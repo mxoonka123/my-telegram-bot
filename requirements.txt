@@ -1,0 +1,5 @@
+python-telegram-bot==20.3
+httpx==0.24.1
+SQLAlchemy==2.0.31
+psycopg2-binary==2.9.9 # Или другой драйвер БД, если используешь не PostgreSQL
+python-dotenv==0.21.1
