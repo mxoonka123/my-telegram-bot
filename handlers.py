@@ -1,10 +1,8 @@
---- START OF FILE handlers.py ---
-
 import logging
 import httpx
 import random
 import asyncio
-import re  # <--- ДОБАВЛЕН ИМПОРТ RE
+import re
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ChatAction
 from telegram.ext import ContextTypes
@@ -35,7 +33,10 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
     logger.error("Exception while handling an update:", exc_info=context.error)
     # Можно добавить отправку сообщения администратору или пользователю при критических ошибках
     # if isinstance(update, Update):
-    #     await update.effective_chat.send_message("ой, кажется, что-то пошло не так. я уже разбираюсь!")
+    #     try:
+    #         await update.effective_chat.send_message("ой, кажется, что-то пошло не так. я уже разбираюсь!")
+    #     except Exception as e:
+    #         logger.error(f"Failed to send error message to chat: {e}")
 
 
 def get_persona_and_context(chat_id: str, db: Session) -> Optional[Tuple[Persona, List[Dict[str, str]]]]:
@@ -64,6 +65,10 @@ def get_persona_and_context(chat_id: str, db: Session) -> Optional[Tuple[Persona
 
 async def send_to_langdock(system_prompt: str, messages: List[Dict[str, str]]) -> str:
     """Отправляет запрос в Langdock API и возвращает текст ответа."""
+    if not LANGDOCK_API_KEY:
+        logger.error("LANGDOCK_API_KEY is not set. Cannot send request to Langdock.")
+        return "" # Возвращаем пустую строку, если ключ не установлен
+
     headers = {
         "Authorization": f"Bearer {LANGDOCK_API_KEY}",
         "Content-Type": "application/json",
@@ -204,8 +209,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         # Проверяем, не является ли сообщение командой смены настроения
         # Это обрабатывается здесь, чтобы пользователь мог использовать просто название настроения
         # (например, "радость"), а не только команду /mood
-        if message_text.lower() in persona.get_all_mood_names():
+        if message_text and message_text.lower() in persona.get_all_mood_names():
              logger.info(f"Message '{message_text}' matched a mood name. Attempting to change mood.")
+             # Создаем имитацию объекта update.message для функции mood, если она ожидает update
+             # Или передаем данные напрямую, как сейчас реализовано в mood, передавая db и persona
              await mood(update, context, db=db, persona=persona) # Передаем сессию и персону
              return # Завершаем обработку сообщения, если это была команда смены настроения
 
@@ -267,7 +274,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         except Exception as e:
             logger.error(f"General error processing message in chat {chat_id}, persona {persona.name}: {e}", exc_info=True)
             # Можно добавить уведомление пользователю об ошибке генерации ответа
-            # await update.message.reply_text("ой, я не смог сгенерировать ответ :(")
+            # try:
+            #     await update.message.reply_text("ой, я не смог сгенерировать ответ :(")
+            # except Exception as send_e:
+            #      logger.error(f"Failed to send error message to user: {send_e}")
 
 
 # Helper function to handle media (photo, voice) processing
@@ -329,7 +339,10 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
         except Exception as e:
             logger.error(f"General error processing {media_type} in chat {chat_id}, persona {persona.name}: {e}", exc_info=True)
             # Уведомление об ошибке
-            # await update.message.reply_text(f"ой, я не смог обработать {media_type}. :(")
+            # try:
+            #     await update.message.reply_text(f"ой, я не смог обработать {media_type}. :(")
+            # except Exception as send_e:
+            #      logger.error(f"Failed to send error message to user: {send_e}")
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -700,7 +713,13 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         with SessionLocal() as db:
             chat_bot_instance = get_chat_bot_instance(db, chat_id)
             if not chat_bot_instance or not chat_bot_instance.active:
-                await query.edit_message_text("в этом чате нет активной личности :(")
+                # Пробуем отредактировать сообщение, если оно еще доступно
+                try:
+                    await query.edit_message_text("в этом чате нет активной личности :(")
+                except Exception:
+                    # Если не получилось отредактировать, отправляем новое
+                    await context.bot.send_message(chat_id=chat_id, text="в этом чате нет активной личности :(")
+
                 logger.debug(f"Callback query received for inactive chat_bot_instance in chat {chat_id}.")
                 return
 
@@ -722,5 +741,3 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             else:
                  await query.edit_message_text(f"неверное настроение: {mood_name}")
                  logger.warning(f"User {user_id} attempted to set unknown mood '{mood_name}' via callback in chat {chat_id}.")
-
---- END OF FILE handlers.py ---
