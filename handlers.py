@@ -13,7 +13,8 @@ from telegram.constants import ChatAction, ParseMode
 from telegram.ext import (
     ContextTypes, ConversationHandler, CommandHandler, MessageHandler, filters, CallbackQueryHandler
 )
-from sqlalchemy.orm import Session, joinedload, contains_eager, flag_modified
+from sqlalchemy.orm import Session, joinedload, contains_eager
+from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy import func
 from typing import List, Dict, Any, Optional, Union, Tuple
