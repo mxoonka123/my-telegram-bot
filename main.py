@@ -1,5 +1,9 @@
+# main.py
+# input_file_0.py
+
 import logging
 import asyncio
+from telegram import Update # <--- Добавленный импорт
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, ContextTypes, filters,
     CallbackQueryHandler, ConversationHandler
@@ -15,12 +19,9 @@ logger = logging.getLogger(__name__)
 
 
 async def post_init(application: Application):
-    # Removed global BOT_USERNAME as it's not strictly needed often
-    # Can get username via context.bot.username if required
     me = await application.bot.get_me()
     logger.info(f"Bot started as @{me.username}")
 
-    # Start background tasks
     asyncio.create_task(tasks.spam_task(application))
     asyncio.create_task(tasks.reset_daily_limits_task())
     asyncio.create_task(tasks.check_subscription_expiry_task())
@@ -42,14 +43,14 @@ def main() -> None:
             handlers.EDIT_MOOD_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.edit_mood_name_received)],
             handlers.EDIT_MOOD_PROMPT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.edit_mood_prompt_received)],
             handlers.DELETE_MOOD_CONFIRM: [CallbackQueryHandler(handlers.delete_mood_confirmed, pattern='^deletemood_delete_'),
-                                           CallbackQueryHandler(handlers.edit_mood_choice, pattern='^edit_moods_back$')] # Back to mood list on cancel
+                                           CallbackQueryHandler(handlers.edit_mood_choice, pattern='^edit_moods_back$')]
         },
         fallbacks=[
             CommandHandler('cancel', handlers.edit_persona_cancel),
             CallbackQueryHandler(handlers.edit_persona_cancel, pattern='^cancel_edit$'),
-            CallbackQueryHandler(handlers.edit_persona_choice, pattern='^edit_persona_back$') # Allow back from mood menu
+            CallbackQueryHandler(handlers.edit_persona_choice, pattern='^edit_persona_back$')
             ],
-        per_message=False # Use one conversation per user+chat
+        per_message=False
     )
 
     # --- Delete Persona Conversation Handler ---
@@ -70,8 +71,8 @@ def main() -> None:
 
     application.add_handler(CommandHandler("createpersona", handlers.create_persona, block=False))
     application.add_handler(CommandHandler("mypersonas", handlers.my_personas, block=False))
-    application.add_handler(edit_persona_conv_handler) # Add conversation handler for editing
-    application.add_handler(delete_persona_conv_handler) # Add conversation handler for deleting
+    application.add_handler(edit_persona_conv_handler)
+    application.add_handler(delete_persona_conv_handler)
     application.add_handler(CommandHandler("addbot", handlers.add_bot_to_chat, block=False))
 
     application.add_handler(CommandHandler("mood", handlers.mood, block=False))
@@ -81,8 +82,6 @@ def main() -> None:
     application.add_handler(MessageHandler(filters.VOICE & ~filters.COMMAND, handlers.handle_voice, block=False))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.handle_message, block=False))
 
-    # General callback handler (must be after specific ones like ConversationHandler)
-    # Handles mood setting, subscription buttons etc.
     application.add_handler(CallbackQueryHandler(handlers.handle_callback_query, pattern='^set_mood_|^subscribe_'))
 
     application.add_error_handler(handlers.error_handler)
@@ -90,6 +89,7 @@ def main() -> None:
     application.post_init = post_init
 
     logger.info("Starting bot polling...")
+    # Теперь Update будет определен
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
