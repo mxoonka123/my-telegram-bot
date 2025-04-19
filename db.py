@@ -1,15 +1,17 @@
 import json
-from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, Boolean, ForeignKey, UniqueConstraint
+from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, Boolean, ForeignKey, UniqueConstraint, func
 from sqlalchemy.orm import sessionmaker, relationship, Session
 from sqlalchemy.ext.declarative import declarative_base
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta, date
 from typing import List, Dict, Any, Optional, Union, Tuple
 
 from config import (
     DATABASE_URL,
     DEFAULT_MOOD_PROMPTS,
     DEFAULT_SYSTEM_PROMPT_TEMPLATE, DEFAULT_SHOULD_RESPOND_PROMPT_TEMPLATE,
-    DEFAULT_SPAM_PROMPT_TEMPLATE, DEFAULT_PHOTO_PROMPT_TEMPLATE, DEFAULT_VOICE_PROMPT_TEMPLATE
+    DEFAULT_SPAM_PROMPT_TEMPLATE, DEFAULT_PHOTO_PROMPT_TEMPLATE, DEFAULT_VOICE_PROMPT_TEMPLATE,
+    FREE_PERSONA_LIMIT, PAID_PERSONA_LIMIT, FREE_DAILY_MESSAGE_LIMIT, PAID_DAILY_MESSAGE_LIMIT,
+    SUBSCRIPTION_DURATION_DAYS
 )
 
 
@@ -20,13 +22,28 @@ class User(Base):
     id = Column(Integer, primary_key=True)
     telegram_id = Column(Integer, unique=True, nullable=False)
     username = Column(String, nullable=True)
-    created_at = Column(DateTime, default=datetime.now(timezone.utc))
-    updated_at = Column(DateTime, default=datetime.now(timezone.utc), onupdate=datetime.now(timezone.utc))
-    is_paying = Column(Boolean, default=False)
-    subscription_end_date = Column(DateTime, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
-    persona_configs = relationship("PersonaConfig", back_populates="owner")
-    bot_instances = relationship("BotInstance", back_populates="owner")
+    is_subscribed = Column(Boolean, default=False)
+    subscription_expires_at = Column(DateTime(timezone=True), nullable=True)
+    daily_message_count = Column(Integer, default=0)
+    last_message_reset = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    persona_configs = relationship("PersonaConfig", back_populates="owner", cascade="all, delete-orphan")
+    bot_instances = relationship("BotInstance", back_populates="owner", cascade="all, delete-orphan")
+
+    @property
+    def message_limit(self) -> int:
+        return PAID_DAILY_MESSAGE_LIMIT if self.is_subscribed and self.subscription_expires_at and self.subscription_expires_at > datetime.now(timezone.utc) else FREE_DAILY_MESSAGE_LIMIT
+
+    @property
+    def persona_limit(self) -> int:
+        return PAID_PERSONA_LIMIT if self.is_subscribed and self.subscription_expires_at and self.subscription_expires_at > datetime.now(timezone.utc) else FREE_PERSONA_LIMIT
+
+    @property
+    def can_create_persona(self) -> bool:
+        return len(self.persona_configs) < self.persona_limit
 
     def __repr__(self):
         return f"<User(id={self.id}, telegram_id={self.telegram_id}, username='{self.username}')>"
@@ -34,8 +51,8 @@ class User(Base):
 class PersonaConfig(Base):
     __tablename__ = 'persona_configs'
     id = Column(Integer, primary_key=True)
-    owner_id = Column(Integer, ForeignKey('users.id'), nullable=False)
-    name = Column(String, nullable=False, unique=True)
+    owner_id = Column(Integer, ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+    name = Column(String, nullable=False)
     description = Column(Text, nullable=True)
 
     system_prompt_template = Column(Text, nullable=False, default=DEFAULT_SYSTEM_PROMPT_TEMPLATE)
@@ -46,7 +63,9 @@ class PersonaConfig(Base):
     voice_prompt_template = Column(Text, nullable=True, default=DEFAULT_VOICE_PROMPT_TEMPLATE)
 
     owner = relationship("User", back_populates="persona_configs")
-    bot_instances = relationship("BotInstance", back_populates="persona_config")
+    bot_instances = relationship("BotInstance", back_populates="persona_config", cascade="all, delete-orphan")
+
+    __table_args__ = (UniqueConstraint('owner_id', 'name', name='_owner_persona_name_uc'),)
 
     def get_mood_prompt(self, mood_name: str) -> str:
         moods = json.loads(self.mood_prompts_json)
@@ -56,14 +75,17 @@ class PersonaConfig(Base):
         moods = json.loads(self.mood_prompts_json)
         return list(moods.keys())
 
+    def set_moods(self, moods: Dict[str, str]):
+        self.mood_prompts_json = json.dumps(moods)
+
     def __repr__(self):
         return f"<PersonaConfig(id={self.id}, name='{self.name}', owner_id={self.owner_id})>"
 
 class BotInstance(Base):
     __tablename__ = 'bot_instances'
     id = Column(Integer, primary_key=True)
-    persona_config_id = Column(Integer, ForeignKey('persona_configs.id'), nullable=False)
-    owner_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    persona_config_id = Column(Integer, ForeignKey('persona_configs.id', ondelete='CASCADE'), nullable=False)
+    owner_id = Column(Integer, ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
     name = Column(String, nullable=True)
 
     persona_config = relationship("PersonaConfig", back_populates="bot_instances")
@@ -80,10 +102,10 @@ class ChatBotInstance(Base):
     __tablename__ = 'chat_bot_instances'
     id = Column(Integer, primary_key=True)
     chat_id = Column(String, nullable=False)
-    bot_instance_id = Column(Integer, ForeignKey('bot_instances.id'), nullable=False)
+    bot_instance_id = Column(Integer, ForeignKey('bot_instances.id', ondelete='CASCADE'), nullable=False)
     active = Column(Boolean, default=True)
-    current_mood = Column(String, default="neutralno")
-    created_at = Column(DateTime, default=datetime.now(timezone.utc))
+    current_mood = Column(String, default="нейтрально")
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     context = relationship("ChatContext", backref="chat_bot_instance", order_by="ChatContext.message_order", cascade="all, delete-orphan")
 
@@ -97,13 +119,11 @@ class ChatBotInstance(Base):
 class ChatContext(Base):
     __tablename__ = 'chat_contexts'
     id = Column(Integer, primary_key=True)
-    chat_bot_instance_id = Column(Integer, ForeignKey('chat_bot_instances.id'), nullable=False)
+    chat_bot_instance_id = Column(Integer, ForeignKey('chat_bot_instances.id', ondelete='CASCADE'), nullable=False)
     message_order = Column(Integer, nullable=False)
     role = Column(String, nullable=False)
     content = Column(Text, nullable=False)
-    timestamp = Column(DateTime, default=datetime.now(timezone.utc))
-
-    # backref="chat_bot_instance" определен в ChatBotInstance
+    timestamp = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
     def __repr__(self):
@@ -129,6 +149,36 @@ def get_or_create_user(db: Session, telegram_id: int, username: str = None) -> U
         db.refresh(user)
     return user
 
+def check_and_update_user_limits(db: Session, user: User) -> bool:
+    now = datetime.now(timezone.utc)
+    today = now.date()
+
+    if not user.last_message_reset or user.last_message_reset.date() < today:
+        user.daily_message_count = 0
+        user.last_message_reset = now
+
+    if user.daily_message_count < user.message_limit:
+        user.daily_message_count += 1
+        db.commit()
+        return True
+    else:
+        db.commit() # Commit the reset if it happened
+        return False
+
+def activate_subscription(db: Session, user_id: int) -> bool:
+    user = db.query(User).get(user_id)
+    if user:
+        now = datetime.now(timezone.utc)
+        expiry_date = now + timedelta(days=SUBSCRIPTION_DURATION_DAYS)
+        user.is_subscribed = True
+        user.subscription_expires_at = expiry_date
+        user.daily_message_count = 0 # Reset count on subscribe
+        user.last_message_reset = now
+        db.commit()
+        return True
+    return False
+
+
 def get_chat_bot_instance(db: Session, chat_id: str) -> Optional[ChatBotInstance]:
     return db.query(ChatBotInstance).filter(ChatBotInstance.chat_id == chat_id, ChatBotInstance.active == True).first()
 
@@ -136,32 +186,27 @@ def get_chat_bot_instance(db: Session, chat_id: str) -> Optional[ChatBotInstance
 def get_context_for_chat_bot(db: Session, chat_bot_instance_id: int, limit: int = 200) -> List[Dict[str, str]]:
     context_records = db.query(ChatContext)\
                         .filter(ChatContext.chat_bot_instance_id == chat_bot_instance_id)\
-                        .order_by(ChatContext.message_order)\
+                        .order_by(ChatContext.message_order.desc())\
                         .limit(limit)\
                         .all()
-    return [{"role": c.role, "content": c.content} for c in context_records]
+    return [{"role": c.role, "content": c.content} for c in reversed(context_records)]
 
 def add_message_to_context(db: Session, chat_bot_instance_id: int, role: str, content: str, max_context: int = 200):
-    current_count = db.query(ChatContext).filter(ChatContext.chat_bot_instance_id == chat_bot_instance_id).count()
+    current_count = db.query(func.count(ChatContext.id)).filter(ChatContext.chat_bot_instance_id == chat_bot_instance_id).scalar()
+
     if current_count >= max_context:
-        oldest_message_to_keep = db.query(ChatContext)\
-                                    .filter(ChatContext.chat_bot_instance_id == chat_bot_instance_id)\
-                                    .order_by(ChatContext.message_order)\
-                                    .limit(1)\
-                                    .offset(current_count - max_context + 1)\
-                                    .first()
-
-        if oldest_message_to_keep:
+         oldest_message_order = db.query(func.min(ChatContext.message_order))\
+                                   .filter(ChatContext.chat_bot_instance_id == chat_bot_instance_id)\
+                                   .scalar()
+         if oldest_message_order is not None:
              db.query(ChatContext)\
-                .filter(
-                    ChatContext.chat_bot_instance_id == chat_bot_instance_id,
-                    ChatContext.message_order < oldest_message_to_keep.message_order
-                ).delete(synchronize_session='auto')
+               .filter(ChatContext.chat_bot_instance_id == chat_bot_instance_id, ChatContext.message_order == oldest_message_order)\
+               .delete(synchronize_session=False)
 
-    max_order = db.query(ChatContext)\
+
+    max_order = db.query(func.max(ChatContext.message_order))\
                   .filter(ChatContext.chat_bot_instance_id == chat_bot_instance_id)\
-                  .order_by(ChatContext.message_order.desc())\
-                  .value(ChatContext.message_order) or 0
+                  .scalar() or 0
 
     new_message = ChatContext(
         chat_bot_instance_id=chat_bot_instance_id,
@@ -172,7 +217,6 @@ def add_message_to_context(db: Session, chat_bot_instance_id: int, role: str, co
     )
     db.add(new_message)
     db.commit()
-    db.refresh(new_message)
 
 
 def get_mood_for_chat_bot(db: Session, chat_bot_instance_id: int) -> str:
@@ -184,14 +228,13 @@ def set_mood_for_chat_bot(db: Session, chat_bot_instance_id: int, mood: str):
     if chat_bot:
         chat_bot.current_mood = mood
         db.commit()
-        db.refresh(chat_bot)
+
 
 def get_all_active_chat_bot_instances(db: Session) -> List[ChatBotInstance]:
     return db.query(ChatBotInstance).filter(ChatBotInstance.active == True).all()
 
 
 def create_persona_config(db: Session, owner_id: int, name: str, description: str = None) -> PersonaConfig:
-    """Создает новую конфигурацию персоны с дефолтными шаблонами."""
     persona = PersonaConfig(
         owner_id=owner_id,
         name=name,
@@ -209,20 +252,16 @@ def create_persona_config(db: Session, owner_id: int, name: str, description: st
     return persona
 
 def get_personas_by_owner(db: Session, owner_id: int) -> List[PersonaConfig]:
-    """Возвращает список персон, принадлежащих пользователю."""
     return db.query(PersonaConfig).filter(PersonaConfig.owner_id == owner_id).all()
 
 def get_persona_by_name_and_owner(db: Session, owner_id: int, name: str) -> Optional[PersonaConfig]:
-    """Возвращает персону по имени и владельцу."""
     return db.query(PersonaConfig).filter(PersonaConfig.owner_id == owner_id, PersonaConfig.name == name).first()
 
 def get_persona_by_id_and_owner(db: Session, owner_id: int, persona_id: int) -> Optional[PersonaConfig]:
-    """Возвращает персону по ID и владельцу."""
     return db.query(PersonaConfig).filter(PersonaConfig.owner_id == owner_id, PersonaConfig.id == persona_id).first()
 
 
 def create_bot_instance(db: Session, owner_id: int, persona_config_id: int, name: str = None) -> BotInstance:
-    """Создает экземпляр бота на основе конфига персоны."""
     bot_instance = BotInstance(
         owner_id=owner_id,
         persona_config_id=persona_config_id,
@@ -234,28 +273,44 @@ def create_bot_instance(db: Session, owner_id: int, persona_config_id: int, name
     return bot_instance
 
 def get_bot_instance_by_id(db: Session, instance_id: int) -> Optional[BotInstance]:
-    """Возвращает экземпляр бота по ID."""
     return db.query(BotInstance).get(instance_id)
 
 
-def link_bot_instance_to_chat(db: Session, bot_instance_id: int, chat_id: str) -> ChatBotInstance:
-    """Связывает экземпляр бота с чатом."""
+def link_bot_instance_to_chat(db: Session, bot_instance_id: int, chat_id: str) -> Optional[ChatBotInstance]:
     chat_link = db.query(ChatBotInstance).filter(
         ChatBotInstance.chat_id == chat_id,
         ChatBotInstance.bot_instance_id == bot_instance_id
     ).first()
 
     if chat_link:
-        chat_link.active = True
-        db.commit()
-        db.refresh(chat_link)
+        if not chat_link.active:
+             chat_link.active = True
+             db.commit()
+             db.refresh(chat_link)
         return chat_link
     else:
+        # Check if another bot instance is already active in this chat for this persona
+        existing_active = db.query(ChatBotInstance)\
+            .join(BotInstance)\
+            .filter(ChatBotInstance.chat_id == chat_id,
+                    BotInstance.persona_config_id == db.query(BotInstance.persona_config_id).filter(BotInstance.id == bot_instance_id).scalar(),
+                    ChatBotInstance.active == True)\
+            .first()
+        if existing_active:
+             # Optionally deactivate the old one or prevent linking
+             # For now, let's just prevent linking if another instance of the *same persona* is active
+             # existing_active.active = False # Uncomment to deactivate old one
+             # db.commit()
+             # logger.warning(f"Deactivated existing bot instance {existing_active.bot_instance_id} for same persona in chat {chat_id}")
+             # OR return None to indicate failure due to existing active link
+             return None # Indicate failure
+
+
         chat_link = ChatBotInstance(
             chat_id=chat_id,
             bot_instance_id=bot_instance_id,
             active=True,
-            current_mood="neutralno"
+            current_mood="нейтрально"
         )
         db.add(chat_link)
         db.commit()
@@ -263,7 +318,6 @@ def link_bot_instance_to_chat(db: Session, bot_instance_id: int, chat_id: str) -
         return chat_link
 
 def unlink_bot_instance_from_chat(db: Session, chat_id: str, bot_instance_id: int) -> bool:
-    """Деактивирует связь экземпляра бота с чатом."""
     chat_link = db.query(ChatBotInstance).filter(
         ChatBotInstance.chat_id == chat_id,
         ChatBotInstance.bot_instance_id == bot_instance_id,
@@ -275,9 +329,8 @@ def unlink_bot_instance_from_chat(db: Session, chat_id: str, bot_instance_id: in
         return True
     return False
 
-def delete_persona_config(db: Session, persona_id: int) -> bool:
-    """Удаляет конфигурацию персоны."""
-    persona = db.query(PersonaConfig).get(persona_id)
+def delete_persona_config(db: Session, persona_id: int, owner_id: int) -> bool:
+    persona = db.query(PersonaConfig).filter(PersonaConfig.id == persona_id, PersonaConfig.owner_id == owner_id).first()
     if persona:
         db.delete(persona)
         db.commit()
@@ -285,5 +338,4 @@ def delete_persona_config(db: Session, persona_id: int) -> bool:
     return False
 
 def create_tables():
-    """Создает все таблицы в базе данных."""
     Base.metadata.create_all(engine)
