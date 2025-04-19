@@ -1,6 +1,9 @@
+# requirements.txt
+# input_file_0.py
+
 python-telegram-bot[ext]==21.0.1
 httpx[http2]==0.27.0
 SQLAlchemy==2.0.31
-psycopg2-binary==2.9.9 # Or remove/change if using SQLite
+psycopg2-binary==2.9.9 # Или уберите/замените, если используете SQLite
 python-dotenv==1.0.1
-yookassa==2.14.0
+yookassa==3.5.0 # <--- Обновленная версия
