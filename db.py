@@ -1,6 +1,6 @@
 import json
 from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, Boolean, ForeignKey, UniqueConstraint, func
-from sqlalchemy.orm import sessionmaker, relationship, Session
+from sqlalchemy.orm import sessionmaker, relationship, Session, flag_modified # Добавили flag_modified
 from sqlalchemy.ext.declarative import declarative_base
 from datetime import datetime, timezone, timedelta, date
 from typing import List, Dict, Any, Optional, Union, Tuple
@@ -34,16 +34,23 @@ class User(Base):
     bot_instances = relationship("BotInstance", back_populates="owner", cascade="all, delete-orphan")
 
     @property
+    def is_active_subscriber(self) -> bool:
+        return self.is_subscribed and self.subscription_expires_at and self.subscription_expires_at > datetime.now(timezone.utc)
+
+    @property
     def message_limit(self) -> int:
-        return PAID_DAILY_MESSAGE_LIMIT if self.is_subscribed and self.subscription_expires_at and self.subscription_expires_at > datetime.now(timezone.utc) else FREE_DAILY_MESSAGE_LIMIT
+        return PAID_DAILY_MESSAGE_LIMIT if self.is_active_subscriber else FREE_DAILY_MESSAGE_LIMIT
 
     @property
     def persona_limit(self) -> int:
-        return PAID_PERSONA_LIMIT if self.is_subscribed and self.subscription_expires_at and self.subscription_expires_at > datetime.now(timezone.utc) else FREE_PERSONA_LIMIT
+        return PAID_PERSONA_LIMIT if self.is_active_subscriber else FREE_PERSONA_LIMIT
 
     @property
     def can_create_persona(self) -> bool:
-        return len(self.persona_configs) < self.persona_limit
+        # Ensure persona_configs is loaded if accessed lazily, or handle None
+        # count = db.query(func.count(PersonaConfig.id)).filter(PersonaConfig.owner_id == self.id).scalar() # Alternative if relationship is lazy
+        count = len(self.persona_configs) if self.persona_configs is not None else 0
+        return count < self.persona_limit
 
     def __repr__(self):
         return f"<User(id={self.id}, telegram_id={self.telegram_id}, username='{self.username}')>"
@@ -62,18 +69,28 @@ class PersonaConfig(Base):
     photo_prompt_template = Column(Text, nullable=True, default=DEFAULT_PHOTO_PROMPT_TEMPLATE)
     voice_prompt_template = Column(Text, nullable=True, default=DEFAULT_VOICE_PROMPT_TEMPLATE)
 
+    # Новое поле: Максимальное количество сообщений в одном ответе
+    max_response_messages = Column(Integer, default=3, nullable=False) # По умолчанию 3 сообщения
+
     owner = relationship("User", back_populates="persona_configs")
     bot_instances = relationship("BotInstance", back_populates="persona_config", cascade="all, delete-orphan")
 
     __table_args__ = (UniqueConstraint('owner_id', 'name', name='_owner_persona_name_uc'),)
 
     def get_mood_prompt(self, mood_name: str) -> str:
-        moods = json.loads(self.mood_prompts_json)
-        return moods.get(mood_name.lower(), "")
+        try:
+            moods = json.loads(self.mood_prompts_json)
+            return moods.get(mood_name.lower(), "")
+        except (json.JSONDecodeError, TypeError):
+             return ""
+
 
     def get_mood_names(self) -> List[str]:
-        moods = json.loads(self.mood_prompts_json)
-        return list(moods.keys())
+        try:
+            moods = json.loads(self.mood_prompts_json)
+            return list(moods.keys())
+        except (json.JSONDecodeError, TypeError):
+            return []
 
     def set_moods(self, moods: Dict[str, str]):
         self.mood_prompts_json = json.dumps(moods)
@@ -129,10 +146,14 @@ class ChatContext(Base):
     def __repr__(self):
         return f"<ChatContext(id={self.id}, chat_bot_instance_id={self.chat_bot_instance_id}, role='{self.role}', order={self.message_order})>"
 
+# --- Константы для контекста ---
+MAX_CONTEXT_MESSAGES_STORED = 200 # Сколько храним в БД
+MAX_CONTEXT_MESSAGES_SENT_TO_LLM = 40 # Сколько отправляем в LLM (УМЕНЬШЕНО)
+
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-def get_db() -> Optional[Session]:
+def get_db() -> Session: # Убрал Optional, так как мы ожидаем сессию
     db = SessionLocal()
     try:
         yield db
@@ -147,6 +168,8 @@ def get_or_create_user(db: Session, telegram_id: int, username: str = None) -> U
         db.add(user)
         db.commit()
         db.refresh(user)
+    # Ensure relationships are loaded if needed immediately, or handle potential lazy loading errors
+    # db.refresh(user, ['persona_configs']) # Example if needed right after creation
     return user
 
 def check_and_update_user_limits(db: Session, user: User) -> bool:
@@ -156,13 +179,18 @@ def check_and_update_user_limits(db: Session, user: User) -> bool:
     if not user.last_message_reset or user.last_message_reset.date() < today:
         user.daily_message_count = 0
         user.last_message_reset = now
+        # Need commit here if we reset
+        db.commit()
+        db.refresh(user) # Refresh state after commit
+
 
     if user.daily_message_count < user.message_limit:
+        # Increment count
         user.daily_message_count += 1
-        db.commit()
+        db.commit() # Commit the increment
         return True
     else:
-        db.commit() # Commit the reset if it happened
+        # Limit exceeded, no increment, commit was done if reset happened
         return False
 
 def activate_subscription(db: Session, user_id: int) -> bool:
@@ -172,7 +200,7 @@ def activate_subscription(db: Session, user_id: int) -> bool:
         expiry_date = now + timedelta(days=SUBSCRIPTION_DURATION_DAYS)
         user.is_subscribed = True
         user.subscription_expires_at = expiry_date
-        user.daily_message_count = 0 # Reset count on subscribe
+        user.daily_message_count = 0
         user.last_message_reset = now
         db.commit()
         return True
@@ -180,30 +208,39 @@ def activate_subscription(db: Session, user_id: int) -> bool:
 
 
 def get_chat_bot_instance(db: Session, chat_id: str) -> Optional[ChatBotInstance]:
-    return db.query(ChatBotInstance).filter(ChatBotInstance.chat_id == chat_id, ChatBotInstance.active == True).first()
+    return db.query(ChatBotInstance).filter(ChatBotInstance.chat_id == chat_id, ChatBotInstance.active == True).options(
+        # Явно загружаем связи, чтобы избежать проблем с ленивой загрузкой вне сессии
+        relationship(ChatBotInstance.bot_instance_ref).joinedload(BotInstance.persona_config),
+        relationship(ChatBotInstance.bot_instance_ref).joinedload(BotInstance.owner)
+    ).first()
 
 
-def get_context_for_chat_bot(db: Session, chat_bot_instance_id: int, limit: int = 200) -> List[Dict[str, str]]:
+def get_context_for_chat_bot(db: Session, chat_bot_instance_id: int) -> List[Dict[str, str]]:
+    # Используем константу MAX_CONTEXT_MESSAGES_SENT_TO_LLM
     context_records = db.query(ChatContext)\
                         .filter(ChatContext.chat_bot_instance_id == chat_bot_instance_id)\
                         .order_by(ChatContext.message_order.desc())\
-                        .limit(limit)\
+                        .limit(MAX_CONTEXT_MESSAGES_SENT_TO_LLM)\
                         .all()
+    # Возвращаем в правильном хронологическом порядке (старые -> новые)
     return [{"role": c.role, "content": c.content} for c in reversed(context_records)]
 
-def add_message_to_context(db: Session, chat_bot_instance_id: int, role: str, content: str, max_context: int = 200):
+def add_message_to_context(db: Session, chat_bot_instance_id: int, role: str, content: str):
+    # Используем константу MAX_CONTEXT_MESSAGES_STORED
     current_count = db.query(func.count(ChatContext.id)).filter(ChatContext.chat_bot_instance_id == chat_bot_instance_id).scalar()
 
-    if current_count >= max_context:
-         oldest_message_order = db.query(func.min(ChatContext.message_order))\
-                                   .filter(ChatContext.chat_bot_instance_id == chat_bot_instance_id)\
-                                   .scalar()
-         if oldest_message_order is not None:
-             db.query(ChatContext)\
-               .filter(ChatContext.chat_bot_instance_id == chat_bot_instance_id, ChatContext.message_order == oldest_message_order)\
-               .delete(synchronize_session=False)
+    if current_count >= MAX_CONTEXT_MESSAGES_STORED:
+         # Находим самое старое сообщение для удаления
+         oldest_message = db.query(ChatContext)\
+                           .filter(ChatContext.chat_bot_instance_id == chat_bot_instance_id)\
+                           .order_by(ChatContext.message_order.asc())\
+                           .first()
+         if oldest_message:
+             db.delete(oldest_message)
+             # Не делаем commit здесь, сделаем после добавления нового
 
 
+    # Находим максимальный текущий порядок
     max_order = db.query(func.max(ChatContext.message_order))\
                   .filter(ChatContext.chat_bot_instance_id == chat_bot_instance_id)\
                   .scalar() or 0
@@ -216,12 +253,13 @@ def add_message_to_context(db: Session, chat_bot_instance_id: int, role: str, co
         timestamp=datetime.now(timezone.utc)
     )
     db.add(new_message)
+    # Commit после всех операций с контекстом (удаление + добавление)
     db.commit()
 
 
 def get_mood_for_chat_bot(db: Session, chat_bot_instance_id: int) -> str:
-    chat_bot = db.query(ChatBotInstance).get(chat_bot_instance_id)
-    return chat_bot.current_mood if chat_bot else "нейтрально"
+    mood = db.query(ChatBotInstance.current_mood).filter(ChatBotInstance.id == chat_bot_instance_id).scalar()
+    return mood if mood else "нейтрально"
 
 def set_mood_for_chat_bot(db: Session, chat_bot_instance_id: int, mood: str):
     chat_bot = db.query(ChatBotInstance).get(chat_bot_instance_id)
@@ -231,7 +269,11 @@ def set_mood_for_chat_bot(db: Session, chat_bot_instance_id: int, mood: str):
 
 
 def get_all_active_chat_bot_instances(db: Session) -> List[ChatBotInstance]:
-    return db.query(ChatBotInstance).filter(ChatBotInstance.active == True).all()
+    # Также явно загружаем связи для задачи спама
+    return db.query(ChatBotInstance).filter(ChatBotInstance.active == True).options(
+        relationship(ChatBotInstance.bot_instance_ref).joinedload(BotInstance.persona_config),
+        relationship(ChatBotInstance.bot_instance_ref).joinedload(BotInstance.owner)
+    ).all()
 
 
 def create_persona_config(db: Session, owner_id: int, name: str, description: str = None) -> PersonaConfig:
@@ -239,12 +281,7 @@ def create_persona_config(db: Session, owner_id: int, name: str, description: st
         owner_id=owner_id,
         name=name,
         description=description,
-        system_prompt_template=DEFAULT_SYSTEM_PROMPT_TEMPLATE,
-        mood_prompts_json=json.dumps(DEFAULT_MOOD_PROMPTS),
-        should_respond_prompt_template=DEFAULT_SHOULD_RESPOND_PROMPT_TEMPLATE,
-        spam_prompt_template=DEFAULT_SPAM_PROMPT_TEMPLATE,
-        photo_prompt_template=DEFAULT_PHOTO_PROMPT_TEMPLATE,
-        voice_prompt_template=DEFAULT_VOICE_PROMPT_TEMPLATE
+        # Остальные поля имеют дефолты в модели
     )
     db.add(persona)
     db.commit()
@@ -277,35 +314,21 @@ def get_bot_instance_by_id(db: Session, instance_id: int) -> Optional[BotInstanc
 
 
 def link_bot_instance_to_chat(db: Session, bot_instance_id: int, chat_id: str) -> Optional[ChatBotInstance]:
+    # Ищем существующую связь
     chat_link = db.query(ChatBotInstance).filter(
         ChatBotInstance.chat_id == chat_id,
         ChatBotInstance.bot_instance_id == bot_instance_id
     ).first()
 
     if chat_link:
+        # Если найдена и неактивна, активируем
         if not chat_link.active:
              chat_link.active = True
              db.commit()
              db.refresh(chat_link)
-        return chat_link
+        return chat_link # Возвращаем существующую (возможно, только что активированную)
     else:
-        # Check if another bot instance is already active in this chat for this persona
-        existing_active = db.query(ChatBotInstance)\
-            .join(BotInstance)\
-            .filter(ChatBotInstance.chat_id == chat_id,
-                    BotInstance.persona_config_id == db.query(BotInstance.persona_config_id).filter(BotInstance.id == bot_instance_id).scalar(),
-                    ChatBotInstance.active == True)\
-            .first()
-        if existing_active:
-             # Optionally deactivate the old one or prevent linking
-             # For now, let's just prevent linking if another instance of the *same persona* is active
-             # existing_active.active = False # Uncomment to deactivate old one
-             # db.commit()
-             # logger.warning(f"Deactivated existing bot instance {existing_active.bot_instance_id} for same persona in chat {chat_id}")
-             # OR return None to indicate failure due to existing active link
-             return None # Indicate failure
-
-
+        # Связи нет, создаем новую
         chat_link = ChatBotInstance(
             chat_id=chat_id,
             bot_instance_id=bot_instance_id,
