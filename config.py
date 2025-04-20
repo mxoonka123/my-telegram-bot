@@ -1,9 +1,9 @@
-# config.py
-
 import os
 from dotenv import load_dotenv
 
 load_dotenv()
+
+ADMIN_USER_ID = 1324596928
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 LANGDOCK_API_KEY = os.getenv("LANGDOCK_API_KEY", "")
