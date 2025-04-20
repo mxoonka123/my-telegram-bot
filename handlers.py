@@ -1,5 +1,3 @@
-# handlers.py
-
 import logging
 import httpx
 import random
@@ -29,7 +27,8 @@ from config import (
     DEFAULT_MOOD_PROMPTS, YOOKASSA_SHOP_ID, YOOKASSA_SECRET_KEY,
     SUBSCRIPTION_PRICE_RUB, SUBSCRIPTION_CURRENCY, WEBHOOK_URL_BASE,
     SUBSCRIPTION_DURATION_DAYS, FREE_DAILY_MESSAGE_LIMIT, PAID_DAILY_MESSAGE_LIMIT,
-    FREE_PERSONA_LIMIT, PAID_PERSONA_LIMIT, MAX_CONTEXT_MESSAGES_SENT_TO_LLM
+    FREE_PERSONA_LIMIT, PAID_PERSONA_LIMIT, MAX_CONTEXT_MESSAGES_SENT_TO_LLM,
+    ADMIN_USER_ID
 )
 from db import (
     get_context_for_chat_bot, add_message_to_context,
@@ -45,6 +44,8 @@ from utils import postprocess_response, extract_gif_links, get_time_info
 
 logger = logging.getLogger(__name__)
 
+def is_admin(user_id: int) -> bool:
+    return user_id == ADMIN_USER_ID
 
 try:
     if YOOKASSA_SHOP_ID and YOOKASSA_SECRET_KEY:
@@ -179,7 +180,7 @@ async def process_and_send_response(update: Optional[Update],
 
     if persona.chat_instance:
         add_message_to_context(db, persona.chat_instance.id, "assistant", full_bot_response_text.strip())
-        db.flush() # <<<--- ИЗМЕНЕНИЕ ЗДЕСЬ (чтобы сохранить ответ в БД перед отправкой)
+        db.flush()
         logger.debug("AI response added to database context.")
     else:
         logger.warning("Cannot add AI response to context, chat_instance is None.")
@@ -356,7 +357,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
             if persona.chat_instance:
                 add_message_to_context(db, persona.chat_instance.id, "user", message_text)
-                db.flush() # <<<--- ИЗМЕНЕНИЕ ЗДЕСЬ
+                db.flush()
                 context_for_ai = get_context_for_chat_bot(db, persona.chat_instance.id)
                 logger.debug(f"Prepared {len(context_for_ai)} messages for AI context.")
             else:
@@ -423,7 +424,7 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
 
             if persona.chat_instance:
                 add_message_to_context(db, persona.chat_instance.id, "user", context_text)
-                db.flush() # <<<--- ДОБАВИМ FLUSH И ЗДЕСЬ НА ВСЯКИЙ СЛУЧАЙ
+                db.flush()
                 context_for_ai = get_context_for_chat_bot(db, persona.chat_instance.id)
                 logger.debug(f"Prepared {len(context_for_ai)} messages for AI context for {media_type}.")
             else:
@@ -719,10 +720,10 @@ async def create_persona(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     with next(get_db()) as db:
         try:
             user = get_or_create_user(db, user_id, username)
-
             db.refresh(user, ['persona_configs'])
 
-            if not user.can_create_persona:
+
+            if not is_admin(user_id) and not user.can_create_persona:
                  persona_count = db.query(func.count(PersonaConfig.id)).filter(PersonaConfig.owner_id == user.id).scalar()
                  logger.warning(f"User {user_id} cannot create persona, limit reached ({persona_count}/{user.persona_limit}).")
                  text = (
@@ -731,6 +732,7 @@ async def create_persona(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                  )
                  await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=ReplyKeyboardRemove())
                  return
+
 
             existing_persona = get_persona_by_name_and_owner(db, user.id, persona_name)
             if existing_persona:
@@ -1158,14 +1160,14 @@ async def edit_persona_choice(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     if data == "edit_moods":
 
-        with next(get_db()) as db:
-            user = get_or_create_user(db, user_id)
-            if not user.is_active_subscriber:
-                 await query.edit_message_text("управление настроениями доступно только по подписке. /subscribe", reply_markup=None)
-
-                 keyboard = await _get_edit_persona_keyboard(persona)
-                 await query.message.reply_text(f"редактируем **{persona.name}**\nвыбери, что изменить:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
-                 return EDIT_PERSONA_CHOICE
+        if not is_admin(user_id):
+            with next(get_db()) as db:
+                user = get_or_create_user(db, user_id)
+                if not user.is_active_subscriber:
+                     await query.edit_message_text("управление настроениями доступно только по подписке. /subscribe", reply_markup=None)
+                     keyboard = await _get_edit_persona_keyboard(persona)
+                     await query.message.reply_text(f"редактируем **{persona.name}**\nвыбери, что изменить:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
+                     return EDIT_PERSONA_CHOICE
 
         return await edit_moods_menu(update, context)
 
@@ -1178,13 +1180,15 @@ async def edit_persona_choice(update: Update, context: ContextTypes.DEFAULT_TYPE
         advanced_fields = ["should_respond_prompt_template", "spam_prompt_template",
                            "photo_prompt_template", "voice_prompt_template", "max_response_messages"]
         if field in advanced_fields:
-             with next(get_db()) as db:
-                 user = get_or_create_user(db, user_id)
-                 if not user.is_active_subscriber:
-                     await query.edit_message_text(f"поле '{field_display_name}' доступно только по подписке. /subscribe", reply_markup=None)
-                     keyboard = await _get_edit_persona_keyboard(persona)
-                     await query.message.reply_text(f"редактируем **{persona.name}**\nвыбери, что изменить:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
-                     return EDIT_PERSONA_CHOICE
+
+             if not is_admin(user_id):
+                 with next(get_db()) as db:
+                     user = get_or_create_user(db, user_id)
+                     if not user.is_active_subscriber:
+                         await query.edit_message_text(f"поле '{field_display_name}' доступно только по подписке. /subscribe", reply_markup=None)
+                         keyboard = await _get_edit_persona_keyboard(persona)
+                         await query.message.reply_text(f"редактируем **{persona.name}**\nвыбери, что изменить:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
+                         return EDIT_PERSONA_CHOICE
 
 
         if field == "max_response_messages":
@@ -1378,6 +1382,17 @@ async def edit_moods_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return ConversationHandler.END
 
     logger.debug(f"Showing moods menu for persona {persona.id}")
+
+
+    user_id = update.effective_user.id
+    if not is_admin(user_id):
+        with next(get_db()) as db:
+            user = get_or_create_user(db, user_id)
+            if not user.is_active_subscriber:
+                 logger.warning(f"Non-admin user {user_id} tried to access mood editor without subscription.")
+                 keyboard = await _get_edit_persona_keyboard(persona)
+                 await query.edit_message_text(f"редактируем **{persona.name}**\nвыбери, что изменить:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
+                 return EDIT_PERSONA_CHOICE
 
 
     with next(get_db()) as db:
