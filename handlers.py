@@ -270,6 +270,7 @@ async def send_limit_exceeded_message(update: Update, context: ContextTypes.DEFA
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    logger.info("--- handle_message ENTERED ---")
     if not update.message or not update.message.text: return
     chat_id = str(update.effective_chat.id)
     user_id = update.effective_user.id
