@@ -1,5 +1,3 @@
-# db.py
-
 import json
 import logging
 from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, Boolean, ForeignKey, UniqueConstraint, func
@@ -18,7 +16,8 @@ from config import (
     DEFAULT_SPAM_PROMPT_TEMPLATE, DEFAULT_PHOTO_PROMPT_TEMPLATE, DEFAULT_VOICE_PROMPT_TEMPLATE,
     FREE_PERSONA_LIMIT, PAID_PERSONA_LIMIT, FREE_DAILY_MESSAGE_LIMIT, PAID_DAILY_MESSAGE_LIMIT,
     SUBSCRIPTION_DURATION_DAYS,
-    MAX_CONTEXT_MESSAGES_SENT_TO_LLM
+    MAX_CONTEXT_MESSAGES_SENT_TO_LLM,
+    ADMIN_USER_ID
 )
 
 
@@ -217,17 +216,18 @@ def get_or_create_user(db: Session, telegram_id: int, username: str = None) -> U
     return user
 
 def check_and_update_user_limits(db: Session, user: User) -> bool:
+    if user.telegram_id == ADMIN_USER_ID:
+        logger.debug(f"Admin user {user.telegram_id} bypasses message limit check.")
+        return True
+
     now = datetime.now(timezone.utc)
     today = now.date()
-
-
     reset_needed = (not user.last_message_reset) or (user.last_message_reset.date() < today)
 
     if reset_needed:
         logger.info(f"Resetting daily message count for user {user.telegram_id}")
         user.daily_message_count = 0
         user.last_message_reset = now
-
 
     can_send = user.daily_message_count < user.message_limit
 
@@ -238,14 +238,12 @@ def check_and_update_user_limits(db: Session, user: User) -> bool:
         logger.info(f"User {user.telegram_id} message limit reached ({user.daily_message_count}/{user.message_limit}).")
 
     try:
-
         db.commit()
         if reset_needed:
             db.refresh(user)
     except SQLAlchemyError as e:
          logger.error(f"Failed to commit user limit update for {user.telegram_id}: {e}", exc_info=True)
          db.rollback()
-
          return False
 
     return can_send
