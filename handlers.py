@@ -179,6 +179,7 @@ async def process_and_send_response(update: Optional[Update],
 
     if persona.chat_instance:
         add_message_to_context(db, persona.chat_instance.id, "assistant", full_bot_response_text.strip())
+        db.flush() # <<<--- ИЗМЕНЕНИЕ ЗДЕСЬ (чтобы сохранить ответ в БД перед отправкой)
         logger.debug("AI response added to database context.")
     else:
         logger.warning("Cannot add AI response to context, chat_instance is None.")
@@ -286,7 +287,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             persona_context_owner_tuple = get_persona_and_context_with_owner(chat_id, db)
 
             if not persona_context_owner_tuple:
-
+                logger.debug(f"No active persona for chat {chat_id}. Ignoring.")
                 return
 
             persona, current_context_list, owner_user = persona_context_owner_tuple
@@ -348,13 +349,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
             if not should_ai_respond:
+                 logger.debug("Decided not to respond based on should_respond logic.")
                  return
 
 
 
             if persona.chat_instance:
                 add_message_to_context(db, persona.chat_instance.id, "user", message_text)
-
+                db.flush() # <<<--- ИЗМЕНЕНИЕ ЗДЕСЬ
                 context_for_ai = get_context_for_chat_bot(db, persona.chat_instance.id)
                 logger.debug(f"Prepared {len(context_for_ai)} messages for AI context.")
             else:
@@ -421,6 +423,7 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
 
             if persona.chat_instance:
                 add_message_to_context(db, persona.chat_instance.id, "user", context_text)
+                db.flush() # <<<--- ДОБАВИМ FLUSH И ЗДЕСЬ НА ВСЯКИЙ СЛУЧАЙ
                 context_for_ai = get_context_for_chat_bot(db, persona.chat_instance.id)
                 logger.debug(f"Prepared {len(context_for_ai)} messages for AI context for {media_type}.")
             else:
