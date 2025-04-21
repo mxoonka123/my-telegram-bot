@@ -1,3 +1,5 @@
+# config.py
+
 import os
 from dotenv import load_dotenv
 
@@ -8,8 +10,10 @@ ADMIN_USER_ID = 1324596928
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 LANGDOCK_API_KEY = os.getenv("LANGDOCK_API_KEY", "")
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./bot_data.db")
-YOOKASSA_SHOP_ID = os.getenv("YOOKASSA_SHOP_ID", "")
-YOOKASSA_SECRET_KEY = os.getenv("YOOKASSA_SECRET_KEY", "")
+
+YOOKASSA_SHOP_ID = "1075114"
+YOOKASSA_SECRET_KEY = "test_WcPfZ-d6u1bMYyoF8ERfmTnVzG3A8GI3gv0ChTtwxRc"
+
 WEBHOOK_URL_BASE = os.getenv("WEBHOOK_URL_BASE", "https://your-bot-domain.com")
 
 LANGDOCK_BASE_URL = os.getenv("LANGDOCK_BASE_URL", "https://api.langdock.com/anthropic/eu/")
