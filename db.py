@@ -1,6 +1,8 @@
+# db.py
+
 import json
 import logging
-from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, Boolean, ForeignKey, UniqueConstraint, func
+from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, Boolean, ForeignKey, UniqueConstraint, func, BIGINT
 from sqlalchemy.orm import sessionmaker, relationship, Session, joinedload
 from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy.ext.declarative import declarative_base
@@ -29,7 +31,7 @@ Base = declarative_base()
 class User(Base):
     __tablename__ = 'users'
     id = Column(Integer, primary_key=True)
-    telegram_id = Column(Integer, unique=True, nullable=False)
+    telegram_id = Column(BIGINT, unique=True, nullable=False) # Изменено на BIGINT
     username = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
@@ -44,31 +46,32 @@ class User(Base):
 
     @property
     def is_active_subscriber(self) -> bool:
-
         return self.is_subscribed and self.subscription_expires_at and self.subscription_expires_at > datetime.now(timezone.utc)
 
     @property
     def message_limit(self) -> int:
+        # Админ всегда имеет максимальный лимит (хотя проверка check_and_update_user_limits его обходит)
+        if self.telegram_id == ADMIN_USER_ID:
+             return PAID_DAILY_MESSAGE_LIMIT
         return PAID_DAILY_MESSAGE_LIMIT if self.is_active_subscriber else FREE_DAILY_MESSAGE_LIMIT
 
     @property
     def persona_limit(self) -> int:
+        if self.telegram_id == ADMIN_USER_ID:
+             return PAID_PERSONA_LIMIT # Или другое большое число, если нужно больше
         return PAID_PERSONA_LIMIT if self.is_active_subscriber else FREE_PERSONA_LIMIT
 
     @property
     def can_create_persona(self) -> bool:
-
+        if self.telegram_id == ADMIN_USER_ID:
+            return True
 
         if self.persona_configs is not None:
              count = len(self.persona_configs)
         else:
              try:
-
-
                  logger.warning(f"Accessing can_create_persona on potentially detached User {self.id}. Persona count might be inaccurate.")
-
                  return False
-
              except Exception as e:
                  logger.error(f"Error checking persona count for User {self.id}: {e}")
                  return False
@@ -102,7 +105,6 @@ class PersonaConfig(Base):
     def get_mood_prompt(self, mood_name: str) -> str:
         try:
             moods = json.loads(self.mood_prompts_json or '{}')
-
             for key, value in moods.items():
                 if key.lower() == mood_name.lower():
                     return value
@@ -120,11 +122,8 @@ class PersonaConfig(Base):
             return []
 
     def set_moods(self, db_session: Session, moods: Dict[str, str]):
-
         self.mood_prompts_json = json.dumps(moods)
         flag_modified(self, "mood_prompts_json")
-
-
 
     def __repr__(self):
         return f"<PersonaConfig(id={self.id}, name='{self.name}', owner_id={self.owner_id})>"
@@ -171,23 +170,16 @@ class ChatContext(Base):
     def __repr__(self):
         return f"<ChatContext(id={self.id}, chat_bot_instance_id={self.chat_bot_instance_id}, role='{self.role}', order={self.message_order})>"
 
-
 MAX_CONTEXT_MESSAGES_STORED = 200
-
-
-
 
 if not DATABASE_URL:
     logger.error("DATABASE_URL environment variable is not set!")
-
     DATABASE_URL = "sqlite:///./bot_data_fallback.db"
     logger.warning(f"Using fallback database: {DATABASE_URL}")
 
 engine = create_engine(DATABASE_URL)
 
-
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
 
 def get_db() -> Session:
     db = SessionLocal()
@@ -205,6 +197,12 @@ def get_or_create_user(db: Session, telegram_id: int, username: str = None) -> U
     if not user:
         logger.info(f"Creating new user for telegram_id {telegram_id}")
         user = User(telegram_id=telegram_id, username=username)
+        # Устанавливаем подписку для админа сразу
+        if telegram_id == ADMIN_USER_ID:
+            logger.info(f"Setting admin user {telegram_id} as subscribed indefinitely.")
+            user.is_subscribed = True
+            # Можно установить очень далекую дату или оставить None, если логика is_active_subscriber это учтет
+            # user.subscription_expires_at = datetime(2099, 12, 31, tzinfo=timezone.utc)
         db.add(user)
         try:
             db.commit()
@@ -213,6 +211,17 @@ def get_or_create_user(db: Session, telegram_id: int, username: str = None) -> U
              logger.error(f"Failed to commit new user {telegram_id}: {e}", exc_info=True)
              db.rollback()
              raise
+    elif user.telegram_id == ADMIN_USER_ID and not user.is_subscribed:
+        # Если админ уже есть, но не подписан, подписываем
+        logger.info(f"Ensuring admin user {telegram_id} is subscribed.")
+        user.is_subscribed = True
+        try:
+            db.commit()
+            db.refresh(user)
+        except SQLAlchemyError as e:
+            logger.error(f"Failed to update admin subscription status for {telegram_id}: {e}", exc_info=True)
+            db.rollback()
+
     return user
 
 def check_and_update_user_limits(db: Session, user: User) -> bool:
@@ -253,11 +262,9 @@ def activate_subscription(db: Session, user_id: int) -> bool:
     if user:
         logger.info(f"Activating subscription for user {user.telegram_id} (DB ID: {user_id})")
         now = datetime.now(timezone.utc)
-
         expiry_date = now + timedelta(days=SUBSCRIPTION_DURATION_DAYS)
         user.is_subscribed = True
         user.subscription_expires_at = expiry_date
-
         user.daily_message_count = 0
         user.last_message_reset = now
         try:
@@ -289,7 +296,6 @@ def get_context_for_chat_bot(db: Session, chat_bot_instance_id: int) -> List[Dic
                         .order_by(ChatContext.message_order.desc())\
                         .limit(MAX_CONTEXT_MESSAGES_SENT_TO_LLM)\
                         .all()
-
     return [{"role": c.role, "content": c.content} for c in reversed(context_records)]
 
 def add_message_to_context(db: Session, chat_bot_instance_id: int, role: str, content: str):
@@ -298,9 +304,7 @@ def add_message_to_context(db: Session, chat_bot_instance_id: int, role: str, co
         logger.warning(f"Truncating context message content from {len(content)} to {max_content_length} chars for chat_bot_instance {chat_bot_instance_id}")
         content = content[:max_content_length] + "..."
 
-
     current_count = db.query(func.count(ChatContext.id)).filter(ChatContext.chat_bot_instance_id == chat_bot_instance_id).scalar()
-
 
     if current_count >= MAX_CONTEXT_MESSAGES_STORED:
          oldest_message = db.query(ChatContext)\
@@ -311,11 +315,9 @@ def add_message_to_context(db: Session, chat_bot_instance_id: int, role: str, co
              db.delete(oldest_message)
              logger.debug(f"Deleted oldest context message {oldest_message.id} for instance {chat_bot_instance_id}")
 
-
     max_order = db.query(func.max(ChatContext.message_order))\
                   .filter(ChatContext.chat_bot_instance_id == chat_bot_instance_id)\
                   .scalar() or 0
-
 
     new_message = ChatContext(
         chat_bot_instance_id=chat_bot_instance_id,
@@ -325,8 +327,6 @@ def add_message_to_context(db: Session, chat_bot_instance_id: int, role: str, co
         timestamp=datetime.now(timezone.utc)
     )
     db.add(new_message)
-
-
 
 def get_mood_for_chat_bot(db: Session, chat_bot_instance_id: int) -> str:
     mood = db.query(ChatBotInstance.current_mood).filter(ChatBotInstance.id == chat_bot_instance_id).scalar()
@@ -347,7 +347,6 @@ def set_mood_for_chat_bot(db: Session, chat_bot_instance_id: int, mood: str):
         logger.warning(f"ChatBotInstance {chat_bot_instance_id} not found to set mood.")
 
 def get_all_active_chat_bot_instances(db: Session) -> List[ChatBotInstance]:
-
     return db.query(ChatBotInstance).filter(ChatBotInstance.active == True).options(
         joinedload(ChatBotInstance.bot_instance_ref).joinedload(BotInstance.persona_config),
         joinedload(ChatBotInstance.bot_instance_ref).joinedload(BotInstance.owner)
@@ -359,10 +358,8 @@ def create_persona_config(db: Session, owner_id: int, name: str, description: st
         owner_id=owner_id,
         name=name,
         description=description,
-
     )
     db.add(persona)
-
     try:
         db.commit()
         db.refresh(persona)
@@ -392,7 +389,6 @@ def create_bot_instance(db: Session, owner_id: int, persona_config_id: int, name
         name=name
     )
     db.add(bot_instance)
-
     try:
         db.commit()
         db.refresh(bot_instance)
@@ -415,7 +411,6 @@ def link_bot_instance_to_chat(db: Session, bot_instance_id: int, chat_id: str) -
         if not chat_link.active:
              logger.info(f"Reactivating ChatBotInstance {chat_link.id} for bot {bot_instance_id} in chat {chat_id}")
              chat_link.active = True
-
         return chat_link
     else:
         logger.info(f"Creating new ChatBotInstance link for bot {bot_instance_id} in chat {chat_id}")
@@ -426,7 +421,6 @@ def link_bot_instance_to_chat(db: Session, bot_instance_id: int, chat_id: str) -
             current_mood="нейтрально"
         )
         db.add(chat_link)
-
         return chat_link
 
 def unlink_bot_instance_from_chat(db: Session, chat_id: str, bot_instance_id: int) -> bool:
@@ -471,5 +465,4 @@ def create_tables():
         logger.info("Database tables verified/created successfully.")
     except Exception as e:
         logger.critical(f"FATAL: Failed to create/verify database tables: {e}", exc_info=True)
-
         raise
