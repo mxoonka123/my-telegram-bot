@@ -23,12 +23,7 @@ from yookassa import Configuration, Payment
 from yookassa.domain.models.currency import Currency
 from yookassa.domain.request.payment_request_builder import PaymentRequestBuilder
 from yookassa.domain.models.receipt import Receipt, ReceiptItem
-# Исправленный импорт ошибок для yookassa==3.5.0
-from yookassa import (
-    ApiError, BadApiRequestError, ForbiddenError, InternalServerError,
-    NotFoundError, ResponseProcessingError, TooManyRequestsError, UnauthorizedError
-)
-
+# Убрали импорт специфичных ошибок Yookassa
 
 from config import (
     LANGDOCK_API_KEY, LANGDOCK_BASE_URL, LANGDOCK_MODEL,
@@ -892,45 +887,43 @@ async def generate_payment_link(update: Update, context: ContextTypes.DEFAULT_TY
         )
         logger.info("Payment link sent to user.")
 
-    except (BadApiRequestError, ForbiddenError, InternalServerError, NotFoundError, ResponseProcessingError, TooManyRequestsError, UnauthorizedError) as api_error:
-        error_body = ""
-        if hasattr(api_error, 'response_body'):
-            error_body = api_error.response_body
+    except Exception as e:
+        # Ловим все ошибки, включая потенциальные ошибки API Yookassa
         logger.error(
-            f"Yookassa API error for user {user_id}: {api_error}. "
-            f"HTTP Status: {getattr(api_error, 'http_status', 'N/A')}. "
-            f"Code: {getattr(api_error, 'code', 'N/A')}. "
-            f"Description: {getattr(api_error, 'description', 'N/A')}. "
-            f"Parameter: {getattr(api_error, 'parameter', 'N/A')}. "
-            f"Response body: {error_body}",
-            exc_info=False
+            f"Error during Yookassa payment creation for user {user_id}. "
+            f"Exception Type: {type(e).__name__}. Exception Args: {e.args}. "
+            f"Full Exception: {e}",
+            exc_info=True # Включаем traceback для диагностики
         )
-        user_message = "❌ ошибка при создании платежа: "
-        if isinstance(api_error, UnauthorizedError):
-            user_message += "проблема с авторизацией (неверный ключ?)."
-        elif isinstance(api_error, ForbiddenError):
-            user_message += "недостаточно прав или магазин неактивен."
-        elif isinstance(api_error, BadApiRequestError):
-            user_message += f"неверный запрос ({api_error.description or api_error.code})."
-        elif isinstance(api_error, InternalServerError):
-             user_message += "внутренняя ошибка ЮKassa."
-        elif isinstance(api_error, TooManyRequestsError):
-             user_message += "слишком много запросов, попробуй чуть позже."
-        else:
-            user_message += "неизвестная ошибка API ЮKassa."
 
-        user_message += "\nпопробуй еще раз позже или свяжись с поддержкой."
+        # Пытаемся извлечь детали, если это ошибка API
+        error_details = ""
+        user_message = "❌ не удалось создать ссылку для оплаты. "
+        if hasattr(e, 'http_status'):
+            error_details += f" HTTP Status: {e.http_status}."
+        if hasattr(e, 'code'):
+            error_details += f" Code: {e.code}."
+        if hasattr(e, 'description'):
+            error_details += f" Description: {e.description}."
+        if hasattr(e, 'parameter'):
+             error_details += f" Parameter: {e.parameter}."
+        # response_body может содержать много данных, логируем его отдельно
+        if hasattr(e, 'response_body'):
+            logger.error(f"Yookassa response body on error: {e.response_body}")
+
+        if error_details:
+            logger.error(f"Potentially Yookassa API error details found: {error_details}")
+            user_message += f"Проблема с API ЮKassa ({type(e).__name__}). {error_details}"
+        else:
+             user_message += "Произошла непредвиденная ошибка."
+
+        user_message += "\nПопробуй еще раз позже или свяжись с поддержкой."
+
         try:
             await query.edit_message_text(user_message, reply_markup=None)
         except Exception as send_e:
-            logger.error(f"Failed to send API error message to user {user_id}: {send_e}")
+            logger.error(f"Failed to send error message to user {user_id} after payment creation failure: {send_e}")
 
-    except Exception as e:
-        logger.error(f"Unexpected error during Yookassa payment creation for user {user_id}: {e}", exc_info=True)
-        try:
-            await query.edit_message_text("❌ не удалось создать ссылку для оплаты из-за непредвиденной ошибки. попробуй позже или свяжись с поддержкой.", reply_markup=None)
-        except Exception as send_e:
-            logger.error(f"Failed to send general error message to user {user_id} after payment creation failure: {send_e}")
 
 async def yookassa_webhook_placeholder(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.warning("Placeholder Yookassa webhook endpoint called. This should be handled by a separate web application.")
