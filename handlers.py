@@ -22,9 +22,11 @@ from typing import List, Dict, Any, Optional, Union, Tuple
 from yookassa import Configuration, Payment
 from yookassa.domain.models.currency import Currency
 from yookassa.domain.request.payment_request_builder import PaymentRequestBuilder
-# Импорты для чека (последняя надежда?)
+# Импорты для чека (v3.5.0?)
 from yookassa.domain.models.receipt import Receipt, ReceiptItem
-from yookassa.domain.models import PaymentMode, PaymentSubject, VatCode # Пробуем импорт из models
+from yookassa.domain.common import VatCode # VatCode часто в common
+from yookassa.domain.models import PaymentMode, PaymentSubject # Остальные пробуем из models
+
 
 from config import (
     LANGDOCK_API_KEY, LANGDOCK_BASE_URL, LANGDOCK_MODEL,
@@ -904,7 +906,7 @@ async def edit_persona_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 await update.message.reply_text(f"личность с id `{persona_id}` не найдена или не твоя.", parse_mode=ParseMode.MARKDOWN)
                 context.user_data.pop('edit_persona_id', None)
                 return ConversationHandler.END
-            context.user_data['persona_config_object'] = persona_config # Сохраняем config
+            context.user_data['persona_config_object'] = persona_config
             keyboard = await _get_edit_persona_keyboard(persona_config)
             reply_markup = InlineKeyboardMarkup(keyboard)
             await update.message.reply_text(f"редактируем **{persona_config.name}** (id: `{persona_id}`)\nвыбери, что изменить:", reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
@@ -938,7 +940,7 @@ async def edit_persona_choice(update: Update, context: ContextTypes.DEFAULT_TYPE
             await query.edit_message_text("ошибка: личность не найдена или нет доступа.")
             context.user_data.clear()
             return ConversationHandler.END
-        context.user_data['persona_config_object'] = persona_config # Сохраняем актуальный
+        context.user_data['persona_config_object'] = persona_config
 
     logger.debug(f"Edit persona choice: {data} for persona {persona_id}")
 
