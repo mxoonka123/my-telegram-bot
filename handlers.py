@@ -22,9 +22,9 @@ from typing import List, Dict, Any, Optional, Union, Tuple
 from yookassa import Configuration, Payment
 from yookassa.domain.models.currency import Currency
 from yookassa.domain.request.payment_request_builder import PaymentRequestBuilder
-# Импорты для чека (финальнее некуда?)
+# Импорты для чека (последняя надежда?)
 from yookassa.domain.models.receipt import Receipt, ReceiptItem
-from yookassa.domain.common import PaymentMode, PaymentSubject, VatCode
+from yookassa.domain.models import PaymentMode, PaymentSubject, VatCode # Пробуем импорт из models
 
 from config import (
     LANGDOCK_API_KEY, LANGDOCK_BASE_URL, LANGDOCK_MODEL,
@@ -885,9 +885,6 @@ async def yookassa_webhook_placeholder(update: Update, context: ContextTypes.DEF
     logger.warning("Placeholder Yookassa webhook endpoint called. This should be handled by a separate web application.")
     pass
 
-# ... (остальные хендлеры без изменений: edit_persona_start, edit_persona_choice, edit_field_update, edit_max_messages_update, _get_edit_persona_keyboard, edit_moods_menu, edit_mood_choice, edit_mood_name_received, edit_mood_prompt_received, delete_mood_confirmed, edit_persona_cancel, delete_persona_start, delete_persona_confirmed, delete_persona_cancel) ...
-# КОД ОСТАЛЬНЫХ ХЕНДЛЕРОВ ИЗ ПРЕДЫДУЩЕГО ОТВЕТА ЗДЕСЬ
-
 async def edit_persona_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not update.message: return ConversationHandler.END
     user_id = update.effective_user.id
@@ -907,8 +904,8 @@ async def edit_persona_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 await update.message.reply_text(f"личность с id `{persona_id}` не найдена или не твоя.", parse_mode=ParseMode.MARKDOWN)
                 context.user_data.pop('edit_persona_id', None)
                 return ConversationHandler.END
-            context.user_data['persona_object'] = Persona(persona_config)
-            keyboard = await _get_edit_persona_keyboard(persona_config) # Передаем persona_config
+            context.user_data['persona_config_object'] = persona_config # Сохраняем config
+            keyboard = await _get_edit_persona_keyboard(persona_config)
             reply_markup = InlineKeyboardMarkup(keyboard)
             await update.message.reply_text(f"редактируем **{persona_config.name}** (id: `{persona_id}`)\nвыбери, что изменить:", reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
         return EDIT_PERSONA_CHOICE
@@ -928,7 +925,6 @@ async def edit_persona_choice(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not query or not query.data: return EDIT_PERSONA_CHOICE
     await query.answer()
     data = query.data
-    # Получаем ID персоны, а не объект Persona, чтобы избежать проблем с detached объектами
     persona_id = context.user_data.get('edit_persona_id')
     user_id = query.from_user.id
 
@@ -936,15 +932,13 @@ async def edit_persona_choice(update: Update, context: ContextTypes.DEFAULT_TYPE
          await query.edit_message_text("ошибка: сессия редактирования потеряна. начни снова /editpersona <id>.")
          return ConversationHandler.END
 
-    # Получаем актуальный persona_config из БД
     with next(get_db()) as db:
         persona_config = get_persona_by_id_and_owner(db, user_id, persona_id)
         if not persona_config:
             await query.edit_message_text("ошибка: личность не найдена или нет доступа.")
             context.user_data.clear()
             return ConversationHandler.END
-        # Сохраняем актуальный объект для дальнейшего использования в этом шаге
-        context.user_data['persona_config_object'] = persona_config
+        context.user_data['persona_config_object'] = persona_config # Сохраняем актуальный
 
     logger.debug(f"Edit persona choice: {data} for persona {persona_id}")
 
@@ -959,7 +953,7 @@ async def edit_persona_choice(update: Update, context: ContextTypes.DEFAULT_TYPE
                 user = get_or_create_user(db, user_id)
                 if not user.is_active_subscriber:
                      await query.edit_message_text("управление настроениями доступно только по подписке. /subscribe", reply_markup=None)
-                     keyboard = await _get_edit_persona_keyboard(persona_config) # Передаем config
+                     keyboard = await _get_edit_persona_keyboard(persona_config)
                      await query.message.reply_text(f"редактируем **{persona_config.name}**\nвыбери, что изменить:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
                      return EDIT_PERSONA_CHOICE
         return await edit_moods_menu(update, context)
@@ -968,7 +962,6 @@ async def edit_persona_choice(update: Update, context: ContextTypes.DEFAULT_TYPE
         field = data.replace("edit_field_", "")
         context.user_data['edit_field'] = field
         field_display_name = FIELD_MAP.get(field, field)
-
         advanced_fields = ["should_respond_prompt_template", "spam_prompt_template",
                            "photo_prompt_template", "voice_prompt_template", "max_response_messages"]
         if field in advanced_fields:
@@ -977,10 +970,9 @@ async def edit_persona_choice(update: Update, context: ContextTypes.DEFAULT_TYPE
                      user = get_or_create_user(db, user_id)
                      if not user.is_active_subscriber:
                          await query.edit_message_text(f"поле '{field_display_name}' доступно только по подписке. /subscribe", reply_markup=None)
-                         keyboard = await _get_edit_persona_keyboard(persona_config) # Передаем config
+                         keyboard = await _get_edit_persona_keyboard(persona_config)
                          await query.message.reply_text(f"редактируем **{persona_config.name}**\nвыбери, что изменить:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
                          return EDIT_PERSONA_CHOICE
-
         if field == "max_response_messages":
             await query.edit_message_text(f"отправь новое значение для **'{field_display_name}'** (число от 1 до 10):", parse_mode=ParseMode.MARKDOWN)
             return EDIT_MAX_MESSAGES
@@ -990,7 +982,7 @@ async def edit_persona_choice(update: Update, context: ContextTypes.DEFAULT_TYPE
             return EDIT_FIELD
 
     if data == "edit_persona_back":
-         keyboard = await _get_edit_persona_keyboard(persona_config) # Передаем config
+         keyboard = await _get_edit_persona_keyboard(persona_config)
          await query.edit_message_text(f"редактируем **{persona_config.name}**\nвыбери, что изменить:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
          return EDIT_PERSONA_CHOICE
 
@@ -1042,12 +1034,10 @@ async def edit_field_update(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             db.commit()
             db.refresh(persona_config)
 
-            # persona_object больше не нужен в user_data после обновления
-            # context.user_data['persona_object'] = Persona(persona_config)
             logger.info(f"User {user_id} updated field '{field}' for persona {persona_id}.")
 
             await update.message.reply_text(f"✅ поле **'{field_display_name}'** для личности **'{persona_config.name}'** обновлено!")
-            keyboard = await _get_edit_persona_keyboard(persona_config) # Обновляем клавиатуру с новым config
+            keyboard = await _get_edit_persona_keyboard(persona_config)
             await update.message.reply_text(f"что еще изменить для **{persona_config.name}** (id: `{persona_id}`)?", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
 
     except SQLAlchemyError as e:
@@ -1100,12 +1090,10 @@ async def edit_max_messages_update(update: Update, context: ContextTypes.DEFAULT
             db.commit()
             db.refresh(persona_config)
 
-            # persona_object больше не нужен в user_data после обновления
-            # context.user_data['persona_object'] = Persona(persona_config)
             logger.info(f"User {user_id} updated max_response_messages to {new_value} for persona {persona_id}.")
 
             await update.message.reply_text(f"✅ макс. сообщений в ответе для **'{persona_config.name}'** установлено: **{new_value}**")
-            keyboard = await _get_edit_persona_keyboard(persona_config) # Обновляем клавиатуру с новым config
+            keyboard = await _get_edit_persona_keyboard(persona_config)
             await update.message.reply_text(f"что еще изменить для **{persona_config.name}** (id: `{persona_id}`)?", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
 
     except SQLAlchemyError as e:
@@ -1119,11 +1107,11 @@ async def edit_max_messages_update(update: Update, context: ContextTypes.DEFAULT
     return EDIT_PERSONA_CHOICE
 
 
-async def _get_edit_persona_keyboard(persona_config: PersonaConfig) -> List[List[InlineKeyboardButton]]: # Принимает PersonaConfig
+async def _get_edit_persona_keyboard(persona_config: PersonaConfig) -> List[List[InlineKeyboardButton]]:
     keyboard = [
         [InlineKeyboardButton("📝 Имя", callback_data="edit_field_name"), InlineKeyboardButton("📜 Описание", callback_data="edit_field_description")],
         [InlineKeyboardButton("⚙️ Системный промпт", callback_data="edit_field_system_prompt_template")],
-        [InlineKeyboardButton(f"📊 Макс. ответов ({persona_config.max_response_messages})", callback_data="edit_field_max_response_messages")], # Используем поле из config
+        [InlineKeyboardButton(f"📊 Макс. ответов ({persona_config.max_response_messages})", callback_data="edit_field_max_response_messages")],
         [InlineKeyboardButton("🤔 Промпт 'Отвечать?'", callback_data="edit_field_should_respond_prompt_template")],
         [InlineKeyboardButton("💬 Промпт спама", callback_data="edit_field_spam_prompt_template")],
         [InlineKeyboardButton("🖼️ Промпт фото", callback_data="edit_field_photo_prompt_template"), InlineKeyboardButton("🎤 Промпт голоса", callback_data="edit_field_voice_prompt_template")],
@@ -1135,7 +1123,6 @@ async def _get_edit_persona_keyboard(persona_config: PersonaConfig) -> List[List
 
 async def edit_moods_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    # Получаем ID, а не объект
     persona_id = context.user_data.get('edit_persona_id')
 
     if not persona_id:
@@ -1144,29 +1131,25 @@ async def edit_moods_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     user_id = update.effective_user.id
 
-    # Проверка подписки
     if not is_admin(user_id):
         with next(get_db()) as db:
             user = get_or_create_user(db, user_id)
             if not user.is_active_subscriber:
                  logger.warning(f"Non-admin user {user_id} tried to access mood editor without subscription.")
-                 # Получаем config для возврата в предыдущее меню
                  persona_config_prev = get_persona_by_id_and_owner(db, user_id, persona_id)
                  if persona_config_prev:
                      keyboard = await _get_edit_persona_keyboard(persona_config_prev)
                      await query.edit_message_text(f"редактируем **{persona_config_prev.name}**\nвыбери, что изменить:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
-                 else: # Если вдруг персона удалена пока проверяли
+                 else:
                       await query.edit_message_text("Ошибка: личность не найдена")
                       return ConversationHandler.END
                  return EDIT_PERSONA_CHOICE
 
-    # Получаем актуальный config
     with next(get_db()) as db:
         persona_config = get_persona_by_id_and_owner(db, user_id, persona_id)
         if not persona_config:
             await query.edit_message_text("ошибка: личность не найдена.")
             return ConversationHandler.END
-        # Сохраняем актуальный объект для дальнейшего использования в этом шаге
         context.user_data['persona_config_object'] = persona_config
 
     logger.debug(f"Showing moods menu for persona {persona_id}")
@@ -1176,7 +1159,6 @@ async def edit_moods_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     except json.JSONDecodeError:
         moods = {}
         logger.warning(f"Invalid JSON in mood_prompts_json for PersonaConfig {persona_id}. Resetting to empty.")
-        # Опционально: можно сбросить JSON в БД на '{}'
 
     keyboard = []
     if moods:
@@ -1198,24 +1180,22 @@ async def edit_moods_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     return EDIT_MOOD_CHOICE
 
-
 async def edit_mood_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     if not query or not query.data: return EDIT_MOOD_CHOICE
     await query.answer()
     data = query.data
-    persona_config: Optional[PersonaConfig] = context.user_data.get('persona_config_object') # Берем config из контекста
+    persona_config: Optional[PersonaConfig] = context.user_data.get('persona_config_object')
     persona_id = context.user_data.get('edit_persona_id')
     user_id = query.from_user.id
 
-    # Перезагружаем persona_config на всякий случай, если он не был передан
     if not persona_config and persona_id:
          with next(get_db()) as db:
              persona_config = get_persona_by_id_and_owner(db, user_id, persona_id)
          if not persona_config:
               await query.edit_message_text("ошибка: личность не найдена или нет доступа.")
               return ConversationHandler.END
-         context.user_data['persona_config_object'] = persona_config # Сохраняем обратно
+         context.user_data['persona_config_object'] = persona_config
 
     if not persona_config or not persona_id:
         await query.edit_message_text("ошибка: сессия редактирования потеряна.")
@@ -1224,7 +1204,7 @@ async def edit_mood_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     logger.debug(f"Edit mood choice: {data} for persona {persona_id}")
 
     if data == "edit_persona_back":
-        keyboard = await _get_edit_persona_keyboard(persona_config) # Используем config
+        keyboard = await _get_edit_persona_keyboard(persona_config)
         await query.edit_message_text(f"редактируем **{persona_config.name}**\nвыбери, что изменить:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
         return EDIT_PERSONA_CHOICE
 
@@ -1327,7 +1307,7 @@ async def edit_mood_prompt_received(update: Update, context: ContextTypes.DEFAUL
             db.commit()
             db.refresh(persona_config)
 
-            context.user_data['persona_config_object'] = persona_config # Обновляем config в контексте
+            context.user_data['persona_config_object'] = persona_config
             logger.info(f"User {user_id} updated mood '{mood_name}' for persona {persona_id}.")
             await update.message.reply_text(f"✅ настроение **'{mood_name}'** сохранено!")
 
@@ -1336,7 +1316,7 @@ async def edit_mood_prompt_received(update: Update, context: ContextTypes.DEFAUL
         logger.error(f"Database error saving mood '{mood_name}' for persona {persona_id}: {e}", exc_info=True)
         await update.message.reply_text("❌ ошибка базы данных при сохранении настроения.")
     except Exception as e:
-        db.rollback() # Откат на всякий случай
+        db.rollback()
         logger.error(f"Error saving mood '{mood_name}' for persona {persona_id}: {e}", exc_info=True)
         await update.message.reply_text("❌ ошибка при сохранении настроения.")
 
@@ -1369,7 +1349,7 @@ async def delete_mood_confirmed(update: Update, context: ContextTypes.DEFAULT_TY
                 current_moods = json.loads(persona_config.mood_prompts_json or '{}')
             except json.JSONDecodeError:
                  logger.warning(f"Invalid JSON for persona {persona_id} during mood deletion.")
-                 current_moods = {} # Считаем, что удалять нечего
+                 current_moods = {}
 
             if mood_name in current_moods:
                 del current_moods[mood_name]
@@ -1378,7 +1358,7 @@ async def delete_mood_confirmed(update: Update, context: ContextTypes.DEFAULT_TY
                 db.commit()
                 db.refresh(persona_config)
 
-                context.user_data['persona_config_object'] = persona_config # Обновляем config в контексте
+                context.user_data['persona_config_object'] = persona_config
                 logger.info(f"Successfully deleted mood '{mood_name}' for persona {persona_id}.")
                 await query.edit_message_text(f"🗑️ настроение **'{mood_name}'** удалено.", parse_mode=ParseMode.MARKDOWN)
             else:
