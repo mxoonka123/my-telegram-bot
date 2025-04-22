@@ -11,10 +11,16 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 LANGDOCK_API_KEY = os.getenv("LANGDOCK_API_KEY", "")
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./bot_data.db")
 
-YOOKASSA_SHOP_ID = "1075114"
-YOOKASSA_SECRET_KEY = "test_WcPfZ-d6u1bMYyoF8ERfmTnVzG3A8GI3gv0ChTtwxRc"
+# --- Боевые ключи Yookassa ---
+# Если используешь переменные окружения (рекомендуется), оставь так:
+# YOOKASSA_SHOP_ID = os.getenv("YOOKASSA_SHOP_ID", "")
+# YOOKASSA_SECRET_KEY = os.getenv("YOOKASSA_SECRET_KEY", "")
+# Если прописываешь ключи прямо здесь (менее безопасно):
+YOOKASSA_SHOP_ID = "1073069"
+YOOKASSA_SECRET_KEY = "live_GzsoyntwE72gRAGwfSQzoYHPCcZ5bOOLg6LKVAAuxbE"
+# -----------------------------
 
-WEBHOOK_URL_BASE = os.getenv("WEBHOOK_URL_BASE", "https://your-bot-domain.com")
+WEBHOOK_URL_BASE = os.getenv("WEBHOOK_URL_BASE", "https://your-bot-domain.com") # Используется ли сейчас? Если нет, можно убрать
 
 LANGDOCK_BASE_URL = os.getenv("LANGDOCK_BASE_URL", "https://api.langdock.com/anthropic/eu/")
 LANGDOCK_MODEL = os.getenv("LANGDOCK_MODEL", "claude-3-5-sonnet-20240620")
