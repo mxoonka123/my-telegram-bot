@@ -22,10 +22,8 @@ from typing import List, Dict, Any, Optional, Union, Tuple
 from yookassa import Configuration, Payment
 from yookassa.domain.models.currency import Currency
 from yookassa.domain.request.payment_request_builder import PaymentRequestBuilder
-# Импорты для чека (v3.5.0?)
-from yookassa.domain.models.receipt import Receipt, ReceiptItem
-from yookassa.domain.common import VatCode # VatCode часто в common
-from yookassa.domain.models import PaymentMode, PaymentSubject # Остальные пробуем из models
+# Импорты для чека (ФИНАЛЬНАЯ ПОПЫТКА!)
+from yookassa.domain.models.receipt import Receipt, ReceiptItem, PaymentSubject, PaymentMode, VatCode
 
 
 from config import (
@@ -882,6 +880,7 @@ async def generate_payment_link(update: Update, context: ContextTypes.DEFAULT_TY
     except Exception as e:
         logger.error(f"Yookassa payment creation failed for user {user_id}: {e}", exc_info=True)
         await query.edit_message_text("❌ не удалось создать ссылку для оплаты. попробуй позже или свяжись с поддержкой.", reply_markup=None)
+
 
 async def yookassa_webhook_placeholder(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.warning("Placeholder Yookassa webhook endpoint called. This should be handled by a separate web application.")
