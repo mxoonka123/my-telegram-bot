@@ -22,11 +22,8 @@ from typing import List, Dict, Any, Optional, Union, Tuple
 from yookassa import Configuration, Payment
 from yookassa.domain.models.currency import Currency
 from yookassa.domain.request.payment_request_builder import PaymentRequestBuilder
-# Импорты для чека (новая попытка)
-from yookassa.domain.models.receipt import Receipt, ReceiptItem
-from yookassa.domain.models.payment_data import PaymentSubject, PaymentMode # Предположение!
-from yookassa.domain.models.vat_data import VatCode # Предположение!
-
+# Импорты для чека (финальная версия?)
+from yookassa.domain.models.receipt import Receipt, ReceiptItem, PaymentSubject, PaymentMode, VatCode
 
 from config import (
     LANGDOCK_API_KEY, LANGDOCK_BASE_URL, LANGDOCK_MODEL,
