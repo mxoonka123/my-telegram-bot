@@ -22,9 +22,9 @@ from typing import List, Dict, Any, Optional, Union, Tuple
 from yookassa import Configuration, Payment
 from yookassa.domain.models.currency import Currency
 from yookassa.domain.request.payment_request_builder import PaymentRequestBuilder
-# Импорты для чека (ФИНАЛЬНАЯ ПОПЫТКА!)
-from yookassa.domain.models.receipt import Receipt, ReceiptItem, PaymentSubject, PaymentMode, VatCode
-
+# Импорты для чека - оставляем только Receipt и ReceiptItem
+from yookassa.domain.models.receipt import Receipt, ReceiptItem
+# Удалили импорты PaymentSubject, PaymentMode, VatCode
 
 from config import (
     LANGDOCK_API_KEY, LANGDOCK_BASE_URL, LANGDOCK_MODEL,
@@ -825,9 +825,9 @@ async def generate_payment_link(update: Update, context: ContextTypes.DEFAULT_TY
                 "value": f"{SUBSCRIPTION_PRICE_RUB:.2f}",
                 "currency": SUBSCRIPTION_CURRENCY
             },
-            "vat_code": VatCode.NO_VAT,
-            "payment_mode": PaymentMode.FULL_PAYMENT,
-            "payment_subject": PaymentSubject.SERVICE
+            "vat_code": 1, # Используем числовое значение для VatCode.NO_VAT
+            "payment_mode": "full_payment", # Используем строковое значение
+            "payment_subject": "service" # Используем строковое значение
         })
     ]
     receipt_data = Receipt({
@@ -885,6 +885,9 @@ async def generate_payment_link(update: Update, context: ContextTypes.DEFAULT_TY
 async def yookassa_webhook_placeholder(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.warning("Placeholder Yookassa webhook endpoint called. This should be handled by a separate web application.")
     pass
+
+# --- Остальные хендлеры (edit_persona_start и т.д.) остаются без изменений ---
+# ... (Вставьте сюда код остальных функций из предыдущего ответа) ...
 
 async def edit_persona_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not update.message: return ConversationHandler.END
