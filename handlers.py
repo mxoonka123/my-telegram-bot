@@ -19,8 +19,8 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy import func
 from typing import List, Dict, Any, Optional, Union, Tuple
 
-# Импортируем все необходимое из yookassa
-from yookassa import Configuration, Payment, ApiClient
+# Убираем ApiClient, он не используется здесь
+from yookassa import Configuration, Payment
 from yookassa.domain.models.currency import Currency
 from yookassa.domain.request.payment_request_builder import PaymentRequestBuilder
 
@@ -72,7 +72,6 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
             logger.error(f"Failed to send error message to user: {e}")
 
 def get_persona_and_context_with_owner(chat_id: str, db: Session) -> Optional[Tuple[Persona, List[Dict[str, str]], User]]:
-    # ... (код без изменений) ...
     chat_instance = db.query(ChatBotInstance)\
         .options(
             joinedload(ChatBotInstance.bot_instance_ref)
@@ -94,7 +93,6 @@ def get_persona_and_context_with_owner(chat_id: str, db: Session) -> Optional[Tu
     return persona, context_list, owner_user
 
 async def send_to_langdock(system_prompt: str, messages: List[Dict[str, str]]) -> str:
-    # ... (код без изменений) ...
     if not LANGDOCK_API_KEY:
         logger.error("LANGDOCK_API_KEY is not set.")
         return "ошибка: ключ api не настроен."
@@ -137,7 +135,6 @@ async def send_to_langdock(system_prompt: str, messages: List[Dict[str, str]]) -
         return "произошла внутренняя ошибка при генерации ответа."
 
 async def process_and_send_response(update: Optional[Update], context: ContextTypes.DEFAULT_TYPE, chat_id: str, persona: Persona, full_bot_response_text: str, db: Session):
-    # ... (код без изменений) ...
     if not full_bot_response_text or not full_bot_response_text.strip():
         logger.warning(f"Received empty response from AI for chat {chat_id}, persona {persona.name}. Not sending anything.")
         return
@@ -188,7 +185,6 @@ async def process_and_send_response(update: Optional[Update], context: ContextTy
                 await asyncio.sleep(random.uniform(0.4, 0.9))
 
 async def send_limit_exceeded_message(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User):
-    # ... (код без изменений) ...
     text = (
         f"упс! 😕 лимит сообщений ({user.daily_message_count}/{user.message_limit}) на сегодня достигнут.\n\n"
         f"✨ **хочешь безлимита?** ✨\n"
@@ -209,7 +205,6 @@ async def send_limit_exceeded_message(update: Update, context: ContextTypes.DEFA
         logger.error(f"Failed to send limit exceeded message to user {user.telegram_id}: {e}")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # ... (код без изменений) ...
     logger.info("--- handle_message ENTERED ---")
     if not update.message or not update.message.text: return
     chat_id = str(update.effective_chat.id)
@@ -289,7 +284,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             logger.error(f"General error processing message in chat {chat_id}: {e}", exc_info=True)
 
 async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media_type: str) -> None:
-    # ... (код без изменений) ...
     chat_id = str(update.effective_chat.id)
     user_id = update.effective_user.id
     username = update.effective_user.username or f"id_{user_id}"
@@ -341,17 +335,14 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
             logger.error(f"General error processing {media_type} in chat {chat_id}: {e}", exc_info=True)
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # ... (код без изменений) ...
     if not update.message: return
     await handle_media(update, context, "photo")
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # ... (код без изменений) ...
     if not update.message: return
     await handle_media(update, context, "voice")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # ... (код без изменений) ...
     if not update.message: return
     user_id = update.effective_user.id
     username = update.effective_user.username or f"id_{user_id}"
@@ -395,7 +386,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("произошла ошибка при обработке команды /start.")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # ... (код без изменений) ...
      if not update.message: return
      user_id = update.effective_user.id
      chat_id = str(update.effective_chat.id)
@@ -420,7 +410,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
      await update.message.reply_text(help_text, parse_mode=ParseMode.MARKDOWN, reply_markup=ReplyKeyboardRemove())
 
 async def mood(update: Update, context: ContextTypes.DEFAULT_TYPE, db: Optional[Session] = None, persona: Optional[Persona] = None) -> None:
-    # ... (код без изменений) ...
     is_callback = update.callback_query is not None
     message = update.message if not is_callback else update.callback_query.message
     if not message: return
@@ -516,7 +505,6 @@ async def mood(update: Update, context: ContextTypes.DEFAULT_TYPE, db: Optional[
             db.close()
 
 async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # ... (код без изменений) ...
     if not update.message: return
     chat_id = str(update.effective_chat.id)
     user_id = update.effective_user.id
@@ -547,7 +535,6 @@ async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await update.message.reply_text("ошибка при сбросе контекста.")
 
 async def create_persona(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # ... (код без изменений, проверка is_admin добавлена) ...
     if not update.message: return
     user_id = update.effective_user.id
     username = update.effective_user.username or f"id_{user_id}"
@@ -611,7 +598,6 @@ async def create_persona(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
              await update.message.reply_text("ошибка при создании личности.")
 
 async def my_personas(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # ... (код без изменений) ...
     if not update.message: return
     user_id = update.effective_user.id
     username = update.effective_user.username or f"id_{user_id}"
@@ -646,7 +632,6 @@ async def my_personas(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await update.message.reply_text("произошла ошибка при обработке команды /mypersonas.")
 
 async def add_bot_to_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # ... (код без изменений) ...
     if not update.message: return
     user_id = update.effective_user.id
     username = update.effective_user.username or f"id_{user_id}"
@@ -720,7 +705,6 @@ async def add_bot_to_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
              await update.message.reply_text("ошибка при активации личности.")
 
 async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # ... (код без изменений) ...
     query = update.callback_query
     if not query or not query.data: return
     await query.answer()
@@ -737,7 +721,6 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         await generate_payment_link(update, context)
 
 async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # ... (код без изменений) ...
     if not update.message: return
     user_id = update.effective_user.id
     username = update.effective_user.username or f"id_{user_id}"
@@ -775,7 +758,6 @@ async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await update.message.reply_text("ошибка при обработке команды /profile.")
 
 async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE, from_callback: bool = False) -> None:
-    # ... (код без изменений) ...
     user = update.effective_user
     user_id = user.id
     username = user.username or f"id_{user_id}"
@@ -814,25 +796,27 @@ async def generate_payment_link(update: Update, context: ContextTypes.DEFAULT_TY
     user_id = query.from_user.id
     logger.info(f"--- generate_payment_link ENTERED for user {user_id} ---")
 
-    # Проверка ключей перед использованием
     if not YOOKASSA_SHOP_ID or not YOOKASSA_SECRET_KEY or not YOOKASSA_SHOP_ID.isdigit():
         logger.error("Yookassa credentials not set correctly in config (shop_id must be numeric). Cannot generate payment link.")
         await query.edit_message_text("❌ ошибка: сервис оплаты не настроен правильно.", reply_markup=None)
         return
 
-    # Логирование ключей (частично скрытых для безопасности)
     logger.debug(f"Using Yookassa Shop ID: {YOOKASSA_SHOP_ID}, Secret Key: ...{YOOKASSA_SECRET_KEY[-5:]}")
 
     try:
-        # Конфигурация перед вызовом API
         Configuration.configure(int(YOOKASSA_SHOP_ID), YOOKASSA_SECRET_KEY)
         logger.info(f"Yookassa configured for payment creation (Shop ID: {YOOKASSA_SHOP_ID}).")
+    except Exception as conf_e:
+        logger.error(f"Failed to configure Yookassa SDK before payment creation: {conf_e}", exc_info=True)
+        await query.edit_message_text("❌ ошибка конфигурации платежной системы.", reply_markup=None)
+        return
 
-        idempotence_key = str(uuid.uuid4())
-        payment_description = f"Premium подписка {context.bot.username} на {SUBSCRIPTION_DURATION_DAYS} дней (User ID: {user_id})"
-        payment_metadata = {'telegram_user_id': user_id}
-        return_url = f"https://t.me/{context.bot.username}?start=payment_success"
+    idempotence_key = str(uuid.uuid4())
+    payment_description = f"Premium подписка {context.bot.username} на {SUBSCRIPTION_DURATION_DAYS} дней (User ID: {user_id})"
+    payment_metadata = {'telegram_user_id': user_id}
+    return_url = f"https://t.me/{context.bot.username}?start=payment_success"
 
+    try:
         logger.debug("Building payment request...")
         builder = PaymentRequestBuilder()
         builder.set_amount({"value": f"{SUBSCRIPTION_PRICE_RUB:.2f}", "currency": SUBSCRIPTION_CURRENCY}) \
@@ -844,15 +828,13 @@ async def generate_payment_link(update: Update, context: ContextTypes.DEFAULT_TY
         logger.debug(f"Payment request built. Idempotence key: {idempotence_key}")
 
         logger.info("Creating Yookassa payment...")
-        # Оборачиваем вызов Payment.create для лучшего отлова ошибок потока
         payment_response = None
         try:
             payment_response = await asyncio.to_thread(Payment.create, request, idempotence_key)
         except Exception as thread_e:
             logger.error(f"Error inside asyncio.to_thread(Payment.create): {thread_e}", exc_info=True)
-            raise # Передаем исключение дальше, чтобы сработал внешний except
+            raise
 
-        # Проверяем, что ответ не пустой
         if not payment_response or not payment_response.confirmation or not payment_response.confirmation.confirmation_url:
              logger.error(f"Yookassa API returned invalid/empty response for user {user_id}. Response: {payment_response}")
              await query.edit_message_text("❌ не удалось получить ссылку от платежной системы. попробуй позже.", reply_markup=None)
@@ -862,7 +844,6 @@ async def generate_payment_link(update: Update, context: ContextTypes.DEFAULT_TY
 
         confirmation_url = payment_response.confirmation.confirmation_url
         payment_id = payment_response.id
-        # Сохраняем ID платежа (если нужно будет проверять статус вручную)
         # context.user_data['pending_payment_id'] = payment_id
 
         logger.info(f"Created Yookassa payment {payment_id} for user {user_id}. URL: {confirmation_url}")
@@ -876,18 +857,15 @@ async def generate_payment_link(update: Update, context: ContextTypes.DEFAULT_TY
         )
 
     except Exception as e:
-        # Логируем любую ошибку, возникшую в процессе
         logger.error(f"Yookassa payment creation failed for user {user_id}: {e}", exc_info=True)
         await query.edit_message_text("❌ не удалось создать ссылку для оплаты. попробуй позже или свяжись с поддержкой.", reply_markup=None)
 
 
 async def yookassa_webhook_placeholder(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # ... (код без изменений) ...
     logger.warning("Placeholder Yookassa webhook endpoint called. This should be handled by a separate web application.")
     pass
 
 async def edit_persona_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # ... (код без изменений) ...
     if not update.message: return ConversationHandler.END
     user_id = update.effective_user.id
     args = context.args
@@ -932,7 +910,6 @@ async def edit_persona_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
          return ConversationHandler.END
 
 async def edit_persona_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # ... (код без изменений, проверка is_admin добавлена) ...
     query = update.callback_query
     if not query or not query.data: return EDIT_PERSONA_CHOICE
     await query.answer()
@@ -987,7 +964,6 @@ async def edit_persona_choice(update: Update, context: ContextTypes.DEFAULT_TYPE
     return EDIT_PERSONA_CHOICE
 
 async def edit_field_update(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # ... (код без изменений) ...
     if not update.message or not update.message.text: return EDIT_FIELD
     new_value = update.message.text.strip()
     field = context.user_data.get('edit_field')
@@ -1045,7 +1021,6 @@ async def edit_field_update(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     return EDIT_PERSONA_CHOICE
 
 async def edit_max_messages_update(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # ... (код без изменений, логи добавлены) ...
     if not update.message or not update.message.text: return EDIT_MAX_MESSAGES
     new_value_str = update.message.text.strip()
     field = "max_response_messages"
@@ -1094,7 +1069,6 @@ async def edit_max_messages_update(update: Update, context: ContextTypes.DEFAULT
     return EDIT_PERSONA_CHOICE
 
 async def _get_edit_persona_keyboard(persona: Persona) -> List[List[InlineKeyboardButton]]:
-    # ... (код без изменений) ...
     keyboard = [
         [InlineKeyboardButton("📝 Имя", callback_data="edit_field_name"), InlineKeyboardButton("📜 Описание", callback_data="edit_field_description")],
         [InlineKeyboardButton("⚙️ Системный промпт", callback_data="edit_field_system_prompt_template")],
@@ -1108,7 +1082,6 @@ async def _get_edit_persona_keyboard(persona: Persona) -> List[List[InlineKeyboa
     return keyboard
 
 async def edit_moods_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # ... (код без изменений, проверка is_admin добавлена) ...
     query = update.callback_query
     persona: Optional[Persona] = context.user_data.get('persona_object')
     if not persona:
@@ -1152,7 +1125,6 @@ async def edit_moods_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     return EDIT_MOOD_CHOICE
 
 async def edit_mood_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # ... (код без изменений) ...
     query = update.callback_query
     if not query or not query.data: return EDIT_MOOD_CHOICE
     await query.answer()
@@ -1198,7 +1170,6 @@ async def edit_mood_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     return await edit_moods_menu(update, context)
 
 async def edit_mood_name_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # ... (код без изменений) ...
     if not update.message or not update.message.text: return EDIT_MOOD_NAME
     mood_name = update.message.text.strip().lower()
     persona: Optional[Persona] = context.user_data.get('persona_object')
@@ -1216,7 +1187,6 @@ async def edit_mood_name_received(update: Update, context: ContextTypes.DEFAULT_
     return EDIT_MOOD_PROMPT
 
 async def edit_mood_prompt_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # ... (код без изменений) ...
     if not update.message or not update.message.text: return EDIT_MOOD_PROMPT
     mood_prompt = update.message.text.strip()
     mood_name = context.user_data.get('edit_mood_name')
@@ -1255,7 +1225,6 @@ async def edit_mood_prompt_received(update: Update, context: ContextTypes.DEFAUL
     return await edit_moods_menu(update, context)
 
 async def delete_mood_confirmed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # ... (код без изменений) ...
     query = update.callback_query
     if not query or not query.data: return EDIT_MOOD_CHOICE
     await query.answer()
@@ -1298,7 +1267,6 @@ async def delete_mood_confirmed(update: Update, context: ContextTypes.DEFAULT_TY
     return await edit_moods_menu(update, context)
 
 async def edit_persona_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # ... (код без изменений) ...
     message = update.effective_message
     if not message: return ConversationHandler.END
     logger.info(f"User {update.effective_user.id} cancelled persona edit.")
@@ -1311,7 +1279,6 @@ async def edit_persona_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE
     return ConversationHandler.END
 
 async def delete_persona_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # ... (код без изменений) ...
     if not update.message: return ConversationHandler.END
     user_id = update.effective_user.id
     args = context.args
@@ -1350,7 +1317,6 @@ async def delete_persona_start(update: Update, context: ContextTypes.DEFAULT_TYP
          return ConversationHandler.END
 
 async def delete_persona_confirmed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # ... (код без изменений) ...
     query = update.callback_query
     if not query or not query.data: return ConversationHandler.END
     await query.answer()
@@ -1385,7 +1351,6 @@ async def delete_persona_confirmed(update: Update, context: ContextTypes.DEFAULT
     return ConversationHandler.END
 
 async def delete_persona_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # ... (код без изменений) ...
     query = update.callback_query
     if not query: return ConversationHandler.END
     await query.answer()
