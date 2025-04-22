@@ -25,6 +25,7 @@ from yookassa.domain.request.payment_request_builder import PaymentRequestBuilde
 from yookassa.domain.models.receipt import Receipt, ReceiptItem
 # Убрали импорт специфичных ошибок Yookassa
 
+
 from config import (
     LANGDOCK_API_KEY, LANGDOCK_BASE_URL, LANGDOCK_MODEL,
     DEFAULT_MOOD_PROMPTS, YOOKASSA_SHOP_ID, YOOKASSA_SECRET_KEY,
@@ -840,7 +841,8 @@ async def generate_payment_link(update: Update, context: ContextTypes.DEFAULT_TY
             })
         ]
         receipt_data = Receipt({
-            "customer": {"user_id": str(user_id)},
+            # Добавляем "технический" email для прохождения валидации ЮKassa
+            "customer": {"email": f"user_{user_id}@telegram.bot"},
             "items": receipt_items
         })
         logger.debug("Receipt data prepared successfully.")
@@ -888,15 +890,12 @@ async def generate_payment_link(update: Update, context: ContextTypes.DEFAULT_TY
         logger.info("Payment link sent to user.")
 
     except Exception as e:
-        # Ловим все ошибки, включая потенциальные ошибки API Yookassa
         logger.error(
             f"Error during Yookassa payment creation for user {user_id}. "
             f"Exception Type: {type(e).__name__}. Exception Args: {e.args}. "
             f"Full Exception: {e}",
-            exc_info=True # Включаем traceback для диагностики
+            exc_info=True
         )
-
-        # Пытаемся извлечь детали, если это ошибка API
         error_details = ""
         user_message = "❌ не удалось создать ссылку для оплаты. "
         if hasattr(e, 'http_status'):
@@ -907,18 +906,17 @@ async def generate_payment_link(update: Update, context: ContextTypes.DEFAULT_TY
             error_details += f" Description: {e.description}."
         if hasattr(e, 'parameter'):
              error_details += f" Parameter: {e.parameter}."
-        # response_body может содержать много данных, логируем его отдельно
         if hasattr(e, 'response_body'):
             logger.error(f"Yookassa response body on error: {e.response_body}")
 
         if error_details:
             logger.error(f"Potentially Yookassa API error details found: {error_details}")
-            user_message += f"Проблема с API ЮKassa ({type(e).__name__}). {error_details}"
+            # Не показываем детали пользователю, они только в логах
+            user_message += f"Проблема с API ЮKassa ({type(e).__name__})."
         else:
              user_message += "Произошла непредвиденная ошибка."
 
         user_message += "\nПопробуй еще раз позже или свяжись с поддержкой."
-
         try:
             await query.edit_message_text(user_message, reply_markup=None)
         except Exception as send_e:
