@@ -22,9 +22,9 @@ from typing import List, Dict, Any, Optional, Union, Tuple
 from yookassa import Configuration, Payment
 from yookassa.domain.models.currency import Currency
 from yookassa.domain.request.payment_request_builder import PaymentRequestBuilder
-# Импорты для чека - оставляем только Receipt и ReceiptItem
-from yookassa.domain.models.receipt import Receipt, ReceiptItem
-# Удалили импорты PaymentSubject, PaymentMode, VatCode
+# Импорты для чека (ФИНАЛЬНАЯ ПОПЫТКА!)
+from yookassa.domain.models.receipt import Receipt, ReceiptItem, PaymentSubject, PaymentMode, VatCode
+
 
 from config import (
     LANGDOCK_API_KEY, LANGDOCK_BASE_URL, LANGDOCK_MODEL,
@@ -797,46 +797,58 @@ async def generate_payment_link(update: Update, context: ContextTypes.DEFAULT_TY
     user_id = query.from_user.id
     logger.info(f"--- generate_payment_link ENTERED for user {user_id} ---")
 
+    logger.debug("Step 1: Checking Yookassa credentials...")
     if not YOOKASSA_SHOP_ID or not YOOKASSA_SECRET_KEY or not YOOKASSA_SHOP_ID.isdigit():
         logger.error("Yookassa credentials not set correctly in config (shop_id must be numeric). Cannot generate payment link.")
         await query.edit_message_text("❌ ошибка: сервис оплаты не настроен правильно.", reply_markup=None)
         return
-
-    logger.debug(f"Using Yookassa Shop ID: {YOOKASSA_SHOP_ID}, Secret Key: ...{YOOKASSA_SECRET_KEY[-5:]}")
+    logger.debug(f"Credentials OK. Shop ID: {YOOKASSA_SHOP_ID}")
 
     try:
+        logger.debug("Step 2: Configuring Yookassa...")
         Configuration.configure(int(YOOKASSA_SHOP_ID), YOOKASSA_SECRET_KEY)
         logger.info(f"Yookassa configured for payment creation (Shop ID: {YOOKASSA_SHOP_ID}).")
     except Exception as conf_e:
-        logger.error(f"Failed to configure Yookassa SDK before payment creation: {conf_e}", exc_info=True)
+        logger.error(f"Failed to configure Yookassa SDK: {conf_e}", exc_info=True)
         await query.edit_message_text("❌ ошибка конфигурации платежной системы.", reply_markup=None)
         return
+    logger.debug("Configuration successful.")
 
+    logger.debug("Step 3: Preparing payment data...")
     idempotence_key = str(uuid.uuid4())
     payment_description = f"Premium подписка {context.bot.username} на {SUBSCRIPTION_DURATION_DAYS} дней (User ID: {user_id})"
     payment_metadata = {'telegram_user_id': user_id}
     return_url = f"https://t.me/{context.bot.username}?start=payment_success"
+    logger.debug(f"Data prepared. Idempotence key: {idempotence_key}")
 
-    receipt_items = [
-        ReceiptItem({
-            "description": f"Премиум доступ {context.bot.username} на {SUBSCRIPTION_DURATION_DAYS} дней",
-            "quantity": 1.0,
-            "amount": {
-                "value": f"{SUBSCRIPTION_PRICE_RUB:.2f}",
-                "currency": SUBSCRIPTION_CURRENCY
-            },
-            "vat_code": 1, # Используем числовое значение для VatCode.NO_VAT
-            "payment_mode": "full_payment", # Используем строковое значение
-            "payment_subject": "service" # Используем строковое значение
-        })
-    ]
-    receipt_data = Receipt({
-        "customer": {},
-        "items": receipt_items
-    })
-
+    logger.debug("Step 4: Preparing receipt data...")
     try:
-        logger.debug("Building payment request with receipt...")
+        receipt_items = [
+            ReceiptItem({
+                "description": f"Премиум доступ {context.bot.username} на {SUBSCRIPTION_DURATION_DAYS} дней",
+                "quantity": 1.0,
+                "amount": {
+                    "value": f"{SUBSCRIPTION_PRICE_RUB:.2f}",
+                    "currency": SUBSCRIPTION_CURRENCY
+                },
+                "vat_code": 1, # VatCode.NO_VAT
+                "payment_mode": "full_payment", # PaymentMode.FULL_PAYMENT
+                "payment_subject": "service" # PaymentSubject.SERVICE
+            })
+        ]
+        receipt_data = Receipt({
+            "customer": {},
+            "items": receipt_items
+        })
+        logger.debug("Receipt data prepared successfully.")
+    except Exception as receipt_e:
+        logger.error(f"Error preparing receipt data: {receipt_e}", exc_info=True)
+        await query.edit_message_text("❌ ошибка при формировании данных чека.", reply_markup=None)
+        return
+
+    payment_response = None
+    try:
+        logger.debug("Step 5: Building payment request...")
         builder = PaymentRequestBuilder()
         builder.set_amount({"value": f"{SUBSCRIPTION_PRICE_RUB:.2f}", "currency": SUBSCRIPTION_CURRENCY}) \
             .set_capture(True) \
@@ -844,28 +856,22 @@ async def generate_payment_link(update: Update, context: ContextTypes.DEFAULT_TY
             .set_description(payment_description) \
             .set_metadata(payment_metadata) \
             .set_receipt(receipt_data)
-
         request = builder.build()
-        logger.debug(f"Payment request built. Idempotence key: {idempotence_key}")
+        logger.debug(f"Payment request built successfully.")
 
-        logger.info("Creating Yookassa payment...")
-        payment_response = None
-        try:
-            payment_response = await asyncio.to_thread(Payment.create, request, idempotence_key)
-        except Exception as thread_e:
-            logger.error(f"Error inside asyncio.to_thread(Payment.create): {thread_e}", exc_info=True)
-            raise
+        logger.info("Step 6: Calling Yookassa Payment.create via asyncio.to_thread...")
+        payment_response = await asyncio.to_thread(Payment.create, request, idempotence_key)
+        logger.info(f"Yookassa API call successful. Response received.")
 
+        logger.debug("Step 7: Processing Yookassa response...")
         if not payment_response or not payment_response.confirmation or not payment_response.confirmation.confirmation_url:
              logger.error(f"Yookassa API returned invalid/empty response for user {user_id}. Response: {payment_response}")
-             await query.edit_message_text("❌ не удалось получить ссылку от платежной системы. попробуй позже.", reply_markup=None)
+             await query.edit_message_text("❌ не удалось получить ссылку от платежной системы (неверный ответ). попробуй позже.", reply_markup=None)
              return
 
-        logger.info(f"Payment created successfully. Payment ID: {payment_response.id}")
-
+        logger.info(f"Payment response seems valid. Payment ID: {payment_response.id}")
         confirmation_url = payment_response.confirmation.confirmation_url
         payment_id = payment_response.id
-        # context.user_data['pending_payment_id'] = payment_id
 
         logger.info(f"Created Yookassa payment {payment_id} for user {user_id}. URL: {confirmation_url}")
 
@@ -876,18 +882,23 @@ async def generate_payment_link(update: Update, context: ContextTypes.DEFAULT_TY
             "нажми кнопку ниже для перехода к оплате. после успеха подписка активируется (может занять пару минут).",
             reply_markup=reply_markup
         )
+        logger.info("Payment link sent to user.")
 
     except Exception as e:
-        logger.error(f"Yookassa payment creation failed for user {user_id}: {e}", exc_info=True)
-        await query.edit_message_text("❌ не удалось создать ссылку для оплаты. попробуй позже или свяжись с поддержкой.", reply_markup=None)
+        logger.error(f"Yookassa payment creation failed for user {user_id} at some stage: {e}", exc_info=True)
+        # Сообщение об ошибке отправляется здесь, если не было отправлено ранее
+        try:
+            await query.edit_message_text("❌ не удалось создать ссылку для оплаты. попробуй позже или свяжись с поддержкой.", reply_markup=None)
+        except Exception as send_e:
+            logger.error(f"Failed to send error message to user after payment creation failure: {send_e}")
 
 
 async def yookassa_webhook_placeholder(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.warning("Placeholder Yookassa webhook endpoint called. This should be handled by a separate web application.")
     pass
 
-# --- Остальные хендлеры (edit_persona_start и т.д.) остаются без изменений ---
-# ... (Вставьте сюда код остальных функций из предыдущего ответа) ...
+# --- Остальные хендлеры (edit_persona_start и т.д.) без изменений ---
+# ... (КОПИРОВАТЬ КОД ОСТАЛЬНЫХ ХЕНДЛЕРОВ СЮДА ИЗ ПРЕДЫДУЩЕГО ОТВЕТА) ...
 
 async def edit_persona_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not update.message: return ConversationHandler.END
