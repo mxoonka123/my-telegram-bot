@@ -22,9 +22,9 @@ from typing import List, Dict, Any, Optional, Union, Tuple
 from yookassa import Configuration, Payment
 from yookassa.domain.models.currency import Currency
 from yookassa.domain.request.payment_request_builder import PaymentRequestBuilder
-# Импорты для чека (ФИНАЛЬНАЯ ПОПЫТКА!)
-from yookassa.domain.models.receipt import Receipt, ReceiptItem, PaymentSubject, PaymentMode, VatCode
-
+# Оставляем только импорты Receipt и ReceiptItem
+from yookassa.domain.models.receipt import Receipt, ReceiptItem
+# Удалили все остальные импорты для чека
 
 from config import (
     LANGDOCK_API_KEY, LANGDOCK_BASE_URL, LANGDOCK_MODEL,
@@ -831,9 +831,9 @@ async def generate_payment_link(update: Update, context: ContextTypes.DEFAULT_TY
                     "value": f"{SUBSCRIPTION_PRICE_RUB:.2f}",
                     "currency": SUBSCRIPTION_CURRENCY
                 },
-                "vat_code": 1, # VatCode.NO_VAT
-                "payment_mode": "full_payment", # PaymentMode.FULL_PAYMENT
-                "payment_subject": "service" # PaymentSubject.SERVICE
+                "vat_code": 1, # Используем числовое значение для VatCode.NO_VAT
+                "payment_mode": "full_payment", # Используем строковое значение
+                "payment_subject": "service" # Используем строковое значение
             })
         ]
         receipt_data = Receipt({
@@ -886,19 +886,14 @@ async def generate_payment_link(update: Update, context: ContextTypes.DEFAULT_TY
 
     except Exception as e:
         logger.error(f"Yookassa payment creation failed for user {user_id} at some stage: {e}", exc_info=True)
-        # Сообщение об ошибке отправляется здесь, если не было отправлено ранее
         try:
             await query.edit_message_text("❌ не удалось создать ссылку для оплаты. попробуй позже или свяжись с поддержкой.", reply_markup=None)
         except Exception as send_e:
             logger.error(f"Failed to send error message to user after payment creation failure: {send_e}")
 
-
 async def yookassa_webhook_placeholder(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.warning("Placeholder Yookassa webhook endpoint called. This should be handled by a separate web application.")
     pass
-
-# --- Остальные хендлеры (edit_persona_start и т.д.) без изменений ---
-# ... (КОПИРОВАТЬ КОД ОСТАЛЬНЫХ ХЕНДЛЕРОВ СЮДА ИЗ ПРЕДЫДУЩЕГО ОТВЕТА) ...
 
 async def edit_persona_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not update.message: return ConversationHandler.END
