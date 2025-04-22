@@ -23,7 +23,11 @@ from yookassa import Configuration, Payment
 from yookassa.domain.models.currency import Currency
 from yookassa.domain.request.payment_request_builder import PaymentRequestBuilder
 from yookassa.domain.models.receipt import Receipt, ReceiptItem
-from yookassa.error import ApiError, BadApiRequestError, ForbiddenError, InternalServerError, NotFoundError, ResponseProcessingError, TooManyRequestsError, UnauthorizedError
+# Исправленный импорт ошибок для yookassa==3.5.0
+from yookassa import (
+    ApiError, BadApiRequestError, ForbiddenError, InternalServerError,
+    NotFoundError, ResponseProcessingError, TooManyRequestsError, UnauthorizedError
+)
 
 
 from config import (
@@ -841,7 +845,7 @@ async def generate_payment_link(update: Update, context: ContextTypes.DEFAULT_TY
             })
         ]
         receipt_data = Receipt({
-            "customer": {"user_id": str(user_id)}, # Добавим ID пользователя в чек
+            "customer": {"user_id": str(user_id)},
             "items": receipt_items
         })
         logger.debug("Receipt data prepared successfully.")
@@ -861,7 +865,7 @@ async def generate_payment_link(update: Update, context: ContextTypes.DEFAULT_TY
             .set_metadata(payment_metadata) \
             .set_receipt(receipt_data)
         request = builder.build()
-        logger.debug(f"Payment request built successfully: {request.json()}") # Логируем тело запроса
+        logger.debug(f"Payment request built successfully: {request.json()}")
 
         logger.info("Step 6: Calling Yookassa Payment.create via asyncio.to_thread...")
         payment_response = await asyncio.to_thread(Payment.create, request, idempotence_key)
@@ -889,7 +893,6 @@ async def generate_payment_link(update: Update, context: ContextTypes.DEFAULT_TY
         logger.info("Payment link sent to user.")
 
     except (BadApiRequestError, ForbiddenError, InternalServerError, NotFoundError, ResponseProcessingError, TooManyRequestsError, UnauthorizedError) as api_error:
-        # Ловим конкретные ошибки API ЮKassa
         error_body = ""
         if hasattr(api_error, 'response_body'):
             error_body = api_error.response_body
@@ -900,7 +903,7 @@ async def generate_payment_link(update: Update, context: ContextTypes.DEFAULT_TY
             f"Description: {getattr(api_error, 'description', 'N/A')}. "
             f"Parameter: {getattr(api_error, 'parameter', 'N/A')}. "
             f"Response body: {error_body}",
-            exc_info=False # Не выводим полный traceback, т.к. мы уже обработали ошибку
+            exc_info=False
         )
         user_message = "❌ ошибка при создании платежа: "
         if isinstance(api_error, UnauthorizedError):
@@ -923,7 +926,6 @@ async def generate_payment_link(update: Update, context: ContextTypes.DEFAULT_TY
             logger.error(f"Failed to send API error message to user {user_id}: {send_e}")
 
     except Exception as e:
-        # Ловим все остальные ошибки
         logger.error(f"Unexpected error during Yookassa payment creation for user {user_id}: {e}", exc_info=True)
         try:
             await query.edit_message_text("❌ не удалось создать ссылку для оплаты из-за непредвиденной ошибки. попробуй позже или свяжись с поддержкой.", reply_markup=None)
