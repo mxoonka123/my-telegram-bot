@@ -19,10 +19,14 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy import func
 from typing import List, Dict, Any, Optional, Union, Tuple
 
-# Убираем ApiClient, он не используется здесь
 from yookassa import Configuration, Payment
 from yookassa.domain.models.currency import Currency
 from yookassa.domain.request.payment_request_builder import PaymentRequestBuilder
+from yookassa.domain.models.receipt import Receipt
+from yookassa.domain.models.receipt_item import ReceiptItem
+from yookassa.domain.models.payment_subject import PaymentSubject
+from yookassa.domain.models.payment_mode import PaymentMode
+from yookassa.domain.models.vat_code import VatCode
 
 
 from config import (
@@ -816,14 +820,34 @@ async def generate_payment_link(update: Update, context: ContextTypes.DEFAULT_TY
     payment_metadata = {'telegram_user_id': user_id}
     return_url = f"https://t.me/{context.bot.username}?start=payment_success"
 
+    receipt_items = [
+        ReceiptItem({
+            "description": f"Премиум доступ {context.bot.username} на {SUBSCRIPTION_DURATION_DAYS} дней",
+            "quantity": 1.0,
+            "amount": {
+                "value": f"{SUBSCRIPTION_PRICE_RUB:.2f}",
+                "currency": SUBSCRIPTION_CURRENCY
+            },
+            "vat_code": VatCode.NO_VAT,
+            "payment_mode": PaymentMode.FULL_PAYMENT,
+            "payment_subject": PaymentSubject.SERVICE
+        })
+    ]
+    receipt_data = Receipt({
+        "customer": {},
+        "items": receipt_items
+    })
+
     try:
-        logger.debug("Building payment request...")
+        logger.debug("Building payment request with receipt...")
         builder = PaymentRequestBuilder()
         builder.set_amount({"value": f"{SUBSCRIPTION_PRICE_RUB:.2f}", "currency": SUBSCRIPTION_CURRENCY}) \
             .set_capture(True) \
             .set_confirmation({"type": "redirect", "return_url": return_url}) \
             .set_description(payment_description) \
-            .set_metadata(payment_metadata)
+            .set_metadata(payment_metadata) \
+            .set_receipt(receipt_data)
+
         request = builder.build()
         logger.debug(f"Payment request built. Idempotence key: {idempotence_key}")
 
@@ -859,7 +883,6 @@ async def generate_payment_link(update: Update, context: ContextTypes.DEFAULT_TY
     except Exception as e:
         logger.error(f"Yookassa payment creation failed for user {user_id}: {e}", exc_info=True)
         await query.edit_message_text("❌ не удалось создать ссылку для оплаты. попробуй позже или свяжись с поддержкой.", reply_markup=None)
-
 
 async def yookassa_webhook_placeholder(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.warning("Placeholder Yookassa webhook endpoint called. This should be handled by a separate web application.")
