@@ -1,12 +1,10 @@
-# db.py
-
 import json
 import logging
 from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, Boolean, ForeignKey, UniqueConstraint, func, BIGINT
 from sqlalchemy.orm import sessionmaker, relationship, Session, joinedload
 from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import SQLAlchemyError, IntegrityError # Добавили IntegrityError
 from datetime import datetime, timezone, timedelta, date
 from typing import List, Dict, Any, Optional, Union, Tuple
 
@@ -172,6 +170,7 @@ class ChatBotInstance(Base):
     active = Column(Boolean, default=True)
     current_mood = Column(String, default="нейтрально")
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    is_muted = Column(Boolean, default=False, nullable=False) # <-- ДОБАВЛЕНО ПОЛЕ
 
     # Relationship to ChatContext messages
     context = relationship("ChatContext", backref="chat_bot_instance", order_by="ChatContext.message_order", cascade="all, delete-orphan")
@@ -182,7 +181,7 @@ class ChatBotInstance(Base):
     __table_args__ = (UniqueConstraint('chat_id', 'bot_instance_id', name='_chat_bot_uc'),)
 
     def __repr__(self):
-        return f"<ChatBotInstance(id={self.id}, chat_id='{self.chat_id}', bot_instance_id={self.bot_instance_id}, active={self.active})>"
+        return f"<ChatBotInstance(id={self.id}, chat_id='{self.chat_id}', bot_instance_id={self.bot_instance_id}, active={self.active}, muted={self.is_muted})>" # Добавили muted в repr
 
 class ChatContext(Base):
     __tablename__ = 'chat_contexts'
@@ -602,6 +601,7 @@ def link_bot_instance_to_chat(db: Session, bot_instance_id: int, chat_id: str) -
              logger.info(f"Reactivating existing ChatBotInstance {chat_link.id} for bot {bot_instance_id} in chat {chat_id}")
              chat_link.active = True
              chat_link.current_mood = "нейтрально" # Reset mood on reactivation
+             chat_link.is_muted = False # Unmute on reactivation
              # No commit here
         else:
             logger.debug(f"ChatBotInstance link for bot {bot_instance_id} in chat {chat_id} is already active.")
@@ -613,7 +613,8 @@ def link_bot_instance_to_chat(db: Session, bot_instance_id: int, chat_id: str) -
             chat_id=chat_id,
             bot_instance_id=bot_instance_id,
             active=True,
-            current_mood="нейтрально" # Default mood for new link
+            current_mood="нейтрально", # Default mood for new link
+            is_muted=False # Default mute status
         )
         db.add(chat_link)
         # No commit here, let caller handle transaction
@@ -632,6 +633,7 @@ def unlink_bot_instance_from_chat(db: Session, chat_id: str, bot_instance_id: in
     if chat_link:
         logger.info(f"Deactivating ChatBotInstance {chat_link.id} for bot {bot_instance_id} in chat {chat_id}")
         chat_link.active = False
+        # chat_link.is_muted = False # Reset mute status on deactivation? Optional.
         try:
             db.commit()
             return True
