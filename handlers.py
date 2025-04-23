@@ -550,7 +550,9 @@ async def mood(update: Update, context: ContextTypes.DEFAULT_TYPE, db: Optional[
                  else: await message.reply_text(reply_text, reply_markup=ReplyKeyboardRemove())
              except Exception as send_err: logger.error(f"Error sending 'no moods defined' msg: {send_err}")
              logger.warning(f"Persona {persona.name} has no moods defined.")
-             return
+             # Do not close session here if it was passed in
+             if close_db_later: db_session.close()
+             return # Return after sending message
 
         mood_arg_lower = None
         # Case 1: Command with argument (/mood радость)
@@ -564,7 +566,8 @@ async def mood(update: Update, context: ContextTypes.DEFAULT_TYPE, db: Optional[
              parts = update.callback_query.data.split('_')
              # Expecting set_mood_<moodname>_<personaid>
              if len(parts) >= 3:
-                  mood_arg_lower = parts[2].lower() # Get moodname part
+                  # Reconstruct mood name if it contained underscores
+                  mood_arg_lower = "_".join(parts[2:-1]).lower() # Get moodname part, handle underscores in name
              else:
                   logger.warning(f"Invalid mood callback data format: {update.callback_query.data}")
 
@@ -573,8 +576,11 @@ async def mood(update: Update, context: ContextTypes.DEFAULT_TYPE, db: Optional[
              original_mood_name = available_moods_lower[mood_arg_lower] # Get original case
              set_mood_for_chat_bot(db_session, chat_bot_instance.id, original_mood_name) # Use original case
              # Commit only if mood was set via this function directly (not via handle_message)
+             # If called from handle_message, db_session=db will be the same object, and close_db_later will be False.
+             # If called from command, db_session=db will be None initially, and close_db_later will be True.
              if close_db_later:
-                 db_session.commit()
+                  pass # set_mood_for_chat_bot now handles commit internally
+                 # db_session.commit() # Commit no longer needed here
              reply_text = f"настроение для '{persona.name}' теперь: **{original_mood_name}**"
              try:
                  if is_callback:
@@ -587,11 +593,18 @@ async def mood(update: Update, context: ContextTypes.DEFAULT_TYPE, db: Optional[
         else:
              keyboard = [[InlineKeyboardButton(m.capitalize(), callback_data=f"set_mood_{m.lower()}_{persona.id}")] for m in available_moods] # Use lower in callback
              reply_markup = InlineKeyboardMarkup(keyboard)
+             current_mood_text = ""
+             try: # Safely get current mood
+                 current_mood_text = get_mood_for_chat_bot(db_session, chat_bot_instance.id)
+             except Exception as e:
+                 logger.error(f"Error getting current mood for {chat_bot_instance.id}: {e}")
+                 current_mood_text = "Неизвестно"
+
              if mood_arg_lower: # Invalid argument case
                  reply_text = f"не знаю настроения '{mood_arg_lower}' для '{persona.name}'. выбери из списка:"
                  logger.debug(f"Invalid mood argument '{mood_arg_lower}' for chat {chat_id}. Sent mood selection.")
              else: # No argument case
-                 reply_text = f"текущее настроение: **{persona.current_mood}**. выбери новое для '{persona.name}':"
+                 reply_text = f"текущее настроение: **{current_mood_text}**. выбери новое для '{persona.name}':"
                  logger.debug(f"Sent mood selection keyboard for chat {chat_id}.")
 
              try:
@@ -677,11 +690,11 @@ async def create_persona(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         return
     persona_name = args[0]
-    persona_description = " ".join(args[1:]) if len(args) > 1 else f"ai бот по имени {persona_name}."
+    persona_description = " ".join(args[1:]) if len(args) > 1 else None # Pass None to use default in create_persona_config
     if len(persona_name) < 2 or len(persona_name) > 50:
          await update.message.reply_text("имя личности: 2-50 символов.", reply_markup=ReplyKeyboardRemove())
          return
-    if len(persona_description) > 1500: # Increased limit slightly
+    if persona_description and len(persona_description) > 1500: # Check only if provided
          await update.message.reply_text("описание: до 1500 символов.", reply_markup=ReplyKeyboardRemove())
          return
     with next(get_db()) as db:
@@ -703,6 +716,7 @@ async def create_persona(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             if existing_persona:
                 await update.message.reply_text(f"личность с именем '{persona_name}' уже есть. выбери другое.", reply_markup=ReplyKeyboardRemove())
                 return
+            # create_persona_config handles commit/rollback internally now
             new_persona = create_persona_config(db, user.id, persona_name, persona_description)
             # No need to commit here, create_persona_config does it
             await update.message.reply_text(
@@ -714,19 +728,15 @@ async def create_persona(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 parse_mode=ParseMode.MARKDOWN, reply_markup=ReplyKeyboardRemove()
             )
             logger.info(f"User {user_id} created persona: '{new_persona.name}' (ID: {new_persona.id})")
-        except IntegrityError as e:
-             db.rollback()
-             logger.error(f"IntegrityError creating persona for user {user_id} with name '{persona_name}': {e}", exc_info=True)
+        except IntegrityError: # Catch specific error from create_persona_config
+             # Rollback is handled inside create_persona_config now
+             logger.warning(f"IntegrityError caught by handler for create_persona user {user_id} name '{persona_name}'.")
              await update.message.reply_text(f"ошибка: личность '{persona_name}' уже существует (возможно, гонка запросов). попробуй еще раз.", reply_markup=ReplyKeyboardRemove())
         except SQLAlchemyError as e:
-             db.rollback()
-             logger.error(f"Database error during /createpersona for user {user_id}: {e}", exc_info=True)
+             # Rollback is handled inside create_persona_config now
+             logger.error(f"SQLAlchemyError caught by handler for create_persona user {user_id}: {e}", exc_info=True)
              await update.message.reply_text("ошибка базы данных при создании личности.")
         except Exception as e:
-             # Catch potential rollback error if session is already inactive
-             try:
-                 if db.is_active: db.rollback()
-             except: pass
              logger.error(f"Error creating persona for user {user_id}: {e}", exc_info=True)
              await update.message.reply_text("ошибка при создании личности.")
 
@@ -796,9 +806,11 @@ async def add_bot_to_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
     with next(get_db()) as db:
         try:
-            user = get_or_create_user(db, user_id, username)
-            persona = get_persona_by_id_and_owner(db, user.id, persona_id)
+            # user = get_or_create_user(db, user_id, username) # Not needed directly, get_persona checks owner
+            # Use the corrected get_persona_by_id_and_owner which takes telegram_id
+            persona = get_persona_by_id_and_owner(db, user_id, persona_id)
             if not persona:
+                 # Pass the correct user_id (telegram_id) to the get function
                  await update.message.reply_text(f"личность с id `{persona_id}` не найдена или не твоя.", parse_mode=ParseMode.MARKDOWN, reply_markup=ReplyKeyboardRemove())
                  return
 
@@ -806,7 +818,10 @@ async def add_bot_to_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             existing_active_link = db.query(ChatBotInstance).filter(
                  ChatBotInstance.chat_id == chat_id,
                  ChatBotInstance.active == True
-            ).options(joinedload(ChatBotInstance.bot_instance_ref)).first() # Load relation
+            ).options(
+                joinedload(ChatBotInstance.bot_instance_ref)
+                .joinedload(BotInstance.persona_config) # Eager load to check persona
+            ).first()
 
             if existing_active_link:
                 old_bot_instance = existing_active_link.bot_instance_ref
@@ -822,11 +837,14 @@ async def add_bot_to_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     db.flush() # Ensure deactivation is processed before linking the new one
 
             # Find or create BotInstance for the chosen PersonaConfig
+            # We need the internal user ID to create the BotInstance if needed
+            user = get_or_create_user(db, user_id, username) # Fetch user now
             bot_instance = db.query(BotInstance).filter(
                 BotInstance.persona_config_id == persona.id
             ).first()
             if not bot_instance:
                  # Use create_bot_instance which handles commit
+                 # Pass the internal user.id here for owner_id foreign key
                  bot_instance = create_bot_instance(db, user.id, persona.id, name=f"Inst:{persona.name}")
                  logger.info(f"Created BotInstance {bot_instance.id} for persona {persona.id}")
                  # No need to commit here, create_bot_instance does it
@@ -866,6 +884,7 @@ async def add_bot_to_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
              except: pass
              logger.error(f"Error adding bot instance {persona_id} to chat {chat_id}: {e}", exc_info=True)
              await update.message.reply_text("ошибка при активации личности.")
+
 
 async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
@@ -1034,7 +1053,7 @@ async def generate_payment_link(update: Update, context: ContextTypes.DEFAULT_TY
         receipt_data = Receipt({
             "customer": {"email": f"user_{user_id}@telegram.bot"}, # Ensure email is valid format
             "items": receipt_items,
-            "tax_system_code": "1" # Example: '1' for OSN. Specify your tax system code if required. Check Yookassa docs.
+            # "tax_system_code": "1" # Example: '1' for OSN. Specify your tax system code if required. Check Yookassa docs. Uncomment if needed.
         })
         logger.debug("Receipt data prepared successfully.")
     except Exception as receipt_e:
@@ -1129,9 +1148,11 @@ async def yookassa_webhook_placeholder(update: Update, context: ContextTypes.DEF
     logger.warning("Placeholder Yookassa webhook endpoint called via Telegram bot handler. This should be handled by the Flask app.")
     pass
 
+# --- Edit Persona Conversation ---
+
 async def edit_persona_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not update.message: return ConversationHandler.END
-    user_id = update.effective_user.id
+    user_id = update.effective_user.id # This is the telegram_id
     args = context.args
     logger.info(f"CMD /editpersona < User {user_id} with args: {args}")
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
@@ -1141,23 +1162,23 @@ async def edit_persona_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
     persona_id = int(args[0])
     # Clear previous edit data if any
     context.user_data.pop('edit_persona_id', None)
-    context.user_data.pop('persona_config_object', None)
+    context.user_data.pop('persona_config_object', None) # Clear potentially stale object
     context.user_data.pop('edit_field', None)
     context.user_data.pop('edit_mood_name', None)
     context.user_data.pop('delete_mood_name', None)
 
     try:
         with next(get_db()) as db:
-            user = get_or_create_user(db, user_id, update.effective_user.username)
-            persona_config = get_persona_by_id_and_owner(db, user.id, persona_id)
+            # --- CORRECTED CALL --- Use user_id (telegram_id) here
+            persona_config = get_persona_by_id_and_owner(db, user_id, persona_id)
             if not persona_config:
                 await update.message.reply_text(f"личность с id `{persona_id}` не найдена или не твоя.", parse_mode=ParseMode.MARKDOWN)
-                return ConversationHandler.END
+                return ConversationHandler.END # Exit if not found
+
             # Store ID for subsequent steps
             context.user_data['edit_persona_id'] = persona_id
-            # No need to store the whole object, fetch it when needed to ensure freshness
-            # context.user_data['persona_config_object'] = persona_config
-            keyboard = await _get_edit_persona_keyboard(persona_config) # Pass object for current values
+            # Pass the fetched config to build the initial keyboard
+            keyboard = await _get_edit_persona_keyboard(persona_config)
             reply_markup = InlineKeyboardMarkup(keyboard)
             await update.message.reply_text(f"редактируем **{persona_config.name}** (id: `{persona_id}`)\nвыбери, что изменить:", reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
         logger.info(f"User {user_id} started editing persona {persona_id}. Sending choice keyboard.")
@@ -1165,12 +1186,12 @@ async def edit_persona_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
     except SQLAlchemyError as e:
          logger.error(f"Database error starting edit persona {persona_id}: {e}", exc_info=True)
          await update.message.reply_text("ошибка базы данных при начале редактирования.")
-         context.user_data.pop('edit_persona_id', None)
+         context.user_data.pop('edit_persona_id', None) # Clear ID on error
          return ConversationHandler.END
     except Exception as e:
          logger.error(f"Unexpected error starting edit persona {persona_id}: {e}", exc_info=True)
          await update.message.reply_text("непредвиденная ошибка.")
-         context.user_data.pop('edit_persona_id', None)
+         context.user_data.pop('edit_persona_id', None) # Clear ID on error
          return ConversationHandler.END
 
 async def edit_persona_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1179,7 +1200,7 @@ async def edit_persona_choice(update: Update, context: ContextTypes.DEFAULT_TYPE
     await query.answer()
     data = query.data
     persona_id = context.user_data.get('edit_persona_id')
-    user_id = query.from_user.id
+    user_id = query.from_user.id # This is the telegram_id
 
     logger.info(f"--- edit_persona_choice: User {user_id}, Persona ID from context: {persona_id}, Callback data: {data} ---")
 
@@ -1192,14 +1213,13 @@ async def edit_persona_choice(update: Update, context: ContextTypes.DEFAULT_TYPE
     try:
         with next(get_db()) as db:
             user = get_or_create_user(db, user_id) # Get user for subscription check
+            # --- CORRECTED CALL --- Use user_id (telegram_id) here
             persona_config = get_persona_by_id_and_owner(db, user_id, persona_id)
             if not persona_config:
                 logger.warning(f"User {user_id} in edit_persona_choice: PersonaConfig {persona_id} not found or not owned.")
                 await query.edit_message_text("ошибка: личность не найдена или нет доступа.", reply_markup=None)
-                context.user_data.clear()
+                context.user_data.clear() # Clear context if persona gone
                 return ConversationHandler.END
-            # Store fresh object in context ONLY if needed by the next step's handler directly (usually not)
-            # context.user_data['persona_config_object'] = persona_config
             is_premium_user = is_admin(user_id) or user.is_active_subscriber
             logger.debug(f"User {user_id} is_premium_user: {is_premium_user}")
 
@@ -1289,7 +1309,7 @@ async def edit_field_update(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     new_value = update.message.text.strip()
     field = context.user_data.get('edit_field')
     persona_id = context.user_data.get('edit_persona_id')
-    user_id = update.effective_user.id
+    user_id = update.effective_user.id # This is the telegram_id
 
     logger.info(f"--- edit_field_update: User={user_id}, PersonaID={persona_id}, Field='{field}' ---")
 
@@ -1323,7 +1343,8 @@ async def edit_field_update(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     # --- Database Update ---
     try:
         with next(get_db()) as db:
-            # Fetch fresh config for update
+            # Fetch fresh config for update using telegram_id
+            # --- CORRECTED CALL --- Use user_id (telegram_id) here
             persona_config = get_persona_by_id_and_owner(db, user_id, persona_id)
             if not persona_config:
                  logger.warning(f"User {user_id}: PersonaConfig {persona_id} not found or not owned during field update.")
@@ -1332,9 +1353,11 @@ async def edit_field_update(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                  return ConversationHandler.END
 
             # Check name uniqueness if changing name
+            # We need the internal user ID for this specific check
+            user = get_or_create_user(db, user_id) # Get user object for internal ID
             if field == "name" and new_value.lower() != persona_config.name.lower():
-                logger.debug(f"Checking name uniqueness for '{new_value}' (User {user_id})")
-                existing = get_persona_by_name_and_owner(db, user_id, new_value)
+                logger.debug(f"Checking name uniqueness for '{new_value}' (User internal ID {user.id})")
+                existing = get_persona_by_name_and_owner(db, user.id, new_value) # Use internal user.id here
                 if existing:
                     logger.info(f"User {user_id} tried to set name to '{new_value}', but it's already taken by persona {existing.id}.")
                     back_button = InlineKeyboardButton("⬅️ Назад", callback_data="edit_persona_back")
@@ -1364,21 +1387,7 @@ async def edit_field_update(update: Update, context: ContextTypes.DEFAULT_TYPE) 
          logger.error(f"Database error updating field {field} for persona {persona_id}: {e}", exc_info=True)
          await update.message.reply_text("❌ ошибка базы данных при обновлении. попробуй еще раз.")
          # Go back to the main edit menu on error to avoid getting stuck
-         try:
-             with next(get_db()) as db_fallback:
-                  persona_config_fallback = get_persona_by_id_and_owner(db_fallback, user_id, persona_id)
-                  if persona_config_fallback:
-                      keyboard_fallback = await _get_edit_persona_keyboard(persona_config_fallback)
-                      await update.message.reply_text(f"редактируем **{persona_config_fallback.name}** (id: `{persona_id}`)\nвыбери, что изменить:", reply_markup=InlineKeyboardMarkup(keyboard_fallback), parse_mode=ParseMode.MARKDOWN)
-                      return EDIT_PERSONA_CHOICE
-                  else: # If persona cannot be fetched even on fallback
-                      await update.message.reply_text("Не удалось вернуться к меню редактирования.")
-                      context.user_data.clear()
-                      return ConversationHandler.END
-         except Exception as fallback_e:
-             logger.error(f"Error generating fallback menu after DB error: {fallback_e}")
-             context.user_data.clear()
-             return ConversationHandler.END
+         return await _try_return_to_edit_menu(update, context, user_id, persona_id)
 
     except Exception as e:
          logger.error(f"Unexpected error updating field {field} for persona {persona_id}: {e}", exc_info=True)
@@ -1391,7 +1400,7 @@ async def edit_max_messages_update(update: Update, context: ContextTypes.DEFAULT
     new_value_str = update.message.text.strip()
     field = "max_response_messages" # Hardcoded field name
     persona_id = context.user_data.get('edit_persona_id')
-    user_id = update.effective_user.id
+    user_id = update.effective_user.id # This is the telegram_id
 
     logger.info(f"--- edit_max_messages_update: User={user_id}, PersonaID={persona_id}, Value='{new_value_str}' ---")
 
@@ -1414,7 +1423,8 @@ async def edit_max_messages_update(update: Update, context: ContextTypes.DEFAULT
     # --- Database Update ---
     try:
         with next(get_db()) as db:
-            logger.debug(f"Fetching PersonaConfig with id={persona_id} for owner={user_id} in edit_max_messages_update.")
+            logger.debug(f"Fetching PersonaConfig with id={persona_id} for owner telegram_id={user_id} in edit_max_messages_update.")
+            # --- CORRECTED CALL --- Use user_id (telegram_id) here
             persona_config = get_persona_by_id_and_owner(db, user_id, persona_id)
 
             if not persona_config:
@@ -1444,27 +1454,14 @@ async def edit_max_messages_update(update: Update, context: ContextTypes.DEFAULT
          logger.error(f"Database error updating max_response_messages for persona {persona_id}: {e}", exc_info=True)
          await update.message.reply_text("❌ ошибка базы данных при обновлении. попробуй еще раз.")
          # Go back to the main edit menu on error
-         try:
-             with next(get_db()) as db_fallback:
-                  persona_config_fallback = get_persona_by_id_and_owner(db_fallback, user_id, persona_id)
-                  if persona_config_fallback:
-                      keyboard_fallback = await _get_edit_persona_keyboard(persona_config_fallback)
-                      await update.message.reply_text(f"редактируем **{persona_config_fallback.name}** (id: `{persona_id}`)\nвыбери, что изменить:", reply_markup=InlineKeyboardMarkup(keyboard_fallback), parse_mode=ParseMode.MARKDOWN)
-                      return EDIT_PERSONA_CHOICE
-                  else:
-                      await update.message.reply_text("Не удалось вернуться к меню редактирования.")
-                      context.user_data.clear()
-                      return ConversationHandler.END
-         except Exception as fallback_e:
-             logger.error(f"Error generating fallback menu after DB error: {fallback_e}")
-             context.user_data.clear()
-             return ConversationHandler.END
+         return await _try_return_to_edit_menu(update, context, user_id, persona_id)
 
     except Exception as e:
          logger.error(f"Unexpected error updating max_response_messages for persona {persona_id}: {e}", exc_info=True)
          await update.message.reply_text("❌ непредвиденная ошибка при обновлении.")
          context.user_data.clear() # Exit on unexpected error
          return ConversationHandler.END
+
 
 # Helper function to generate the main edit keyboard
 async def _get_edit_persona_keyboard(persona_config: PersonaConfig) -> List[List[InlineKeyboardButton]]:
@@ -1489,12 +1486,12 @@ async def _get_edit_persona_keyboard(persona_config: PersonaConfig) -> List[List
     ]
     return keyboard
 
-# --- Mood Editing Handlers (Minor logging/robustness adjustments) ---
+# --- Mood Editing Handlers ---
 
 async def edit_moods_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, persona_config: Optional[PersonaConfig] = None) -> int:
     query = update.callback_query
     persona_id = context.user_data.get('edit_persona_id')
-    user_id = query.from_user.id
+    user_id = query.from_user.id # This is the telegram_id
 
     logger.info(f"--- edit_moods_menu: User={user_id}, PersonaID={persona_id} ---")
 
@@ -1507,17 +1504,19 @@ async def edit_moods_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, pe
     if persona_config is None:
         try:
             with next(get_db()) as db:
+                # --- CORRECTED CALL --- Use user_id (telegram_id) here
                 persona_config = get_persona_by_id_and_owner(db, user_id, persona_id)
                 if not persona_config:
                     logger.warning(f"User {user_id}: PersonaConfig {persona_id} not found/owned in edit_moods_menu fetch.")
                     await query.edit_message_text("ошибка: личность не найдена или нет доступа.", reply_markup=None)
+                    context.user_data.clear() # Clear data if persona gone
                     return ConversationHandler.END
         except Exception as e:
              logger.error(f"DB Error fetching persona in edit_moods_menu: {e}", exc_info=True)
              await query.edit_message_text("Ошибка базы данных при загрузке настроений.", reply_markup=None)
              return EDIT_PERSONA_CHOICE # Go back to main menu
 
-    # Check premium status again just in case (redundant if check in edit_persona_choice is reliable)
+    # Check premium status again just in case
     try:
         with next(get_db()) as db:
              user = get_or_create_user(db, user_id)
@@ -1540,17 +1539,7 @@ async def edit_moods_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, pe
         moods = {}
         logger.warning(f"Invalid JSON in mood_prompts_json for PersonaConfig {persona_id}. Resetting to empty for display.")
 
-    keyboard = []
-    if moods:
-        sorted_moods = sorted(moods.keys())
-        for mood_name in sorted_moods:
-             # Shorten callback data if mood name is very long? No, keep it exact.
-             keyboard.append([
-                 InlineKeyboardButton(f"✏️ {mood_name.capitalize()}", callback_data=f"editmood_select_{mood_name}"),
-                 InlineKeyboardButton(f"🗑️", callback_data=f"deletemood_confirm_{mood_name}")
-             ])
-    keyboard.append([InlineKeyboardButton("➕ Добавить настроение", callback_data="editmood_add")])
-    keyboard.append([InlineKeyboardButton("⬅️ Назад", callback_data="edit_persona_back")]) # Back to main edit menu
+    keyboard = await _get_edit_moods_keyboard_internal(persona_config) # Use internal helper
 
     reply_markup = InlineKeyboardMarkup(keyboard)
     try:
@@ -1572,7 +1561,7 @@ async def edit_mood_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     await query.answer()
     data = query.data
     persona_id = context.user_data.get('edit_persona_id')
-    user_id = query.from_user.id
+    user_id = query.from_user.id # This is the telegram_id
 
     logger.info(f"--- edit_mood_choice: User={user_id}, PersonaID={persona_id}, Data={data} ---")
 
@@ -1584,6 +1573,7 @@ async def edit_mood_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     # --- Fetch Persona Config --- Needed for back button and context
     try:
         with next(get_db()) as db:
+             # --- CORRECTED CALL --- Use user_id (telegram_id) here
              persona_config = get_persona_by_id_and_owner(db, user_id, persona_id)
              if not persona_config:
                  logger.warning(f"User {user_id}: PersonaConfig {persona_id} not found/owned in edit_mood_choice.")
@@ -1672,9 +1662,10 @@ async def edit_mood_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 async def edit_mood_name_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not update.message or not update.message.text: return EDIT_MOOD_NAME # Stay in state
     mood_name_raw = update.message.text.strip()
-    mood_name = mood_name_raw.lower() # Store lowercase internally for consistency? Or keep original? Let's keep original for now.
+    # mood_name = mood_name_raw.lower() # Decide if storing lower or original case
+    mood_name = mood_name_raw # Store original case for now
     persona_id = context.user_data.get('edit_persona_id')
-    user_id = update.effective_user.id
+    user_id = update.effective_user.id # This is the telegram_id
 
     logger.info(f"--- edit_mood_name_received: User={user_id}, PersonaID={persona_id}, Name='{mood_name_raw}' ---")
 
@@ -1684,10 +1675,8 @@ async def edit_mood_name_received(update: Update, context: ContextTypes.DEFAULT_
         return ConversationHandler.END
 
     # --- Validation ---
-    # Allow more flexible names, but sanitize? For now, basic checks.
-    # Regex allows letters (Cyrillic/Latin), numbers, underscore, hyphen. Disallows spaces.
-    if not mood_name_raw or len(mood_name_raw) > 30 or not re.match(r'^[\wа-яА-ЯёЁ-]+$', mood_name_raw, re.UNICODE):
-        logger.debug(f"Validation failed for mood name '{mood_name_raw}'.")
+    if not mood_name or len(mood_name) > 30 or not re.match(r'^[\wа-яА-ЯёЁ-]+$', mood_name, re.UNICODE):
+        logger.debug(f"Validation failed for mood name '{mood_name}'.")
         back_button = InlineKeyboardButton("⬅️ Назад", callback_data="edit_moods_back_cancel")
         await update.message.reply_text("название: 1-30 символов, только буквы/цифры/дефис/подчеркивание, без пробелов. попробуй еще:", reply_markup=InlineKeyboardMarkup([[back_button]]))
         return EDIT_MOOD_NAME # Stay in state
@@ -1695,25 +1684,27 @@ async def edit_mood_name_received(update: Update, context: ContextTypes.DEFAULT_
     # --- Check Uniqueness ---
     try:
         with next(get_db()) as db:
+            # --- CORRECTED CALL --- Use user_id (telegram_id) here
             persona_config = get_persona_by_id_and_owner(db, user_id, persona_id)
             if not persona_config:
                  logger.warning(f"User {user_id}: Persona {persona_id} not found/owned in mood name check.")
                  await update.message.reply_text("ошибка: личность не найдена.", reply_markup=ReplyKeyboardRemove())
-                 return ConversationHandler.END # Exit if persona gone
+                 context.user_data.clear() # Clear data if persona gone
+                 return ConversationHandler.END
 
             current_moods = json.loads(persona_config.mood_prompts_json or '{}')
             # Case-insensitive check for existence
-            if any(existing_name.lower() == mood_name_raw.lower() for existing_name in current_moods):
-                logger.info(f"User {user_id} tried mood name '{mood_name_raw}' which already exists for persona {persona_id}.")
+            if any(existing_name.lower() == mood_name.lower() for existing_name in current_moods):
+                logger.info(f"User {user_id} tried mood name '{mood_name}' which already exists for persona {persona_id}.")
                 back_button = InlineKeyboardButton("⬅️ Назад", callback_data="edit_moods_back_cancel")
-                await update.message.reply_text(f"настроение '{mood_name_raw}' уже существует. выбери другое:", reply_markup=InlineKeyboardMarkup([[back_button]]))
+                await update.message.reply_text(f"настроение '{mood_name}' уже существует. выбери другое:", reply_markup=InlineKeyboardMarkup([[back_button]]))
                 return EDIT_MOOD_NAME # Stay in state
 
             # --- Store Name & Ask for Prompt ---
-            context.user_data['edit_mood_name'] = mood_name_raw # Store the original case name
-            logger.debug(f"Stored mood name '{mood_name_raw}' for user {user_id}. Asking for prompt.")
+            context.user_data['edit_mood_name'] = mood_name # Store the original case name
+            logger.debug(f"Stored mood name '{mood_name}' for user {user_id}. Asking for prompt.")
             back_button = InlineKeyboardButton("⬅️ Назад", callback_data="edit_moods_back_cancel") # Back to mood list
-            await update.message.reply_text(f"отлично! теперь отправь **текст промпта** для настроения **'{mood_name_raw}'**:", parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup([[back_button]]))
+            await update.message.reply_text(f"отлично! теперь отправь **текст промпта** для настроения **'{mood_name}'**:", parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup([[back_button]]))
             return EDIT_MOOD_PROMPT # State to receive prompt
 
     except json.JSONDecodeError:
@@ -1735,7 +1726,7 @@ async def edit_mood_prompt_received(update: Update, context: ContextTypes.DEFAUL
     mood_prompt = update.message.text.strip()
     mood_name = context.user_data.get('edit_mood_name') # Get the stored original case name
     persona_id = context.user_data.get('edit_persona_id')
-    user_id = update.effective_user.id
+    user_id = update.effective_user.id # This is the telegram_id
 
     logger.info(f"--- edit_mood_prompt_received: User={user_id}, PersonaID={persona_id}, Mood='{mood_name}' ---")
 
@@ -1752,7 +1743,8 @@ async def edit_mood_prompt_received(update: Update, context: ContextTypes.DEFAUL
     # --- Database Update ---
     try:
         with next(get_db()) as db:
-            # Fetch fresh config
+            # Fetch fresh config using telegram_id
+            # --- CORRECTED CALL --- Use user_id (telegram_id) here
             persona_config = get_persona_by_id_and_owner(db, user_id, persona_id)
             if not persona_config:
                 logger.warning(f"User {user_id}: Persona {persona_id} not found/owned when saving mood prompt.")
@@ -1768,29 +1760,21 @@ async def edit_mood_prompt_received(update: Update, context: ContextTypes.DEFAUL
 
             # Add or update the mood with original case name
             current_moods[mood_name] = mood_prompt
-            persona_config.mood_prompts_json = json.dumps(current_moods, ensure_ascii=False) # Save JSON with unicode
-            flag_modified(persona_config, "mood_prompts_json") # Mark JSON field as modified
+            # Use the set_moods method to handle JSON conversion and modification flag
+            persona_config.set_moods(db, current_moods)
+            # persona_config.mood_prompts_json = json.dumps(current_moods, ensure_ascii=False) # Done by set_moods
+            # flag_modified(persona_config, "mood_prompts_json") # Done by set_moods
             logger.debug(f"Updated moods JSON for persona {persona_id}. Committing...")
             db.commit()
-            # No need to refresh here, as we are returning to the menu which will fetch fresh data
 
             context.user_data.pop('edit_mood_name', None) # Clear mood name being edited
             logger.info(f"User {user_id} updated mood '{mood_name}' for persona {persona_id}.")
             await update.message.reply_text(f"✅ настроение **'{mood_name}'** сохранено!")
 
-            # --- Return to Mood Menu --- Use a query object simulation for edit_moods_menu
-            # We need the original callback query message to edit it
-            # This is tricky because we are in a MessageHandler. We need to simulate the callback.
-            # Best approach: Send a *new* message with the mood menu.
-            try:
-                # Fetch the config again to pass to the menu function
-                 db.refresh(persona_config)
-                 keyboard = await _get_edit_moods_keyboard(persona_config) # Helper needed
-                 await update.message.reply_text(f"управление настроениями для **{persona_config.name}**:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
-                 return EDIT_MOOD_CHOICE
-            except Exception as menu_e:
-                 logger.error(f"Failed to resend mood menu after prompt update: {menu_e}")
-                 return EDIT_PERSONA_CHOICE # Fallback to main edit menu
+            # --- Return to Mood Menu ---
+            # Fetch refreshed config to pass to menu function
+            db.refresh(persona_config)
+            return await edit_moods_menu(update, context, persona_config=persona_config)
 
     except SQLAlchemyError as e:
         try:
@@ -1813,7 +1797,7 @@ async def delete_mood_confirmed(update: Update, context: ContextTypes.DEFAULT_TY
     data = query.data
     mood_name = context.user_data.get('delete_mood_name') # Get original case name
     persona_id = context.user_data.get('edit_persona_id')
-    user_id = query.from_user.id
+    user_id = query.from_user.id # This is the telegram_id
 
     logger.info(f"--- delete_mood_confirmed: User={user_id}, PersonaID={persona_id}, Mood='{mood_name}' ---")
 
@@ -1824,13 +1808,13 @@ async def delete_mood_confirmed(update: Update, context: ContextTypes.DEFAULT_TY
         # Try to return to mood menu
         return await _try_return_to_mood_menu(update, context, user_id, persona_id)
 
-
     logger.warning(f"User {user_id} confirmed deletion of mood '{mood_name}' for persona {persona_id}.")
 
     # --- Database Update ---
     try:
         with next(get_db()) as db:
-            # Fetch fresh config
+            # Fetch fresh config using telegram_id
+            # --- CORRECTED CALL --- Use user_id (telegram_id) here
             persona_config = get_persona_by_id_and_owner(db, user_id, persona_id)
             if not persona_config:
                 logger.warning(f"User {user_id}: Persona {persona_id} not found/owned during mood deletion.")
@@ -1847,11 +1831,12 @@ async def delete_mood_confirmed(update: Update, context: ContextTypes.DEFAULT_TY
             # Delete the mood (case-sensitive match with stored name)
             if mood_name in current_moods:
                 del current_moods[mood_name]
-                persona_config.mood_prompts_json = json.dumps(current_moods, ensure_ascii=False)
-                flag_modified(persona_config, "mood_prompts_json") # Mark as modified
+                # Use the set_moods method
+                persona_config.set_moods(db, current_moods)
+                # persona_config.mood_prompts_json = json.dumps(current_moods, ensure_ascii=False) # Done by set_moods
+                # flag_modified(persona_config, "mood_prompts_json") # Done by set_moods
                 logger.debug(f"Removed mood '{mood_name}'. Committing changes for persona {persona_id}...")
                 db.commit()
-                # No need to refresh, returning to menu which fetches fresh data
 
                 context.user_data.pop('delete_mood_name', None) # Clear name being deleted
                 logger.info(f"Successfully deleted mood '{mood_name}' for persona {persona_id}.")
@@ -1862,6 +1847,7 @@ async def delete_mood_confirmed(update: Update, context: ContextTypes.DEFAULT_TY
                 context.user_data.pop('delete_mood_name', None) # Clear name anyway
 
             # --- Return to Mood Menu --- Use the fetched config
+            db.refresh(persona_config) # Refresh before passing to menu
             return await edit_moods_menu(update, context, persona_config=persona_config)
 
     except SQLAlchemyError as e:
@@ -1880,8 +1866,8 @@ async def delete_mood_confirmed(update: Update, context: ContextTypes.DEFAULT_TY
         return await _try_return_to_mood_menu(update, context, user_id, persona_id)
 
 
-# Helper function to generate mood keyboard (used in edit_mood_prompt_received)
-async def _get_edit_moods_keyboard(persona_config: PersonaConfig) -> List[List[InlineKeyboardButton]]:
+# Helper function to generate mood keyboard (used in edit_moods_menu and after updates)
+async def _get_edit_moods_keyboard_internal(persona_config: PersonaConfig) -> List[List[InlineKeyboardButton]]:
      if not persona_config: return []
      try:
          moods = json.loads(persona_config.mood_prompts_json or '{}')
@@ -1891,36 +1877,68 @@ async def _get_edit_moods_keyboard(persona_config: PersonaConfig) -> List[List[I
      if moods:
          sorted_moods = sorted(moods.keys())
          for mood_name in sorted_moods:
+              # Ensure callback data uses the exact mood name
               keyboard.append([
                   InlineKeyboardButton(f"✏️ {mood_name.capitalize()}", callback_data=f"editmood_select_{mood_name}"),
                   InlineKeyboardButton(f"🗑️", callback_data=f"deletemood_confirm_{mood_name}")
               ])
      keyboard.append([InlineKeyboardButton("➕ Добавить настроение", callback_data="editmood_add")])
-     keyboard.append([InlineKeyboardButton("⬅️ Назад", callback_data="edit_persona_back")])
+     keyboard.append([InlineKeyboardButton("⬅️ Назад", callback_data="edit_persona_back")]) # Back to main edit menu
      return keyboard
 
 # Helper function to try returning to mood menu after an error in a sub-step
 async def _try_return_to_mood_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int, persona_id: int) -> int:
      logger.debug(f"Attempting to return to mood menu for user {user_id}, persona {persona_id} after error.")
+     message = update.effective_message # Get message object to reply to
+     if not message:
+         logger.warning("Cannot return to mood menu: effective_message is None.")
+         context.user_data.clear()
+         return ConversationHandler.END
      try:
          with next(get_db()) as db:
+             # --- CORRECTED CALL --- Use user_id (telegram_id) here
              persona_config = get_persona_by_id_and_owner(db, user_id, persona_id)
              if persona_config:
-                 keyboard = await _get_edit_moods_keyboard(persona_config)
-                 message = update.effective_message
-                 if message: # Can be None if original message deleted
-                     await message.reply_text(f"управление настроениями для **{persona_config.name}**:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
+                 keyboard = await _get_edit_moods_keyboard_internal(persona_config)
+                 await message.reply_text(f"управление настроениями для **{persona_config.name}**:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
                  return EDIT_MOOD_CHOICE
              else:
                  logger.warning(f"Persona {persona_id} not found when trying to return to mood menu.")
-                 await update.effective_message.reply_text("Не удалось вернуться к меню настроений (личность не найдена).")
+                 await message.reply_text("Не удалось вернуться к меню настроений (личность не найдена).")
                  context.user_data.clear()
                  return ConversationHandler.END
      except Exception as e:
-         logger.error(f"Failed to return to mood menu after error: {e}")
-         await update.effective_message.reply_text("Не удалось вернуться к меню настроений.")
+         logger.error(f"Failed to return to mood menu after error: {e}", exc_info=True)
+         await message.reply_text("Не удалось вернуться к меню настроений.")
          context.user_data.clear()
          return ConversationHandler.END
+
+# Helper function to try returning to the main edit menu after an error
+async def _try_return_to_edit_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int, persona_id: int) -> int:
+    logger.debug(f"Attempting to return to main edit menu for user {user_id}, persona {persona_id} after error.")
+    message = update.effective_message
+    if not message:
+        logger.warning("Cannot return to edit menu: effective_message is None.")
+        context.user_data.clear()
+        return ConversationHandler.END
+    try:
+        with next(get_db()) as db:
+            # --- CORRECTED CALL --- Use user_id (telegram_id) here
+            persona_config = get_persona_by_id_and_owner(db, user_id, persona_id)
+            if persona_config:
+                keyboard = await _get_edit_persona_keyboard(persona_config)
+                await message.reply_text(f"редактируем **{persona_config.name}** (id: `{persona_id}`)\nвыбери, что изменить:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
+                return EDIT_PERSONA_CHOICE
+            else:
+                logger.warning(f"Persona {persona_id} not found when trying to return to main edit menu.")
+                await message.reply_text("Не удалось вернуться к меню редактирования (личность не найдена).")
+                context.user_data.clear()
+                return ConversationHandler.END
+    except Exception as e:
+        logger.error(f"Failed to return to main edit menu after error: {e}", exc_info=True)
+        await message.reply_text("Не удалось вернуться к меню редактирования.")
+        context.user_data.clear()
+        return ConversationHandler.END
 
 # --- Cancel Handler ---
 async def edit_persona_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1949,11 +1967,11 @@ async def edit_persona_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE
     context.user_data.clear()
     return ConversationHandler.END
 
-# --- Delete Persona Handlers (Minor logging adjustments) ---
+# --- Delete Persona Conversation ---
 
 async def delete_persona_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not update.message: return ConversationHandler.END
-    user_id = update.effective_user.id
+    user_id = update.effective_user.id # This is the telegram_id
     args = context.args
     logger.info(f"CMD /deletepersona < User {user_id} with args: {args}")
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
@@ -1966,10 +1984,11 @@ async def delete_persona_start(update: Update, context: ContextTypes.DEFAULT_TYP
 
     try:
         with next(get_db()) as db:
+            # --- CORRECTED CALL --- Use user_id (telegram_id) here
             persona_config = get_persona_by_id_and_owner(db, user_id, persona_id)
             if not persona_config:
                 await update.message.reply_text(f"личность с id `{persona_id}` не найдена или не твоя.", parse_mode=ParseMode.MARKDOWN)
-                return ConversationHandler.END
+                return ConversationHandler.END # Exit if not found
             # Store ID for confirmation step
             context.user_data['delete_persona_id'] = persona_id
             keyboard = [
@@ -1999,7 +2018,7 @@ async def delete_persona_confirmed(update: Update, context: ContextTypes.DEFAULT
     if not query or not query.data: return ConversationHandler.END # Should not happen
     await query.answer()
     data = query.data
-    user_id = query.from_user.id
+    user_id = query.from_user.id # This is the telegram_id
     persona_id = context.user_data.get('delete_persona_id')
 
     logger.info(f"--- delete_persona_confirmed: User={user_id}, PersonaID={persona_id}, Data={data} ---")
@@ -2013,27 +2032,29 @@ async def delete_persona_confirmed(update: Update, context: ContextTypes.DEFAULT
 
     logger.warning(f"User {user_id} CONFIRMED DELETION of persona {persona_id}.")
     deleted_ok = False
-    persona_name_deleted = "Неизвестная"
+    persona_name_deleted = f"ID {persona_id}" # Default name
     try:
         with next(get_db()) as db:
-             # Fetch name before deleting
+             # Fetch name before deleting & get internal user id for delete function
+             user = get_or_create_user(db, user_id) # Get user for internal ID
+             # --- CORRECTED CALL --- Use user_id (telegram_id) here to find the persona
              persona_to_delete = get_persona_by_id_and_owner(db, user_id, persona_id)
              if persona_to_delete:
                  persona_name_deleted = persona_to_delete.name
                  logger.info(f"Attempting database deletion for persona {persona_id} ('{persona_name_deleted}')...")
-                 if delete_persona_config(db, persona_id, user_id): # This function handles commit/rollback
+                 # Call delete_persona_config with internal user.id
+                 if delete_persona_config(db, persona_id, user.id): # Use user.id here!
                      logger.info(f"User {user_id} successfully deleted persona {persona_id} ('{persona_name_deleted}').")
                      deleted_ok = True
                  else:
                      # delete_persona_config already logged the error
-                     logger.error(f"delete_persona_config returned False for persona {persona_id}, user {user_id}.")
+                     logger.error(f"delete_persona_config returned False for persona {persona_id}, user internal ID {user.id}.")
              else:
                  logger.warning(f"User {user_id} confirmed delete, but persona {persona_id} not found (maybe already deleted).")
-                 persona_name_deleted = f"ID {persona_id}" # Use ID if name unknown
                  deleted_ok = True # Consider it "ok" as it's gone
 
     except SQLAlchemyError as e:
-        # DB errors during the fetch phase
+        # DB errors during the fetch/delete phase
         logger.error(f"Database error during delete_persona_confirmed fetch/delete for {persona_id}: {e}", exc_info=True)
     except Exception as e:
         logger.error(f"Unexpected error during delete_persona_confirmed for {persona_id}: {e}", exc_info=True)
