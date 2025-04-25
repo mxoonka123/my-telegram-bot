@@ -128,7 +128,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("apscheduler").setLevel(logging.WARNING)
 logging.getLogger("telegram.ext").setLevel(logging.INFO)
 logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
-logging.getLogger("werkzeug").setLevel(logging.WARNING) # Уменьшаем логи Flask/Werkzeug
+logging.getLogger("werkzeug").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
@@ -153,8 +153,18 @@ async def setup_telegraph_page(application: Application):
             subscription_price=f"{config.SUBSCRIPTION_PRICE_RUB:.0f}",
             subscription_currency=config.SUBSCRIPTION_CURRENCY
         )
-        plain_text_content = tos_content_formatted.replace("**", "")
+        plain_text_content = tos_content_formatted.replace("**", "") # Убираем жирный шрифт
+
+        # Разбиваем на параграфы и УДАЛЯЕМ ПУСТЫЕ строки после strip
         paragraphs = [p.strip() for p in plain_text_content.split('\n\n') if p.strip()]
+
+        # Проверяем, что список параграфов не пуст
+        if not paragraphs:
+            logger.error("Failed to parse paragraphs from TOS_TEXT. Cannot create Telegra.ph page.")
+            application.bot_data['tos_url'] = None
+            return
+
+        # Создаем ноды: children должен быть списком строк
         tos_nodes = [{"tag": "p", "children": [para]} for para in paragraphs]
         # ------------------------------------------
 
@@ -170,9 +180,10 @@ async def setup_telegraph_page(application: Application):
                  # Добавляем await
                 pages = await telegraph.get_page_list(limit=50)
                 for p in pages['pages']:
-                    if p['title'] == tos_title:
-                        logger.info(f"Found existing Telegra.ph page: {p['path']}")
-                        path_to_find = p['path']
+                    # Добавим проверку на None в title, на всякий случай
+                    if p.get('title') == tos_title:
+                        logger.info(f"Found existing Telegra.ph page: {p.get('path')}")
+                        path_to_find = p.get('path')
                         break
             else:
                  logger.info("Telegra.ph account has no pages yet.")
@@ -197,7 +208,7 @@ async def setup_telegraph_page(application: Application):
               # Добавляем await
              page = await telegraph.create_page(
                  title=tos_title,
-                 content=tos_nodes,
+                 content=tos_nodes, # Передаем список нод
                  author_name=author_name,
              )
              logger.info(f"Created Telegra.ph page: {page['url']}")
@@ -206,6 +217,7 @@ async def setup_telegraph_page(application: Application):
 
     except Exception as e:
         logger.error(f"Failed to setup Telegra.ph page: {e}", exc_info=True)
+        # Важно: устанавливаем None, чтобы хендлеры знали об ошибке
         application.bot_data['tos_url'] = None
 
 
