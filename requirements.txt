@@ -8,3 +8,5 @@ python-dotenv==1.0.1
 yookassa==3.5.0
 Flask==3.0.3
 gunicorn==22.0.0
+telegraph-api==2.1.0
+markdown==3.6
