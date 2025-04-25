@@ -62,47 +62,58 @@ FIELD_MAP = {
 }
 
 TOS_TEXT = """
-**📜 Пользовательское Соглашение**
+**📜 Пользовательское Соглашение Сервиса @NunuAiBot**
 
-Дата последнего обновления: [Вставь актуальную дату, например, 25.07.2024]
+Привет! Добро пожаловать в @NunuAiBot! Мы очень рады, что вы с нами. Это Соглашение — документ, который объясняет правила использования нашего Сервиса. Прочитайте его, пожалуйста.
 
-**1. Общие положения**
-1.1. Настоящее Пользовательское Соглашение (далее - "Соглашение") регулирует отношения между владельцем Telegram-бота [Название твоего бота или @username] (далее – "Сервис") и пользователем Сервиса (далее – "Пользователь").
-1.2. Используя Сервис, Пользователь подтверждает, что ознакомился, понял и полностью принимает условия настоящего Соглашения. Если Пользователь не согласен с условиями Соглашения, он должен немедленно прекратить использование Сервиса.
-1.3. Сервис предоставляет Пользователю возможность создавать и взаимодействовать с виртуальными AI-собеседниками (далее – "Личности") на базе языковых моделей.
+Дата последнего обновления: 01.03.2025
 
-**2. Подписка и Оплата**
-2.1. Сервис предлагает бесплатный и платный (Premium) уровни доступа. Условия и лимиты каждого уровня описаны в команде `/profile` и `/subscribe`.
-2.2. Платная подписка предоставляет расширенные возможности и увеличенные лимиты на определенный срок ({subscription_duration} дней).
+**1. О чем это Соглашение?**
+1.1. Это Пользовательское Соглашение (или просто "Соглашение") — договор между вами (далее – "Пользователь" или "Вы") и нами (владельцем Telegram-бота @NunuAiBot, далее – "Сервис" или "Мы"). Оно описывает условия использования Сервиса.
+1.2. Начиная использовать наш Сервис (просто отправляя боту любое сообщение или команду), Вы подтверждаете, что прочитали, поняли и согласны со всеми условиями этого Соглашения. Если Вы не согласны хотя бы с одним пунктом, пожалуйста, прекратите использование Сервиса.
+1.3. Наш Сервис предоставляет Вам интересную возможность создавать и общаться с виртуальными собеседниками на базе искусственного интеллекта (далее – "Личности" или "AI-собеседники").
+
+**2. Про подписку и оплату**
+2.1. Мы предлагаем два уровня доступа: бесплатный и Premium (платный). Возможности и лимиты для каждого уровня подробно описаны внутри бота, например, в командах `/profile` и `/subscribe`.
+2.2. Платная подписка дает Вам расширенные возможности и увеличенные лимиты на период в {subscription_duration} дней.
 2.3. Стоимость подписки составляет {subscription_price} {subscription_currency} за {subscription_duration} дней.
-2.4. Оплата осуществляется через платежную систему Yookassa. Сервис не хранит платежные данные Пользователя.
-2.5. **Политика возвратов:** Оплачивая подписку, Пользователь подтверждает свое согласие с тем, что **оплаченные средства за предоставленный доступ к расширенным возможностям Сервиса возврату не подлежат**. Активация подписки происходит сразу после успешной оплаты.
-2.6. В исключительном случае длительной технической недоступности Сервиса (более 7 календарных дней подряд) по вине владельца Сервиса, Пользователь с активной подпиской может обратиться в поддержку (если контакт указан) для рассмотрения возможности продления срока действия подписки на период недоступности. Решение о продлении принимается владельцем Сервиса в индивидуальном порядке.
+2.4. Оплата проходит через безопасную платежную систему Yookassa. Важно: мы не получаем и не храним Ваши платежные данные (номер карты и т.п.). Все безопасно.
+2.5. **Политика возвратов:** Покупая подписку, Вы получаете доступ к расширенным возможностям Сервиса сразу же после оплаты. Поскольку Вы получаете услугу немедленно, оплаченные средства за этот период доступа, к сожалению, **не подлежат возврату**.
+2.6. В редких случаях, если Сервис окажется недоступен по нашей вине в течение длительного времени (более 7 дней подряд), и у Вас будет активная подписка, Вы можете написать нам в поддержку (контакт указан в биографии бота и в нашем Telegram-канале). Мы рассмотрим возможность продлить Вашу подписку на срок недоступности Сервиса. Решение принимается индивидуально.
 
-**3. Права и обязанности Сторон**
-3.1. Пользователь обязуется:
-    - Не использовать Сервис в противозаконных целях.
-    - Не пытаться нарушить работу Сервиса.
-    - Не использовать Сервис для распространения спама, вредоносного ПО или запрещенной информации.
-    - Предоставлять достоверную информацию при необходимости (например, при оплате).
-3.2. Владелец Сервиса имеет право:
-    - Изменять условия настоящего Соглашения в одностороннем порядке, уведомляя Пользователей путем публикации новой версии Соглашения или иным доступным способом.
-    - Приостанавливать или прекращать доступ Пользователя к Сервису в случае нарушения настоящего Соглашения.
-    - Модифицировать Сервис, включая изменение функционала, лимитов и стоимости подписки.
+**3. Ваши и наши права и обязанности**
+3.1. Что ожидается от Вас (Ваши обязанности):
+*   Использовать Сервис только в законных целях и не нарушать никакие законы при его использовании.
+*   Не пытаться вмешаться в работу Сервиса или получить несанкционированный доступ.
+*   Не использовать Сервис для рассылки спама, вредоносных программ или любой запрещенной информации.
+*   Если требуется (например, для оплаты), предоставлять точную и правдивую информацию.
+*   Поскольку у Сервиса нет возрастных ограничений, Вы подтверждаете свою способность принять условия настоящего Соглашения.
+3.2. Что можем делать мы (Наши права):
+*   Мы можем менять условия этого Соглашения. Если это произойдет, мы уведомим Вас, опубликовав новую версию Соглашения в нашем Telegram-канале или иным доступным способом в рамках Сервиса. Ваше дальнейшее использование Сервиса будет означать согласие с изменениями.
+*   Мы можем временно приостановить или полностью прекратить Ваш доступ к Сервису, если Вы нарушите условия этого Соглашения.
+*   Мы можем изменять сам Сервис: добавлять или убирать функции, менять лимиты или стоимость подписки.
 
-**4. Ограничение ответственности**
-4.1. Сервис предоставляется "как есть". Владелец Сервиса не несет ответственности за возможные ошибки, сбои в работе Сервиса или языковых моделей.
-4.2. Ответы, генерируемые Личностями, являются результатом работы AI и могут быть неточными, неполными или не соответствовать ожиданиям Пользователя. Владелец Сервиса не несет ответственности за содержание ответов AI.
-4.3. Владелец Сервиса не несет ответственности за любые прямые или косвенные убытки Пользователя, возникшие в результате использования или невозможности использования Сервиса.
+**4. Важное предупреждение об ограничении ответственности**
+4.1. Сервис предоставляется "как есть". Это значит, что мы не можем гарантировать его идеальную работу без сбоев или ошибок. Технологии иногда подводят, и мы не несем ответственности за возможные проблемы, возникшие не по нашей прямой вине.
+4.2. Помните, Личности — это искусственный интеллект. Их ответы генерируются автоматически и могут быть неточными, неполными, странными или не соответствующими Вашим ожиданиям или реальности. Мы не несем никакой ответственности за содержание ответов, сгенерированных AI-собеседниками. Не воспринимайте их как истину в последней инстанции или профессиональный совет.
+4.3. Мы не несем ответственности за любые прямые или косвенные убытки или ущерб, который Вы могли понести в результате использования (или невозможности использования) Сервиса.
 
-**5. Конфиденциальность**
-5.1. Сервис собирает и обрабатывает минимально необходимые данные для своей работы (Telegram ID, username, данные о подписке, созданные личности, история сообщений для контекста AI).
-5.2. Владелец Сервиса принимает разумные меры для защиты данных Пользователя, однако не может гарантировать абсолютную безопасность в сети Интернет.
-5.3. Детальная информация о сборе и обработке данных может быть изложена в отдельной Политике Конфиденциальности (если применимо).
+**5. Про Ваши данные (Конфиденциальность)**
+5.1. Для работы Сервиса нам приходится собирать и обрабатывать минимальные данные: Ваш Telegram ID (для идентификации аккаунта), имя пользователя Telegram (username, если есть), информацию о Вашей подписке, информацию о созданных Вами Личностях, а также историю Ваших сообщений с Личностями (это нужно AI для поддержания контекста разговора).
+5.2. Мы предпринимаем разумные шаги для защиты Ваших данных, но, пожалуйста, помните, что передача информации через Интернет никогда не может быть абсолютно безопасной.
 
-**6. Заключительные положения**
-6.1. Настоящее Соглашение вступает в силу с момента начала использования Сервиса Пользователем и действует до момента прекращения использования Сервиса Пользователем или прекращения работы Сервиса.
-6.2. Все споры и разногласия решаются путем переговоров.
+**6. Действие Соглашения**
+6.1. Настоящее Соглашение начинает действовать с момента, как Вы впервые используете Сервис, и действует до момента, пока Вы не перестанете им пользоваться или пока Сервис не прекратит свою работу.
+
+**7. Интеллектуальная Собственность**
+7.1. Вы сохраняете все права на контент (текст), который Вы создаете и вводите в Сервис в процессе взаимодействия с AI-собеседниками.
+7.2. Вы предоставляете нам неисключительную, безвозмездную, действующую по всему миру лицензию на использование Вашего контента исключительно в целях предоставления, поддержания и улучшения работы Сервиса (например, для обработки Ваших запросов, сохранения контекста диалога, анонимного анализа для улучшения моделей, если применимо).
+7.3. Все права на сам Сервис (код бота, дизайн, название, графические элементы и т.д.) принадлежат владельцу Сервиса.
+7.4. Ответы, сгенерированные AI-собеседниками, являются результатом работы алгоритмов искусственного интеллекта. Вы можете использовать полученные ответы в личных некоммерческих целях, но признаете, что они созданы машиной и не являются Вашей или нашей интеллектуальной собственностью в традиционном понимании.
+
+**8. Заключительные положения**
+8.1. Все споры и разногласия решаются путем переговоров. Если это не поможет, споры будут рассматриваться в соответствии с законодательством Российской Федерации.
+8.2. По всем вопросам, касающимся настоящего Соглашения или работы Сервиса, Вы можете обращаться к нам через контакты, указанные в биографии бота и в нашем Telegram-канале.
 """.format(subscription_duration=SUBSCRIPTION_DURATION_DAYS, subscription_price=f"{SUBSCRIPTION_PRICE_RUB:.0f}", subscription_currency=SUBSCRIPTION_CURRENCY)
 
 
@@ -533,7 +544,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                     "**начало работы:**\n"
                     "1. `/createpersona <имя>` - создай ai-личность.\n"
                     "2. `/mypersonas` - посмотри своих личностей и управляй ими.\n"
-                    # "3. `/addbot <id>` - добавь личность в чат.\n\n" # Убрали, т.к. кнопка в mypersonas
                     "`/profile` - детали статуса | `/subscribe` - узнать о подписке\n"
                     "`/help` - все команды"
                 )
@@ -560,10 +570,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
          "**👤 управление личностями:**\n"
          "/createpersona <имя> [описание] - создать новую\n"
          "/mypersonas - список твоих личностей и кнопки управления (редакт., удалить, добавить в чат)\n"
-         # Убрали дублирующие команды, т.к. есть кнопки
-         # "/editpersona <id> - изменить личность (имя, промпты, настройки)\n"
-         # "/deletepersona <id> - удалить личность (!)\n"
-         # "/addbot <id> - активировать личность в чате\n\n"
          "\n**💬 управление в чате (где есть личность):**\n"
          "/mood [настроение] - сменить настроение активной личности\n"
          "/reset - очистить память (контекст) личности в этом чате\n"
@@ -784,7 +790,7 @@ async def create_persona(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 f"✅ личность '{new_persona.name}' создана!\n"
                 f"id: `{new_persona.id}`\n"
                 f"описание: {new_persona.description}\n\n"
-                f"добавь в чат или управляй через /mypersonas", # Обновили текст
+                f"добавь в чат или управляй через /mypersonas",
                 parse_mode=ParseMode.MARKDOWN, reply_markup=ReplyKeyboardRemove()
             )
             logger.info(f"User {user_id} created persona: '{new_persona.name}' (ID: {new_persona.id})")
@@ -829,9 +835,7 @@ async def my_personas(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             text = f"твои личности ({persona_count}/{persona_limit}):\n"
             keyboard = []
             for p in personas:
-                 # Добавляем имя личности и ID в одну строку
                  keyboard.append([InlineKeyboardButton(f"👤 {p.name} (ID: {p.id})", callback_data=f"dummy_{p.id}")])
-                 # Добавляем кнопки действий для этой личности в следующую строку
                  keyboard.append([
                      InlineKeyboardButton("⚙️ Редакт.", callback_data=f"edit_persona_{p.id}"),
                      InlineKeyboardButton("🗑️ Удалить", callback_data=f"delete_persona_{p.id}"),
@@ -850,7 +854,6 @@ async def my_personas(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 async def add_bot_to_chat(update: Update, context: ContextTypes.DEFAULT_TYPE, persona_id: Optional[int] = None) -> None:
-    """Обработчик команды /addbot или колбэка add_bot_<id>."""
     is_callback = update.callback_query is not None
     message = update.message if not is_callback else update.callback_query.message
     if not message: return
@@ -879,9 +882,9 @@ async def add_bot_to_chat(update: Update, context: ContextTypes.DEFAULT_TYPE, pe
          except ValueError:
              await message.reply_text("id личности должен быть числом.", reply_markup=ReplyKeyboardRemove())
              return
-    else: # Is callback with persona_id
+    else:
         logger.info(f"CALLBACK add_bot < User {user_id} ({username}) in Chat '{chat_title}' ({chat_id}) for persona_id: {persona_id}")
-        await update.callback_query.answer("Добавляем личность...") # Ответ на колбэк
+        await update.callback_query.answer("Добавляем личность...")
 
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
 
@@ -906,7 +909,7 @@ async def add_bot_to_chat(update: Update, context: ContextTypes.DEFAULT_TYPE, pe
                 old_bot_instance = existing_active_link.bot_instance_ref
                 if old_bot_instance and old_bot_instance.persona_config_id == persona.id:
                     response_text = f"личность '{persona.name}' уже активна в этом чате."
-                    if is_callback: await update.callback_query.answer(response_text, show_alert=True) # Покажем в уведомлении
+                    if is_callback: await update.callback_query.answer(response_text, show_alert=True)
                     else: await message.reply_text(response_text, reply_markup=ReplyKeyboardRemove())
                     return
                 else:
@@ -930,12 +933,10 @@ async def add_bot_to_chat(update: Update, context: ContextTypes.DEFAULT_TYPE, pe
                  db.commit()
                  logger.debug(f"Cleared {deleted_ctx} context messages for chat_bot_instance {chat_link.id} upon linking.")
                  response_text = f"✅ личность '{persona.name}' (id: `{persona.id}`) активирована в этом чате! Память очищена."
-                 # Отправляем новое сообщение, т.к. колбэк от mypersonas
                  await context.bot.send_message(chat_id=chat_id, text=response_text, parse_mode=ParseMode.MARKDOWN, reply_markup=ReplyKeyboardRemove())
-                 # Если исходное сообщение было от колбэка, можно его удалить или изменить
                  if is_callback:
                       try: await update.callback_query.delete_message()
-                      except: pass # Игнорируем ошибки удаления старого сообщения
+                      except: pass
                  logger.info(f"Linked BotInstance {bot_instance.id} (Persona {persona.id}) to chat {chat_id} ('{chat_title}'). ChatBotInstance ID: {chat_link.id}")
             else:
                  db.rollback()
@@ -958,15 +959,12 @@ async def add_bot_to_chat(update: Update, context: ContextTypes.DEFAULT_TYPE, pe
              logger.error(f"Error adding bot instance {persona_id} to chat {chat_id}: {e}", exc_info=True)
              await context.bot.send_message(chat_id=chat_id, text="ошибка при активации личности.")
 
-# --- Обработчики колбэков ---
-
 async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     if not query or not query.data: return
 
     try:
-        # Не отвечаем сразу на колбэки, которые меняют сообщение
-        pass # await query.answer()
+        pass
     except Exception as e:
         logger.warning(f"Failed to answer callback query {query.id}: {e}")
 
@@ -977,22 +975,21 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     logger.info(f"CALLBACK < User {user_id} ({username}) in Chat {chat_id} data: {data}")
 
     if data.startswith("set_mood_"):
-        await query.answer() # Отвечаем здесь
+        await query.answer()
         await mood(update, context)
     elif data == "subscribe_info":
-        await query.answer() # Отвечаем здесь
+        await query.answer()
         await subscribe(update, context, from_callback=True)
     elif data == "subscribe_pay":
-        await query.answer("Создаю ссылку на оплату...") # Отвечаем здесь
+        await query.answer("Создаю ссылку на оплату...")
         await generate_payment_link(update, context)
     elif data == "view_tos":
-        await query.answer() # Отвечаем здесь
+        await query.answer()
         await view_tos(update, context)
     elif data == "confirm_pay":
-        await query.answer() # Отвечаем здесь
+        await query.answer()
         await confirm_pay(update, context)
     elif data.startswith("add_bot_"):
-         # persona_id извлекается из data
          try:
              persona_id_to_add = int(data.split('_')[-1])
              await add_bot_to_chat(update, context, persona_id=persona_id_to_add)
@@ -1000,13 +997,12 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
              logger.error(f"Could not parse persona_id from add_bot callback data: {data}")
              await query.answer("Ошибка: неверный ID личности.", show_alert=True)
     elif data.startswith("dummy_"):
-        await query.answer() # Просто отвечаем на нажатие кнопки с именем
+        await query.answer()
     else:
-        # Проверяем, не относится ли колбэк к активному диалогу
-        known_prefixes = ("edit_field_", "edit_mood", "deletemood", "cancel_edit", "edit_persona_back", "delete_persona", "edit_persona_", "delete_persona_") # Добавили префиксы для кнопок
+        known_prefixes = ("edit_field_", "edit_mood", "deletemood", "cancel_edit", "edit_persona_back", "delete_persona", "edit_persona_", "delete_persona_")
         if not any(data.startswith(p) for p in known_prefixes):
             logger.warning(f"Unhandled callback query data: {data} from user {user_id}")
-            await query.answer() # Отвечаем, чтобы кнопка перестала грузиться
+            await query.answer()
 
 async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message: return
@@ -1082,7 +1078,7 @@ async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE, from_cal
             if message_to_update.text != text or message_to_update.reply_markup != reply_markup:
                  await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
             else:
-                 await update.callback_query.answer() # Отвечаем, если текст не изменился
+                 await update.callback_query.answer()
         else:
             await message_to_update.reply_text(text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
     except Exception as e:
@@ -1094,7 +1090,6 @@ async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE, from_cal
                  logger.error(f"Failed to send fallback subscribe message for user {user_id}: {send_e}")
 
 async def view_tos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Показывает текст Пользовательского Соглашения."""
     query = update.callback_query
     if not query or not query.message: return
     user_id = query.from_user.id
@@ -1112,7 +1107,6 @@ async def view_tos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
     except Exception as e:
         logger.error(f"Failed to show ToS to user {user_id}: {e}")
-        # Попытка отправить новое сообщение как fallback
         try:
             await context.bot.send_message(
                 chat_id=query.message.chat.id,
@@ -1124,9 +1118,7 @@ async def view_tos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         except Exception as send_e:
             logger.error(f"Failed to send fallback ToS message to user {user_id}: {send_e}")
 
-
 async def confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Показывает подтверждение и финальную кнопку оплаты."""
     query = update.callback_query
     if not query or not query.message: return
     user_id = query.from_user.id
@@ -1140,11 +1132,12 @@ async def confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         text = (
              "✅ Отлично!\n\n"
              "Нажимая кнопку 'Оплатить' ниже, вы подтверждаете, что ознакомились и полностью согласны с "
-             "[Пользовательским Соглашением](https://t.me/TODO_LINK_TO_TOS_OR_HANDLER)." # Замени ссылку или используй #view_tos?
+             "Пользовательским Соглашением."
              "\n\n👇"
-        ) # TODO: Добавить ссылку на #view_tos если возможно или на сам текст
+        )
         keyboard = [
             [InlineKeyboardButton(f"💳 Оплатить {SUBSCRIPTION_PRICE_RUB:.0f} {SUBSCRIPTION_CURRENCY}", callback_data="subscribe_pay")],
+            [InlineKeyboardButton("📜 Условия использования", callback_data="view_tos")],
             [InlineKeyboardButton("⬅️ Назад", callback_data="subscribe_info")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -1182,10 +1175,7 @@ async def generate_payment_link(update: Update, context: ContextTypes.DEFAULT_TY
     idempotence_key = str(uuid.uuid4())
     payment_description = f"Premium подписка {context.bot.username} на {SUBSCRIPTION_DURATION_DAYS} дней (User ID: {user_id})"
     payment_metadata = {'telegram_user_id': str(user_id)}
-    # !! Важно: Убедись, что бот публичный, или используй другой return_url !!
-    # return_url = f"https://t.me/{context.bot.username}?start=payment_success" # Может не сработать для приватных ботов
-    # Более надежный вариант - страница "спасибо" на твоем веб-ресурсе, если он есть
-    return_url = f"https://t.me/{context.bot.username}" # Просто возврат в бот
+    return_url = f"https://t.me/{context.bot.username}"
 
     try:
         receipt_items = [
@@ -1198,9 +1188,8 @@ async def generate_payment_link(update: Update, context: ContextTypes.DEFAULT_TY
                 "payment_subject": "service"
             })
         ]
-        # TODO: Узнай у Yookassa, нужен ли email обязательно или можно телефон/другой ID
         receipt_data = Receipt({
-            "customer": {"email": f"user_{user_id}@telegram.bot"}, # Placeholder email
+            "customer": {"email": f"user_{user_id}@telegram.bot"},
             "items": receipt_items,
         })
     except Exception as receipt_e:
@@ -1219,7 +1208,6 @@ async def generate_payment_link(update: Update, context: ContextTypes.DEFAULT_TY
         request = builder.build()
         logger.debug(f"Payment request built: {request.json()}")
 
-        # Запуск синхронного кода Yookassa в отдельном потоке
         payment_response = await asyncio.to_thread(Payment.create, request, idempotence_key)
 
         if not payment_response or payment_response.status == 'canceled' or not payment_response.confirmation or not payment_response.confirmation.confirmation_url:
@@ -1256,10 +1244,8 @@ async def yookassa_webhook_placeholder(update: Update, context: ContextTypes.DEF
     logger.warning("Placeholder Yookassa webhook endpoint called via Telegram bot handler. This should be handled by the Flask app.")
     pass
 
-# --- Edit Persona Conversation ---
 
 async def _start_edit_convo(update: Update, context: ContextTypes.DEFAULT_TYPE, persona_id: int) -> int:
-    """Helper to start edit conversation from command or button."""
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id if update.effective_chat else update.effective_message.chat_id
 
@@ -1281,12 +1267,11 @@ async def _start_edit_convo(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             msg_text = f"редактируем **{persona_config.name}** (id: `{persona_id}`)\nвыбери, что изменить:"
 
             if update.callback_query:
-                 # Try editing the message from the button press
                  try: await update.callback_query.edit_message_text(msg_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
-                 except Exception as edit_err: # If fails (e.g., message too old), send new message
+                 except Exception as edit_err:
                       logger.warning(f"Could not edit message for edit start (persona {persona_id}): {edit_err}. Sending new message.")
                       await context.bot.send_message(chat_id, msg_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
-            else: # From command
+            else:
                  await update.effective_message.reply_text(msg_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
 
         logger.info(f"User {user_id} started editing persona {persona_id}. Sending choice keyboard.")
@@ -1301,7 +1286,6 @@ async def _start_edit_convo(update: Update, context: ContextTypes.DEFAULT_TYPE, 
          return ConversationHandler.END
 
 async def edit_persona_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Entry point for /editpersona command."""
     if not update.message: return ConversationHandler.END
     user_id = update.effective_user.id
     args = context.args
@@ -1313,7 +1297,6 @@ async def edit_persona_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
     return await _start_edit_convo(update, context, persona_id)
 
 async def edit_persona_button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Entry point for edit_persona_<id> callback button."""
     query = update.callback_query
     if not query or not query.data: return ConversationHandler.END
     await query.answer("Начинаем редактирование...")
@@ -1534,6 +1517,7 @@ async def edit_max_messages_update(update: Update, context: ContextTypes.DEFAULT
          await update.message.reply_text("❌ непредвиденная ошибка при обновлении.")
          context.user_data.clear()
          return ConversationHandler.END
+
 
 async def _get_edit_persona_keyboard(persona_config: PersonaConfig) -> List[List[InlineKeyboardButton]]:
     if not persona_config:
@@ -1803,6 +1787,7 @@ async def edit_mood_name_received(update: Update, context: ContextTypes.DEFAULT_
         await update.message.reply_text("непредвиденная ошибка.", reply_markup=ReplyKeyboardRemove())
         return ConversationHandler.END
 
+
 async def edit_mood_prompt_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not update.message or not update.message.text: return EDIT_MOOD_PROMPT
     mood_prompt = update.message.text.strip()
@@ -1922,6 +1907,7 @@ async def delete_mood_confirmed(update: Update, context: ContextTypes.DEFAULT_TY
         await query.edit_message_text("❌ ошибка при удалении настроения.", reply_markup=None)
         return await _try_return_to_mood_menu(update, context, user_id, persona_id)
 
+
 async def edit_persona_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     message = update.effective_message
     user_id = update.effective_user.id
@@ -1945,10 +1931,8 @@ async def edit_persona_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE
     context.user_data.clear()
     return ConversationHandler.END
 
-# --- Delete Persona Conversation ---
 
 async def _start_delete_convo(update: Update, context: ContextTypes.DEFAULT_TYPE, persona_id: int) -> int:
-    """Helper to start delete conversation from command or button."""
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id if update.effective_chat else update.effective_message.chat_id
 
@@ -1981,7 +1965,7 @@ async def _start_delete_convo(update: Update, context: ContextTypes.DEFAULT_TYPE
                  except Exception as edit_err:
                       logger.warning(f"Could not edit message for delete start (persona {persona_id}): {edit_err}. Sending new message.")
                       await context.bot.send_message(chat_id, msg_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
-            else: # From command
+            else:
                  await update.effective_message.reply_text(msg_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
 
             logger.info(f"User {user_id} initiated delete for persona {persona_id}. Asking confirmation.")
@@ -2007,7 +1991,6 @@ async def delete_persona_start(update: Update, context: ContextTypes.DEFAULT_TYP
     return await _start_delete_convo(update, context, persona_id)
 
 async def delete_persona_button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Entry point for delete_persona_<id> callback button."""
     query = update.callback_query
     if not query or not query.data: return ConversationHandler.END
     await query.answer("Начинаем удаление...")
@@ -2032,7 +2015,7 @@ async def delete_persona_confirmed(update: Update, context: ContextTypes.DEFAULT
     logger.info(f"--- delete_persona_confirmed: User={user_id}, PersonaID={persona_id}, Data={data} ---")
 
     expected_pattern = f"delete_persona_confirm_{persona_id}"
-    if not persona_id or data != expected_pattern: # Строгая проверка callback_data
+    if not persona_id or data != expected_pattern:
          logger.warning(f"User {user_id}: Mismatch or missing ID in delete_persona_confirmed. ID='{persona_id}', Data='{data}'")
          await query.edit_message_text("ошибка: неверные данные для удаления или сессия потеряна.", reply_markup=None)
          context.user_data.clear()
@@ -2080,6 +2063,7 @@ async def delete_persona_cancel(update: Update, context: ContextTypes.DEFAULT_TY
     await query.edit_message_text("удаление отменено.", reply_markup=None)
     context.user_data.clear()
     return ConversationHandler.END
+
 
 async def mute_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message: return
