@@ -155,32 +155,20 @@ async def setup_telegraph_page(application: Application):
         )
         plain_text_content = tos_content_formatted.replace("**", "") # Убираем жирный шрифт
 
-        # Разбиваем на параграфы и УДАЛЯЕМ ПУСТЫЕ строки после strip
-        paragraphs = [p.strip() for p in plain_text_content.split('\n\n') if p.strip()]
-
-        # Проверяем, что список параграфов не пуст
-        if not paragraphs:
-            logger.error("Failed to parse paragraphs from TOS_TEXT. Cannot create Telegra.ph page.")
-            application.bot_data['tos_url'] = None
-            return
-
-        # Создаем ноды: children должен быть списком строк
-        tos_nodes = [{"tag": "p", "children": [para]} for para in paragraphs]
-        # ------------------------------------------
+        # Передаем просто текст в API, библиотека должна сама обработать
+        tos_content_for_api = plain_text_content
+        # ------------------------------------
 
         page = None
         path_to_find = None
         try:
             logger.debug("Trying to find existing Telegra.ph page...")
-            # Добавляем await
             acc_info = await telegraph.get_account_info(fields=['short_name', 'author_name', 'page_count'])
             logger.info(f"Telegra.ph account info: {acc_info}")
 
             if acc_info['page_count'] > 0:
-                 # Добавляем await
                 pages = await telegraph.get_page_list(limit=50)
                 for p in pages['pages']:
-                    # Добавим проверку на None в title, на всякий случай
                     if p.get('title') == tos_title:
                         logger.info(f"Found existing Telegra.ph page: {p.get('path')}")
                         path_to_find = p.get('path')
@@ -190,11 +178,10 @@ async def setup_telegraph_page(application: Application):
 
             if path_to_find:
                 logger.debug(f"Editing existing page: {path_to_find}")
-                 # Добавляем await
                 page = await telegraph.edit_page(
                     path=path_to_find,
                     title=tos_title,
-                    content=tos_nodes,
+                    content=tos_content_for_api, # Передаем просто текст
                     author_name=author_name
                 )
                 logger.info(f"Updated Telegra.ph page: {page['url']}")
@@ -205,10 +192,9 @@ async def setup_telegraph_page(application: Application):
 
         if not page:
              logger.info(f"Creating new Telegra.ph page with title: {tos_title}")
-              # Добавляем await
              page = await telegraph.create_page(
                  title=tos_title,
-                 content=tos_nodes, # Передаем список нод
+                 content=tos_content_for_api, # Передаем просто текст
                  author_name=author_name,
              )
              logger.info(f"Created Telegra.ph page: {page['url']}")
@@ -217,7 +203,6 @@ async def setup_telegraph_page(application: Application):
 
     except Exception as e:
         logger.error(f"Failed to setup Telegra.ph page: {e}", exc_info=True)
-        # Важно: устанавливаем None, чтобы хендлеры знали об ошибке
         application.bot_data['tos_url'] = None
 
 
@@ -231,6 +216,7 @@ async def post_init(application: Application):
 
     logger.info("Starting background tasks...")
     application.job_queue.run_repeating(tasks.reset_daily_limits_task, interval=timedelta(hours=1), first=timedelta(minutes=1), name="daily_limit_reset_check")
+    # Передаем application через data
     application.job_queue.run_repeating(tasks.check_subscription_expiry_task, interval=timedelta(hours=1), first=timedelta(minutes=2), name="subscription_expiry_check", data=application)
     logger.info("Background tasks scheduled.")
 
