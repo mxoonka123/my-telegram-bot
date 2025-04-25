@@ -1,3 +1,5 @@
+# main.py
+
 import logging
 import asyncio
 import os
@@ -14,8 +16,8 @@ from telegram.ext import (
     Application, CommandHandler, MessageHandler, ContextTypes, filters,
     CallbackQueryHandler, ConversationHandler
 )
-from telegraph_api import Telegraph, exceptions as telegraph_exceptions
-import markdown
+from telegraph_api import Telegraph # Убрали импорт exceptions
+import markdown # Убрали импорт specific exceptions
 
 import config
 import db
@@ -29,8 +31,12 @@ flask_logger = logging.getLogger('flask_webhook')
 
 try:
     if config.YOOKASSA_SHOP_ID and config.YOOKASSA_SECRET_KEY:
-        YookassaConfig.configure(None, config.YOOKASSA_SECRET_KEY)
-        flask_logger.info("Yookassa SDK configured for webhook handler using Secret Key.")
+        # Проверяем, что YOOKASSA_SECRET_KEY не пустой
+        if config.YOOKASSA_SECRET_KEY:
+            YookassaConfig.configure(None, config.YOOKASSA_SECRET_KEY)
+            flask_logger.info("Yookassa SDK configured for webhook handler using Secret Key.")
+        else:
+            flask_logger.warning("YOOKASSA_SECRET_KEY is empty in config for webhook handler.")
     else:
         flask_logger.warning("YOOKASSA_SHOP_ID or YOOKASSA_SECRET_KEY not found in config for webhook handler.")
 except Exception as e:
@@ -44,6 +50,21 @@ def handle_yookassa_webhook():
         request_body = request.get_data(as_text=True)
         flask_logger.info(f"Webhook body (first 500 chars): {request_body[:500]}...")
 
+        # Добавляем проверку наличия ключа перед парсингом
+        if not config.YOOKASSA_SECRET_KEY:
+            flask_logger.error("YOOKASSA_SECRET_KEY not configured. Cannot process webhook.")
+            return Response("Yookassa Secret Key not configured", status=500)
+
+        # Перенастраиваем SDK здесь, на всякий случай, если он не был настроен при старте
+        try:
+             if not YookassaConfig.secret_key: # Проверяем, был ли уже установлен
+                 YookassaConfig.configure(None, config.YOOKASSA_SECRET_KEY)
+                 flask_logger.info("Yookassa SDK re-configured within webhook handler.")
+        except Exception as conf_e:
+             flask_logger.error(f"Failed to re-configure Yookassa SDK in webhook: {conf_e}")
+             return Response("Yookassa configuration error", status=500)
+
+
         notification = WebhookNotification(json.loads(request_body))
         payment = notification.object
 
@@ -55,7 +76,7 @@ def handle_yookassa_webhook():
             metadata = payment.metadata
             if not metadata or 'telegram_user_id' not in metadata:
                 flask_logger.error(f"Webhook error: 'telegram_user_id' not found in metadata for payment {payment.id}")
-                return Response(status=200)
+                return Response(status=200) # Возвращаем 200, чтобы Юкасса не повторяла запрос
 
             try:
                 telegram_user_id = int(metadata['telegram_user_id'])
@@ -67,72 +88,52 @@ def handle_yookassa_webhook():
 
             db_session = None
             try:
-                db_session = db.SessionLocal()
-                user = db_session.query(db.User).filter(db.User.telegram_id == telegram_user_id).first()
+                # Используем context manager для сессии
+                with db.get_db() as db_session:
+                    user = db_session.query(db.User).filter(db.User.telegram_id == telegram_user_id).first()
 
-                if user:
-                    if db.activate_subscription(db_session, user.id):
-                        flask_logger.info(f"Subscription successfully activated for user {telegram_user_id} (DB ID: {user.id}) via webhook for payment {payment.id}.")
+                    if user:
+                        if db.activate_subscription(db_session, user.id): # activate_subscription сама коммитит
+                            flask_logger.info(f"Subscription successfully activated for user {telegram_user_id} (DB ID: {user.id}) via webhook for payment {payment.id}.")
+                        else:
+                            # activate_subscription вернула False, значит была ошибка коммита
+                            flask_logger.error(f"Failed to activate subscription in DB for user {telegram_user_id} (DB ID: {user.id}) payment {payment.id}.")
                     else:
-                        flask_logger.error(f"Failed to activate subscription in DB for user {telegram_user_id} (DB ID: {user.id}) payment {payment.id}.")
-                else:
-                    flask_logger.error(f"User with Telegram ID {telegram_user_id} not found in DB for payment {payment.id}.")
+                        flask_logger.error(f"User with Telegram ID {telegram_user_id} not found in DB for payment {payment.id}.")
 
-            except SQLAlchemyError as db_e:
-                flask_logger.error(f"Database error during webhook processing for user {telegram_user_id} payment {payment.id}: {db_e}", exc_info=True)
-                if db_session and db_session.is_active:
-                    db_session.rollback()
+            # SQLAlchemyError будет перехвачен внешней конструкцией
             except Exception as e:
+                # Логируем неожиданную ошибку внутри with db.get_db()
                 flask_logger.error(f"Unexpected error during database operation in webhook for user {telegram_user_id} payment {payment.id}: {e}", exc_info=True)
-                if db_session and db_session.is_active:
-                    db_session.rollback()
-            finally:
-                if db_session:
-                    db_session.close()
+                # Роллбэк произойдет автоматически при выходе из with db.get_db() если было исключение
 
+        # Возвращаем 200 OK в любом случае (кроме критических ошибок конфигурации)
+        # чтобы Юкасса считала вебхук доставленным и не повторяла попытки.
         return Response(status=200)
 
     except json.JSONDecodeError:
         flask_logger.error("Webhook error: Invalid JSON received.")
         abort(400, description="Invalid JSON")
     except ValueError as ve:
+         # Эта ошибка может возникнуть при парсинге WebhookNotification
          flask_logger.error(f"Webhook error: Could not parse Yookassa notification. Error: {ve}", exc_info=True)
          abort(400, description="Invalid Yookassa notification format")
     except Exception as e:
+        # Ловим все остальные непредвиденные ошибки
         flask_logger.error(f"Unexpected error in webhook handler: {e}", exc_info=True)
+        # Возвращаем 500, т.к. это внутренняя ошибка сервера
         abort(500, description="Internal server error")
+
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
     flask_logger.info(f"Starting Flask server on 0.0.0.0:{port}")
     try:
-        from gunicorn.app.base import BaseApplication
-
-        class StandaloneApplication(BaseApplication):
-             def __init__(self, app, options=None):
-                 self.options = options or {}
-                 self.application = app
-                 super().__init__()
-
-             def load_config(self):
-                 config_gunicorn = {key: value for key, value in self.options.items()
-                           if key in self.cfg.settings and value is not None}
-                 for key, value in config_gunicorn.items():
-                     self.cfg.set(key.lower(), value)
-
-             def load(self):
-                 return self.application
-
-        options = {
-             'bind': f'0.0.0.0:{port}',
-             'workers': 4,
-             'worker_class': 'sync',
-             'timeout': 120,
-        }
-        StandaloneApplication(flask_app, options).run()
-
+        # Просто запускаем Flask без Gunicorn внутри потока
+        flask_app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False) # use_reloader=False важен в потоке
     except Exception as e:
-        flask_logger.critical(f"Flask server failed to start or crashed: {e}", exc_info=True)
+        # Логируем критическую ошибку, если Flask не запустился
+        flask_logger.critical(f"Flask server thread failed to start or crashed: {e}", exc_info=True)
 
 
 logging.basicConfig(
@@ -143,7 +144,8 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("apscheduler").setLevel(logging.WARNING)
 logging.getLogger("telegram.ext").setLevel(logging.INFO)
 logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
-logging.getLogger("gunicorn.error").setLevel(logging.INFO)
+# Логи Gunicorn нам больше не нужны здесь
+# logging.getLogger("gunicorn.error").setLevel(logging.INFO)
 
 logger = logging.getLogger(__name__)
 
@@ -152,73 +154,77 @@ async def setup_telegraph_page(application: Application):
     logger.info("Setting up Telegra.ph ToS page...")
     if not config.TELEGRAPH_ACCESS_TOKEN:
         logger.error("TELEGRAPH_ACCESS_TOKEN is not set. Cannot create/update ToS page.")
-        application.bot_data['tos_url'] = None
+        application.bot_data['tos_url'] = None # Устанавливаем None, если нет токена
         return
 
     telegraph = Telegraph(access_token=config.TELEGRAPH_ACCESS_TOKEN)
-    # Используем фиксированные short_name и author_name или берем их из config, если нужно
-    short_name = "nunu" # Как ты указывал при создании токена
-    author_name = "@NunuAiBot" # Как ты указывал при создании токена
+    short_name = "nunu"  # Используй то же, что при создании токена
+    author_name = "@NunuAiBot" # Используй то же, что при создании токена
     tos_title = f"Пользовательское Соглашение @NunuAiBot"
 
     try:
-        # Конвертируем Markdown в HTML, затем в Telegra.ph nodes
-        # Убираем части .format() из строки TOS_TEXT перед конвертацией
-        tos_content_raw = handlers.TOS_TEXT.replace(
-             "{subscription_duration}", str(config.SUBSCRIPTION_DURATION_DAYS)
-         ).replace(
-             "{subscription_price}", f"{config.SUBSCRIPTION_PRICE_RUB:.0f}"
-         ).replace(
-             "{subscription_currency}", config.SUBSCRIPTION_CURRENCY
-         )
-
-        tos_html = markdown.markdown(tos_content_raw)
-        tos_nodes = telegraph.html_to_nodes(tos_html)
+        # --- Создание контента для Telegra.ph ---
+        tos_content_raw = handlers.TOS_TEXT
+        tos_content_formatted = tos_content_raw.format(
+            subscription_duration=config.SUBSCRIPTION_DURATION_DAYS,
+            subscription_price=f"{config.SUBSCRIPTION_PRICE_RUB:.0f}",
+            subscription_currency=config.SUBSCRIPTION_CURRENCY
+        )
+        plain_text_content = tos_content_formatted.replace("**", "")
+        paragraphs = [p.strip() for p in plain_text_content.split('\n\n') if p.strip()]
+        tos_nodes = [{"tag": "p", "children": [para]} for para in paragraphs]
+        # ------------------------------------------
 
         page = None
         path_to_find = None
         try:
-            # Пытаемся найти существующую страницу по заголовку
-            pages = telegraph.get_page_list(limit=50) # Ограничим поиск
-            for p in pages['pages']:
-                if p['title'] == tos_title:
-                    logger.info(f"Found existing Telegra.ph page: {p['path']}")
-                    path_to_find = p['path']
-                    break
-            # Если нашли, редактируем
+            logger.debug("Trying to find existing Telegra.ph page...")
+            # Используем get_account_info для проверки токена и получения author_name/short_name
+            acc_info = telegraph.get_account_info(fields=['short_name', 'author_name', 'page_count'])
+            logger.info(f"Telegra.ph account info: {acc_info}")
+
+            # Ищем страницу
+            if acc_info['page_count'] > 0:
+                pages = telegraph.get_page_list(limit=50) # Можно увеличить limit, если страниц много
+                for p in pages['pages']:
+                    if p['title'] == tos_title:
+                        logger.info(f"Found existing Telegra.ph page: {p['path']}")
+                        path_to_find = p['path']
+                        break
+            else:
+                 logger.info("Telegra.ph account has no pages yet.")
+
+
             if path_to_find:
+                logger.debug(f"Editing existing page: {path_to_find}")
                 page = telegraph.edit_page(
                     path=path_to_find,
                     title=tos_title,
-                    content=tos_nodes,
-                    author_name=author_name
+                    content=tos_nodes, # Используем созданные ноды
+                    author_name=author_name # Можно не указывать, если совпадает с аккаунтом
                 )
                 logger.info(f"Updated Telegra.ph page: {page['url']}")
 
-        except telegraph_exceptions.TelegraphApiException as e:
-             logger.warning(f"Could not get page list or edit page, will try to create new. Error: {e}")
-        except Exception as e:
-             logger.error(f"Unexpected error finding/editing Telegra.ph page: {e}", exc_info=True)
+        # Ловим базовый Exception, так как конкретного нет
+        except Exception as e_find_edit:
+             logger.warning(f"Could not get page list or edit page, will try to create new. Error: {e_find_edit}")
 
         # Если не нашли или не смогли отредактировать, создаем новую
         if not page:
              logger.info(f"Creating new Telegra.ph page with title: {tos_title}")
              page = telegraph.create_page(
                  title=tos_title,
-                 content=tos_nodes,
+                 content=tos_nodes, # Используем созданные ноды
                  author_name=author_name,
-                 # short_name можно не указывать, если используется токен
              )
              logger.info(f"Created Telegra.ph page: {page['url']}")
 
         application.bot_data['tos_url'] = page['url'] # Сохраняем URL
 
-    except telegraph_exceptions.TelegraphApiException as e:
-        logger.error(f"Telegra.ph API error during page setup: {e}")
-        application.bot_data['tos_url'] = None
+    # Ловим базовый Exception
     except Exception as e:
         logger.error(f"Failed to setup Telegra.ph page: {e}", exc_info=True)
-        application.bot_data['tos_url'] = None
+        application.bot_data['tos_url'] = None # Устанавливаем None в случае любой ошибки
 
 
 async def post_init(application: Application):
@@ -341,12 +347,14 @@ def main() -> None:
     application.add_handler(MessageHandler(filters.VOICE & ~filters.COMMAND, handlers.handle_voice, block=False))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.handle_message, block=False))
 
+    # Основной обработчик колбэков ловит всё, что не перехвачено диалогами
     application.add_handler(CallbackQueryHandler(handlers.handle_callback_query))
 
     application.add_error_handler(handlers.error_handler)
     logger.info("Handlers registered.")
 
     logger.info("Starting bot polling...")
+    # Используем run_polling в основном потоке
     application.run_polling(
         allowed_updates=Update.ALL_TYPES,
         drop_pending_updates=True
