@@ -61,6 +61,7 @@ FIELD_MAP = {
     "max_response_messages": "макс. сообщений в ответе"
 }
 
+# Текст соглашения используется ТОЛЬКО функцией setup_telegraph_page в main.py
 TOS_TEXT = """
 **📜 Пользовательское Соглашение Сервиса @NunuAiBot**
 
@@ -126,6 +127,7 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
             logger.error(f"Failed to send error message to user: {e}")
 
 def get_persona_and_context_with_owner(chat_id: str, db: Session) -> Optional[Tuple[Persona, List[Dict[str, str]], User]]:
+    # ... (код функции без изменений) ...
     chat_instance = db.query(ChatBotInstance)\
         .options(
             joinedload(ChatBotInstance.bot_instance_ref)
@@ -146,7 +148,9 @@ def get_persona_and_context_with_owner(chat_id: str, db: Session) -> Optional[Tu
     context_list = get_context_for_chat_bot(db, chat_instance.id)
     return persona, context_list, owner_user
 
+
 async def send_to_langdock(system_prompt: str, messages: List[Dict[str, str]]) -> str:
+    # ... (код функции без изменений) ...
     if not LANGDOCK_API_KEY:
         logger.error("LANGDOCK_API_KEY is not set.")
         return "ошибка: ключ api не настроен."
@@ -197,6 +201,7 @@ async def send_to_langdock(system_prompt: str, messages: List[Dict[str, str]]) -
         return "произошла внутренняя ошибка при генерации ответа."
 
 async def process_and_send_response(update: Optional[Update], context: ContextTypes.DEFAULT_TYPE, chat_id: str, persona: Persona, full_bot_response_text: str, db: Session):
+    # ... (код функции без изменений) ...
     if not full_bot_response_text or not full_bot_response_text.strip():
         logger.warning(f"Received empty response from AI for chat {chat_id}, persona {persona.name}. Not sending anything.")
         return
@@ -259,6 +264,7 @@ async def process_and_send_response(update: Optional[Update], context: ContextTy
                 await asyncio.sleep(random.uniform(0.4, 0.9))
 
 async def send_limit_exceeded_message(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User):
+    # ... (код функции без изменений) ...
     text = (
         f"упс! 😕 лимит сообщений ({user.daily_message_count}/{user.message_limit}) на сегодня достигнут.\n\n"
         f"✨ **хочешь безлимита?** ✨\n"
@@ -279,6 +285,7 @@ async def send_limit_exceeded_message(update: Update, context: ContextTypes.DEFA
         logger.error(f"Failed to send limit exceeded message to user {user.telegram_id}: {e}")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # ... (код функции без изменений) ...
     logger.info("--- handle_message ENTERED ---")
     if not update.message or not update.message.text: return
     chat_id = str(update.effective_chat.id)
@@ -404,6 +411,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media_type: str) -> None:
+    # ... (код функции без изменений) ...
     chat_id = str(update.effective_chat.id)
     user_id = update.effective_user.id
     username = update.effective_user.username or f"user_{user_id}"
@@ -505,8 +513,8 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if not update.message: return
     await handle_media(update, context, "voice")
 
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # ... (код функции без изменений) ...
     if not update.message: return
     user_id = update.effective_user.id
     username = update.effective_user.username or f"id_{user_id}"
@@ -537,7 +545,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 expires_text = f" до {user.subscription_expires_at.strftime('%d.%m.%Y')}" if user.is_active_subscriber and user.subscription_expires_at else ""
                 persona_count = db.query(func.count(PersonaConfig.id)).filter(PersonaConfig.owner_id == user.id).scalar() or 0
                 reply_text = (
-                    f"привет! 👋 я бот для создания ai-собеседников ({context.bot.username}).\n\n"
+                    f"привет! 👋 я бот для создания ai-собеседников (@NunuAiBot).\n\n" # ИЗМЕНЕНО ИМЯ БОТА
                     f"твой статус: **{status}**{expires_text}\n"
                     f"личности: {persona_count}/{user.persona_limit} | "
                     f"сообщения: {user.daily_message_count}/{user.message_limit}\n\n"
@@ -555,7 +563,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.error(f"Error in /start handler for user {user_id}: {e}", exc_info=True)
         await update.message.reply_text("произошла ошибка при обработке команды /start.")
 
+
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+     # ... (код функции без изменений) ...
      if not update.message: return
      user_id = update.effective_user.id
      chat_id = str(update.effective_chat.id)
@@ -578,7 +588,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
      )
      await update.message.reply_text(help_text, parse_mode=ParseMode.MARKDOWN, reply_markup=ReplyKeyboardRemove())
 
+
 async def mood(update: Update, context: ContextTypes.DEFAULT_TYPE, db: Optional[Session] = None, persona: Optional[Persona] = None) -> None:
+    # ... (код функции без изменений) ...
     is_callback = update.callback_query is not None
     message = update.message if not is_callback else update.callback_query.message
     if not message: return
@@ -712,6 +724,7 @@ async def mood(update: Update, context: ContextTypes.DEFAULT_TYPE, db: Optional[
             db_session.close()
 
 async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # ... (код функции без изменений) ...
     if not update.message: return
     chat_id = str(update.effective_chat.id)
     user_id = update.effective_user.id
@@ -745,7 +758,9 @@ async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             logger.error(f"Error in /reset handler for chat {chat_id}: {e}", exc_info=True)
             await update.message.reply_text("ошибка при сбросе контекста.")
 
+
 async def create_persona(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # ... (код функции без изменений) ...
     if not update.message: return
     user_id = update.effective_user.id
     username = update.effective_user.username or f"id_{user_id}"
@@ -804,7 +819,9 @@ async def create_persona(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
              logger.error(f"Error creating persona for user {user_id}: {e}", exc_info=True)
              await update.message.reply_text("ошибка при создании личности.")
 
+
 async def my_personas(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # ... (код функции без изменений) ...
     if not update.message: return
     user_id = update.effective_user.id
     username = update.effective_user.username or f"id_{user_id}"
@@ -854,6 +871,7 @@ async def my_personas(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 async def add_bot_to_chat(update: Update, context: ContextTypes.DEFAULT_TYPE, persona_id: Optional[int] = None) -> None:
+    # ... (код функции без изменений) ...
     is_callback = update.callback_query is not None
     message = update.message if not is_callback else update.callback_query.message
     if not message: return
@@ -959,12 +977,13 @@ async def add_bot_to_chat(update: Update, context: ContextTypes.DEFAULT_TYPE, pe
              logger.error(f"Error adding bot instance {persona_id} to chat {chat_id}: {e}", exc_info=True)
              await context.bot.send_message(chat_id=chat_id, text="ошибка при активации личности.")
 
+
 async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     if not query or not query.data: return
 
     try:
-        pass
+        pass # Отвечаем позже или в конкретных ветках
     except Exception as e:
         logger.warning(f"Failed to answer callback query {query.id}: {e}")
 
@@ -984,12 +1003,13 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         await query.answer("Создаю ссылку на оплату...")
         await generate_payment_link(update, context)
     elif data == "view_tos":
-        await query.answer()
+        await query.answer() # Отвечаем здесь, т.к. view_tos будет редактировать сообщение
         await view_tos(update, context)
     elif data == "confirm_pay":
-        await query.answer()
+        await query.answer() # Отвечаем здесь, т.к. confirm_pay будет редактировать сообщение
         await confirm_pay(update, context)
     elif data.startswith("add_bot_"):
+         # Ответ на коллбек происходит внутри add_bot_to_chat
          try:
              persona_id_to_add = int(data.split('_')[-1])
              await add_bot_to_chat(update, context, persona_id=persona_id_to_add)
@@ -997,14 +1017,16 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
              logger.error(f"Could not parse persona_id from add_bot callback data: {data}")
              await query.answer("Ошибка: неверный ID личности.", show_alert=True)
     elif data.startswith("dummy_"):
-        await query.answer()
+        await query.answer() # Просто отвечаем на нажатие кнопки с именем
     else:
+        # Если коллбэк не относится к диалогам или известным кнопкам, просто отвечаем
         known_prefixes = ("edit_field_", "edit_mood", "deletemood", "cancel_edit", "edit_persona_back", "delete_persona", "edit_persona_", "delete_persona_")
         if not any(data.startswith(p) for p in known_prefixes):
             logger.warning(f"Unhandled callback query data: {data} from user {user_id}")
             await query.answer()
 
 async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # ... (код функции без изменений) ...
     if not update.message: return
     user_id = update.effective_user.id
     username = update.effective_user.username or f"id_{user_id}"
@@ -1042,6 +1064,7 @@ async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         except Exception as e:
             logger.error(f"Error in /profile handler for user {user_id}: {e}", exc_info=True)
             await update.message.reply_text("ошибка при обработке команды /profile.")
+
 
 async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE, from_callback: bool = False) -> None:
     user = update.effective_user
@@ -1095,34 +1118,43 @@ async def view_tos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = query.from_user.id
     logger.info(f"User {user_id} requested to view ToS.")
 
-    keyboard = [[InlineKeyboardButton("⬅️ Назад", callback_data="subscribe_info")]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    tos_url = context.bot_data.get('tos_url')
 
-    try:
-        await query.edit_message_text(
-            TOS_TEXT,
-            reply_markup=reply_markup,
-            parse_mode=ParseMode.MARKDOWN,
-            disable_web_page_preview=True
-        )
-    except Exception as e:
-        logger.error(f"Failed to show ToS to user {user_id}: {e}")
+    if tos_url:
+        keyboard = [
+            [InlineKeyboardButton("📜 Открыть Соглашение", url=tos_url)],
+            [InlineKeyboardButton("⬅️ Назад", callback_data="subscribe_info")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        text = "Ознакомьтесь с Пользовательским Соглашением, открыв его по ссылке ниже:"
         try:
-            await context.bot.send_message(
-                chat_id=query.message.chat.id,
-                text=TOS_TEXT,
+            await query.edit_message_text(
+                text,
                 reply_markup=reply_markup,
-                parse_mode=ParseMode.MARKDOWN,
-                disable_web_page_preview=True
+                parse_mode=ParseMode.MARKDOWN # Можно оставить для форматирования текста
             )
-        except Exception as send_e:
-            logger.error(f"Failed to send fallback ToS message to user {user_id}: {send_e}")
+        except Exception as e:
+            logger.error(f"Failed to show ToS link to user {user_id}: {e}")
+            # Если не удалось отредактировать, просто отвечаем на коллбек
+            await query.answer("Не удалось отобразить ссылку на соглашение. Попробуйте еще раз.", show_alert=True)
+    else:
+        logger.error(f"ToS URL not found in bot_data for user {user_id}.")
+        text = "❌ Не удалось загрузить ссылку на Пользовательское Соглашение. Попробуйте позже."
+        keyboard = [[InlineKeyboardButton("⬅️ Назад", callback_data="subscribe_info")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        try:
+            await query.edit_message_text(text, reply_markup=reply_markup)
+        except Exception as e:
+             logger.error(f"Failed to show ToS error message to user {user_id}: {e}")
+             await query.answer("Ошибка загрузки соглашения.", show_alert=True)
 
 async def confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     if not query or not query.message: return
     user_id = query.from_user.id
     logger.info(f"User {user_id} confirmed ToS agreement, proceeding to payment button.")
+
+    tos_url = context.bot_data.get('tos_url')
 
     if not YOOKASSA_SHOP_ID or not YOOKASSA_SECRET_KEY or not YOOKASSA_SHOP_ID.isdigit():
         text = "К сожалению, функция оплаты сейчас недоступна. 😥 (проблема с настройками)"
@@ -1136,10 +1168,14 @@ async def confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
              "\n\n👇"
         )
         keyboard = [
-            [InlineKeyboardButton(f"💳 Оплатить {SUBSCRIPTION_PRICE_RUB:.0f} {SUBSCRIPTION_CURRENCY}", callback_data="subscribe_pay")],
-            [InlineKeyboardButton("📜 Условия использования", callback_data="view_tos")],
-            [InlineKeyboardButton("⬅️ Назад", callback_data="subscribe_info")]
+            [InlineKeyboardButton(f"💳 Оплатить {SUBSCRIPTION_PRICE_RUB:.0f} {SUBSCRIPTION_CURRENCY}", callback_data="subscribe_pay")]
         ]
+        if tos_url:
+             keyboard.append([InlineKeyboardButton("📜 Условия использования", url=tos_url)])
+        else:
+             keyboard.append([InlineKeyboardButton("📜 Условия (ошибка загрузки)", callback_data="view_tos")])
+
+        keyboard.append([InlineKeyboardButton("⬅️ Назад", callback_data="subscribe_info")])
         reply_markup = InlineKeyboardMarkup(keyboard)
 
     try:
@@ -1152,7 +1188,9 @@ async def confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     except Exception as e:
         logger.error(f"Failed to show final payment confirmation to user {user_id}: {e}")
 
+
 async def generate_payment_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # ... (код функции без изменений) ...
     query = update.callback_query
     if not query or not query.message: return
 
@@ -1173,14 +1211,14 @@ async def generate_payment_link(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
     idempotence_key = str(uuid.uuid4())
-    payment_description = f"Premium подписка {context.bot.username} на {SUBSCRIPTION_DURATION_DAYS} дней (User ID: {user_id})"
+    payment_description = f"Premium подписка @NunuAiBot на {SUBSCRIPTION_DURATION_DAYS} дней (User ID: {user_id})" # ИЗМЕНЕНО ИМЯ БОТА
     payment_metadata = {'telegram_user_id': str(user_id)}
-    return_url = f"https://t.me/{context.bot.username}"
+    return_url = f"https://t.me/{(await context.bot.get_me()).username}" # Динамическое получение username
 
     try:
         receipt_items = [
             ReceiptItem({
-                "description": f"Премиум доступ {context.bot.username} на {SUBSCRIPTION_DURATION_DAYS} дней",
+                "description": f"Премиум доступ @NunuAiBot на {SUBSCRIPTION_DURATION_DAYS} дней", # ИЗМЕНЕНО ИМЯ БОТА
                 "quantity": 1.0,
                 "amount": {"value": f"{SUBSCRIPTION_PRICE_RUB:.2f}", "currency": SUBSCRIPTION_CURRENCY},
                 "vat_code": "1",
@@ -1240,12 +1278,15 @@ async def generate_payment_link(update: Update, context: ContextTypes.DEFAULT_TY
         except Exception as send_e:
             logger.error(f"Failed to send error message after payment creation failure: {send_e}")
 
+
 async def yookassa_webhook_placeholder(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.warning("Placeholder Yookassa webhook endpoint called via Telegram bot handler. This should be handled by the Flask app.")
     pass
 
 
+# --- Edit Persona Conversation (Код без изменений) ---
 async def _start_edit_convo(update: Update, context: ContextTypes.DEFAULT_TYPE, persona_id: int) -> int:
+    # ... (код функции без изменений) ...
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id if update.effective_chat else update.effective_message.chat_id
 
@@ -1286,6 +1327,7 @@ async def _start_edit_convo(update: Update, context: ContextTypes.DEFAULT_TYPE, 
          return ConversationHandler.END
 
 async def edit_persona_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    # ... (код функции без изменений) ...
     if not update.message: return ConversationHandler.END
     user_id = update.effective_user.id
     args = context.args
@@ -1297,6 +1339,7 @@ async def edit_persona_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
     return await _start_edit_convo(update, context, persona_id)
 
 async def edit_persona_button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    # ... (код функции без изменений) ...
     query = update.callback_query
     if not query or not query.data: return ConversationHandler.END
     await query.answer("Начинаем редактирование...")
@@ -1310,6 +1353,7 @@ async def edit_persona_button_callback(update: Update, context: ContextTypes.DEF
         return ConversationHandler.END
 
 async def edit_persona_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    # ... (код функции без изменений) ...
     query = update.callback_query
     if not query or not query.data: return EDIT_PERSONA_CHOICE
     await query.answer()
@@ -1392,6 +1436,7 @@ async def edit_persona_choice(update: Update, context: ContextTypes.DEFAULT_TYPE
     return EDIT_PERSONA_CHOICE
 
 async def edit_field_update(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    # ... (код функции без изменений) ...
     if not update.message or not update.message.text: return EDIT_FIELD
     new_value = update.message.text.strip()
     field = context.user_data.get('edit_field')
@@ -1464,6 +1509,7 @@ async def edit_field_update(update: Update, context: ContextTypes.DEFAULT_TYPE) 
          return ConversationHandler.END
 
 async def edit_max_messages_update(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    # ... (код функции без изменений) ...
     if not update.message or not update.message.text: return EDIT_MAX_MESSAGES
     new_value_str = update.message.text.strip()
     field = "max_response_messages"
@@ -1520,6 +1566,7 @@ async def edit_max_messages_update(update: Update, context: ContextTypes.DEFAULT
 
 
 async def _get_edit_persona_keyboard(persona_config: PersonaConfig) -> List[List[InlineKeyboardButton]]:
+    # ... (код функции без изменений) ...
     if not persona_config:
         logger.error("_get_edit_persona_keyboard called with None persona_config")
         return [[InlineKeyboardButton("❌ Ошибка: Личность не найдена", callback_data="cancel_edit")]]
@@ -1537,6 +1584,7 @@ async def _get_edit_persona_keyboard(persona_config: PersonaConfig) -> List[List
     return keyboard
 
 async def _get_edit_moods_keyboard_internal(persona_config: PersonaConfig) -> List[List[InlineKeyboardButton]]:
+    # ... (код функции без изменений) ...
      if not persona_config: return []
      try:
          moods = json.loads(persona_config.mood_prompts_json or '{}')
@@ -1555,6 +1603,7 @@ async def _get_edit_moods_keyboard_internal(persona_config: PersonaConfig) -> Li
      return keyboard
 
 async def _try_return_to_edit_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int, persona_id: int) -> int:
+    # ... (код функции без изменений) ...
     logger.debug(f"Attempting to return to main edit menu for user {user_id}, persona {persona_id} after error.")
     message = update.effective_message
     if not message:
@@ -1580,6 +1629,7 @@ async def _try_return_to_edit_menu(update: Update, context: ContextTypes.DEFAULT
         return ConversationHandler.END
 
 async def _try_return_to_mood_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int, persona_id: int) -> int:
+    # ... (код функции без изменений) ...
      logger.debug(f"Attempting to return to mood menu for user {user_id}, persona {persona_id} after error.")
      message = update.effective_message
      if not message:
@@ -1606,6 +1656,7 @@ async def _try_return_to_mood_menu(update: Update, context: ContextTypes.DEFAULT
 
 
 async def edit_moods_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, persona_config: Optional[PersonaConfig] = None) -> int:
+    # ... (код функции без изменений) ...
     query = update.callback_query
     persona_id = context.user_data.get('edit_persona_id')
     user_id = query.from_user.id
@@ -1657,6 +1708,7 @@ async def edit_moods_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, pe
 
 
 async def edit_mood_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    # ... (код функции без изменений) ...
     query = update.callback_query
     if not query or not query.data: return EDIT_MOOD_CHOICE
     await query.answer()
@@ -1733,6 +1785,7 @@ async def edit_mood_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     return await edit_moods_menu(update, context, persona_config=persona_config)
 
 async def edit_mood_name_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    # ... (код функции без изменений) ...
     if not update.message or not update.message.text: return EDIT_MOOD_NAME
     mood_name_raw = update.message.text.strip()
     mood_name = mood_name_raw
@@ -1789,6 +1842,7 @@ async def edit_mood_name_received(update: Update, context: ContextTypes.DEFAULT_
 
 
 async def edit_mood_prompt_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    # ... (код функции без изменений) ...
     if not update.message or not update.message.text: return EDIT_MOOD_PROMPT
     mood_prompt = update.message.text.strip()
     mood_name = context.user_data.get('edit_mood_name')
@@ -1846,6 +1900,7 @@ async def edit_mood_prompt_received(update: Update, context: ContextTypes.DEFAUL
         return await _try_return_to_mood_menu(update, context, user_id, persona_id)
 
 async def delete_mood_confirmed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    # ... (код функции без изменений) ...
     query = update.callback_query
     if not query or not query.data: return EDIT_MOOD_CHOICE
     await query.answer()
@@ -1909,6 +1964,7 @@ async def delete_mood_confirmed(update: Update, context: ContextTypes.DEFAULT_TY
 
 
 async def edit_persona_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    # ... (код функции без изменений) ...
     message = update.effective_message
     user_id = update.effective_user.id
     logger.info(f"User {user_id} cancelled persona edit/mood edit.")
@@ -1932,7 +1988,9 @@ async def edit_persona_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE
     return ConversationHandler.END
 
 
+# --- Delete Persona Conversation (Код без изменений) ---
 async def _start_delete_convo(update: Update, context: ContextTypes.DEFAULT_TYPE, persona_id: int) -> int:
+    # ... (код функции без изменений) ...
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id if update.effective_chat else update.effective_message.chat_id
 
@@ -1980,6 +2038,7 @@ async def _start_delete_convo(update: Update, context: ContextTypes.DEFAULT_TYPE
          return ConversationHandler.END
 
 async def delete_persona_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    # ... (код функции без изменений) ...
     if not update.message: return ConversationHandler.END
     user_id = update.effective_user.id
     args = context.args
@@ -1991,6 +2050,7 @@ async def delete_persona_start(update: Update, context: ContextTypes.DEFAULT_TYP
     return await _start_delete_convo(update, context, persona_id)
 
 async def delete_persona_button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    # ... (код функции без изменений) ...
     query = update.callback_query
     if not query or not query.data: return ConversationHandler.END
     await query.answer("Начинаем удаление...")
@@ -2005,6 +2065,7 @@ async def delete_persona_button_callback(update: Update, context: ContextTypes.D
 
 
 async def delete_persona_confirmed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    # ... (код функции без изменений) ...
     query = update.callback_query
     if not query or not query.data: return ConversationHandler.END
     await query.answer()
@@ -2054,6 +2115,7 @@ async def delete_persona_confirmed(update: Update, context: ContextTypes.DEFAULT
     return ConversationHandler.END
 
 async def delete_persona_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    # ... (код функции без изменений) ...
     query = update.callback_query
     if not query: return ConversationHandler.END
     await query.answer()
@@ -2066,6 +2128,7 @@ async def delete_persona_cancel(update: Update, context: ContextTypes.DEFAULT_TY
 
 
 async def mute_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # ... (код функции без изменений) ...
     if not update.message: return
     chat_id = str(update.effective_chat.id)
     user_id = update.effective_user.id
@@ -2107,7 +2170,9 @@ async def mute_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             logger.error(f"Unexpected error during /mutebot for chat {chat_id}: {e}", exc_info=True)
             await update.message.reply_text("Непредвиденная ошибка при выполнении команды.")
 
+
 async def unmute_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # ... (код функции без изменений) ...
     if not update.message: return
     chat_id = str(update.effective_chat.id)
     user_id = update.effective_user.id
