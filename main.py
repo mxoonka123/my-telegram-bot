@@ -14,6 +14,8 @@ from telegram.ext import (
     Application, CommandHandler, MessageHandler, ContextTypes, filters,
     CallbackQueryHandler, ConversationHandler
 )
+from telegraph_api import Telegraph, exceptions as telegraph_exceptions
+import markdown
 
 import config
 import db
@@ -104,9 +106,6 @@ def run_flask():
     port = int(os.environ.get("PORT", 8080))
     flask_logger.info(f"Starting Flask server on 0.0.0.0:{port}")
     try:
-        # Используем gunicorn для запуска Flask в Railway (пример)
-        # flask_app.run(host='0.0.0.0', port=port, debug=False) # Оставляем для локального запуска
-        # В Railway gunicorn запускается через Procfile или команду старта
         from gunicorn.app.base import BaseApplication
 
         class StandaloneApplication(BaseApplication):
@@ -116,9 +115,9 @@ def run_flask():
                  super().__init__()
 
              def load_config(self):
-                 config = {key: value for key, value in self.options.items()
+                 config_gunicorn = {key: value for key, value in self.options.items()
                            if key in self.cfg.settings and value is not None}
-                 for key, value in config.items():
+                 for key, value in config_gunicorn.items():
                      self.cfg.set(key.lower(), value)
 
              def load(self):
@@ -126,8 +125,8 @@ def run_flask():
 
         options = {
              'bind': f'0.0.0.0:{port}',
-             'workers': 4, # Можно настроить
-             'worker_class': 'sync', # Или 'gevent', 'eventlet' если установлены
+             'workers': 4,
+             'worker_class': 'sync',
              'timeout': 120,
         }
         StandaloneApplication(flask_app, options).run()
@@ -144,23 +143,95 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("apscheduler").setLevel(logging.WARNING)
 logging.getLogger("telegram.ext").setLevel(logging.INFO)
 logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
-logging.getLogger("gunicorn.error").setLevel(logging.INFO) # Логи Gunicorn
+logging.getLogger("gunicorn.error").setLevel(logging.INFO)
 
 logger = logging.getLogger(__name__)
+
+
+async def setup_telegraph_page(application: Application):
+    logger.info("Setting up Telegra.ph ToS page...")
+    if not config.TELEGRAPH_ACCESS_TOKEN:
+        logger.error("TELEGRAPH_ACCESS_TOKEN is not set. Cannot create/update ToS page.")
+        application.bot_data['tos_url'] = None
+        return
+
+    telegraph = Telegraph(access_token=config.TELEGRAPH_ACCESS_TOKEN)
+    # Используем фиксированные short_name и author_name или берем их из config, если нужно
+    short_name = "nunu" # Как ты указывал при создании токена
+    author_name = "@NunuAiBot" # Как ты указывал при создании токена
+    tos_title = f"Пользовательское Соглашение @NunuAiBot"
+
+    try:
+        # Конвертируем Markdown в HTML, затем в Telegra.ph nodes
+        # Убираем части .format() из строки TOS_TEXT перед конвертацией
+        tos_content_raw = handlers.TOS_TEXT.replace(
+             "{subscription_duration}", str(config.SUBSCRIPTION_DURATION_DAYS)
+         ).replace(
+             "{subscription_price}", f"{config.SUBSCRIPTION_PRICE_RUB:.0f}"
+         ).replace(
+             "{subscription_currency}", config.SUBSCRIPTION_CURRENCY
+         )
+
+        tos_html = markdown.markdown(tos_content_raw)
+        tos_nodes = telegraph.html_to_nodes(tos_html)
+
+        page = None
+        path_to_find = None
+        try:
+            # Пытаемся найти существующую страницу по заголовку
+            pages = telegraph.get_page_list(limit=50) # Ограничим поиск
+            for p in pages['pages']:
+                if p['title'] == tos_title:
+                    logger.info(f"Found existing Telegra.ph page: {p['path']}")
+                    path_to_find = p['path']
+                    break
+            # Если нашли, редактируем
+            if path_to_find:
+                page = telegraph.edit_page(
+                    path=path_to_find,
+                    title=tos_title,
+                    content=tos_nodes,
+                    author_name=author_name
+                )
+                logger.info(f"Updated Telegra.ph page: {page['url']}")
+
+        except telegraph_exceptions.TelegraphApiException as e:
+             logger.warning(f"Could not get page list or edit page, will try to create new. Error: {e}")
+        except Exception as e:
+             logger.error(f"Unexpected error finding/editing Telegra.ph page: {e}", exc_info=True)
+
+        # Если не нашли или не смогли отредактировать, создаем новую
+        if not page:
+             logger.info(f"Creating new Telegra.ph page with title: {tos_title}")
+             page = telegraph.create_page(
+                 title=tos_title,
+                 content=tos_nodes,
+                 author_name=author_name,
+                 # short_name можно не указывать, если используется токен
+             )
+             logger.info(f"Created Telegra.ph page: {page['url']}")
+
+        application.bot_data['tos_url'] = page['url'] # Сохраняем URL
+
+    except telegraph_exceptions.TelegraphApiException as e:
+        logger.error(f"Telegra.ph API error during page setup: {e}")
+        application.bot_data['tos_url'] = None
+    except Exception as e:
+        logger.error(f"Failed to setup Telegra.ph page: {e}", exc_info=True)
+        application.bot_data['tos_url'] = None
+
 
 async def post_init(application: Application):
     try:
         me = await application.bot.get_me()
         logger.info(f"Bot started as @{me.username} (ID: {me.id})")
+        await setup_telegraph_page(application)
     except Exception as e:
-        logger.error(f"Failed to get bot info: {e}", exc_info=True)
+        logger.error(f"Failed to get bot info or setup Telegra.ph: {e}", exc_info=True)
 
     logger.info("Starting background tasks...")
     application.job_queue.run_repeating(tasks.reset_daily_limits_task, interval=timedelta(hours=1), first=timedelta(minutes=1), name="daily_limit_reset_check")
-    application.job_queue.run_repeating(tasks.check_subscription_expiry_task, interval=timedelta(hours=1), first=timedelta(minutes=2), name="subscription_expiry_check", data=application) # Передаем application
-
-    # application.job_queue.run_once(tasks.spam_task, when=timedelta(seconds=10), name="spam_task", data=application) # Запускаем спам-таск через 10 сек
-    # logger.info("Background tasks scheduled (including spam task).")
+    application.job_queue.run_repeating(tasks.check_subscription_expiry_task, interval=timedelta(hours=1), first=timedelta(minutes=2), name="subscription_expiry_check", data=application)
     logger.info("Background tasks scheduled.")
 
 def main() -> None:
@@ -173,7 +244,6 @@ def main() -> None:
         return
     logger.info("Database setup complete.")
 
-    # Запуск Flask в отдельном потоке все еще нужен для вебхука Yookassa
     flask_thread = threading.Thread(target=run_flask, name="FlaskWebhookThread", daemon=True)
     flask_thread.start()
     logger.info("Flask thread for Yookassa webhook started.")
@@ -184,7 +254,6 @@ def main() -> None:
         logger.critical("TELEGRAM_TOKEN not found in config. Exiting.")
         return
 
-    # Увеличиваем таймауты, если нужно
     application = Application.builder().token(token).connect_timeout(30).read_timeout(60).post_init(post_init).build()
     logger.info("Application built.")
 
@@ -192,7 +261,7 @@ def main() -> None:
     edit_persona_conv_handler = ConversationHandler(
         entry_points=[
             CommandHandler('editpersona', handlers.edit_persona_start),
-            CallbackQueryHandler(handlers.edit_persona_button_callback, pattern='^edit_persona_') # <-- Добавили вход через кнопку
+            CallbackQueryHandler(handlers.edit_persona_button_callback, pattern='^edit_persona_')
             ],
         states={
             handlers.EDIT_PERSONA_CHOICE: [
@@ -234,7 +303,7 @@ def main() -> None:
     delete_persona_conv_handler = ConversationHandler(
         entry_points=[
             CommandHandler('deletepersona', handlers.delete_persona_start),
-            CallbackQueryHandler(handlers.delete_persona_button_callback, pattern='^delete_persona_') # <-- Добавили вход через кнопку
+            CallbackQueryHandler(handlers.delete_persona_button_callback, pattern='^delete_persona_')
             ],
         states={
             handlers.DELETE_PERSONA_CONFIRM: [
@@ -259,9 +328,9 @@ def main() -> None:
 
     application.add_handler(CommandHandler("createpersona", handlers.create_persona, block=False))
     application.add_handler(CommandHandler("mypersonas", handlers.my_personas, block=False))
-    application.add_handler(edit_persona_conv_handler) # Диалог редактирования (включает входы через команду и кнопку)
-    application.add_handler(delete_persona_conv_handler) # Диалог удаления (включает входы через команду и кнопку)
-    application.add_handler(CommandHandler("addbot", handlers.add_bot_to_chat, block=False)) # Оставляем команду на всякий случай
+    application.add_handler(edit_persona_conv_handler)
+    application.add_handler(delete_persona_conv_handler)
+    application.add_handler(CommandHandler("addbot", handlers.add_bot_to_chat, block=False))
 
     application.add_handler(CommandHandler("mood", handlers.mood, block=False))
     application.add_handler(CommandHandler("reset", handlers.reset, block=False))
@@ -272,8 +341,7 @@ def main() -> None:
     application.add_handler(MessageHandler(filters.VOICE & ~filters.COMMAND, handlers.handle_voice, block=False))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.handle_message, block=False))
 
-    # Основной обработчик колбэков (обрабатывает всё, что не перехвачено диалогами)
-    application.add_handler(CallbackQueryHandler(handlers.handle_callback_query)) # <-- Убрали pattern, чтобы ловить всё остальное
+    application.add_handler(CallbackQueryHandler(handlers.handle_callback_query))
 
     application.add_error_handler(handlers.error_handler)
     logger.info("Handlers registered.")
@@ -281,9 +349,10 @@ def main() -> None:
     logger.info("Starting bot polling...")
     application.run_polling(
         allowed_updates=Update.ALL_TYPES,
-        drop_pending_updates=True # Сбрасываем старые апдейты при перезапуске
+        drop_pending_updates=True
     )
     logger.info("----- Bot Stopped -----")
+
 
 if __name__ == "__main__":
     main()
