@@ -16,11 +16,8 @@ from telegram.ext import (
     Application, CommandHandler, MessageHandler, ContextTypes, filters,
     CallbackQueryHandler, ConversationHandler
 )
-# Импортируем только основной класс Telegraph
 from telegraph_api import Telegraph
-# Импортируем ValidationError для явной обработки
-from pydantic import ValidationError
-
+from pydantic import ValidationError # Добавлен импорт
 
 import config
 import db
@@ -150,47 +147,67 @@ async def setup_telegraph_page(application: Application):
 
     try:
         # --- Подготовка контента ---
-        # Берем текст из handlers.py
         tos_content_raw = handlers.TOS_TEXT
-        # Форматируем его с актуальными данными из config
         tos_content_formatted = tos_content_raw.format(
             subscription_duration=config.SUBSCRIPTION_DURATION_DAYS,
             subscription_price=f"{config.SUBSCRIPTION_PRICE_RUB:.0f}",
             subscription_currency=config.SUBSCRIPTION_CURRENCY
         )
-        # Убираем ** Markdown, API его не поймет как форматирование текста
         plain_text_content = tos_content_formatted.replace("**", "")
+        tos_content_for_api = plain_text_content # Передаем простую строку
+        # -----------------------------
 
-        # --- Создание/Редактирование страницы ---
-        page_data = None
+        page_url = None
+        raw_response_data = None # Для хранения данных из ошибки
+
         try:
-             # Всегда создаем новую страницу (упрощение для обхода ошибок валидации)
+            # Всегда пытаемся создать новую страницу (упрощение)
             logger.info(f"Attempting to create Telegra.ph page with title: {tos_title}")
-            # Передаем простой текст в 'content'
+            # Вызываем create_page, но готовы ловить ValidationError
             page_data = await telegraph.create_page(
                  title=tos_title,
-                 content=plain_text_content, # <--- Передаем СТРОКУ
+                 content=tos_content_for_api, # <--- Передаем СТРОКУ
                  author_name=author_name,
-                 # return_content=False # Попробуем без этого параметра
+                 # return_content=True # Попробуем с этим параметром, чтобы получить больше данных в ответе
             )
+            # Если ошибки не было, пытаемся извлечь URL стандартно
             logger.debug(f"Telegra.ph API create_page raw response: {page_data}")
-
-            # Пытаемся извлечь URL из ответа
             if isinstance(page_data, dict) and 'url' in page_data:
-                application.bot_data['tos_url'] = page_data['url']
-                logger.info(f"Successfully created Telegra.ph page URL: {page_data['url']}")
+                page_url = page_data['url']
+                logger.info(f"Successfully created Telegra.ph page (standard): {page_url}")
             else:
-                 logger.error(f"Could not extract URL from Telegra.ph API response: {page_data}")
+                 logger.error(f"Could not extract URL from Telegra.ph API response (standard way): {page_data}")
 
-        # Ловим ошибки валидации Pydantic и другие при создании/редактировании
-        except (ValidationError, TypeError, Exception) as page_err:
-             logger.error(f"Error during Telegra.ph page creation/editing: {page_err}", exc_info=True)
-             # URL останется None
+
+        except ValidationError as e:
+            logger.warning(f"Pydantic ValidationError during page creation: {e}. Trying to extract URL from raw data...")
+            try:
+                error_details = e.errors()
+                if error_details and isinstance(error_details[0].get('input'), dict):
+                    raw_response_data = error_details[0]['input']
+                    logger.debug(f"Extracted raw data from ValidationError: {raw_response_data}")
+                    if isinstance(raw_response_data, dict) and 'url' in raw_response_data:
+                        page_url = raw_response_data['url']
+                        logger.info(f"Successfully created Telegra.ph page (extracted from error): {page_url}")
+                    else:
+                        logger.error("Could not find 'url' in raw data from ValidationError.")
+                else:
+                     logger.error("Could not extract input data from ValidationError details.")
+            except Exception as extract_err:
+                logger.error(f"Error trying to extract data from ValidationError: {extract_err}")
+
+        except Exception as create_err:
+            logger.error(f"Non-validation error during Telegra.ph page creation: {create_err}", exc_info=True)
+
+
+        # Сохраняем URL, если удалось его получить
+        application.bot_data['tos_url'] = page_url
+        if not page_url:
+             logger.error("Failed to obtain Telegra.ph page URL after creation attempt.")
+
 
     except Exception as e:
-        # Общая ошибка (например, при форматировании текста)
         logger.error(f"Failed to setup Telegra.ph page (outer try): {e}", exc_info=True)
-        # URL останется None
 
 
 async def post_init(application: Application):
