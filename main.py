@@ -16,8 +16,11 @@ from telegram.ext import (
     Application, CommandHandler, MessageHandler, ContextTypes, filters,
     CallbackQueryHandler, ConversationHandler
 )
+# Импортируем только основной класс Telegraph
 from telegraph_api import Telegraph
-import markdown
+# Импортируем ValidationError для явной обработки
+from pydantic import ValidationError
+
 
 import config
 import db
@@ -135,75 +138,59 @@ logger = logging.getLogger(__name__)
 
 async def setup_telegraph_page(application: Application):
     logger.info("Setting up Telegra.ph ToS page...")
+    application.bot_data['tos_url'] = None # Сразу ставим None, чтобы не было старого URL
+
     if not config.TELEGRAPH_ACCESS_TOKEN:
         logger.error("TELEGRAPH_ACCESS_TOKEN is not set. Cannot create/update ToS page.")
-        application.bot_data['tos_url'] = None
         return
 
     telegraph = Telegraph(access_token=config.TELEGRAPH_ACCESS_TOKEN)
-    short_name = "nunu"
-    author_name = "@NunuAiBot"
-    tos_title = f"Пользовательское Соглашение @NunuAiBot"
+    author_name = "@NunuAiBot" # Имя автора
+    tos_title = f"Пользовательское Соглашение @NunuAiBot" # Заголовок страницы
 
     try:
-        # --- Создание контента для Telegra.ph ---
+        # --- Подготовка контента ---
+        # Берем текст из handlers.py
         tos_content_raw = handlers.TOS_TEXT
+        # Форматируем его с актуальными данными из config
         tos_content_formatted = tos_content_raw.format(
             subscription_duration=config.SUBSCRIPTION_DURATION_DAYS,
             subscription_price=f"{config.SUBSCRIPTION_PRICE_RUB:.0f}",
             subscription_currency=config.SUBSCRIPTION_CURRENCY
         )
-        plain_text_content = tos_content_formatted.replace("**", "") # Убираем жирный шрифт
+        # Убираем ** Markdown, API его не поймет как форматирование текста
+        plain_text_content = tos_content_formatted.replace("**", "")
 
-        # Передаем просто текст в API, библиотека должна сама обработать
-        tos_content_for_api = plain_text_content
-        # ------------------------------------
-
-        page = None
-        path_to_find = None
+        # --- Создание/Редактирование страницы ---
+        page_data = None
         try:
-            logger.debug("Trying to find existing Telegra.ph page...")
-            acc_info = await telegraph.get_account_info(fields=['short_name', 'author_name', 'page_count'])
-            logger.info(f"Telegra.ph account info: {acc_info}")
-
-            if acc_info['page_count'] > 0:
-                pages = await telegraph.get_page_list(limit=50)
-                for p in pages['pages']:
-                    if p.get('title') == tos_title:
-                        logger.info(f"Found existing Telegra.ph page: {p.get('path')}")
-                        path_to_find = p.get('path')
-                        break
-            else:
-                 logger.info("Telegra.ph account has no pages yet.")
-
-            if path_to_find:
-                logger.debug(f"Editing existing page: {path_to_find}")
-                page = await telegraph.edit_page(
-                    path=path_to_find,
-                    title=tos_title,
-                    content=tos_content_for_api, # Передаем просто текст
-                    author_name=author_name
-                )
-                logger.info(f"Updated Telegra.ph page: {page['url']}")
-
-        except Exception as e_find_edit:
-             logger.warning(f"Could not get page list or edit page, will try to create new. Error: {e_find_edit}")
-
-
-        if not page:
-             logger.info(f"Creating new Telegra.ph page with title: {tos_title}")
-             page = await telegraph.create_page(
+             # Всегда создаем новую страницу (упрощение для обхода ошибок валидации)
+            logger.info(f"Attempting to create Telegra.ph page with title: {tos_title}")
+            # Передаем простой текст в 'content'
+            page_data = await telegraph.create_page(
                  title=tos_title,
-                 content=tos_content_for_api, # Передаем просто текст
+                 content=plain_text_content, # <--- Передаем СТРОКУ
                  author_name=author_name,
-             )
-             logger.info(f"Created Telegra.ph page: {page['url']}")
+                 # return_content=False # Попробуем без этого параметра
+            )
+            logger.debug(f"Telegra.ph API create_page raw response: {page_data}")
 
-        application.bot_data['tos_url'] = page['url']
+            # Пытаемся извлечь URL из ответа
+            if isinstance(page_data, dict) and 'url' in page_data:
+                application.bot_data['tos_url'] = page_data['url']
+                logger.info(f"Successfully created Telegra.ph page URL: {page_data['url']}")
+            else:
+                 logger.error(f"Could not extract URL from Telegra.ph API response: {page_data}")
+
+        # Ловим ошибки валидации Pydantic и другие при создании/редактировании
+        except (ValidationError, TypeError, Exception) as page_err:
+             logger.error(f"Error during Telegra.ph page creation/editing: {page_err}", exc_info=True)
+             # URL останется None
 
     except Exception as e:
-        logger.error(f"Failed to setup Telegra.ph page: {e}", exc_info=True)
-        application.bot_data['tos_url'] = None
+        # Общая ошибка (например, при форматировании текста)
+        logger.error(f"Failed to setup Telegra.ph page (outer try): {e}", exc_info=True)
+        # URL останется None
 
 
 async def post_init(application: Application):
@@ -216,7 +203,6 @@ async def post_init(application: Application):
 
     logger.info("Starting background tasks...")
     application.job_queue.run_repeating(tasks.reset_daily_limits_task, interval=timedelta(hours=1), first=timedelta(minutes=1), name="daily_limit_reset_check")
-    # Передаем application через data
     application.job_queue.run_repeating(tasks.check_subscription_expiry_task, interval=timedelta(hours=1), first=timedelta(minutes=2), name="subscription_expiry_check", data=application)
     logger.info("Background tasks scheduled.")
 
