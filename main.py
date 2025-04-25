@@ -1,5 +1,3 @@
-# main.py
-
 import logging
 import asyncio
 import os
@@ -102,12 +100,38 @@ def handle_yookassa_webhook():
         flask_logger.error(f"Unexpected error in webhook handler: {e}", exc_info=True)
         abort(500, description="Internal server error")
 
-
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
     flask_logger.info(f"Starting Flask server on 0.0.0.0:{port}")
     try:
-        flask_app.run(host='0.0.0.0', port=port, debug=False)
+        # Используем gunicorn для запуска Flask в Railway (пример)
+        # flask_app.run(host='0.0.0.0', port=port, debug=False) # Оставляем для локального запуска
+        # В Railway gunicorn запускается через Procfile или команду старта
+        from gunicorn.app.base import BaseApplication
+
+        class StandaloneApplication(BaseApplication):
+             def __init__(self, app, options=None):
+                 self.options = options or {}
+                 self.application = app
+                 super().__init__()
+
+             def load_config(self):
+                 config = {key: value for key, value in self.options.items()
+                           if key in self.cfg.settings and value is not None}
+                 for key, value in config.items():
+                     self.cfg.set(key.lower(), value)
+
+             def load(self):
+                 return self.application
+
+        options = {
+             'bind': f'0.0.0.0:{port}',
+             'workers': 4, # Можно настроить
+             'worker_class': 'sync', # Или 'gevent', 'eventlet' если установлены
+             'timeout': 120,
+        }
+        StandaloneApplication(flask_app, options).run()
+
     except Exception as e:
         flask_logger.critical(f"Flask server failed to start or crashed: {e}", exc_info=True)
 
@@ -120,9 +144,9 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("apscheduler").setLevel(logging.WARNING)
 logging.getLogger("telegram.ext").setLevel(logging.INFO)
 logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
+logging.getLogger("gunicorn.error").setLevel(logging.INFO) # Логи Gunicorn
 
 logger = logging.getLogger(__name__)
-
 
 async def post_init(application: Application):
     try:
@@ -133,10 +157,11 @@ async def post_init(application: Application):
 
     logger.info("Starting background tasks...")
     application.job_queue.run_repeating(tasks.reset_daily_limits_task, interval=timedelta(hours=1), first=timedelta(minutes=1), name="daily_limit_reset_check")
-    application.job_queue.run_repeating(tasks.check_subscription_expiry_task, interval=timedelta(hours=1), first=timedelta(minutes=2), name="subscription_expiry_check", data={'application': application})
-    # asyncio.create_task(tasks.spam_task(application)) # Если спам-таск нужен, раскомментируй
-    logger.info("Background tasks scheduled.")
+    application.job_queue.run_repeating(tasks.check_subscription_expiry_task, interval=timedelta(hours=1), first=timedelta(minutes=2), name="subscription_expiry_check", data=application) # Передаем application
 
+    # application.job_queue.run_once(tasks.spam_task, when=timedelta(seconds=10), name="spam_task", data=application) # Запускаем спам-таск через 10 сек
+    # logger.info("Background tasks scheduled (including spam task).")
+    logger.info("Background tasks scheduled.")
 
 def main() -> None:
     logger.info("----- Bot Starting -----")
@@ -148,9 +173,10 @@ def main() -> None:
         return
     logger.info("Database setup complete.")
 
-    flask_thread = threading.Thread(target=run_flask, name="FlaskThread", daemon=True)
+    # Запуск Flask в отдельном потоке все еще нужен для вебхука Yookassa
+    flask_thread = threading.Thread(target=run_flask, name="FlaskWebhookThread", daemon=True)
     flask_thread.start()
-    logger.info("Flask thread started.")
+    logger.info("Flask thread for Yookassa webhook started.")
 
     logger.info("Initializing Telegram Bot Application...")
     token = config.TELEGRAM_TOKEN
@@ -158,12 +184,16 @@ def main() -> None:
         logger.critical("TELEGRAM_TOKEN not found in config. Exiting.")
         return
 
-    application = Application.builder().token(token).connect_timeout(30).read_timeout(30).post_init(post_init).build()
+    # Увеличиваем таймауты, если нужно
+    application = Application.builder().token(token).connect_timeout(30).read_timeout(60).post_init(post_init).build()
     logger.info("Application built.")
 
     logger.info("Setting up Conversation Handlers...")
     edit_persona_conv_handler = ConversationHandler(
-        entry_points=[CommandHandler('editpersona', handlers.edit_persona_start)],
+        entry_points=[
+            CommandHandler('editpersona', handlers.edit_persona_start),
+            CallbackQueryHandler(handlers.edit_persona_button_callback, pattern='^edit_persona_') # <-- Добавили вход через кнопку
+            ],
         states={
             handlers.EDIT_PERSONA_CHOICE: [
                 CallbackQueryHandler(handlers.edit_persona_choice, pattern='^edit_field_|^edit_moods$|^cancel_edit$|^edit_persona_back$')
@@ -202,7 +232,10 @@ def main() -> None:
 
 
     delete_persona_conv_handler = ConversationHandler(
-        entry_points=[CommandHandler('deletepersona', handlers.delete_persona_start)],
+        entry_points=[
+            CommandHandler('deletepersona', handlers.delete_persona_start),
+            CallbackQueryHandler(handlers.delete_persona_button_callback, pattern='^delete_persona_') # <-- Добавили вход через кнопку
+            ],
         states={
             handlers.DELETE_PERSONA_CONFIRM: [
                 CallbackQueryHandler(handlers.delete_persona_confirmed, pattern='^delete_persona_confirm_'),
@@ -226,9 +259,9 @@ def main() -> None:
 
     application.add_handler(CommandHandler("createpersona", handlers.create_persona, block=False))
     application.add_handler(CommandHandler("mypersonas", handlers.my_personas, block=False))
-    application.add_handler(edit_persona_conv_handler)
-    application.add_handler(delete_persona_conv_handler)
-    application.add_handler(CommandHandler("addbot", handlers.add_bot_to_chat, block=False))
+    application.add_handler(edit_persona_conv_handler) # Диалог редактирования (включает входы через команду и кнопку)
+    application.add_handler(delete_persona_conv_handler) # Диалог удаления (включает входы через команду и кнопку)
+    application.add_handler(CommandHandler("addbot", handlers.add_bot_to_chat, block=False)) # Оставляем команду на всякий случай
 
     application.add_handler(CommandHandler("mood", handlers.mood, block=False))
     application.add_handler(CommandHandler("reset", handlers.reset, block=False))
@@ -239,7 +272,8 @@ def main() -> None:
     application.add_handler(MessageHandler(filters.VOICE & ~filters.COMMAND, handlers.handle_voice, block=False))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.handle_message, block=False))
 
-    application.add_handler(CallbackQueryHandler(handlers.handle_callback_query, pattern='^set_mood_|^subscribe_'))
+    # Основной обработчик колбэков (обрабатывает всё, что не перехвачено диалогами)
+    application.add_handler(CallbackQueryHandler(handlers.handle_callback_query)) # <-- Убрали pattern, чтобы ловить всё остальное
 
     application.add_error_handler(handlers.error_handler)
     logger.info("Handlers registered.")
@@ -247,10 +281,9 @@ def main() -> None:
     logger.info("Starting bot polling...")
     application.run_polling(
         allowed_updates=Update.ALL_TYPES,
-        drop_pending_updates=True
+        drop_pending_updates=True # Сбрасываем старые апдейты при перезапуске
     )
     logger.info("----- Bot Stopped -----")
-
 
 if __name__ == "__main__":
     main()
