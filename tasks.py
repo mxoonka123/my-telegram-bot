@@ -1,121 +1,150 @@
-# tasks.py
-
 import asyncio
 import logging
 import random
 import httpx
 import re
 from telegram.constants import ChatAction, ParseMode
-from telegram.ext import Application, ContextTypes # Добавлен ContextTypes
+from telegram.ext import Application, ContextTypes
 from telegram.error import TelegramError
 from typing import List, Dict, Any, Optional, Union, Tuple
 from datetime import datetime, timedelta, timezone
 
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy import func, select
+
 from db import (
     get_all_active_chat_bot_instances, SessionLocal, User, ChatBotInstance, BotInstance,
-    check_and_update_user_limits, get_db, PersonaConfig # Добавлен PersonaConfig
+    check_and_update_user_limits, get_db, PersonaConfig
 )
-from sqlalchemy import func # Добавлен func
 from persona import Persona
 from utils import postprocess_response, extract_gif_links
 from handlers import send_to_langdock, process_and_send_response
-from config import FREE_PERSONA_LIMIT, PAID_PERSONA_LIMIT, FREE_DAILY_MESSAGE_LIMIT, PAID_DAILY_MESSAGE_LIMIT # Добавлены лимиты
+from config import FREE_PERSONA_LIMIT, PAID_PERSONA_LIMIT, FREE_DAILY_MESSAGE_LIMIT, PAID_DAILY_MESSAGE_LIMIT
 
 logger = logging.getLogger(__name__)
 
-# spam_task пока закомментирован, как и раньше
-# async def spam_task(application: Application):
-#     ...
 
-# Добавляем context в аргументы
 async def reset_daily_limits_task(context: ContextTypes.DEFAULT_TYPE):
-    logger.info("Daily limit reset task triggered.")
-    logger.info("Limit reset task: Resetting daily message counts...")
+    logger.info("Task started: Resetting daily message counts...")
     updated_count = 0
-    db_session = None # Инициализируем переменную сессии
+    db_session = None
     try:
-        with next(get_db()) as db_session: # Используем db_session здесь
-            today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-            result = db_session.query(User).filter(
-                User.last_message_reset < today_start
-            ).update({
-                User.daily_message_count: 0,
-                User.last_message_reset: datetime.now(timezone.utc)
-            }, synchronize_session=False)
-            db_session.commit()
-            updated_count = result
-            if updated_count > 0:
-                 logger.info(f"Limit reset task: Reset counts for {updated_count} users.")
-            else:
-                 logger.debug("Limit reset task: No users needed a reset.")
-    except Exception as e:
-        logger.error(f"Error during daily limit reset: {e}", exc_info=True)
-        if db_session and db_session.is_active: # Проверяем db_session перед роллбэком
-             try:
-                 db_session.rollback()
-             except Exception as rb_e:
-                 logger.error(f"Error during rollback in reset_daily_limits_task: {rb_e}")
+        with next(get_db()) as db_session:
+            now = datetime.now(timezone.utc)
+            today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
 
+            # Find users whose last reset was before today
+            users_to_reset = db_session.execute(
+                select(User.id)
+                .where(User.last_message_reset < today_start)
+            ).scalars().all()
 
-# Меняем application на context, получаем application из context.job.data
-async def check_subscription_expiry_task(context: ContextTypes.DEFAULT_TYPE):
-    application = context.job.data # Получаем application
-    logger.info("Subscription expiry check task triggered.") # Убрали "started"
-
-    now = datetime.now(timezone.utc)
-    expired_count = 0
-    db_session = None # Инициализируем переменную сессии
-    try:
-        with next(get_db()) as db_session: # Используем db_session здесь
-            expired_users = db_session.query(User).filter(
-                User.is_subscribed == True,
-                User.subscription_expires_at != None,
-                User.subscription_expires_at <= now
-            ).all()
-
-            if expired_users:
-                user_ids_to_update = [user.id for user in expired_users]
-                db_session.query(User).filter(User.id.in_(user_ids_to_update)).update(
-                    {User.is_subscribed: False},
-                    synchronize_session=False
+            if users_to_reset:
+                result = db_session.execute(
+                    User.__table__.update()
+                    .where(User.id.in_(users_to_reset))
+                    .values(
+                        daily_message_count=0,
+                        last_message_reset=now
+                    )
                 )
                 db_session.commit()
-                expired_count = len(user_ids_to_update)
+                updated_count = result.rowcount
+                logger.info(f"Limit reset task: Reset counts for {updated_count} users.")
+            else:
+                 logger.debug("Limit reset task: No users needed a reset.")
+    except SQLAlchemyError as e:
+        logger.error(f"Error during daily limit reset: {e}", exc_info=True)
+        # Rollback handled by context manager
+    except Exception as e:
+        logger.error(f"Unexpected error during daily limit reset: {e}", exc_info=True)
+        if db_session and db_session.is_active:
+            try: db_session.rollback()
+            except Exception as rb_e: logger.error(f"Error during rollback: {rb_e}")
+
+
+async def check_subscription_expiry_task(context: ContextTypes.DEFAULT_TYPE):
+    if not isinstance(context.job.data, Application):
+        logger.error("check_subscription_expiry_task: context.job.data is not a PTB Application instance.")
+        return
+    application: Application = context.job.data
+    logger.info("Task started: Checking subscription expiry...")
+
+    now = datetime.now(timezone.utc)
+    expired_users_info = [] # Store info needed for notification
+    db_session = None
+    try:
+        with next(get_db()) as db_session:
+            # Find users whose subscription expires now or earlier
+            expired_users_query = (
+                select(User.id, User.telegram_id, User.daily_message_count)
+                .where(
+                    User.is_subscribed == True,
+                    User.subscription_expires_at != None,
+                    User.subscription_expires_at <= now
+                )
+            )
+            expired_users_result = db_session.execute(expired_users_query).all()
+
+            if expired_users_result:
+                user_ids_to_update = [user.id for user in expired_users_result]
+
+                # Update subscription status in DB
+                update_stmt = (
+                    User.__table__.update()
+                    .where(User.id.in_(user_ids_to_update))
+                    .values(is_subscribed=False) # Keep expiry date for history
+                )
+                result = db_session.execute(update_stmt)
+                db_session.commit()
+                expired_count = result.rowcount
                 logger.info(f"Subscription expiry task: Deactivated {expired_count} expired subscriptions.")
 
-                # Обновляем объекты пользователей в сессии после коммита, чтобы получить новые лимиты
-                # Или можно передать старые лимиты в сообщение, как было
-                # Пока оставим как было - передаем старые лимиты
-                for user in expired_users:
-                    logger.info(f"Subscription expired for user {user.telegram_id}. Notifying.")
-                    try:
-                         # Считаем количество персон для сообщения
-                         persona_count = db_session.query(func.count(PersonaConfig.id)).filter(PersonaConfig.owner_id == user.id).scalar() or 0
-                         text = (
-                             f"⏳ ваша премиум подписка истекла.\n"
-                             f"текущие лимиты (Free):\n"
-                             # Показываем счетчик сообщений на момент проверки (он мог измениться после)
-                             # и новый лимит FREE_DAILY_MESSAGE_LIMIT
-                             f"сообщения: {user.daily_message_count}/{FREE_DAILY_MESSAGE_LIMIT} | "
-                             f"личности: {persona_count}/{FREE_PERSONA_LIMIT}\n\n"
-                             "чтобы продолжить пользоваться всеми возможностями, вы можете снова оформить подписку командой /subscribe"
-                         )
-                         await application.bot.send_message(
-                             chat_id=user.telegram_id,
-                             text=text,
-                             parse_mode=ParseMode.MARKDOWN
-                         )
-                    except TelegramError as te:
-                        logger.warning(f"Failed to send expiry notification to user {user.telegram_id}: {te}")
-                    except Exception as e_notify:
-                        logger.error(f"Unexpected error sending expiry notification to user {user.telegram_id}: {e_notify}", exc_info=True)
+                # Prepare info for notifications
+                for user_id, telegram_id, daily_count in expired_users_result:
+                    # Get current persona count for the notification
+                    persona_count = db_session.query(func.count(PersonaConfig.id)).filter(PersonaConfig.owner_id == user_id).scalar() or 0
+                    expired_users_info.append({
+                        "telegram_id": telegram_id,
+                        "daily_count": daily_count,
+                        "persona_count": persona_count
+                    })
             else:
                 logger.debug("Subscription expiry task: No expired subscriptions found.")
 
+    except SQLAlchemyError as e:
+        logger.error(f"Error during subscription expiry check (DB phase): {e}", exc_info=True)
+        # Rollback handled by context manager
+        return # Stop if DB failed
     except Exception as e:
-        logger.error(f"Error during subscription expiry check: {e}", exc_info=True)
-        if db_session and db_session.is_active: # Проверяем db_session
-             try:
-                 db_session.rollback()
-             except Exception as rb_e:
-                 logger.error(f"Error during rollback in check_subscription_expiry_task: {rb_e}")
+        logger.error(f"Unexpected error during subscription expiry check (DB phase): {e}", exc_info=True)
+        if db_session and db_session.is_active:
+             try: db_session.rollback()
+             except Exception as rb_e: logger.error(f"Error during rollback: {rb_e}")
+        return # Stop if DB failed
+
+    # Send notifications outside the DB transaction
+    if expired_users_info:
+        logger.info(f"Sending expiry notifications to {len(expired_users_info)} users.")
+        for user_info in expired_users_info:
+            telegram_id = user_info["telegram_id"]
+            try:
+                 text = (
+                     f"⏳ ваша премиум подписка истекла.\n"
+                     f"текущие лимиты (Free):\n"
+                     f"сообщения: {user_info['daily_count']}/{FREE_DAILY_MESSAGE_LIMIT} | " # Show count at expiry, new limit
+                     f"личности: {user_info['persona_count']}/{FREE_PERSONA_LIMIT}\n\n"
+                     "чтобы продолжить пользоваться всеми возможностями, вы можете снова оформить подписку командой /subscribe"
+                 )
+                 await application.bot.send_message(
+                     chat_id=telegram_id,
+                     text=text,
+                     parse_mode=ParseMode.MARKDOWN # Use constant from telegram.constants
+                 )
+                 logger.info(f"Sent expiry notification to user {telegram_id}.")
+                 await asyncio.sleep(0.1) # Small delay between messages
+            except TelegramError as te:
+                # Handle specific errors like blocked bot, chat not found, etc.
+                logger.warning(f"Failed to send expiry notification to user {telegram_id}: {te}")
+            except Exception as e_notify:
+                logger.error(f"Unexpected error sending expiry notification to user {telegram_id}: {e_notify}", exc_info=True)
