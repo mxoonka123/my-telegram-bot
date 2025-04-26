@@ -1,13 +1,11 @@
-# requirements.txt
-
 python-telegram-bot[ext]==21.0.1
 httpx[http2]==0.27.0
 SQLAlchemy==2.0.31
-# psycopg2-binary==2.9.9 # <-- Закомментировали или удалили
-psycopg[binary]==3.1.18 # <-- Добавили эту строку
+psycopg[binary]==3.1.18
 python-dotenv==1.0.1
 yookassa==3.5.0
 Flask==3.0.3
 gunicorn==22.0.0
 telegraph-api==1.1.0
 markdown==3.6
+pydantic==2.7.1 # Added for telegraph validation fix if needed, or check telegraph-api version compatibility
