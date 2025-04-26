@@ -18,7 +18,8 @@ from telegram.ext import (
     CallbackQueryHandler, ConversationHandler, Defaults
 )
 from telegram.constants import ParseMode as TelegramParseMode
-from telegraph_api import Telegraph, exceptions as telegraph_exceptions, types as telegraph_types
+# Убираем импорт types
+from telegraph_api import Telegraph, exceptions as telegraph_exceptions
 from pydantic import ValidationError
 
 
@@ -212,11 +213,14 @@ async def setup_telegraph_page(application: Application):
             return_content=False
         )
 
-        if isinstance(created_page, telegraph_types.Page) and hasattr(created_page, 'url') and created_page.url:
+        # Убираем проверку isinstance(..., telegraph_types.Page)
+        if created_page and hasattr(created_page, 'url') and created_page.url:
             page_url = created_page.url
             logger.info(f"Successfully created/updated Telegra.ph page: {page_url}")
         else:
-            logger.error(f"Telegra.ph create_page did not return a valid Page object with a URL. Response type: {type(created_page)}, Response: {created_page}")
+            # Логируем тип и значение, если проверка не прошла
+            logger.error(f"Telegra.ph create_page did not return expected object with a URL. Response type: {type(created_page)}, Response: {created_page}")
+
 
     except telegraph_exceptions.TelegraphError as te:
          logger.error(f"Telegraph API Error during page creation: {te}", exc_info=True)
