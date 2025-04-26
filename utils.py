@@ -3,94 +3,82 @@ import urllib.parse
 from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Any, Optional, Union, Tuple
 import random
+import logging
+
+logger = logging.getLogger(__name__)
 
 def get_time_info():
-    now = datetime.now(timezone.utc)
-    # Using common timezones for example
-    try:
-        msk = now.astimezone(timezone(timedelta(hours=3)))
-        msk_str = msk.strftime('%H:%M %d.%m.%Y')
-    except Exception:
-        msk_str = "N/A"
-    try:
-        cet = now.astimezone(timezone(timedelta(hours=1))) # Central European Time (Winter)
-        cet_str = cet.strftime('%H:%M %d.%m.%Y')
-    except Exception:
-        cet_str = "N/A"
-    try:
-        est = now.astimezone(timezone(timedelta(hours=-5))) # US Eastern Standard Time
-        est_str = est.strftime('%H:%M %d.%m.%Y')
-    except Exception:
-        est_str = "N/A"
+    now_utc = datetime.now(timezone.utc)
+    time_parts = [f"utc {now_utc.strftime('%H:%M %d.%m.%Y')}"]
 
-    return (
-        f"сейчас utc {now.strftime('%H:%M %d.%m.%Y')}, мск {msk_str}, берлин {cet_str}, нью-йорк {est_str}."
-    )
+    timezones = {
+        "мск": timedelta(hours=3),
+        "берлин": timedelta(hours=2), # CET with DST usually
+        "нью-йорк": timedelta(hours=-4) # EDT usually
+    }
+
+    for name, offset in timezones.items():
+        try:
+            local_time = now_utc.astimezone(timezone(offset))
+            time_parts.append(f"{name} {local_time.strftime('%H:%M %d.%m')}") # Shorter format
+        except Exception as e:
+             logger.warning(f"Could not calculate time for tz offset {offset}: {e}")
+             time_parts.append(f"{name} N/A")
+
+    return f"сейчас " + ", ".join(time_parts) + "."
+
 
 def extract_gif_links(text: str) -> List[str]:
+    if not isinstance(text, str): return []
     try:
+        # Minimal decoding, avoid errors
         text = urllib.parse.unquote(text)
     except Exception:
-        pass # Ignore decoding errors
+        pass # Ignore decoding errors if input is malformed
 
-    # More robust regex for URLs ending in .gif, potentially with query params
-    # Also matches common GIF hosting patterns like Giphy
+    # Common GIF patterns
     gif_patterns = [
-        r'(https?://[^\s<>"\']+\.gif(?:[?#][^\s<>"\']*)?)', # .gif links
-        r'(https?://media\.giphy\.com/media/[a-zA-Z0-9]+(?:/giphy\.gif)?(?:[?#][^\s<>"\']*)?)', # Giphy media links
-        r'(https?://(?:www\.)?tenor\.com/view/[a-zA-Z0-9-]+/[a-zA-Z0-9-]+)', # Tenor links (might not be direct gif, but usually render)
-        r'(https?://(?:i\.)?imgur\.com/[a-zA-Z0-9]+\.gif(?:[?#][^\s<>"\']*)?)' # Imgur gif links
+        r'(https?://[^\s<>"\']+\.gif(?:[?#][^\s<>"\']*)?)', # Direct .gif
+        r'(https?://media\.giphy\.com/media/[a-zA-Z0-9]+(?:/giphy\.gif)?(?:[?#][^\s<>"\']*)?)', # Giphy
+        # r'(https?://(?:www\.)?tenor\.com/view/[a-zA-Z0-9-]+(?:/[a-zA-Z0-9-]+)?)', # Tenor (often links to page, not direct gif) - maybe exclude
+        r'(https?://(?:i\.)?imgur\.com/[a-zA-Z0-9]+\.gif(?:[?#][^\s<>"\']*)?)' # Imgur direct .gif
     ]
 
     gif_links = set()
     for pattern in gif_patterns:
-         found = re.findall(pattern, text, re.IGNORECASE)
-         gif_links.update(found)
+         try:
+             found = re.findall(pattern, text, re.IGNORECASE)
+             gif_links.update(found)
+         except Exception as e:
+              logger.error(f"Regex error in extract_gif_links for pattern '{pattern}': {e}")
 
 
-    # Basic filtering: ensure it looks like a URL
-    valid_links = [link for link in gif_links if link.startswith(('http://', 'https://')) and ' ' not in link]
+    # Basic validation and remove duplicates
+    valid_links = [link for link in gif_links if isinstance(link, str) and link.startswith(('http://', 'https://')) and ' ' not in link]
 
-    return list(valid_links)
+    return list(set(valid_links)) # Return unique list
 
 def postprocess_response(response: str) -> List[str]:
     if not response or not isinstance(response, str):
         return []
 
-    # Normalize whitespace and remove excessive newlines/carriage returns
+    # 1. Normalize whitespace: Replace multiple spaces/newlines with single space
     response = re.sub(r'\s+', ' ', response).strip()
 
-    # Split primarily by sentence-ending punctuation followed by space
-    # Keep the punctuation with the sentence. Use lookbehind/lookahead.
+    # 2. Split into potential sentences/clauses
+    # Split by common sentence endings followed by space. Keep the punctuation.
+    # Also split by double newlines if they somehow survived normalization (less likely now)
     sentences = re.split(r'(?<=[.!?…])\s+', response)
 
-    # Further split long sentences without punctuation (heuristic)
-    processed_sentences = []
-    for sentence in sentences:
-         if len(sentence) > 250: # If a segment is very long without punctuation
-              # Try splitting by commas or just chunking
-              sub_sentences = re.split(r'(?<=,)\s+', sentence)
-              temp_buffer = ""
-              for sub in sub_sentences:
-                   if len(temp_buffer) + len(sub) < 200: # Combine short sub-sentences
-                        temp_buffer += (sub + " ")
-                   else:
-                        if temp_buffer:
-                            processed_sentences.append(temp_buffer.strip())
-                        temp_buffer = sub + " "
-              if temp_buffer:
-                  processed_sentences.append(temp_buffer.strip())
-         else:
-             processed_sentences.append(sentence)
-
-
-    # Merge short consecutive sentences intelligently
+    # 3. Process segments: Merge short ones, ensure no excessively long ones
     merged_messages = []
     current_message = ""
-    max_length = 150 # Target max length for a message part
-    min_length = 20 # Try not to have super short messages unless necessary
+    # Adjust thresholds as needed
+    max_length = 350 # Allow slightly longer messages if needed
+    ideal_length = 200 # Try to stay around this
+    min_length = 20 # Avoid tiny messages unless it's the whole response
 
-    for sentence in processed_sentences:
+    for sentence in sentences:
         sentence = sentence.strip()
         if not sentence:
             continue
@@ -98,23 +86,30 @@ def postprocess_response(response: str) -> List[str]:
         potential_length = len(current_message) + len(sentence) + (1 if current_message else 0)
 
         if not current_message:
-             current_message = sentence
-        elif potential_length <= max_length:
+            # Start new message
+            current_message = sentence
+        elif potential_length <= ideal_length:
+            # Add to current message if it fits nicely
+            current_message += " " + sentence
+        elif len(current_message) < min_length and potential_length <= max_length:
+             # If current message is very short, allow adding if it doesn't exceed max length too much
              current_message += " " + sentence
-        else: # potential_length > max_length
-             # If current message is too short, try adding anyway if it doesn't exceed max drastically
-             if len(current_message) < min_length and potential_length < max_length + 50:
-                 current_message += " " + sentence
-             else:
-                 # Finalize the current message and start a new one
-                 merged_messages.append(current_message)
-                 current_message = sentence
+        else:
+            # Current message is long enough, or adding makes it too long. Finalize current.
+            merged_messages.append(current_message)
+            current_message = sentence # Start new message with current sentence
 
-    # Add the last message
+    # Add the last remaining message
     if current_message:
         merged_messages.append(current_message)
 
-    # Final cleanup: ensure lowercase and strip again
+    # 4. Final cleanup: lowercase and strip again, filter empty
     final_messages = [msg.strip().lower() for msg in merged_messages if msg.strip()]
+
+    # 5. Sanity check: If somehow the result is empty but input wasn't, return original split differently
+    if not final_messages and response:
+         logger.warning("Postprocessing resulted in empty list, returning basic split.")
+         # Fallback to splitting by space if all else fails
+         return [part.lower() for part in response.split() if part]
 
     return final_messages
