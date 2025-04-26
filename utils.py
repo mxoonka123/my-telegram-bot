@@ -1,3 +1,5 @@
+# --- START OF FILE utils.py ---
+
 import re
 import urllib.parse
 from datetime import datetime, timezone, timedelta
@@ -6,6 +8,19 @@ import random
 import logging
 
 logger = logging.getLogger(__name__)
+
+# +++ ДОБАВЬ ЭТУ ФУНКЦИЮ +++
+def escape_markdown_v2(text: str) -> str:
+    """Escapes characters reserved in Telegram MarkdownV2."""
+    # Список символов, требующих экранирования в MarkdownV2
+    # Источник: https://core.telegram.org/bots/api#markdownv2-style
+    escape_chars = r'_*[]()~`>#+-=|{}.!'
+    # Экранируем символы, добавляя перед ними \
+    # Важно: сам \ тоже нужно экранировать, если он используется как обычный символ,
+    # но для простоты и в большинстве случаев достаточно экранировать только указанные символы.
+    # Используем re.escape для корректной обработки символов внутри [...] в regex
+    return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text)
+# +++ КОНЕЦ ДОБАВЛЕННОЙ ФУНКЦИИ +++
 
 def get_time_info():
     now_utc = datetime.now(timezone.utc)
@@ -113,3 +128,5 @@ def postprocess_response(response: str) -> List[str]:
          return [part.lower() for part in response.split() if part]
 
     return final_messages
+
+# --- END OF FILE utils.py ---
