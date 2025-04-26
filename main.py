@@ -10,7 +10,7 @@ from yookassa import Configuration as YookassaConfig
 from yookassa.domain.notification import WebhookNotification
 import json
 from sqlalchemy.exc import SQLAlchemyError, OperationalError
-import aiohttp # <-- Убедитесь, что aiohttp импортирован, если telegraph-api его требует неявно
+import aiohttp
 
 from telegram import Update
 from telegram.ext import (
@@ -18,9 +18,8 @@ from telegram.ext import (
     CallbackQueryHandler, ConversationHandler, Defaults
 )
 from telegram.constants import ParseMode as TelegramParseMode
-# Импортируем Telegraph и его исключения
-from telegraph_api import Telegraph, exceptions as telegraph_exceptions
-from pydantic import ValidationError # Оставляем на всякий случай, хотя create_page может не вызывать
+from telegraph_api import Telegraph, exceptions as telegraph_exceptions, types as telegraph_types
+from pydantic import ValidationError
 
 
 import config
@@ -33,10 +32,8 @@ flask_app = Flask(__name__)
 flask_logger = logging.getLogger('flask_webhook')
 
 
-# Configure Yookassa SDK for Webhook handler
 try:
     if config.YOOKASSA_SHOP_ID and config.YOOKASSA_SECRET_KEY and config.YOOKASSA_SHOP_ID.isdigit():
-        # Используем int() для account_id, как ожидает SDK
         YookassaConfig.configure(account_id=int(config.YOOKASSA_SHOP_ID), secret_key=config.YOOKASSA_SECRET_KEY)
         flask_logger.info(f"Yookassa SDK configured for webhook handler (Shop ID: {config.YOOKASSA_SHOP_ID}).")
     else:
@@ -59,7 +56,6 @@ def handle_yookassa_webhook():
             flask_logger.error("YOOKASSA_SHOP_ID/SECRET_KEY not configured correctly. Cannot process webhook.")
             return Response("Server configuration error", status=500)
         try:
-            # Переконфигурируем, если текущие настройки не совпадают (на случай, если они изменились)
              current_shop_id = int(config.YOOKASSA_SHOP_ID)
              if not YookassaConfig.secret_key or YookassaConfig.account_id != current_shop_id:
                   YookassaConfig.configure(account_id=current_shop_id, secret_key=config.YOOKASSA_SECRET_KEY)
@@ -134,8 +130,6 @@ def run_flask():
     port = int(os.environ.get("PORT", 8080))
     flask_logger.info(f"Starting Flask server on 0.0.0.0:{port}")
     try:
-        # Используем Gunicorn или другой WSGI сервер в production вместо flask_app.run
-        # Но для простоты пока оставляем run
         flask_app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
     except Exception as e:
         flask_logger.critical(f"Flask server thread failed to start or crashed: {e}", exc_info=True)
@@ -153,7 +147,6 @@ logging.getLogger("sqlalchemy").setLevel(logging.WARNING)
 logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
 logging.getLogger("werkzeug").setLevel(logging.WARNING)
 logging.getLogger("telegraph_api").setLevel(logging.INFO)
-# Уменьшаем уровень логгирования aiohttp, чтобы не видеть лишнее
 logging.getLogger("aiohttp").setLevel(logging.WARNING)
 
 
@@ -170,108 +163,96 @@ async def setup_telegraph_page(application: Application):
 
     telegraph = None
     try:
-        # Используем httpx сессию для Telegraph, если возможно (зависит от версии telegraph_api)
-        # Если telegraph_api использует aiohttp, то этот шаг не нужен
-        # session = httpx.AsyncClient()
-        # telegraph = Telegraph(access_token=config.TELEGRAPH_ACCESS_TOKEN, session=session)
-        telegraph = Telegraph(access_token=config.TELEGRAPH_ACCESS_TOKEN) # Стандартный вызов
-
+        telegraph = Telegraph(access_token=config.TELEGRAPH_ACCESS_TOKEN)
         account_info = await telegraph.get_account_info(fields=['author_name', 'page_count'])
         logger.info(f"Telegraph account info: {account_info}")
     except Exception as e:
         logger.error(f"Failed to initialize Telegraph or get account info: {e}", exc_info=True)
-        # if session: await session.aclose() # Закрываем сессию httpx, если создавали
         return
 
-    author_name = "@NunuAiBot" # Убедитесь, что это имя автора совпадает с тем, что в токене
+    author_name = "@NunuAiBot"
     tos_title = f"Пользовательское Соглашение @NunuAiBot"
     page_url = None
 
     try:
         tos_content_raw = handlers.TOS_TEXT
+        if not tos_content_raw or not isinstance(tos_content_raw, str):
+             logger.error("handlers.TOS_TEXT is empty or not a string. Cannot create ToS page.")
+             return
+
         tos_content_formatted = tos_content_raw.format(
             subscription_duration=config.SUBSCRIPTION_DURATION_DAYS,
             subscription_price=f"{config.SUBSCRIPTION_PRICE_RUB:.0f}",
             subscription_currency=config.SUBSCRIPTION_CURRENCY
-        ).replace("**", "") # Убираем Markdown для Telegra.ph
+        ).replace("**", "")
 
-        # Преобразуем текст в формат нод Telegra.ph
-        # Простейший вариант: один параграф
-        content_node_array = [{"tag": "p", "children": [tos_content_formatted.strip()]}]
-        # Более сложный: пытаемся сохранить абзацы
-        # paragraphs = [p.strip() for p in tos_content_formatted.split('\n') if p.strip()]
-        # content_node_array = [{"tag": "p", "children": [p]} for p in paragraphs]
+        paragraphs_raw = tos_content_formatted.splitlines()
+        content_node_array = []
+        for p_text in paragraphs_raw:
+            stripped_text = p_text.strip()
+            if stripped_text:
+                node = {"tag": "p", "children": [stripped_text]}
+                content_node_array.append(node)
+            else:
+                 pass
 
-        logger.debug(f"Telegra.ph content node array prepared: {str(content_node_array)[:200]}...")
+        if not content_node_array:
+            logger.error("content_node_array is empty after processing paragraphs. Cannot create page.")
+            return
+
+        logger.debug(f"Total nodes in content_node_array: {len(content_node_array)}")
+        logger.debug(f"First node example: {content_node_array[0] if content_node_array else 'N/A'}")
 
         logger.info("Attempting to create/update Telegra.ph page using create_page...")
 
-        # --- ИСПОЛЬЗУЕМ СТАНДАРТНЫЙ МЕТОД create_page ---
-        # Он ожидает content в виде списка словарей (Python list of dicts)
-        # Передаем content_node_array напрямую
         created_page = await telegraph.create_page(
             title=tos_title,
-            content=content_node_array, # Передаем массив нод
+            content=content_node_array,
             author_name=author_name,
-            # author_url = "https://t.me/NunuAiBot", # Можно добавить ссылку на автора
             return_content=False
         )
 
-        if created_page and hasattr(created_page, 'url'):
+        if isinstance(created_page, telegraph_types.Page) and hasattr(created_page, 'url') and created_page.url:
             page_url = created_page.url
             logger.info(f"Successfully created/updated Telegra.ph page: {page_url}")
         else:
-            logger.error(f"Telegra.ph create_page did not return a valid page object with URL. Response: {created_page}")
+            logger.error(f"Telegra.ph create_page did not return a valid Page object with a URL. Response type: {type(created_page)}, Response: {created_page}")
 
     except telegraph_exceptions.TelegraphError as te:
-         # Ловим специфичные ошибки Telegraph API
          logger.error(f"Telegraph API Error during page creation: {te}", exc_info=True)
-         # Попытка получить детали ошибки, если они есть
          if hasattr(te, 'response') and te.response:
              try:
                  response_text = await te.response.text()
                  logger.error(f"Telegraph API response body: {response_text}")
-             except Exception:
-                 logger.error("Could not read Telegraph API error response body.")
+             except Exception: pass
     except aiohttp.client_exceptions.ClientError as aiohttp_err:
-         # Ловим ошибки aiohttp (если telegraph_api использует его)
          logger.error(f"Aiohttp client error during Telegraph request: {aiohttp_err}", exc_info=True)
     except ValidationError as pydantic_err:
-         # Ловим ошибки валидации Pydantic (если они возникают в create_page)
          logger.error(f"Pydantic validation error during Telegraph operation: {pydantic_err}", exc_info=True)
     except Exception as e:
-         # Ловим все остальные непредвиденные ошибки
          logger.error(f"Unexpected error during Telegra.ph page creation: {e}", exc_info=True)
     finally:
-         # Закрываем сессию httpx, если создавали ее для telegraph
-         # if session: await session.aclose()
-         # Если telegraph_api использует свою сессию, она должна закрываться при выходе из контекста или при сборке мусора
          pass
 
-    # --- Финальное присвоение URL ---
     if page_url:
         application.bot_data['tos_url'] = page_url
         logger.info(f"Final ToS URL set in bot_data: {page_url}")
     else:
         logger.error("Failed to obtain Telegra.ph page URL.")
-        # Возможно, стоит добавить URL по умолчанию или инструкцию обратиться к админу
-        # application.bot_data['tos_url'] = "https://some-fallback-tos-link.com"
 
 
 async def post_init(application: Application):
     try:
         me = await application.bot.get_me()
         logger.info(f"Bot started as @{me.username} (ID: {me.id})")
-        # Запускаем setup_telegraph_page асинхронно
         asyncio.create_task(setup_telegraph_page(application))
-        # await setup_telegraph_page(application) # Если нужно дождаться завершения перед стартом задач
     except Exception as e:
         logger.error(f"Failed during post_init (get_me or scheduling setup_telegraph): {e}", exc_info=True)
 
     logger.info("Starting background tasks...")
     if application.job_queue:
-        application.job_queue.run_repeating(tasks.reset_daily_limits_task, interval=timedelta(hours=1), first=timedelta(seconds=15), name="daily_limit_reset_check") # Чуть позже запускаем
-        application.job_queue.run_repeating(tasks.check_subscription_expiry_task, interval=timedelta(hours=1), first=timedelta(seconds=30), name="subscription_expiry_check", data=application) # И эту
+        application.job_queue.run_repeating(tasks.reset_daily_limits_task, interval=timedelta(hours=1), first=timedelta(seconds=15), name="daily_limit_reset_check")
+        application.job_queue.run_repeating(tasks.check_subscription_expiry_task, interval=timedelta(hours=1), first=timedelta(seconds=30), name="subscription_expiry_check", data=application)
         logger.info("Background tasks scheduled.")
     else:
         logger.warning("JobQueue not available, background tasks not scheduled.")
@@ -279,7 +260,6 @@ async def post_init(application: Application):
 def main() -> None:
     logger.info("----- Bot Starting -----")
 
-    # --- Database Initialization ---
     try:
         db.initialize_database()
         db.create_tables()
@@ -291,12 +271,10 @@ def main() -> None:
          return
     logger.info("Database setup complete.")
 
-    # --- Flask Webhook Thread ---
     flask_thread = threading.Thread(target=run_flask, name="FlaskWebhookThread", daemon=True)
     flask_thread.start()
     logger.info("Flask thread for Yookassa webhook started.")
 
-    # --- Telegram Bot Application ---
     logger.info("Initializing Telegram Bot Application...")
     token = config.TELEGRAM_TOKEN
     if not token:
@@ -317,7 +295,6 @@ def main() -> None:
     )
     logger.info("Application built.")
 
-    # --- Conversation Handlers ---
     logger.info("Setting up Conversation Handlers...")
     edit_persona_conv_handler = ConversationHandler(
         entry_points=[
@@ -378,7 +355,6 @@ def main() -> None:
     )
     logger.info("Conversation Handlers configured.")
 
-    # --- Register Handlers ---
     logger.info("Registering handlers...")
     application.add_handler(CommandHandler("start", handlers.start))
     application.add_handler(CommandHandler("help", handlers.help_command))
@@ -400,7 +376,6 @@ def main() -> None:
     application.add_error_handler(handlers.error_handler)
     logger.info("Handlers registered.")
 
-    # --- Start Bot ---
     logger.info("Starting bot polling...")
     application.run_polling(
         allowed_updates=Update.ALL_TYPES,
