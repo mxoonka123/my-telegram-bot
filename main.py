@@ -11,6 +11,7 @@ from yookassa.domain.notification import WebhookNotification
 import json
 from sqlalchemy.exc import SQLAlchemyError, OperationalError
 import aiohttp
+import httpx # <-- Добавляем импорт httpx
 
 from telegram import Update
 from telegram.ext import (
@@ -18,7 +19,7 @@ from telegram.ext import (
     CallbackQueryHandler, ConversationHandler, Defaults
 )
 from telegram.constants import ParseMode as TelegramParseMode
-# Убираем импорт types
+# Оставляем импорт Telegraph только для get_account_info и exceptions
 from telegraph_api import Telegraph, exceptions as telegraph_exceptions
 from pydantic import ValidationError
 
@@ -157,21 +158,24 @@ logger = logging.getLogger(__name__)
 async def setup_telegraph_page(application: Application):
     logger.info("Setting up Telegra.ph ToS page...")
     application.bot_data['tos_url'] = None
+    access_token = config.TELEGRAPH_ACCESS_TOKEN
 
-    if not config.TELEGRAPH_ACCESS_TOKEN:
+    if not access_token:
         logger.error("TELEGRAPH_ACCESS_TOKEN is not set. Cannot create/update ToS page.")
         return
 
-    telegraph = None
+    # Попробуем получить инфо об аккаунте через библиотеку, чтобы проверить токен
     try:
-        telegraph = Telegraph(access_token=config.TELEGRAPH_ACCESS_TOKEN)
+        telegraph = Telegraph(access_token=access_token)
         account_info = await telegraph.get_account_info(fields=['author_name', 'page_count'])
-        logger.info(f"Telegraph account info: {account_info}")
+        logger.info(f"Telegraph account info check successful: {account_info}")
     except Exception as e:
-        logger.error(f"Failed to initialize Telegraph or get account info: {e}", exc_info=True)
+        logger.error(f"Failed to get Telegraph account info (token might be invalid): {e}", exc_info=True)
+        # Можно не прерывать, а попробовать создать страницу все равно,
+        # но лучше прервать, если токен невалиден
         return
 
-    author_name = "@NunuAiBot"
+    author_name = "@NunuAiBot" # Убедитесь, что это имя автора совпадает с тем, что в токене
     tos_title = f"Пользовательское Соглашение @NunuAiBot"
     page_url = None
 
@@ -194,47 +198,63 @@ async def setup_telegraph_page(application: Application):
             if stripped_text:
                 node = {"tag": "p", "children": [stripped_text]}
                 content_node_array.append(node)
-            else:
-                 pass
 
         if not content_node_array:
             logger.error("content_node_array is empty after processing paragraphs. Cannot create page.")
             return
 
-        logger.debug(f"Total nodes in content_node_array: {len(content_node_array)}")
-        logger.debug(f"First node example: {content_node_array[0] if content_node_array else 'N/A'}")
+        # --- Прямой запрос через httpx ---
+        telegraph_api_url = "https://api.telegra.ph/createPage"
+        payload = {
+            "access_token": access_token,
+            "title": tos_title,
+            "author_name": author_name,
+            "content": json.dumps(content_node_array), # Важно: передаем JSON-строку!
+            "return_content": False
+        }
+        logger.info(f"Sending direct request to {telegraph_api_url}...")
+        logger.debug(f"Payload (content truncated): access_token=..., title='{tos_title}', author_name='{author_name}', content='{payload['content'][:100]}...', return_content=False")
 
-        logger.info("Attempting to create/update Telegra.ph page using create_page...")
+        async with httpx.AsyncClient() as client:
+            response = await client.post(telegraph_api_url, data=payload) # Используем data для form-encoded
 
-        created_page = await telegraph.create_page(
-            title=tos_title,
-            content=content_node_array,
-            author_name=author_name,
-            return_content=False
-        )
+        logger.info(f"Telegraph API direct response status: {response.status_code}")
 
-        # Убираем проверку isinstance(..., telegraph_types.Page)
-        if created_page and hasattr(created_page, 'url') and created_page.url:
-            page_url = created_page.url
-            logger.info(f"Successfully created/updated Telegra.ph page: {page_url}")
+        if response.status_code == 200:
+            try:
+                response_data = response.json()
+                logger.debug(f"Telegraph API direct response JSON: {response_data}")
+                if response_data.get("ok"):
+                    result = response_data.get("result")
+                    if result and isinstance(result, dict) and result.get("url"):
+                        page_url = result["url"]
+                        logger.info(f"Successfully created/updated Telegra.ph page via direct request: {page_url}")
+                    else:
+                        logger.error(f"Telegraph API direct request OK=true, but 'result' or 'url' invalid/missing. Result: {result}")
+                else:
+                    error_message = response_data.get("error", "Unknown error")
+                    logger.error(f"Telegraph API direct request returned error: {error_message}")
+                    # Особо проверяем на CONTENT_TEXT_REQUIRED, если вдруг опять
+                    if "CONTENT_TEXT_REQUIRED" in error_message:
+                        logger.error(">>> Received CONTENT_TEXT_REQUIRED even with direct request! Check payload format.")
+                        logger.error(f"Sent content JSON string: {payload['content']}")
+
+
+            except json.JSONDecodeError:
+                logger.error(f"Failed to decode JSON response from Telegraph API direct request. Response text: {response.text}")
+            except Exception as parse_err:
+                 logger.error(f"Error parsing successful Telegraph API direct response: {parse_err}", exc_info=True)
         else:
-            # Логируем тип и значение, если проверка не прошла
-            logger.error(f"Telegra.ph create_page did not return expected object with a URL. Response type: {type(created_page)}, Response: {created_page}")
+            logger.error(f"Telegraph API direct request failed with status {response.status_code}. Response text: {response.text}")
 
 
-    except telegraph_exceptions.TelegraphError as te:
-         logger.error(f"Telegraph API Error during page creation: {te}", exc_info=True)
-         if hasattr(te, 'response') and te.response:
-             try:
-                 response_text = await te.response.text()
-                 logger.error(f"Telegraph API response body: {response_text}")
-             except Exception: pass
-    except aiohttp.client_exceptions.ClientError as aiohttp_err:
-         logger.error(f"Aiohttp client error during Telegraph request: {aiohttp_err}", exc_info=True)
-    except ValidationError as pydantic_err:
-         logger.error(f"Pydantic validation error during Telegraph operation: {pydantic_err}", exc_info=True)
+    # Ловим только ошибки, связанные с httpx или JSON, т.к. ошибки Telegraph API обработаны выше
+    except httpx.RequestError as http_err:
+         logger.error(f"HTTPX network error during direct Telegraph request: {http_err}", exc_info=True)
+    except json.JSONDecodeError as json_err: # Ошибка при дампе content_node_array в строку
+        logger.error(f"Failed to dump content_node_array to JSON string: {json_err}", exc_info=True)
     except Exception as e:
-         logger.error(f"Unexpected error during Telegra.ph page creation: {e}", exc_info=True)
+         logger.error(f"Unexpected error during direct Telegra.ph page creation: {e}", exc_info=True)
     finally:
          pass
 
@@ -242,7 +262,7 @@ async def setup_telegraph_page(application: Application):
         application.bot_data['tos_url'] = page_url
         logger.info(f"Final ToS URL set in bot_data: {page_url}")
     else:
-        logger.error("Failed to obtain Telegra.ph page URL.")
+        logger.error("Failed to obtain Telegra.ph page URL using direct request.")
 
 
 async def post_init(application: Application):
