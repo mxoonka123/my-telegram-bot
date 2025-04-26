@@ -162,6 +162,8 @@ logging.getLogger("telegram.ext").setLevel(logging.INFO)
 logging.getLogger("sqlalchemy").setLevel(logging.WARNING) # Set to INFO for SQL query debugging
 logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
 logging.getLogger("werkzeug").setLevel(logging.WARNING) # Flask dev server logs
+logging.getLogger("telegraph_api").setLevel(logging.INFO) # Log telegraph info
+
 
 logger = logging.getLogger(__name__)
 
@@ -177,53 +179,32 @@ async def setup_telegraph_page(application: Application):
     telegraph = None
     try:
         telegraph = Telegraph(access_token=config.TELEGRAPH_ACCESS_TOKEN)
-        # Test connection with get_account_info
         account_info = await telegraph.get_account_info(fields=['author_name', 'page_count'])
         logger.info(f"Telegraph account info: {account_info}")
     except Exception as e:
         logger.error(f"Failed to initialize Telegraph or get account info: {e}", exc_info=True)
-        return # Cannot proceed without Telegraph client
+        return
 
     author_name = "@NunuAiBot"
     tos_title = f"Пользовательское Соглашение @NunuAiBot"
 
     try:
         tos_content_raw = handlers.TOS_TEXT
+        # --- Use simple string content ---
         tos_content_formatted = tos_content_raw.format(
             subscription_duration=config.SUBSCRIPTION_DURATION_DAYS,
             subscription_price=f"{config.SUBSCRIPTION_PRICE_RUB:.0f}",
             subscription_currency=config.SUBSCRIPTION_CURRENCY
-        )
+        ).replace("**", "") # Remove markdown bold, keep newlines
+        # --------------------------------
 
-        # Convert Markdown-like text to Telegra.ph node format if needed
-        # Simple conversion: **bold** -> {"tag": "b", "children": ["bold"]}
-        # \n\n -> {"tag": "p", "children": ["Paragraph."]}
-        # For simplicity, let's just replace ** with <b> tags and newlines with <p>
-        # Note: telegraph_api library might handle simple strings, but let's be explicit
-        content_html = tos_content_formatted.replace("**", "") # Remove markdown bold
-        paragraphs = content_html.strip().split('\n\n')
-        content_nodes = []
-        for para in paragraphs:
-            lines = para.split('\n')
-            para_content = []
-            for i, line in enumerate(lines):
-                 if line.strip(): # Ignore empty lines within paragraph
-                     para_content.append(line.strip())
-                     if i < len(lines) - 1: # Add line break within paragraph
-                         para_content.append({"tag": "br"})
-            if para_content:
-                 content_nodes.append({"tag": "p", "children": para_content})
+        logger.debug(f"Attempting to create Telegra.ph page with string content (length: {len(tos_content_formatted)}).")
 
-        logger.debug(f"Attempting to create Telegra.ph page with {len(content_nodes)} nodes.")
-
-        # --- Create Page ---
-        # Let's always create a new page for simplicity and to ensure latest version
-        # We lose the old URL, but it's simpler than finding/editing
+        # --- Create Page with String Content ---
         page_data = await telegraph.create_page(
              title=tos_title,
-             content=content_nodes, # Use node list
+             content=tos_content_formatted, # Pass the formatted string directly
              author_name=author_name,
-             # return_content=False # Don't need content back
         )
         logger.debug(f"Telegra.ph create_page response: {page_data}")
 
@@ -235,18 +216,21 @@ async def setup_telegraph_page(application: Application):
             logger.error(f"Could not extract URL from Telegra.ph API response: {page_data}")
 
     except ValidationError as e:
-         # This might happen if the content format is wrong
          logger.error(f"Pydantic ValidationError during Telegra.ph operation: {e}", exc_info=True)
-         logger.error("Check Telegra.ph content format (nodes).")
     except Exception as e:
-        logger.error(f"Failed to setup Telegra.ph page: {e}", exc_info=True)
+        # Catching specific TelegraphError if possible
+        if "CONTENT_TEXT_REQUIRED" in str(e):
+             logger.error(f"Telegraph Error: CONTENT_TEXT_REQUIRED. Library might still expect node format. Content length: {len(tos_content_formatted)}", exc_info=True)
+        elif "CONTENT_FORMAT_INVALID" in str(e):
+             logger.error(f"Telegraph Error: CONTENT_FORMAT_INVALID. Content: {tos_content_formatted[:200]}...", exc_info=True)
+        else:
+             logger.error(f"Failed to setup Telegra.ph page: {e}", exc_info=True)
 
 
 async def post_init(application: Application):
     try:
         me = await application.bot.get_me()
         logger.info(f"Bot started as @{me.username} (ID: {me.id})")
-        # Setup telegraph page after bot is confirmed running
         await setup_telegraph_page(application)
     except Exception as e:
         logger.error(f"Failed during post_init (get_me or setup_telegraph): {e}", exc_info=True)
