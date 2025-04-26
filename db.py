@@ -204,13 +204,13 @@ engine_args = {}
 if DATABASE_URL.startswith("sqlite"):
     engine_args["connect_args"] = {"check_same_thread": False}
 
-# --- ИЗМЕНЕНИЕ ЗДЕСЬ: Убираем pool_recycle ---
+# --- Убрали pool_recycle ---
 engine = create_engine(
     DATABASE_URL,
     pool_size=10,       # Базовый размер пула
     max_overflow=20,    # Дополнительные соединения сверх базового
     pool_timeout=30,    # Таймаут ожидания свободного соединения (секунды)
-    # pool_recycle=1800,  # <-- УБРАЛИ ЭТУ СТРОКУ
+    # pool_recycle=1800, # <-- УБРАЛИ
     **engine_args
 )
 # --- КОНЕЦ ИЗМЕНЕНИЯ ---
