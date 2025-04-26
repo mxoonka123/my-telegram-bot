@@ -16,8 +16,9 @@ from telegram.ext import (
     Application, CommandHandler, MessageHandler, ContextTypes, filters,
     CallbackQueryHandler, ConversationHandler, Defaults
 )
-from telegram.constants import ParseMode as TelegramParseMode # Import with alias
-from telegraph_api import Telegraph, exceptions as telegraph_exceptions # Import exceptions
+from telegram.constants import ParseMode as TelegramParseMode
+# Убираем импорт Page, т.к. не будем парсить ответ в него
+from telegraph_api import Telegraph, exceptions as telegraph_exceptions
 from pydantic import ValidationError
 
 
@@ -140,7 +141,7 @@ logging.getLogger("telegram.ext").setLevel(logging.INFO)
 logging.getLogger("sqlalchemy").setLevel(logging.WARNING)
 logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
 logging.getLogger("werkzeug").setLevel(logging.WARNING)
-logging.getLogger("telegraph_api").setLevel(logging.INFO) # Keep INFO for telegraph debugging
+logging.getLogger("telegraph_api").setLevel(logging.INFO)
 
 
 logger = logging.getLogger(__name__)
@@ -173,54 +174,55 @@ async def setup_telegraph_page(application: Application):
             subscription_duration=config.SUBSCRIPTION_DURATION_DAYS,
             subscription_price=f"{config.SUBSCRIPTION_PRICE_RUB:.0f}",
             subscription_currency=config.SUBSCRIPTION_CURRENCY
-        ).replace("**", "") # Use plain text, seems more reliable for create_page
+        ).replace("**", "") # Use plain text for content
 
-        logger.debug(f"Attempting to create Telegra.ph page with string content (length: {len(tos_content_formatted)}).")
+        # --- Prepare content in Telegra.ph node format ---
+        # Simple approach: wrap the entire text in one paragraph node
+        # More complex formatting (like preserving paragraphs) is possible but harder
+        content_node_array = [{"tag": "p", "children": [tos_content_formatted]}]
+        content_json_string = json.dumps(content_node_array, ensure_ascii=False)
+        logger.debug(f"Telegra.ph content prepared as JSON string: {content_json_string[:200]}...")
 
-        # --- Create Page ---
-        # This call might raise ValidationError or TelegraphError
-        page_data = await telegraph.create_page(
-             title=tos_title,
-             content=tos_content_formatted, # Pass the formatted string
-             author_name=author_name,
-        )
-        logger.debug(f"Telegra.ph create_page successful response (parsed by library): {page_data}")
+        # --- Prepare parameters for the manual API call ---
+        params = {
+            'access_token': config.TELEGRAPH_ACCESS_TOKEN, # Token needed for API call
+            'title': tos_title,
+            'author_name': author_name,
+            'content': content_json_string, # Pass the JSON string
+            'return_content': False # We don't need the content back
+        }
 
-        # If no ValidationError was raised, library parsed it successfully (unexpected?)
-        if isinstance(page_data, dict) and 'url' in page_data:
-            page_url = page_data['url']
-            logger.info(f"Successfully created Telegra.ph page (standard way): {page_url}")
-        else:
-             logger.error(f"Could not extract URL from Telegra.ph API response (standard way): {page_data}")
+        logger.info("Making manual request to Telegra.ph createPage API...")
+        # --- Make request using the library's low-level method BUT WITHOUT Pydantic model ---
+        # We expect this to return the raw dictionary response from the server
+        raw_response = await telegraph.make_request('createPage', params=params, method="post", model=None) # Pass params, not json; model=None is key
+        logger.debug(f"Raw response from Telegra.ph createPage: {raw_response}")
 
-
-    except ValidationError as e:
-        # --- ATTENTION: WORKAROUND FOR Pydantic ValidationError ---
-        logger.warning(f"Pydantic ValidationError during Telegra.ph response parsing (EXPECTED WORKAROUND): {e}. Trying to extract URL from raw error data...")
-        try:
-            # Attempt to extract the raw dictionary that failed validation
-            # Pydantic v2 structure: e.errors()[0]['input']
-            raw_response_data = e.errors()[0].get('input')
-            if isinstance(raw_response_data, dict) and 'url' in raw_response_data:
-                page_url = raw_response_data['url']
-                logger.info(f"Successfully extracted Telegra.ph page URL from ValidationError data: {page_url}")
+        # --- Process the raw response ---
+        if isinstance(raw_response, dict) and raw_response.get('ok') is True:
+            result_data = raw_response.get('result')
+            if isinstance(result_data, dict) and 'url' in result_data:
+                page_url = result_data['url']
+                logger.info(f"Successfully created Telegra.ph page via manual request: {page_url}")
             else:
-                logger.error(f"Could not find 'url' in raw data from ValidationError. Raw data: {raw_response_data}")
-        except (IndexError, KeyError, AttributeError, TypeError) as extract_err:
-            logger.error(f"Error trying to extract data from ValidationError: {extract_err}", exc_info=True)
-        # --- END WORKAROUND ---
+                logger.error(f"Telegra.ph API response OK=True, but 'result' or 'url' missing/invalid. Result: {result_data}")
+        elif isinstance(raw_response, dict) and raw_response.get('ok') is False:
+             error_message = raw_response.get('error', 'Unknown error')
+             logger.error(f"Telegra.ph API returned error: {error_message}")
+        else:
+             logger.error(f"Unexpected response format from Telegra.ph API: {raw_response}")
 
     except telegraph_exceptions.TelegraphError as te:
-         logger.error(f"Telegraph API Error during page creation: {te}", exc_info=True)
+         logger.error(f"Telegraph API Error during manual page creation request: {te}", exc_info=True)
     except Exception as e:
-         logger.error(f"Unexpected error during Telegra.ph page creation: {e}", exc_info=True)
+         logger.error(f"Unexpected error during manual Telegra.ph page creation: {e}", exc_info=True)
 
     # --- Final URL assignment ---
     if page_url:
         application.bot_data['tos_url'] = page_url
         logger.info(f"Final ToS URL set in bot_data: {page_url}")
     else:
-        logger.error("Failed to obtain Telegra.ph page URL after creation attempt.")
+        logger.error("Failed to obtain Telegra.ph page URL after manual creation attempt.")
 
 
 async def post_init(application: Application):
