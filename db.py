@@ -1,15 +1,13 @@
-# db.py
-
 import json
 import logging
 from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, Boolean, ForeignKey, UniqueConstraint, func, BIGINT
 from sqlalchemy.orm import sessionmaker, relationship, Session, joinedload
 from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.exc import SQLAlchemyError, IntegrityError
+from sqlalchemy.exc import SQLAlchemyError, IntegrityError, OperationalError
 from datetime import datetime, timezone, timedelta, date
 from typing import List, Dict, Any, Optional, Union, Tuple
-
+import psycopg # Import for specific exception type
 
 from config import (
     DATABASE_URL,
@@ -66,6 +64,7 @@ class User(Base):
     def can_create_persona(self) -> bool:
         if self.telegram_id == ADMIN_USER_ID:
             return True
+        count = 0
         try:
             if 'persona_configs' not in self.__dict__ and not hasattr(self, '_sa_instance_state'):
                  logger.warning(f"Accessing can_create_persona for potentially detached User {self.id}. Querying count directly.")
@@ -76,8 +75,10 @@ class User(Base):
                  else:
                       logger.error(f"Cannot get session for detached User {self.id} to check persona count.")
                       return False
+            elif self.persona_configs is not None:
+                count = len(self.persona_configs)
             else:
-                 count = len(self.persona_configs) if self.persona_configs is not None else 0
+                count = 0
 
         except Exception as e:
              logger.error(f"Error accessing persona_configs for User {self.id} in can_create_persona: {e}", exc_info=True)
@@ -195,83 +196,111 @@ class ChatContext(Base):
 
 MAX_CONTEXT_MESSAGES_STORED = 200
 
-if not DATABASE_URL:
-    logger.critical("DATABASE_URL environment variable is not set!")
-    DATABASE_URL = "sqlite:///./bot_data_fallback.db"
-    logger.warning(f"Using fallback database: {DATABASE_URL}")
+engine = None
+SessionLocal = None
 
-engine_args = {}
-if DATABASE_URL.startswith("sqlite"):
-    engine_args["connect_args"] = {"check_same_thread": False}
+def initialize_database():
+    global engine, SessionLocal
+    if not DATABASE_URL:
+        logger.critical("DATABASE_URL environment variable is not set!")
+        raise ValueError("DATABASE_URL environment variable is not set!")
+    if DATABASE_URL.startswith("postgres"):
+        logger.info(f"Initializing PostgreSQL database connection pool for: {DATABASE_URL.split('@')[1] if '@' in DATABASE_URL else DATABASE_URL}")
+    else:
+         logger.info(f"Initializing database connection pool for: {DATABASE_URL}")
 
-# --- Убрали pool_recycle ---
-engine = create_engine(
-    DATABASE_URL,
-    pool_size=10,       # Базовый размер пула
-    max_overflow=20,    # Дополнительные соединения сверх базового
-    pool_timeout=30,    # Таймаут ожидания свободного соединения (секунды)
-    # pool_recycle=1800, # <-- УБРАЛИ
-    **engine_args
-)
-# --- КОНЕЦ ИЗМЕНЕНИЯ ---
+    engine_args = {}
+    if DATABASE_URL.startswith("sqlite"):
+        engine_args["connect_args"] = {"check_same_thread": False}
+    elif DATABASE_URL.startswith("postgres"):
+         # Ensure SSL is used by default with Supabase/cloud providers
+         if 'sslmode' not in DATABASE_URL:
+             logger.info("Adding sslmode=require to DATABASE_URL for PostgreSQL")
+             engine_args["connect_args"] = {"sslmode": "require"}
+         else:
+             logger.info(f"sslmode is already present in DATABASE_URL")
 
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    try:
+        engine = create_engine(
+            DATABASE_URL,
+            pool_size=10,
+            max_overflow=20,
+            pool_timeout=30,
+            # pool_pre_ping=True, # Can help detect stale connections early
+            **engine_args
+        )
+        SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+        logger.info("Database engine and session maker initialized.")
+
+        # Test connection immediately
+        logger.info("Attempting to establish initial database connection...")
+        with engine.connect() as connection:
+             logger.info("Initial database connection successful.")
+
+    except OperationalError as e:
+         logger.critical(f"FATAL: Failed to create database engine or initial connection: {e}", exc_info=True)
+         logger.critical("Please check your DATABASE_URL and network connectivity.")
+         raise
+    except Exception as e:
+         logger.critical(f"FATAL: An unexpected error occurred during database initialization: {e}", exc_info=True)
+         raise
 
 def get_db() -> Session:
+    if SessionLocal is None:
+         logger.error("Database is not initialized. Call initialize_database() first.")
+         raise RuntimeError("Database not initialized.")
     db = SessionLocal()
     try:
         yield db
     except SQLAlchemyError as e:
         logger.error(f"Database Session Error: {e}", exc_info=True)
-        db.rollback()
+        try:
+            db.rollback()
+        except Exception as rb_err:
+             logger.error(f"Error during rollback: {rb_err}")
         raise
     finally:
         db.close()
 
 def get_or_create_user(db: Session, telegram_id: int, username: str = None) -> User:
-    user = db.query(User).filter(User.telegram_id == telegram_id).first()
-    if not user:
-        logger.info(f"Creating new user for telegram_id {telegram_id} (Username: {username})")
-        user = User(telegram_id=telegram_id, username=username)
-        if telegram_id == ADMIN_USER_ID:
-            logger.info(f"Setting admin user {telegram_id} as subscribed indefinitely.")
-            user.is_subscribed = True
-            user.subscription_expires_at = datetime(2099, 12, 31, tzinfo=timezone.utc)
-        db.add(user)
-        try:
-            db.commit()
+    user = None
+    try:
+        user = db.query(User).filter(User.telegram_id == telegram_id).first()
+        if not user:
+            logger.info(f"Creating new user for telegram_id {telegram_id} (Username: {username})")
+            user = User(telegram_id=telegram_id, username=username)
+            if telegram_id == ADMIN_USER_ID:
+                logger.info(f"Setting admin user {telegram_id} as subscribed indefinitely.")
+                user.is_subscribed = True
+                user.subscription_expires_at = datetime(2099, 12, 31, tzinfo=timezone.utc)
+            db.add(user)
+            db.flush()
             db.refresh(user)
             logger.info(f"New user created with DB ID {user.id}")
-        except SQLAlchemyError as e:
-             logger.error(f"Failed to commit new user {telegram_id}: {e}", exc_info=True)
-             db.rollback()
-             raise
-    elif user.telegram_id == ADMIN_USER_ID and not user.is_active_subscriber:
-        logger.info(f"Ensuring admin user {telegram_id} is subscribed.")
-        user.is_subscribed = True
-        user.subscription_expires_at = datetime(2099, 12, 31, tzinfo=timezone.utc)
-        try:
-            db.commit()
+
+        elif user.telegram_id == ADMIN_USER_ID and not user.is_active_subscriber:
+            logger.info(f"Ensuring admin user {telegram_id} is subscribed.")
+            user.is_subscribed = True
+            user.subscription_expires_at = datetime(2099, 12, 31, tzinfo=timezone.utc)
+            db.flush()
             db.refresh(user)
-        except SQLAlchemyError as e:
-            logger.error(f"Failed to update admin subscription status for {telegram_id}: {e}", exc_info=True)
-            db.rollback()
 
-    if user.username != username and username is not None:
-         logger.info(f"Updating username for user {telegram_id} from '{user.username}' to '{username}'")
-         user.username = username
-         try:
-             db.commit()
+        if user.username != username and username is not None:
+             logger.info(f"Updating username for user {telegram_id} from '{user.username}' to '{username}'")
+             user.username = username
+             db.flush()
              db.refresh(user)
-         except SQLAlchemyError as e:
-             logger.error(f"Failed to update username for {telegram_id}: {e}", exc_info=True)
-             db.rollback()
 
+        db.commit() # Commit all changes for this user at the end
+
+    except SQLAlchemyError as e:
+         logger.error(f"DB Error in get_or_create_user for {telegram_id}: {e}", exc_info=True)
+         db.rollback()
+         raise
     return user
 
 def check_and_update_user_limits(db: Session, user: User) -> bool:
     if user.telegram_id == ADMIN_USER_ID:
-        logger.debug(f"Admin user {user.telegram_id} bypasses message limit check.")
         return True
 
     now = datetime.now(timezone.utc)
@@ -289,62 +318,72 @@ def check_and_update_user_limits(db: Session, user: User) -> bool:
     if can_send:
         user.daily_message_count += 1
         logger.debug(f"User {user.telegram_id} message count incremented to {user.daily_message_count}/{user.message_limit}")
-    else:
-        logger.info(f"User {user.telegram_id} message limit reached ({user.daily_message_count}/{user.message_limit}).")
 
     try:
-        db.commit()
-        if reset_needed:
-            db.refresh(user)
+        db.commit() # Commit changes (reset or increment)
     except SQLAlchemyError as e:
          logger.error(f"Failed to commit user limit update for {user.telegram_id}: {e}", exc_info=True)
          db.rollback()
-         return False
+         return False # Assume failure if commit fails
+
+    if not can_send:
+         logger.info(f"User {user.telegram_id} message limit reached ({user.daily_message_count}/{user.message_limit}).")
 
     return can_send
 
-def activate_subscription(db: Session, user_id: int) -> bool:
-    user = db.query(User).filter(User.id == user_id).first()
-    if user:
-        logger.info(f"Activating subscription for user {user.telegram_id} (DB ID: {user_id})")
-        now = datetime.now(timezone.utc)
-        start_date = max(now, user.subscription_expires_at) if user.is_active_subscriber and user.subscription_expires_at else now
-        expiry_date = start_date + timedelta(days=SUBSCRIPTION_DURATION_DAYS)
 
-        user.is_subscribed = True
-        user.subscription_expires_at = expiry_date
-        user.daily_message_count = 0
-        user.last_message_reset = now
-        try:
+def activate_subscription(db: Session, user_id: int) -> bool:
+    user = None
+    try:
+        user = db.query(User).filter(User.id == user_id).with_for_update().first()
+        if user:
+            logger.info(f"Activating subscription for user {user.telegram_id} (DB ID: {user_id})")
+            now = datetime.now(timezone.utc)
+            start_date = max(now, user.subscription_expires_at) if user.is_active_subscriber and user.subscription_expires_at else now
+            expiry_date = start_date + timedelta(days=SUBSCRIPTION_DURATION_DAYS)
+
+            user.is_subscribed = True
+            user.subscription_expires_at = expiry_date
+            user.daily_message_count = 0
+            user.last_message_reset = now
             db.commit()
             logger.info(f"Subscription activated/extended for user {user.telegram_id} until {expiry_date}")
             return True
-        except SQLAlchemyError as e:
-             logger.error(f"Failed to commit subscription activation for {user.telegram_id}: {e}", exc_info=True)
-             db.rollback()
+        else:
+             logger.warning(f"User with DB ID {user_id} not found for subscription activation.")
              return False
-    else:
-         logger.warning(f"User with DB ID {user_id} not found for subscription activation.")
+    except SQLAlchemyError as e:
+         logger.error(f"Failed to commit subscription activation for DB user {user_id}: {e}", exc_info=True)
+         db.rollback()
          return False
 
 def get_active_chat_bot_instance_with_relations(db: Session, chat_id: str) -> Optional[ChatBotInstance]:
-    return db.query(ChatBotInstance)\
-        .options(
-            joinedload(ChatBotInstance.bot_instance_ref)
-            .joinedload(BotInstance.persona_config),
-            joinedload(ChatBotInstance.bot_instance_ref)
-            .joinedload(BotInstance.owner)
-        )\
-        .filter(ChatBotInstance.chat_id == chat_id, ChatBotInstance.active == True)\
-        .first()
+    try:
+        return db.query(ChatBotInstance)\
+            .options(
+                joinedload(ChatBotInstance.bot_instance_ref)
+                .joinedload(BotInstance.persona_config),
+                joinedload(ChatBotInstance.bot_instance_ref)
+                .joinedload(BotInstance.owner)
+            )\
+            .filter(ChatBotInstance.chat_id == chat_id, ChatBotInstance.active == True)\
+            .first()
+    except SQLAlchemyError as e:
+        logger.error(f"DB error getting active chatbot instance for chat {chat_id}: {e}", exc_info=True)
+        return None
+
 
 def get_context_for_chat_bot(db: Session, chat_bot_instance_id: int) -> List[Dict[str, str]]:
-    context_records = db.query(ChatContext)\
-                        .filter(ChatContext.chat_bot_instance_id == chat_bot_instance_id)\
-                        .order_by(ChatContext.message_order.desc())\
-                        .limit(MAX_CONTEXT_MESSAGES_SENT_TO_LLM)\
-                        .all()
-    return [{"role": c.role, "content": c.content} for c in reversed(context_records)]
+    try:
+        context_records = db.query(ChatContext)\
+                            .filter(ChatContext.chat_bot_instance_id == chat_bot_instance_id)\
+                            .order_by(ChatContext.message_order.desc())\
+                            .limit(MAX_CONTEXT_MESSAGES_SENT_TO_LLM)\
+                            .all()
+        return [{"role": c.role, "content": c.content} for c in reversed(context_records)]
+    except SQLAlchemyError as e:
+        logger.error(f"DB error getting context for instance {chat_bot_instance_id}: {e}", exc_info=True)
+        return []
 
 def add_message_to_context(db: Session, chat_bot_instance_id: int, role: str, content: str):
     max_content_length = 4000
@@ -352,66 +391,83 @@ def add_message_to_context(db: Session, chat_bot_instance_id: int, role: str, co
         logger.warning(f"Truncating context message content from {len(content)} to {max_content_length} chars for chat_bot_instance {chat_bot_instance_id}")
         content = content[:max_content_length - 3] + "..."
 
-    current_count = db.query(func.count(ChatContext.id)).filter(ChatContext.chat_bot_instance_id == chat_bot_instance_id).scalar()
+    try:
+        current_count = db.query(func.count(ChatContext.id)).filter(ChatContext.chat_bot_instance_id == chat_bot_instance_id).scalar()
 
-    if current_count >= MAX_CONTEXT_MESSAGES_STORED:
-         message_to_keep_threshold = db.query(ChatContext.message_order)\
+        if current_count >= MAX_CONTEXT_MESSAGES_STORED:
+             oldest_to_keep_order = db.query(ChatContext.message_order)\
                                      .filter(ChatContext.chat_bot_instance_id == chat_bot_instance_id)\
                                      .order_by(ChatContext.message_order.desc())\
                                      .limit(1)\
                                      .offset(MAX_CONTEXT_MESSAGES_STORED - 1)\
                                      .scalar()
 
-         if message_to_keep_threshold is not None:
-             deleted_count = db.query(ChatContext)\
-                               .filter(ChatContext.chat_bot_instance_id == chat_bot_instance_id,
-                                       ChatContext.message_order < message_to_keep_threshold)\
-                               .delete(synchronize_session=False)
-             logger.debug(f"Pruned {deleted_count} old context messages for instance {chat_bot_instance_id} (keeping {MAX_CONTEXT_MESSAGES_STORED}).")
+             if oldest_to_keep_order is not None:
+                 deleted_count = db.query(ChatContext)\
+                                   .filter(ChatContext.chat_bot_instance_id == chat_bot_instance_id,
+                                           ChatContext.message_order < oldest_to_keep_order)\
+                                   .delete(synchronize_session=False)
+                 logger.debug(f"Pruned {deleted_count} old context messages for instance {chat_bot_instance_id} (keeping ~{MAX_CONTEXT_MESSAGES_STORED}).")
+                 db.flush()
 
-    max_order = db.query(func.max(ChatContext.message_order))\
-                  .filter(ChatContext.chat_bot_instance_id == chat_bot_instance_id)\
-                  .scalar() or 0
+        max_order = db.query(func.max(ChatContext.message_order))\
+                      .filter(ChatContext.chat_bot_instance_id == chat_bot_instance_id)\
+                      .scalar() or 0
 
-    new_message = ChatContext(
-        chat_bot_instance_id=chat_bot_instance_id,
-        message_order=max_order + 1,
-        role=role,
-        content=content,
-        timestamp=datetime.now(timezone.utc)
-    )
-    db.add(new_message)
+        new_message = ChatContext(
+            chat_bot_instance_id=chat_bot_instance_id,
+            message_order=max_order + 1,
+            role=role,
+            content=content,
+            timestamp=datetime.now(timezone.utc)
+        )
+        db.add(new_message)
+        db.flush()
+    except SQLAlchemyError as e:
+        logger.error(f"DB error adding message to context for instance {chat_bot_instance_id}: {e}", exc_info=True)
+        db.rollback() # Rollback only the context add attempt
+        raise # Re-raise so the caller knows it failed
 
 def get_mood_for_chat_bot(db: Session, chat_bot_instance_id: int) -> str:
-    mood = db.query(ChatBotInstance.current_mood).filter(ChatBotInstance.id == chat_bot_instance_id).scalar()
-    return mood if mood else "нейтрально"
+    try:
+        mood = db.query(ChatBotInstance.current_mood).filter(ChatBotInstance.id == chat_bot_instance_id).scalar()
+        return mood if mood else "нейтрально"
+    except SQLAlchemyError as e:
+        logger.error(f"DB error getting mood for instance {chat_bot_instance_id}: {e}", exc_info=True)
+        return "нейтрально"
+
 
 def set_mood_for_chat_bot(db: Session, chat_bot_instance_id: int, mood: str):
-    chat_bot = db.query(ChatBotInstance).filter(ChatBotInstance.id == chat_bot_instance_id).first()
-    if chat_bot:
-        if chat_bot.current_mood != mood:
-            logger.info(f"Setting mood from '{chat_bot.current_mood}' to '{mood}' for ChatBotInstance {chat_bot_instance_id}")
-            chat_bot.current_mood = mood
-            try:
+    try:
+        chat_bot = db.query(ChatBotInstance).filter(ChatBotInstance.id == chat_bot_instance_id).first()
+        if chat_bot:
+            if chat_bot.current_mood != mood:
+                logger.info(f"Setting mood from '{chat_bot.current_mood}' to '{mood}' for ChatBotInstance {chat_bot_instance_id}")
+                chat_bot.current_mood = mood
                 db.commit()
                 logger.info(f"Successfully set mood to '{mood}' for ChatBotInstance {chat_bot_instance_id}")
-            except SQLAlchemyError as e:
-                logger.error(f"Failed to commit mood change for {chat_bot_instance_id}: {e}", exc_info=True)
-                db.rollback()
+            else:
+                 logger.debug(f"Mood already set to '{mood}' for ChatBotInstance {chat_bot_instance_id}. No change.")
         else:
-             logger.debug(f"Mood already set to '{mood}' for ChatBotInstance {chat_bot_instance_id}. No change.")
-    else:
-        logger.warning(f"ChatBotInstance {chat_bot_instance_id} not found to set mood.")
+            logger.warning(f"ChatBotInstance {chat_bot_instance_id} not found to set mood.")
+    except SQLAlchemyError as e:
+        logger.error(f"Failed to commit mood change for {chat_bot_instance_id}: {e}", exc_info=True)
+        db.rollback()
+
 
 def get_all_active_chat_bot_instances(db: Session) -> List[ChatBotInstance]:
-    return db.query(ChatBotInstance)\
-        .filter(ChatBotInstance.active == True)\
-        .options(
-            joinedload(ChatBotInstance.bot_instance_ref)
-            .joinedload(BotInstance.persona_config),
-            joinedload(ChatBotInstance.bot_instance_ref)
-            .joinedload(BotInstance.owner)
-        ).all()
+    try:
+        return db.query(ChatBotInstance)\
+            .filter(ChatBotInstance.active == True)\
+            .options(
+                joinedload(ChatBotInstance.bot_instance_ref)
+                .joinedload(BotInstance.persona_config),
+                joinedload(ChatBotInstance.bot_instance_ref)
+                .joinedload(BotInstance.owner)
+            ).all()
+    except SQLAlchemyError as e:
+        logger.error(f"DB error getting all active instances: {e}", exc_info=True)
+        return []
 
 def create_persona_config(db: Session, owner_id: int, name: str, description: str = None) -> PersonaConfig:
     logger.info(f"Attempting to create persona '{name}' for owner_id {owner_id}")
@@ -423,14 +479,14 @@ def create_persona_config(db: Session, owner_id: int, name: str, description: st
         name=name,
         description=description,
     )
-    db.add(persona)
     try:
+        db.add(persona)
         db.commit()
         db.refresh(persona)
         logger.info(f"Successfully created PersonaConfig '{name}' with ID {persona.id} for owner_id {owner_id}")
         return persona
     except IntegrityError as e:
-        logger.warning(f"IntegrityError creating persona '{name}' for owner {owner_id}: {e}", exc_info=True)
+        logger.warning(f"IntegrityError creating persona '{name}' for owner {owner_id}: {e}", exc_info=False)
         db.rollback()
         raise
     except SQLAlchemyError as e:
@@ -439,47 +495,61 @@ def create_persona_config(db: Session, owner_id: int, name: str, description: st
          raise
 
 def get_personas_by_owner(db: Session, owner_id: int) -> List[PersonaConfig]:
-    return db.query(PersonaConfig).filter(PersonaConfig.owner_id == owner_id).order_by(PersonaConfig.name).all()
+    try:
+        return db.query(PersonaConfig).filter(PersonaConfig.owner_id == owner_id).order_by(PersonaConfig.name).all()
+    except SQLAlchemyError as e:
+        logger.error(f"DB error getting personas for owner {owner_id}: {e}", exc_info=True)
+        return []
 
 def get_persona_by_name_and_owner(db: Session, owner_id: int, name: str) -> Optional[PersonaConfig]:
-    return db.query(PersonaConfig).filter(
-        PersonaConfig.owner_id == owner_id,
-        func.lower(PersonaConfig.name) == name.lower()
-    ).first()
+    try:
+        return db.query(PersonaConfig).filter(
+            PersonaConfig.owner_id == owner_id,
+            func.lower(PersonaConfig.name) == name.lower()
+        ).first()
+    except SQLAlchemyError as e:
+        logger.error(f"DB error getting persona by name '{name}' for owner {owner_id}: {e}", exc_info=True)
+        return None
+
 
 def get_persona_by_id_and_owner(db: Session, owner_telegram_id: int, persona_id: int) -> Optional[PersonaConfig]:
     logger.debug(f"Searching for PersonaConfig id={persona_id} owned by telegram_id={owner_telegram_id}")
-    user = db.query(User).filter(User.telegram_id == owner_telegram_id).first()
-    if not user:
-        logger.warning(f"User with telegram_id {owner_telegram_id} not found when searching for persona {persona_id}")
+    try:
+        user = db.query(User).filter(User.telegram_id == owner_telegram_id).first()
+        if not user:
+            logger.warning(f"User with telegram_id {owner_telegram_id} not found when searching for persona {persona_id}")
+            return None
+        logger.debug(f"Found User with id={user.id} for telegram_id={owner_telegram_id}")
+        persona_config = db.query(PersonaConfig).filter(
+            PersonaConfig.owner_id == user.id,
+            PersonaConfig.id == persona_id
+        ).first()
+        if not persona_config:
+            logger.warning(f"PersonaConfig id={persona_id} not found for owner User id={user.id} (telegram_id={owner_telegram_id})")
+            return None
+        logger.debug(f"Successfully found PersonaConfig id={persona_id} for owner User id={user.id}")
+        return persona_config
+    except SQLAlchemyError as e:
+        logger.error(f"DB error getting persona by ID {persona_id} for owner {owner_telegram_id}: {e}", exc_info=True)
         return None
-    logger.debug(f"Found User with id={user.id} for telegram_id={owner_telegram_id}")
-    persona_config = db.query(PersonaConfig).filter(
-        PersonaConfig.owner_id == user.id,
-        PersonaConfig.id == persona_id
-    ).first()
-    if not persona_config:
-        logger.warning(f"PersonaConfig id={persona_id} not found for owner User id={user.id} (telegram_id={owner_telegram_id})")
-        return None
-    logger.debug(f"Successfully found PersonaConfig id={persona_id} for owner User id={user.id}")
-    return persona_config
 
 def delete_persona_config(db: Session, persona_id: int, owner_id: int) -> bool:
     logger.warning(f"Attempting to delete PersonaConfig {persona_id} owned by User ID {owner_id}")
-    persona = db.query(PersonaConfig).filter(PersonaConfig.id == persona_id, PersonaConfig.owner_id == owner_id).first()
-    if persona:
-        db.delete(persona)
-        try:
+    try:
+        persona = db.query(PersonaConfig).filter(PersonaConfig.id == persona_id, PersonaConfig.owner_id == owner_id).first()
+        if persona:
+            db.delete(persona)
             db.commit()
             logger.info(f"Successfully deleted PersonaConfig {persona_id}")
             return True
-        except SQLAlchemyError as e:
-            logger.error(f"Failed to commit deletion of PersonaConfig {persona_id}: {e}", exc_info=True)
-            db.rollback()
+        else:
+            logger.warning(f"PersonaConfig {persona_id} not found or not owned by User ID {owner_id} for deletion.")
             return False
-    else:
-        logger.warning(f"PersonaConfig {persona_id} not found or not owned by User ID {owner_id} for deletion.")
+    except SQLAlchemyError as e:
+        logger.error(f"Failed to commit deletion of PersonaConfig {persona_id}: {e}", exc_info=True)
+        db.rollback()
         return False
+
 
 def create_bot_instance(db: Session, owner_id: int, persona_config_id: int, name: str = None) -> BotInstance:
     logger.info(f"Creating BotInstance for persona_id {persona_config_id}, owner_id {owner_id}")
@@ -488,8 +558,8 @@ def create_bot_instance(db: Session, owner_id: int, persona_config_id: int, name
         persona_config_id=persona_config_id,
         name=name
     )
-    db.add(bot_instance)
     try:
+        db.add(bot_instance)
         db.commit()
         db.refresh(bot_instance)
         logger.info(f"Successfully created BotInstance {bot_instance.id} for persona {persona_config_id}")
@@ -500,61 +570,87 @@ def create_bot_instance(db: Session, owner_id: int, persona_config_id: int, name
         raise
 
 def get_bot_instance_by_id(db: Session, instance_id: int) -> Optional[BotInstance]:
-    return db.query(BotInstance).get(instance_id)
+    try:
+        return db.query(BotInstance).get(instance_id)
+    except SQLAlchemyError as e:
+        logger.error(f"DB error getting bot instance by ID {instance_id}: {e}", exc_info=True)
+        return None
+
 
 def link_bot_instance_to_chat(db: Session, bot_instance_id: int, chat_id: str) -> Optional[ChatBotInstance]:
-    chat_link = db.query(ChatBotInstance).filter(
-        ChatBotInstance.chat_id == chat_id,
-        ChatBotInstance.bot_instance_id == bot_instance_id
-    ).first()
+    chat_link = None
+    try:
+        chat_link = db.query(ChatBotInstance).filter(
+            ChatBotInstance.chat_id == chat_id,
+            ChatBotInstance.bot_instance_id == bot_instance_id
+        ).first()
 
-    if chat_link:
-        if not chat_link.active:
-             logger.info(f"Reactivating existing ChatBotInstance {chat_link.id} for bot {bot_instance_id} in chat {chat_id}")
-             chat_link.active = True
-             chat_link.current_mood = "нейтрально"
-             chat_link.is_muted = False
+        if chat_link:
+            if not chat_link.active:
+                 logger.info(f"Reactivating existing ChatBotInstance {chat_link.id} for bot {bot_instance_id} in chat {chat_id}")
+                 chat_link.active = True
+                 chat_link.current_mood = "нейтрально"
+                 chat_link.is_muted = False
+                 db.flush() # Flush reactivation changes
+            else:
+                logger.debug(f"ChatBotInstance link for bot {bot_instance_id} in chat {chat_id} is already active.")
         else:
-            logger.debug(f"ChatBotInstance link for bot {bot_instance_id} in chat {chat_id} is already active.")
+            logger.info(f"Creating new ChatBotInstance link for bot {bot_instance_id} in chat {chat_id}")
+            chat_link = ChatBotInstance(
+                chat_id=chat_id,
+                bot_instance_id=bot_instance_id,
+                active=True,
+                current_mood="нейтрально",
+                is_muted=False
+            )
+            db.add(chat_link)
+            db.flush() # Flush creation
+
+        # Commit changes (reactivation or creation)
+        db.commit()
+        if chat_link: db.refresh(chat_link)
         return chat_link
-    else:
-        logger.info(f"Creating new ChatBotInstance link for bot {bot_instance_id} in chat {chat_id}")
-        chat_link = ChatBotInstance(
-            chat_id=chat_id,
-            bot_instance_id=bot_instance_id,
-            active=True,
-            current_mood="нейтрально",
-            is_muted=False
-        )
-        db.add(chat_link)
-        return chat_link
+
+    except SQLAlchemyError as e:
+         logger.error(f"Failed linking bot instance {bot_instance_id} to chat {chat_id}: {e}", exc_info=True)
+         db.rollback()
+         return None
+
 
 def unlink_bot_instance_from_chat(db: Session, chat_id: str, bot_instance_id: int) -> bool:
-    chat_link = db.query(ChatBotInstance).filter(
-        ChatBotInstance.chat_id == chat_id,
-        ChatBotInstance.bot_instance_id == bot_instance_id,
-        ChatBotInstance.active == True
-    ).first()
-    if chat_link:
-        logger.info(f"Deactivating ChatBotInstance {chat_link.id} for bot {bot_instance_id} in chat {chat_id}")
-        chat_link.active = False
-        try:
+    try:
+        chat_link = db.query(ChatBotInstance).filter(
+            ChatBotInstance.chat_id == chat_id,
+            ChatBotInstance.bot_instance_id == bot_instance_id,
+            ChatBotInstance.active == True
+        ).first()
+        if chat_link:
+            logger.info(f"Deactivating ChatBotInstance {chat_link.id} for bot {bot_instance_id} in chat {chat_id}")
+            chat_link.active = False
             db.commit()
             return True
-        except SQLAlchemyError as e:
-            logger.error(f"Failed to commit deactivation for ChatBotInstance {chat_link.id}: {e}", exc_info=True)
+        else:
+            logger.warning(f"No active ChatBotInstance found for bot {bot_instance_id} in chat {chat_id} to deactivate.")
+            return False
+    except SQLAlchemyError as e:
+            logger.error(f"Failed to commit deactivation for ChatBotInstance bot {bot_instance_id} chat {chat_id}: {e}", exc_info=True)
             db.rollback()
             return False
-    else:
-        logger.warning(f"No active ChatBotInstance found for bot {bot_instance_id} in chat {chat_id} to deactivate.")
-        return False
+
 
 
 def create_tables():
+    if engine is None:
+         logger.critical("Database engine is not initialized. Cannot create tables.")
+         raise RuntimeError("Database engine not initialized.")
     logger.info("Attempting to create database tables if they don't exist...")
     try:
         Base.metadata.create_all(engine)
         logger.info("Database tables verified/created successfully.")
+    except (OperationalError, psycopg.OperationalError) as op_err:
+         logger.critical(f"FATAL: Database connection error during create_tables: {op_err}", exc_info=False) # Keep info concise
+         logger.critical("Check DATABASE_URL, network connectivity, and DB server status.")
+         raise # Re-raise to stop the application
     except Exception as e:
         logger.critical(f"FATAL: Failed to create/verify database tables: {e}", exc_info=True)
         raise
