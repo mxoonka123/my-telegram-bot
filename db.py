@@ -46,7 +46,6 @@ class User(Base):
 
     @property
     def is_active_subscriber(self) -> bool:
-        # Админ всегда активен
         if self.telegram_id == ADMIN_USER_ID:
             return True
         return self.is_subscribed and self.subscription_expires_at and self.subscription_expires_at > datetime.now(timezone.utc)
@@ -54,13 +53,13 @@ class User(Base):
     @property
     def message_limit(self) -> int:
         if self.telegram_id == ADMIN_USER_ID:
-             return PAID_DAILY_MESSAGE_LIMIT # Или другое очень большое число
+             return PAID_DAILY_MESSAGE_LIMIT
         return PAID_DAILY_MESSAGE_LIMIT if self.is_active_subscriber else FREE_DAILY_MESSAGE_LIMIT
 
     @property
     def persona_limit(self) -> int:
         if self.telegram_id == ADMIN_USER_ID:
-             return PAID_PERSONA_LIMIT # Или другое большое число
+             return PAID_PERSONA_LIMIT
         return PAID_PERSONA_LIMIT if self.is_active_subscriber else FREE_PERSONA_LIMIT
 
     @property
@@ -68,7 +67,6 @@ class User(Base):
         if self.telegram_id == ADMIN_USER_ID:
             return True
         try:
-            # Проверяем, загружена ли связь, чтобы избежать ошибки DetachedInstanceError
             if 'persona_configs' not in self.__dict__ and not hasattr(self, '_sa_instance_state'):
                  logger.warning(f"Accessing can_create_persona for potentially detached User {self.id}. Querying count directly.")
                  from sqlalchemy.orm.session import Session as SQLASession
@@ -206,13 +204,13 @@ engine_args = {}
 if DATABASE_URL.startswith("sqlite"):
     engine_args["connect_args"] = {"check_same_thread": False}
 
-# --- ИЗМЕНЕНИЕ ЗДЕСЬ: Добавляем параметры пула ---
+# --- ИЗМЕНЕНИЕ ЗДЕСЬ: Убираем pool_recycle ---
 engine = create_engine(
     DATABASE_URL,
     pool_size=10,       # Базовый размер пула
     max_overflow=20,    # Дополнительные соединения сверх базового
     pool_timeout=30,    # Таймаут ожидания свободного соединения (секунды)
-    pool_recycle=1800,  # Время жизни соединения в пуле (секунды, 1800 = 30 минут)
+    # pool_recycle=1800,  # <-- УБРАЛИ ЭТУ СТРОКУ
     **engine_args
 )
 # --- КОНЕЦ ИЗМЕНЕНИЯ ---
