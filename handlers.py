@@ -50,7 +50,7 @@ from utils import postprocess_response, extract_gif_links, get_time_info, escape
 
 logger = logging.getLogger(__name__)
 
-# +++ ДОБАВЛЕНА ФУНКЦИЯ ПРОВЕРКИ ПОДПИСКИ +++
+# +++ ДОБАВЛЕНА ФУНКЦИЯ ПРОВЕРКИ ПОДПИСКИ (С УЛУЧШЕННЫМ ЛОГИРОВАНИЕМ) +++
 async def check_channel_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     """Checks if the user is subscribed to the required channel."""
     if not CHANNEL_ID:
@@ -69,6 +69,10 @@ async def check_channel_subscription(update: Update, context: ContextTypes.DEFAU
     try:
         member = await context.bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
         allowed_statuses = [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR]
+
+        # <<< ИЗМЕНЕНО: Добавлено логирование статуса пользователя >>>
+        logger.debug(f"User {user_id} status in {CHANNEL_ID}: {member.status}")
+
         if member.status in allowed_statuses:
             logger.debug(f"User {user_id} IS subscribed to {CHANNEL_ID} (status: {member.status})")
             return True
@@ -86,15 +90,23 @@ async def check_channel_subscription(update: Update, context: ContextTypes.DEFAU
                  logger.error(f"Failed to send 'Forbidden' error message: {send_err}")
         return False # Deny access if check fails
     except BadRequest as e:
-         if "user not found" in str(e).lower():
-             logger.info(f"User {user_id} not found in channel {CHANNEL_ID} (BadRequest).")
-             return False
+         # <<< ИЗМЕНЕНО: Более подробное логирование BadRequest >>>
+         error_message = str(e).lower()
+         logger.error(f"BadRequest checking subscription for user {user_id} in channel {CHANNEL_ID}: {e}") # Логируем полную ошибку
+         if "member list is inaccessible" in error_message:
+             logger.error(f"-> Specific BadRequest: Member list is inaccessible. Bot might lack permissions or channel privacy settings restrictive?")
+             if update.effective_message:
+                 try: await update.effective_message.reply_text(escape_markdown_v2("Не удается получить доступ к списку участников канала для проверки подписки. Возможно, настройки канала не позволяют это сделать."))
+                 except Exception as send_err: logger.error(f"Failed to send 'Member list inaccessible' error message: {send_err}")
+         elif "user not found" in error_message:
+             logger.info(f"-> Specific BadRequest: User {user_id} not found in channel {CHANNEL_ID}.")
+             # Сообщение пользователю не требуется, функция просто вернет False
          else:
-             logger.error(f"BadRequest checking subscription for user {user_id} in channel {CHANNEL_ID}: {e}")
+             # Другие BadRequest
              if update.effective_message:
                  try: await update.effective_message.reply_text(escape_markdown_v2("Произошла ошибка при проверке подписки (BadRequest). Попробуйте позже."))
-                 except Exception as send_err: logger.error(f"Failed to send 'BadRequest' error message: {send_err}")
-             return False
+                 except Exception as send_err: logger.error(f"Failed to send generic 'BadRequest' error message: {send_err}")
+         return False # В любом случае BadRequest означает неудачную проверку
     except TelegramError as e:
         logger.error(f"Telegram error checking subscription for user {user_id} in channel {CHANNEL_ID}: {e}")
         if update.effective_message:
@@ -152,7 +164,6 @@ FIELD_MAP = {
     "max_response_messages": escape_markdown_v2("макс. сообщений в ответе")
 }
 
-# <<< ИЗМЕНЕНО: Исходный текст TOS без изменений для Telegra.ph >>>
 TOS_TEXT_RAW = """
 **📜 Пользовательское Соглашение Сервиса @NunuAiBot**
 
@@ -209,7 +220,6 @@ TOS_TEXT_RAW = """
 """
 
 # <<< ИЗМЕНЕНО: Форматированный и ЭКРАНИРОВАННЫЙ текст для отправки через бота >>>
-# Этот код теперь выполняется ПОСЛЕ импорта config
 formatted_tos_text_for_bot = TOS_TEXT_RAW.format(
     subscription_duration=config.SUBSCRIPTION_DURATION_DAYS,
     subscription_price=f"{config.SUBSCRIPTION_PRICE_RUB:.0f}",
@@ -3237,7 +3247,7 @@ async def mute_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
             persona, _, owner_user = instance_info
             chat_instance = persona.chat_instance
-            persona_name_escaped = escape_markdown_v2(persona.name)
+            persona_name_escaped = escape_markdown_v2(persona.name) # Экранируем имя здесь
 
             if owner_user.telegram_id != user_id and not is_admin(user_id):
                 logger.warning(f"User {user_id} tried to mute persona '{persona.name}' owned by {owner_user.telegram_id} in chat {chat_id}.")
