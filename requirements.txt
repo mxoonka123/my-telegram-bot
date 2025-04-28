@@ -9,3 +9,4 @@ gunicorn==22.0.0
 telegraph-api==1.1.0
 markdown==3.6
 pydantic==2.7.1 # Added for telegraph validation fix if needed, or check telegraph-api version compatibility
+waitress==3.0.0 # <<< ДОБАВЛЕНО: Для Flask сервера
