@@ -8,7 +8,7 @@ import json
 from datetime import datetime, timezone, timedelta
 from telegram import Update, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ChatAction, ParseMode
-from telegram.error import BadRequest # <--- ДОБАВЛЕН ИМПОРТ
+from telegram.error import BadRequest # <--- Убедись, что импорт есть
 from telegram.ext import (
     ContextTypes, ConversationHandler, CommandHandler, MessageHandler, filters, CallbackQueryHandler
 )
@@ -38,11 +38,10 @@ from db import (
     create_persona_config, get_personas_by_owner, get_persona_by_name_and_owner,
     get_persona_by_id_and_owner, check_and_update_user_limits, activate_subscription,
     create_bot_instance, link_bot_instance_to_chat, delete_persona_config,
-    get_db, get_active_chat_bot_instance_with_relations, # <<<--- ДОБАВЛЕН ИМПОРТ
+    get_db, get_active_chat_bot_instance_with_relations,
     User, PersonaConfig, BotInstance, ChatBotInstance, ChatContext
 )
 from persona import Persona
-# <<< ИЗМЕНЕНО: Добавлен escape_markdown_v2 >>>
 from utils import postprocess_response, extract_gif_links, get_time_info, escape_markdown_v2
 
 logger = logging.getLogger(__name__)
@@ -52,8 +51,6 @@ def is_admin(user_id: int) -> bool:
 
 EDIT_PERSONA_CHOICE, EDIT_FIELD, EDIT_MOOD_CHOICE, EDIT_MOOD_NAME, EDIT_MOOD_PROMPT, DELETE_MOOD_CONFIRM, DELETE_PERSONA_CONFIRM, EDIT_MAX_MESSAGES = range(8)
 
-# <<< ИЗМЕНЕНО: Значения в FIELD_MAP экранированы для безопасности, хотя они используются в **...** и могут быть не нужны >>>
-#     Если форматирование **ломается**, убери escape_markdown_v2 отсюда и из мест, где используется field_display_name внутри **...**
 FIELD_MAP = {
     "name": escape_markdown_v2("имя"),
     "description": escape_markdown_v2("описание"),
@@ -65,9 +62,6 @@ FIELD_MAP = {
     "max_response_messages": escape_markdown_v2("макс. сообщений в ответе")
 }
 
-# <<< ИЗМЕНЕНО: Текст TOS экранируется перед форматированием, чтобы избежать проблем со спецсимволами в самом тексте >>>
-#     Примечание: Это удалит любое существующее Markdown форматирование внутри TOS_TEXT (если оно было).
-#     Если внутри TOS_TEXT нужно Markdown, нужно будет использовать более сложную логику экранирования.
 TOS_TEXT_RAW = """
 **📜 Пользовательское Соглашение Сервиса @NunuAiBot**
 
@@ -122,40 +116,38 @@ TOS_TEXT_RAW = """
 8.1. Все споры и разногласия решаются путем переговоров. Если это не поможет, споры будут рассматриваться в соответствии с законодательством Российской Федерации.
 8.2. По всем вопросам, касающимся настоящего Соглашения или работы Сервиса, Вы можете обращаться к нам через контакты, указанные в биографии бота и в нашем Telegram-канале.
 """
-# Экранируем весь текст TOS, заменяя спецсимволы Markdown V2
-TOS_TEXT = escape_markdown_v2(TOS_TEXT_RAW).format(
+# <<< ИЗМЕНЕНО: Сначала форматируем, потом экранируем >>>
+formatted_tos_text = TOS_TEXT_RAW.format(
     subscription_duration=SUBSCRIPTION_DURATION_DAYS,
     subscription_price=f"{SUBSCRIPTION_PRICE_RUB:.0f}",
     subscription_currency=SUBSCRIPTION_CURRENCY
 )
+# Экранируем ВЕСЬ текст TOS после форматирования.
+# Внимание: Это удалит существующее Markdown (**...**) форматирование внутри TOS_TEXT_RAW.
+# Если нужно сохранить ** в TOS, нужно использовать более сложную логику экранирования
+# или убедиться, что TOS_TEXT_RAW не содержит других конфликтующих символов.
+TOS_TEXT = escape_markdown_v2(formatted_tos_text)
 
 
-# <<< ИЗМЕНЕНО: Добавлено экранирование escape_markdown_v2 >>>
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.error("Exception while handling an update:", exc_info=context.error)
-    # Сообщение, которое может содержать '.'
     error_message = "упс... что-то пошло не так. попробуй еще раз позже."
-    # Экранируем его перед отправкой
     escaped_error_message = escape_markdown_v2(error_message)
     if isinstance(update, Update) and update.effective_message:
         try:
-            # Отправляем экранированное сообщение (с parse_mode по умолчанию = MarkdownV2)
             await update.effective_message.reply_text(escaped_error_message)
         except BadRequest as e:
-            # Если даже экранированное сообщение не отправилось, логгируем это
             logger.error(f"Failed to send ESCAPED error message (BadRequest): {e} - Original Text: '{error_message}'")
-            # Пытаемся отправить как простой текст в последнюю очередь
             try:
                  await update.effective_message.reply_text(error_message, parse_mode=None)
             except Exception as final_e:
                  logger.error(f"Failed even sending plain text error message: {final_e}")
         except Exception as e:
-            # Логгируем ошибку при отправке *экранированного* сообщения
             logger.error(f"Failed to send escaped error message to user: {e}")
 
 
 def get_persona_and_context_with_owner(chat_id: str, db: Session) -> Optional[Tuple[Persona, List[Dict[str, str]], User]]:
-    chat_instance = get_active_chat_bot_instance_with_relations(db, chat_id) # Function is now imported
+    chat_instance = get_active_chat_bot_instance_with_relations(db, chat_id)
     if not chat_instance:
         logger.debug(f"No active chatbot instance found for chat {chat_id}")
         return None
@@ -181,7 +173,6 @@ def get_persona_and_context_with_owner(chat_id: str, db: Session) -> Optional[Tu
 async def send_to_langdock(system_prompt: str, messages: List[Dict[str, str]]) -> str:
     if not LANGDOCK_API_KEY:
         logger.error("LANGDOCK_API_KEY is not set.")
-        # <<< ИЗМЕНЕНО: Экранирование текста ошибки >>>
         return escape_markdown_v2("ошибка: ключ api не настроен.")
     headers = {
         "Authorization": f"Bearer {LANGDOCK_API_KEY}",
@@ -229,20 +220,16 @@ async def send_to_langdock(system_prompt: str, messages: List[Dict[str, str]]) -
 
     except httpx.ReadTimeout:
          logger.error("Langdock API request timed out.")
-         # <<< ИЗМЕНЕНО: Экранирование текста ошибки >>>
          return escape_markdown_v2("хм, кажется, я слишком долго думал... попробуй еще раз?")
     except httpx.HTTPStatusError as e:
         logger.error(f"Langdock API HTTP error: {e.response.status_code} - {e.response.text}", exc_info=True)
-        # <<< ИЗМЕНЕНО: Экранирование текста ошибки >>>
         error_text = f"ой, произошла ошибка при связи с ai ({e.response.status_code})..."
         return escape_markdown_v2(error_text)
     except httpx.RequestError as e:
         logger.error(f"Langdock API request error: {e}", exc_info=True)
-        # <<< ИЗМЕНЕНО: Экранирование текста ошибки >>>
         return escape_markdown_v2("не могу связаться с ai сейчас...")
     except Exception as e:
         logger.error(f"Unexpected error communicating with Langdock: {e}", exc_info=True)
-        # <<< ИЗМЕНЕНО: Экранирование текста ошибки >>>
         return escape_markdown_v2("произошла внутренняя ошибка при генерации ответа.")
 
 async def process_and_send_response(update: Optional[Update], context: ContextTypes.DEFAULT_TYPE, chat_id: str, persona: Persona, full_bot_response_text: str, db: Session):
@@ -255,26 +242,21 @@ async def process_and_send_response(update: Optional[Update], context: ContextTy
     if persona.chat_instance:
         try:
             add_message_to_context(db, persona.chat_instance.id, "assistant", full_bot_response_text.strip())
-            # No commit here, should be handled by the calling function after all operations succeed
             logger.debug("AI response added to database context (pending commit).")
         except SQLAlchemyError as e:
             logger.error(f"DB Error adding assistant response to context for chat_instance {persona.chat_instance.id}: {e}", exc_info=True)
-            db.rollback() # Rollback immediately on context add failure
-            # Optionally notify user? Probably better to let the main handler fail.
-            raise # Propagate DB error
+            db.rollback()
+            raise
         except Exception as e:
             logger.error(f"Unexpected Error adding assistant response to context for chat_instance {persona.chat_instance.id}: {e}", exc_info=True)
-            raise # Propagate other errors
+            raise
     else:
         logger.warning("Cannot add AI response to context, chat_instance is None.")
-        # Decide if this is fatal. If context is essential, maybe raise an error.
-        # For now, continue processing but context won't include this response.
 
 
     all_text_content = full_bot_response_text.strip()
     gif_links = extract_gif_links(all_text_content)
     for gif in gif_links:
-        # <<< ИЗМЕНЕНО: Использовать re.escape для безопасного удаления ссылки из текста >>>
         all_text_content = re.sub(re.escape(gif), "", all_text_content, flags=re.IGNORECASE).strip()
 
     text_parts_to_send = postprocess_response(all_text_content)
@@ -289,7 +271,6 @@ async def process_and_send_response(update: Optional[Update], context: ContextTy
         logger.info(f"Limiting response parts from {len(text_parts_to_send)} to {max_messages} for persona {persona.name}")
         text_parts_to_send = text_parts_to_send[:max_messages]
         if text_parts_to_send:
-             # <<< ИЗМЕНЕНО: Экранируем добавленное многоточие >>>
              text_parts_to_send[-1] += escape_markdown_v2("...")
 
     for gif in gif_links:
@@ -313,24 +294,20 @@ async def process_and_send_response(update: Optional[Update], context: ContextTy
                      logger.warning(f"Failed to send typing action to {chat_id}: {e}")
             try:
                  logger.debug(f"Sending part {i+1}/{len(text_parts_to_send)} to chat {chat_id}: '{part[:50]}...'")
-                 # <<< ИЗМЕНЕНО: Ответ от LLM экранируется перед отправкой, т.к. он может содержать спецсимволы >>>
-                 #    Важно: Если LLM *специально* генерирует Markdown (например, **текст**), это экранирование его сломает.
-                 #    Если требуется поддержка Markdown от LLM, нужно либо отключить экранирование здесь,
-                 #    либо инструктировать LLM использовать *только* безопасные символы или экранировать самостоятельно.
-                 #    Пока оставляем экранирование для безопасности от ошибок парсинга.
+                 # Экранируем ответ от LLM перед отправкой
                  escaped_part = escape_markdown_v2(part)
                  await context.bot.send_message(chat_id=chat_id, text=escaped_part)
             except BadRequest as e:
                  logger.error(f"Error sending ESCAPED text part {i+1} to {chat_id} (BadRequest): {e} - Original: '{part[:100]}...'")
-                 break # Stop sending if one part fails parsing
+                 break
             except Exception as e:
                  logger.error(f"Error sending text part {i+1} to {chat_id}: {e}", exc_info=True)
-                 break # Stop sending on other errors
+                 break
 
             if i < len(text_parts_to_send) - 1:
                 await asyncio.sleep(random.uniform(0.4, 0.9))
 
-# <<< ИЗМЕНЕНО: Экранирование текста сообщения о лимите >>>
+
 async def send_limit_exceeded_message(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User):
     # Формируем текст с Markdown
     text_raw = (
@@ -342,29 +319,24 @@ async def send_limit_exceeded_message(update: Update, context: ContextTypes.DEFA
         f"✅ полная настройка промптов и настроений\n\n"
         "👇 жми /subscribe или кнопку ниже!"
     )
-    # Экранируем только части, которые *не* являются Markdown, или весь текст, если нет ** или ``
-    # В данном случае есть ** и форматированные числа/валюта. Проблемные символы могут быть в '😕', '✨', '✅', '👇'.
-    # Безопаснее экранировать весь текст, но это сломает **.
-    # Альтернатива: оставить как есть и надеяться, что эмодзи и стрелки не вызовут проблем (часто так и есть).
-    # Пробуем оставить как есть, т.к. форматирование важно. Если будут ошибки - вернемся к экранированию частей.
+    # Оставляем Markdown как есть, т.к. он важен
     text_to_send = text_raw
-    # text_to_send = escape_markdown_v2(text_raw) # Вариант с полным экранированием (ломает **)
 
     keyboard = [[InlineKeyboardButton("🚀 получить подписку!", callback_data="subscribe_info")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     try:
         target_chat_id = update.effective_chat.id if update.effective_chat else None
         if target_chat_id:
-             # Отправляем с разметкой по умолчанию (MarkdownV2)
              await context.bot.send_message(target_chat_id, text_to_send, reply_markup=reply_markup)
         else:
              logger.warning(f"Could not send limit exceeded message to user {user.telegram_id}: no effective chat.")
     except BadRequest as e:
          logger.error(f"Failed sending limit message (BadRequest): {e} - Text: '{text_to_send[:100]}...'")
-         # Попытка отправить без разметки
          try:
               if target_chat_id:
-                  await context.bot.send_message(target_chat_id, text_raw, reply_markup=reply_markup, parse_mode=None)
+                  # Пытаемся отправить без разметки
+                  plain_text = text_raw.replace("**", "").replace("`", "") # Убираем маркдаун
+                  await context.bot.send_message(target_chat_id, plain_text, reply_markup=reply_markup, parse_mode=None)
          except Exception as final_e:
               logger.error(f"Failed sending limit message even plain: {final_e}")
     except Exception as e:
@@ -372,11 +344,11 @@ async def send_limit_exceeded_message(update: Update, context: ContextTypes.DEFA
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not update.message or not (update.message.text or update.message.caption): return # Handle captions too maybe? Text only for now.
+    if not update.message or not (update.message.text or update.message.caption): return
     chat_id = str(update.effective_chat.id)
     user_id = update.effective_user.id
     username = update.effective_user.username or f"user_{user_id}"
-    message_text = update.message.text or update.message.caption or "" # Prioritize text
+    message_text = update.message.text or update.message.caption or ""
     logger.info(f"MSG < User {user_id} ({username}) in Chat {chat_id}: {message_text[:100]}")
 
     with next(get_db()) as db:
@@ -392,7 +364,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 logger.info(f"Owner {owner_user.telegram_id} exceeded daily message limit ({owner_user.daily_message_count}/{owner_user.message_limit}). Not responding or saving context.")
                 await send_limit_exceeded_message(update, context, owner_user)
                 db.commit() # Commit limit update if needed
-                return # Stop processing
+                return
 
             # --- Add user message to context ---
             context_added = False
@@ -401,25 +373,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     user_prefix = username
                     context_content = f"{user_prefix}: {message_text}"
                     add_message_to_context(db, persona.chat_instance.id, "user", context_content)
-                    # db.flush() # Flush is handled within add_message_to_context or before commit
                     context_added = True
                     logger.debug("Added user message to context.")
                 except SQLAlchemyError as e_ctx:
                     logger.error(f"DB Error adding user message to context: {e_ctx}", exc_info=True)
-                    # db.rollback() # Rolled back by get_db context manager
-                    # <<< ИЗМЕНЕНО: Экранирование текста ошибки >>>
                     await update.message.reply_text(escape_markdown_v2("ошибка при сохранении вашего сообщения."))
-                    return # Stop if context saving fails
+                    return
             else:
                 logger.error("Cannot add user message to context, chat_instance is None.")
-                 # <<< ИЗМЕНЕНО: Экранирование текста ошибки >>>
                 await update.message.reply_text(escape_markdown_v2("системная ошибка: не удалось связать сообщение с личностью."))
-                return # Stop if internal state is inconsistent
+                return
 
             # --- Check if muted ---
             if persona.chat_instance and persona.chat_instance.is_muted:
                 logger.debug(f"Persona '{persona.name}' is muted in chat {chat_id}. Message saved to context, but ignoring response.")
-                db.commit() # Commit the added context message even if muted
+                db.commit()
                 return
 
             # --- Handle potential mood change command ---
@@ -427,8 +395,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             if message_text.lower() in map(str.lower, available_moods):
                  logger.info(f"Message '{message_text}' matched mood name. Changing mood.")
                  await mood(update, context, db=db, persona=persona)
-                 # mood handler manages its own commits/rollbacks
-                 return # Stop processing here after mood change
+                 return
 
             # --- Decide whether to respond (especially in groups) ---
             should_ai_respond = True
@@ -441,15 +408,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                              context_for_should_respond = get_context_for_chat_bot(db, persona.chat_instance.id) if persona.chat_instance else []
                              decision_response = await send_to_langdock(
                                  system_prompt=should_respond_prompt,
-                                 messages=context_for_should_respond # Send current context
+                                 messages=context_for_should_respond
                              )
-                             # Ответ AI на should_respond не должен содержать разметки, его не экранируем
-                             answer = decision_response.strip().lower()
+                             answer = decision_response.strip().lower() # Ответ да/нет не экранируем
                              logger.debug(f"should_respond AI decision for '{message_text[:50]}...': '{answer}'")
                              if answer.startswith("д"):
                                  logger.info(f"Chat {chat_id}, Persona {persona.name}: Deciding to respond based on AI='{answer}'.")
                                  should_ai_respond = True
-                             elif random.random() < 0.05: # Small chance to respond anyway
+                             elif random.random() < 0.05:
                                  logger.info(f"Chat {chat_id}, Persona {persona.name}: Deciding to respond randomly despite AI='{answer}'.")
                                  should_ai_respond = True
                              else:
@@ -458,7 +424,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                          except Exception as e:
                               logger.error(f"Error in should_respond logic for chat {chat_id}, persona {persona.name}: {e}", exc_info=True)
                               logger.warning("Error in should_respond. Defaulting to respond.")
-                              should_ai_respond = True # Fail safe: respond if check fails
+                              should_ai_respond = True
                      else:
                           logger.debug(f"No should_respond_prompt generated for persona {persona.name}. Defaulting to respond in group.")
                           should_ai_respond = True
@@ -468,35 +434,29 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
             if not should_ai_respond:
                  logger.debug(f"Decided not to respond based on should_respond logic for message: {message_text[:50]}...")
-                 db.commit() # Commit the user message context even if not responding
+                 db.commit()
                  return
 
             # --- Get context for AI response generation ---
             context_for_ai = []
             if context_added and persona.chat_instance:
                 try:
-                    # Re-fetch context to include the user's latest message added earlier
                     context_for_ai = get_context_for_chat_bot(db, persona.chat_instance.id)
                     logger.debug(f"Prepared {len(context_for_ai)} messages for AI context.")
                 except SQLAlchemyError as e_ctx:
                      logger.error(f"DB Error getting context for AI response: {e_ctx}", exc_info=True)
-                     # db.rollback() # Handled by context manager
-                     # <<< ИЗМЕНЕНО: Экранирование текста ошибки >>>
                      await update.message.reply_text(escape_markdown_v2("ошибка при получении контекста для ответа."))
                      return
             elif not context_added:
                  logger.warning("Cannot generate AI response without updated context due to prior error.")
-                 # <<< ИЗМЕНЕНО: Экранирование текста ошибки >>>
                  await update.message.reply_text(escape_markdown_v2("ошибка: не удалось сохранить ваше сообщение перед ответом."))
                  return
 
             # --- Generate and send AI response ---
             system_prompt = persona.format_system_prompt(user_id, username, message_text)
-            if not system_prompt: # Check if formatting failed
+            if not system_prompt:
                 logger.error(f"System prompt formatting failed for persona {persona.name}. Cannot generate response.")
-                # <<< ИЗМЕНЕНО: Экранирование текста ошибки >>>
                 await update.message.reply_text(escape_markdown_v2("ошибка при подготовке ответа."))
-                # Commit context so far
                 db.commit()
                 return
 
@@ -507,19 +467,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
             await process_and_send_response(update, context, chat_id, persona, response_text, db)
 
-            # Commit everything (user message, AI response context, limit update)
             db.commit()
             logger.debug(f"Committed DB changes for handle_message cycle chat {chat_id}")
 
         except SQLAlchemyError as e:
              logger.error(f"Database error during handle_message: {e}", exc_info=True)
-             # Rollback handled by context manager
-             # <<< ИЗМЕНЕНО: Экранирование текста ошибки >>>
              await update.message.reply_text(escape_markdown_v2("ошибка базы данных, попробуйте позже."))
         except Exception as e:
             logger.error(f"General error processing message in chat {chat_id}: {e}", exc_info=True)
-            # Rollback handled by context manager
-             # <<< ИЗМЕНЕНО: Экранирование текста ошибки >>>
             await update.message.reply_text(escape_markdown_v2("произошла непредвиденная ошибка."))
 
 
@@ -533,28 +488,26 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
     with next(get_db()) as db:
         try:
             persona_context_owner_tuple = get_persona_and_context_with_owner(chat_id, db)
-            if not persona_context_owner_tuple: return # No active persona
+            if not persona_context_owner_tuple: return
             persona, _, owner_user = persona_context_owner_tuple
             logger.debug(f"Handling {media_type} for persona '{persona.name}' owned by {owner_user.id}")
 
             if not check_and_update_user_limits(db, owner_user):
                 logger.info(f"Owner {owner_user.telegram_id} exceeded daily message limit for media. Not responding or saving context.")
                 await send_limit_exceeded_message(update, context, owner_user)
-                db.commit() # Commit limit check state
+                db.commit()
                 return
 
             prompt_template = None
-            context_text_placeholder = ""
+            context_text_placeholder = "" # Не экранируем здесь, т.к. это для контекста, а не для отправки
             system_formatter = None
             if media_type == "photo":
                 prompt_template = persona.photo_prompt_template
-                # <<< ИЗМЕНЕНО: Экранирование плейсхолдера >>>
-                context_text_placeholder = escape_markdown_v2("прислали фотографию.")
+                context_text_placeholder = "прислали фотографию."
                 system_formatter = persona.format_photo_prompt
             elif media_type == "voice":
                 prompt_template = persona.voice_prompt_template
-                # <<< ИЗМЕНЕНО: Экранирование плейсхолдера >>>
-                context_text_placeholder = escape_markdown_v2("прислали голосовое сообщение.")
+                context_text_placeholder = "прислали голосовое сообщение."
                 system_formatter = persona.format_voice_prompt
             else:
                  logger.error(f"Unsupported media_type '{media_type}' in handle_media")
@@ -565,31 +518,29 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
             if persona.chat_instance:
                 try:
                     user_prefix = username
-                    context_content = f"{user_prefix}: {context_text_placeholder}" # Используем экранированный плейсхолдер
+                    context_content = f"{user_prefix}: {context_text_placeholder}" # Неэкранированный текст для контекста
                     add_message_to_context(db, persona.chat_instance.id, "user", context_content)
                     context_added = True
                     logger.debug(f"Added media placeholder to context for {media_type}.")
                 except SQLAlchemyError as e_ctx:
                      logger.error(f"DB Error adding media placeholder context: {e_ctx}", exc_info=True)
-                     # <<< ИЗМЕНЕНО: Экранирование текста ошибки >>>
                      if update.effective_message: await update.effective_message.reply_text(escape_markdown_v2("ошибка при сохранении информации о медиа."))
-                     return # Stop if context fails
+                     return
             else:
                  logger.error("Cannot add media placeholder to context, chat_instance is None.")
-                 # <<< ИЗМЕНЕНО: Экранирование текста ошибки >>>
                  if update.effective_message: await update.effective_message.reply_text(escape_markdown_v2("системная ошибка: не удалось связать медиа с личностью."))
-                 return # Stop if inconsistent
+                 return
 
             # --- Check if muted ---
             if persona.chat_instance and persona.chat_instance.is_muted:
                 logger.debug(f"Persona '{persona.name}' is muted in chat {chat_id}. Media saved to context, but ignoring response.")
-                db.commit() # Commit context placeholder
+                db.commit()
                 return
 
             # --- Check if template exists ---
             if not prompt_template or not system_formatter:
                 logger.info(f"Persona {persona.name} in chat {chat_id} has no {media_type} template. Skipping response generation.")
-                db.commit() # Commit context placeholder
+                db.commit()
                 return
 
             # --- Get context for AI ---
@@ -600,12 +551,10 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
                     logger.debug(f"Prepared {len(context_for_ai)} messages for AI context for {media_type}.")
                 except SQLAlchemyError as e_ctx:
                     logger.error(f"DB Error getting context for AI media response: {e_ctx}", exc_info=True)
-                    # <<< ИЗМЕНЕНО: Экранирование текста ошибки >>>
                     if update.effective_message: await update.effective_message.reply_text(escape_markdown_v2("ошибка при получении контекста для ответа на медиа."))
-                    return # Stop if context retrieval fails
+                    return
             elif not context_added:
                  logger.warning("Cannot generate AI media response without updated context.")
-                 # <<< ИЗМЕНЕНО: Экранирование текста ошибки >>>
                  if update.effective_message: await update.effective_message.reply_text(escape_markdown_v2("ошибка: не удалось сохранить информацию о медиа перед ответом."))
                  return
 
@@ -613,7 +562,7 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
             system_prompt = system_formatter()
             if not system_prompt:
                  logger.error(f"Failed to format {media_type} prompt for persona {persona.name}")
-                 db.commit() # Commit context so far
+                 db.commit()
                  return
 
             logger.debug(f"Formatted {media_type} system prompt.")
@@ -622,16 +571,14 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
 
             await process_and_send_response(update, context, chat_id, persona, response_text, db)
 
-            db.commit() # Commit everything
+            db.commit()
             logger.debug(f"Committed DB changes for handle_media cycle chat {chat_id}")
 
         except SQLAlchemyError as e:
              logger.error(f"Database error during handle_media ({media_type}): {e}", exc_info=True)
-             # <<< ИЗМЕНЕНО: Экранирование текста ошибки >>>
              if update.effective_message: await update.effective_message.reply_text(escape_markdown_v2("ошибка базы данных."))
         except Exception as e:
             logger.error(f"General error processing {media_type} in chat {chat_id}: {e}", exc_info=True)
-            # <<< ИЗМЕНЕНО: Экранирование текста ошибки >>>
             if update.effective_message: await update.effective_message.reply_text(escape_markdown_v2("произошла непредвиденная ошибка."))
 
 
@@ -643,7 +590,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if not update.message: return
     await handle_media(update, context, "voice")
 
-# <<< ИЗМЕНЕНО: Применено экранирование для сообщений и дат >>>
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message: return
     user_id = update.effective_user.id
@@ -659,14 +606,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             persona_info_tuple = get_persona_and_context_with_owner(chat_id, db)
             if persona_info_tuple:
                 persona, _, _ = persona_info_tuple
-                # Этот текст не содержит ** или ``, только обычные символы, экранируем
+                # Экранируем сообщение
                 reply_text_raw = (
                     f"привет! я {persona.name}. я уже активен в этом чате.\n"
                     "используй /help для списка команд."
                 )
                 escaped_reply_text = escape_markdown_v2(reply_text_raw)
             else:
-                # Refresh user state after potential creation/update and check limits
+                # Refresh user state
                 db.refresh(user)
                 now = datetime.now(timezone.utc)
                 if not user.last_message_reset or user.last_message_reset.date() < now.date():
@@ -677,7 +624,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
                 status = "⭐ Premium" if user.is_active_subscriber else "🆓 Free"
                 expires_at_obj = user.subscription_expires_at
-                # Экранируем дату ПЕРЕД вставкой в f-string, если она есть
                 escaped_expires_date = ""
                 if expires_at_obj and isinstance(expires_at_obj, datetime):
                     # Используем формат с экранированными точками
@@ -686,7 +632,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
                 persona_count = db.query(func.count(PersonaConfig.id)).filter(PersonaConfig.owner_id == user.id).scalar() or 0
 
-                # Используем ВАРИАНТ 2: Аккуратное экранирование для сохранения разметки
+                # Аккуратное экранирование с сохранением Markdown
                 escaped_greeting = escape_markdown_v2("привет! 👋 я бот для создания ai-собеседников (@NunuAiBot).\n\n")
                 escaped_limits_info = escape_markdown_v2(f"личности: {persona_count}/{user.persona_limit} | сообщения: {user.daily_message_count}/{user.message_limit}\n\n")
                 escaped_instruction1 = escape_markdown_v2(" - создай ai-личность.\n")
@@ -695,29 +641,28 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
                 escaped_reply_text = (
                     escaped_greeting +
-                    f"твой статус: **{status}**{expires_text}\n" + # Статус и дата (уже экранированная) НЕ экранируем здесь
+                    f"твой статус: **{status}**{expires_text}\n" +
                     escaped_limits_info +
-                    "**начало работы:**\n" + # Заголовок НЕ экранируем
-                    "1\\. `/createpersona <имя>`" + escaped_instruction1 + # Экранируем точку перед командой
-                    "2\\. `/mypersonas`" + escaped_instruction2 + # Экранируем точку перед командой
-                    "`/profile`" + escaped_commands_info # Команды в `...` НЕ экранируем здесь
+                    "**начало работы:**\n" +
+                    "1\\. `/createpersona <имя>`" + escaped_instruction1 +
+                    "2\\. `/mypersonas`" + escaped_instruction2 +
+                    "`/profile`" + escaped_commands_info
                  )
-                reply_text_raw = "текст для старта (неэкранированный, содержит разметку)" # Placeholder for logging
+                reply_text_raw = "текст для старта (неэкранированный, содержит разметку)" # Placeholder
 
             await update.message.reply_text(escaped_reply_text, reply_markup=ReplyKeyboardRemove())
 
     except SQLAlchemyError as e:
         logger.error(f"Database error during /start for user {user_id}: {e}", exc_info=True)
         error_msg = "ошибка при загрузке данных. попробуй позже."
-        await update.message.reply_text(escape_markdown_v2(error_msg)) # <-- Экранируем сообщение об ошибке
-    except NameError as ne: # Catch the specific NameError if import was missed
+        await update.message.reply_text(escape_markdown_v2(error_msg))
+    except NameError as ne:
         logger.error(f"NameError in /start handler for user {user_id}: {ne}", exc_info=True)
         error_msg = "произошла внутренняя ошибка конфигурации."
-        await update.message.reply_text(escape_markdown_v2(error_msg)) # <-- Экранируем сообщение об ошибке
+        await update.message.reply_text(escape_markdown_v2(error_msg))
     except BadRequest as e:
         logger.error(f"BadRequest sending /start message for user {user_id}: {e}", exc_info=True)
         logger.error(f"Failed text (escaped): '{escaped_reply_text[:200]}...'")
-        # Попытка отправить сообщение без разметки
         try:
             fallback_text = escape_markdown_v2("Привет! Произошла ошибка отображения стартового сообщения. Используй /help для списка команд.")
             await update.message.reply_text(fallback_text, reply_markup=ReplyKeyboardRemove())
@@ -725,9 +670,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
              logger.error(f"Failed sending fallback start message: {fallback_e}")
     except Exception as e:
         logger.error(f"Error in /start handler for user {user_id}: {e}", exc_info=True)
-        # Логгируем оригинальный текст, если ошибка была именно BadRequest (хотя уже обработано выше)
         error_msg = "произошла ошибка при обработке команды /start."
-        await update.message.reply_text(escape_markdown_v2(error_msg)) # <-- Экранируем сообщение об ошибке
+        await update.message.reply_text(escape_markdown_v2(error_msg))
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -736,40 +680,42 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
      chat_id = str(update.effective_chat.id)
      logger.info(f"CMD /help < User {user_id} in Chat {chat_id}")
      await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
-     # <<< НЕ ЭКРАНИРУЕМ: Этот текст интенсивно использует Markdown >>>
-     help_text = (
-         "**🤖 основные команды:**\n"
-         "/start \- приветствие и твой статус\n" # Экранируем тире вручную, т.к. это часть текста
-         "/help \- эта справка\n"
-         "/profile \- твой статус подписки и лимиты\n"
-         "/subscribe \- инфо о подписке и оплата\n\n"
-         "**👤 управление личностями:**\n"
-         "/createpersona <имя> \\[описание] \- создать новую\n" # Экранируем [] и -
-         "/mypersonas \- список твоих личностей и кнопки управления \\(редакт\\., удалить, добавить в чат\\)\n" # Экранируем () . -
-         "/editpersona <id> \- редактировать личность по ID\n"
-         "/deletepersona <id> \- удалить личность по ID\n\n"
-         "**💬 управление в чате \\(где есть личность\\):**\n" # Экранируем ()
-         "/addbot <id> \- добавить личность в текущий чат\n"
-         "/mood \\[настроение] \- сменить настроение активной личности\n" # Экранируем [] -
-         "/reset \- очистить память \\(контекст\\) личности в этом чате\n" # Экранируем () -
-         "/mutebot \- заставить личность молчать в чате\n"
-         "/unmutebot \- разрешить личности отвечать в чате"
-     )
-     # Отправляем с MarkdownV2 по умолчанию
+     # <<< ИЗМЕНЕНО: Используем raw string r"""...""" для упрощения экранирования >>>
+     #    Теперь бэкслеши \ перед спецсимволами Markdown V2 пишутся один раз.
+     help_text = r"""
+**🤖 основные команды:**
+/start \- приветствие и твой статус
+/help \- эта справка
+/profile \- твой статус подписки и лимиты
+/subscribe \- инфо о подписке и оплата
+
+**👤 управление личностями:**
+/createpersona <имя> \[описание] \- создать новую
+/mypersonas \- список твоих личностей и кнопки управления \(редакт\., удалить, добавить в чат\)
+/editpersona <id> \- редактировать личность по ID
+/deletepersona <id> \- удалить личность по ID
+
+**💬 управление в чате \(где есть личность\):**
+/addbot <id> \- добавить личность в текущий чат
+/mood \[настроение] \- сменить настроение активной личности
+/reset \- очистить память \(контекст\) личности в этом чате
+/mutebot \- заставить личность молчать в чате
+/unmutebot \- разрешить личности отвечать в чате
+     """
      try:
          await update.message.reply_text(help_text, reply_markup=ReplyKeyboardRemove())
      except BadRequest as e:
          logger.error(f"Failed sending help message (BadRequest): {e}", exc_info=True)
-         # Попытка отправить без разметки
          try:
-             plain_help_text = re.sub(r'\\(.)', r'\1', help_text) # Убираем ручное экранирование
-             plain_help_text = plain_help_text.replace("**", "").replace("`", "") # Убираем маркдаун
+             # Генерируем plain text версию, убирая Markdown
+             plain_help_text = re.sub(r'\\(.)', r'\1', help_text) # Убираем экранирование TG
+             plain_help_text = re.sub(r'\*\*(.*?)\*\*', r'\1', plain_help_text) # Убираем **
+             plain_help_text = re.sub(r'`(.*?)`', r'\1', plain_help_text) # Убираем ``
              await update.message.reply_text(plain_help_text, reply_markup=ReplyKeyboardRemove(), parse_mode=None)
          except Exception as fallback_e:
              logger.error(f"Failed sending plain help message: {fallback_e}")
 
 
-# <<< ИЗМЕНЕНО: Добавлено экранирование для сообщений пользователю >>>
 async def mood(update: Update, context: ContextTypes.DEFAULT_TYPE, db: Optional[Session] = None, persona: Optional[Persona] = None) -> None:
     is_callback = update.callback_query is not None
     message_or_callback_msg = update.callback_query.message if is_callback else update.message
@@ -814,7 +760,7 @@ async def mood(update: Update, context: ContextTypes.DEFAULT_TYPE, db: Optional[
 
         if not local_persona or not local_persona.chat_instance:
              logger.error(f"Mood called, but persona or persona.chat_instance is None for chat {chat_id}.")
-             if is_callback: await update.callback_query.answer(error_persona_info, show_alert=True) # Answer is plain text
+             if is_callback: await update.callback_query.answer("Ошибка: не найдена информация о личности.", show_alert=True) # Plain text
              else: await message_or_callback_msg.reply_text(error_persona_info)
              if close_db_later: db_session.close()
              return
@@ -823,7 +769,6 @@ async def mood(update: Update, context: ContextTypes.DEFAULT_TYPE, db: Optional[
 
         if chat_bot_instance.is_muted:
             logger.debug(f"Persona '{local_persona.name}' is muted in chat {chat_id}. Ignoring mood command.")
-            # <<< ИЗМЕНЕНО: Экранирование имени и сообщения >>>
             reply_text = escape_markdown_v2(f"Личность '{local_persona.name}' сейчас заглушена (/unmutebot).")
             try:
                  if is_callback: await update.callback_query.edit_message_text(reply_text)
@@ -834,7 +779,6 @@ async def mood(update: Update, context: ContextTypes.DEFAULT_TYPE, db: Optional[
 
         available_moods = local_persona.get_all_mood_names()
         if not available_moods:
-             # <<< ИЗМЕНЕНО: Экранирование имени и сообщения >>>
              reply_text = escape_markdown_v2(f"у личности '{local_persona.name}' не настроены настроения.")
              try:
                  if is_callback: await update.callback_query.edit_message_text(reply_text)
@@ -874,50 +818,44 @@ async def mood(update: Update, context: ContextTypes.DEFAULT_TYPE, db: Optional[
 
         # Process the mood change or show keyboard
         if target_mood_original_case:
-             set_mood_for_chat_bot(db_session, chat_bot_instance.id, target_mood_original_case) # Function handles commit/rollback
-             # <<< ИЗМЕНЕНО: Форматирование ** и экранирование имени/настроения >>>
+             set_mood_for_chat_bot(db_session, chat_bot_instance.id, target_mood_original_case)
              reply_text = f"настроение для '{escape_markdown_v2(local_persona.name)}' теперь: **{escape_markdown_v2(target_mood_original_case)}**"
              try:
                  if is_callback:
-                     if update.callback_query.message.text != reply_text: # Compare with final formatted text
+                     if update.callback_query.message.text != reply_text:
                          await update.callback_query.edit_message_text(reply_text)
                      else:
-                         await update.callback_query.answer(f"Настроение: {target_mood_original_case}") # Answer is plain text
+                         await update.callback_query.answer(f"Настроение: {target_mood_original_case}") # Plain text
                  else:
                      await message_or_callback_msg.reply_text(reply_text, reply_markup=ReplyKeyboardRemove())
              except Exception as send_err: logger.error(f"Error sending mood confirmation: {send_err}")
              logger.info(f"Mood for persona {local_persona.name} in chat {chat_id} set to {target_mood_original_case}.")
         else:
-             # Show keyboard if no valid mood provided or derived
-             # Кнопки не требуют экранирования в тексте
+             # Show keyboard
              keyboard = [[InlineKeyboardButton(m.capitalize(), callback_data=f"set_mood_{m}_{local_persona.id}")] for m in available_moods]
              reply_markup = InlineKeyboardMarkup(keyboard)
              current_mood_text = get_mood_for_chat_bot(db_session, chat_bot_instance.id)
 
-             if mood_arg_lower: # If user provided an invalid mood
-                  # <<< ИЗМЕНЕНО: Экранирование имен и текста >>>
+             if mood_arg_lower:
                  reply_text = escape_markdown_v2(f"не знаю настроения '{mood_arg_lower}' для '{local_persona.name}'. выбери из списка:")
                  logger.debug(f"Invalid mood argument '{mood_arg_lower}' for chat {chat_id}. Sent mood selection.")
-             else: # Just /mood command
-                  # <<< ИЗМЕНЕНО: Форматирование ** и экранирование имен/настроения >>>
+             else:
                  reply_text = f"текущее настроение: **{escape_markdown_v2(current_mood_text)}**\\. выбери новое для '{escape_markdown_v2(local_persona.name)}':"
                  logger.debug(f"Sent mood selection keyboard for chat {chat_id}.")
 
              try:
                  if is_callback:
                       query = update.callback_query
-                      # Compare with final formatted text
                       if query.message.text != reply_text or query.message.reply_markup != reply_markup:
                            await query.edit_message_text(reply_text, reply_markup=reply_markup)
                       else:
-                           await query.answer() # Answer callback without editing
+                           await query.answer()
                  else:
                       await message_or_callback_msg.reply_text(reply_text, reply_markup=reply_markup)
              except Exception as send_err: logger.error(f"Error sending mood selection: {send_err}")
 
     except SQLAlchemyError as e:
          logger.error(f"Database error during /mood for chat {chat_id}: {e}", exc_info=True)
-         # Rollback handled by context manager if close_db_later is True
          try:
              if is_callback: await update.callback_query.edit_message_text(error_db)
              else: await message_or_callback_msg.reply_text(error_db, reply_markup=ReplyKeyboardRemove())
@@ -932,7 +870,7 @@ async def mood(update: Update, context: ContextTypes.DEFAULT_TYPE, db: Optional[
         if close_db_later and db_session:
             db_session.close()
 
-# <<< ИЗМЕНЕНО: Добавлено экранирование для сообщений пользователю >>>
+
 async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message: return
     chat_id = str(update.effective_chat.id)
@@ -967,20 +905,18 @@ async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                  return
 
             deleted_count = db.query(ChatContext).filter(ChatContext.chat_bot_instance_id == chat_bot_instance.id).delete(synchronize_session='fetch')
-            db.commit() # Commit deletion
+            db.commit()
             logger.info(f"Deleted {deleted_count} context messages for chat_bot_instance {chat_bot_instance.id} (Persona '{persona.name}') in chat {chat_id} by user {user_id}.")
-            # <<< ИЗМЕНЕНО: Экранирование имени в сообщении об успехе >>>
             final_success_msg = escape_markdown_v2(f"память личности '{persona.name}' в этом чате очищена.")
             await update.message.reply_text(final_success_msg, reply_markup=ReplyKeyboardRemove())
         except SQLAlchemyError as e:
             logger.error(f"Database error during /reset for chat {chat_id}: {e}", exc_info=True)
-            # Rollback handled by context manager
             await update.message.reply_text(error_db)
         except Exception as e:
             logger.error(f"Error in /reset handler for chat {chat_id}: {e}", exc_info=True)
             await update.message.reply_text(error_general)
 
-# <<< ИЗМЕНЕНО: Добавлено экранирование для сообщений пользователю >>>
+
 async def create_persona(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message: return
     user_id = update.effective_user.id
@@ -989,15 +925,17 @@ async def create_persona(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     logger.info(f"CMD /createpersona < User {user_id} ({username}) with args: {context.args}")
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
 
-    # Сообщения об ошибках и инструкции (экранированные, но с сохранением `` и _)
-    usage_text = "формат: `/createpersona <имя> \\[описание]`\n_имя обязательно, описание нет\\._" # Экранируем [], ., _ вне ``, оставляем ``
+    # Используем raw string для usage_text
+    usage_text = r"формат: `/createpersona <имя> \[описание]`\n_имя обязательно, описание нет\._"
     error_name_len = escape_markdown_v2("имя личности: 2-50 символов.")
     error_desc_len = escape_markdown_v2("описание: до 1500 символов.")
-    error_limit_reached = escape_markdown_v2("упс! достигнут лимит личностей ({current_count}/{limit}) для статуса **{status_text}**. 😟\nчтобы создавать больше, используй /subscribe") # Placeholder
+    # Оставляем ** в сообщении о лимите, но экранируем остальное
+    error_limit_reached = escape_markdown_v2("упс\\! достигнут лимит личностей \\({current_count}/{limit}\\) для статуса ") + "**{status_text}**" + escape_markdown_v2("\\. 😟\nчтобы создавать больше, используй /subscribe") # Placeholder
     error_name_exists = escape_markdown_v2("личность с именем '{persona_name}' уже есть. выбери другое.") # Placeholder
     error_db = escape_markdown_v2("ошибка базы данных при создании личности.")
     error_general = escape_markdown_v2("ошибка при создании личности.")
-    success_create = escape_markdown_v2("✅ личность '{name}' создана!\nid: `{id}`\nописание: {description}\n\nдобавь в чат или управляй через /mypersonas") # Placeholder
+    # Оставляем `id` в сообщении об успехе
+    success_create = escape_markdown_v2("✅ личность '{name}' создана!\nid: ") + "`{id}`" + escape_markdown_v2("\nописание: {description}\n\nдобавь в чат или управляй через /mypersonas") # Placeholder
 
     args = context.args
     if not args:
@@ -1014,7 +952,7 @@ async def create_persona(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     with next(get_db()) as db:
         try:
-            user = get_or_create_user(db, user_id, username) # Ensure user exists
+            user = get_or_create_user(db, user_id, username)
             user_for_check = db.query(User).options(joinedload(User.persona_configs)).filter(User.id == user.id).one()
 
             if not user_for_check.can_create_persona:
@@ -1022,32 +960,26 @@ async def create_persona(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                  limit = user_for_check.persona_limit
                  logger.warning(f"User {user_id} cannot create persona, limit reached ({current_count}/{limit}).")
                  status_text = "⭐ Premium" if user_for_check.is_active_subscriber else "🆓 Free"
-                 # <<< ИЗМЕНЕНО: Форматируем и отправляем >>>
-                 final_limit_msg = error_limit_reached.format(current_count=current_count, limit=limit, status_text=status_text)
+                 # Format string carefully preserving **
+                 final_limit_msg = escape_markdown_v2(f"упс\\! достигнут лимит личностей \\({current_count}/{limit}\\) для статуса ") + f"**{escape_markdown_v2(status_text)}**" + escape_markdown_v2("\\. 😟\nчтобы создавать больше, используй /subscribe")
                  await update.message.reply_text(final_limit_msg, reply_markup=ReplyKeyboardRemove())
                  return
 
             existing_persona = get_persona_by_name_and_owner(db, user.id, persona_name)
             if existing_persona:
-                 # <<< ИЗМЕНЕНО: Форматируем и отправляем >>>
                  final_exists_msg = error_name_exists.format(persona_name=escape_markdown_v2(persona_name))
                  await update.message.reply_text(final_exists_msg, reply_markup=ReplyKeyboardRemove())
                  return
 
-            new_persona = create_persona_config(db, user.id, persona_name, persona_description) # Handles commit internally
-             # <<< ИЗМЕНЕНО: Форматируем и отправляем (экранируем name и description) >>>
+            new_persona = create_persona_config(db, user.id, persona_name, persona_description)
             desc_display = escape_markdown_v2(new_persona.description) if new_persona.description else escape_markdown_v2("(пусто)")
-            final_success_msg = success_create.format(
-                name=escape_markdown_v2(new_persona.name),
-                id=new_persona.id, # ID не требует экранирования в ``
-                description=desc_display
-            )
+            # Format string carefully preserving `id`
+            final_success_msg = escape_markdown_v2(f"✅ личность '{new_persona.name}' создана!\nid: ") + f"`{new_persona.id}`" + escape_markdown_v2(f"\nописание: {desc_display}\n\nдобавь в чат или управляй через /mypersonas")
             await update.message.reply_text(final_success_msg)
             logger.info(f"User {user_id} created persona: '{new_persona.name}' (ID: {new_persona.id})")
 
         except IntegrityError:
              logger.warning(f"IntegrityError caught by handler for create_persona user {user_id} name '{persona_name}'.")
-             # <<< ИЗМЕНЕНО: Экранируем имя и сообщение >>>
              error_msg_ie = escape_markdown_v2(f"ошибка: личность '{persona_name}' уже существует (возможно, гонка запросов). попробуй еще раз.")
              await update.message.reply_text(error_msg_ie, reply_markup=ReplyKeyboardRemove())
         except SQLAlchemyError as e:
@@ -1057,7 +989,7 @@ async def create_persona(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
              logger.error(f"Error creating persona for user {user_id}: {e}", exc_info=True)
              await update.message.reply_text(error_general)
 
-# <<< ИЗМЕНЕНО: Добавлено экранирование для сообщений пользователю >>>
+
 async def my_personas(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message: return
     user_id = update.effective_user.id
@@ -1069,7 +1001,8 @@ async def my_personas(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     error_db = escape_markdown_v2("ошибка при загрузке списка личностей.")
     error_general = escape_markdown_v2("произошла ошибка при обработке команды /mypersonas.")
     error_user_not_found = escape_markdown_v2("Ошибка: не удалось найти пользователя.")
-    info_no_personas = escape_markdown_v2("у тебя пока нет личностей (лимит: {count}/{limit}).\nсоздай: /createpersona <имя>") # Placeholder
+    # Используем raw string для info_no_personas
+    info_no_personas = r"у тебя пока нет личностей \(лимит: {count}/{limit}\)\.\nсоздай: /createpersona <имя>" # Placeholder
     info_list_header = escape_markdown_v2("твои личности ({count}/{limit}):\n") # Placeholder
 
     try:
@@ -1083,7 +1016,7 @@ async def my_personas(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 return
 
             personas = sorted(user_with_personas.persona_configs, key=lambda p: p.name) if user_with_personas.persona_configs else []
-            persona_limit = user_with_personas.persona_limit # Use property
+            persona_limit = user_with_personas.persona_limit
             persona_count = len(personas)
 
             if not personas:
@@ -1091,14 +1024,12 @@ async def my_personas(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 await update.message.reply_text(final_no_personas_msg)
                 return
 
-            # <<< ИЗМЕНЕНО: Экранирование заголовка >>>
             text = info_list_header.format(count=persona_count, limit=persona_limit)
             keyboard = []
             for p in personas:
-                 # <<< ИЗМЕНЕНО: Экранирование имени в кнопке (на всякий случай) >>>
-                 button_text = escape_markdown_v2(f"👤 {p.name} (ID: {p.id})")
+                 # Текст кнопки не требует экранирования
+                 button_text = f"👤 {p.name} (ID: {p.id})"
                  keyboard.append([InlineKeyboardButton(button_text, callback_data=f"dummy_{p.id}")])
-                 # Текст кнопок действий не требует экранирования
                  keyboard.append([
                      InlineKeyboardButton("⚙️ Редакт.", callback_data=f"edit_persona_{p.id}"),
                      InlineKeyboardButton("🗑️ Удалить", callback_data=f"delete_persona_{p.id}"),
@@ -1116,7 +1047,6 @@ async def my_personas(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await update.message.reply_text(error_general)
 
 
-# <<< ИЗМЕНЕНО: Добавлено экранирование для сообщений пользователю >>>
 async def add_bot_to_chat(update: Update, context: ContextTypes.DEFAULT_TYPE, persona_id: Optional[int] = None) -> None:
     is_callback = update.callback_query is not None
     message_or_callback_msg = update.callback_query.message if is_callback else update.message
@@ -1128,8 +1058,8 @@ async def add_bot_to_chat(update: Update, context: ContextTypes.DEFAULT_TYPE, pe
     chat_title = message_or_callback_msg.chat.title or f"Chat {chat_id}"
     local_persona_id = persona_id # Use passed ID if available
 
-    # Сообщения об ошибках и инструкции (с экранированием где нужно)
-    usage_text = "формат: `/addbot <id персоны>`\nили используй кнопку '➕ В чат' из /mypersonas" # Не требует экранирования
+    # Используем raw string для usage_text
+    usage_text = r"формат: `/addbot <id персоны>`\nили используй кнопку '➕ В чат' из /mypersonas"
     error_invalid_id_callback = escape_markdown_v2("Ошибка: неверный ID личности.")
     error_invalid_id_cmd = escape_markdown_v2("id личности должен быть числом.")
     error_no_id = escape_markdown_v2("Ошибка: ID личности не определен.")
@@ -1139,14 +1069,15 @@ async def add_bot_to_chat(update: Update, context: ContextTypes.DEFAULT_TYPE, pe
     error_integrity = escape_markdown_v2("произошла ошибка целостности данных (возможно, конфликт активации), попробуйте еще раз.")
     error_db = escape_markdown_v2("ошибка базы данных при добавлении бота.")
     error_general = escape_markdown_v2("ошибка при активации личности.")
-    success_added = escape_markdown_v2("✅ личность '{name}' (id: `{id}`) активирована в этом чате! Память очищена.") # Placeholder
+    # Оставляем `id` неэкранированным в success_added
+    success_added = escape_markdown_v2("✅ личность '{name}' (id: ") + "`{id}`" + escape_markdown_v2(") активирована в этом чате! Память очищена.") # Placeholder
 
     if is_callback and local_persona_id is None:
          try:
              local_persona_id = int(update.callback_query.data.split('_')[-1])
          except (IndexError, ValueError):
              logger.error(f"Could not parse persona_id from add_bot callback data: {update.callback_query.data}")
-             await update.callback_query.answer(error_invalid_id_callback, show_alert=True) # Answer plain text
+             await update.callback_query.answer("Ошибка: неверный ID личности.", show_alert=True) # Plain text
              return
     elif not is_callback:
          logger.info(f"CMD /addbot < User {user_id} ({username}) in Chat '{chat_title}' ({chat_id}) with args: {context.args}")
@@ -1162,12 +1093,12 @@ async def add_bot_to_chat(update: Update, context: ContextTypes.DEFAULT_TYPE, pe
 
     if local_persona_id is None:
          logger.error("add_bot_to_chat: persona_id is None after processing input.")
-         if is_callback: await update.callback_query.answer(error_no_id, show_alert=True) # Answer plain text
+         if is_callback: await update.callback_query.answer("Ошибка: ID личности не определен.", show_alert=True) # Plain text
          else: await message_or_callback_msg.reply_text(error_no_id)
          return
 
     if is_callback:
-        await update.callback_query.answer("Добавляем личность...") # Answer plain text
+        await update.callback_query.answer("Добавляем личность...") # Plain text
 
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
 
@@ -1175,8 +1106,7 @@ async def add_bot_to_chat(update: Update, context: ContextTypes.DEFAULT_TYPE, pe
         try:
             persona = get_persona_by_id_and_owner(db, user_id, local_persona_id)
             if not persona:
-                 # <<< ИЗМЕНЕНО: Форматируем и отправляем >>>
-                 final_not_found_msg = error_persona_not_found.format(id=local_persona_id) # ID в `` не экранируем
+                 final_not_found_msg = error_persona_not_found.format(id=local_persona_id)
                  if is_callback: await update.callback_query.edit_message_text(final_not_found_msg)
                  else: await message_or_callback_msg.reply_text(final_not_found_msg, reply_markup=ReplyKeyboardRemove())
                  return
@@ -1191,18 +1121,17 @@ async def add_bot_to_chat(update: Update, context: ContextTypes.DEFAULT_TYPE, pe
 
             if existing_active_link:
                 if existing_active_link.bot_instance_ref and existing_active_link.bot_instance_ref.persona_config_id == local_persona_id:
-                    # <<< ИЗМЕНЕНО: Форматируем и отправляем >>>
                     final_already_active_msg = error_already_active.format(name=escape_markdown_v2(persona.name))
-                    if is_callback: await update.callback_query.answer(final_already_active_msg, show_alert=True) # Answer plain text
+                    if is_callback: await update.callback_query.answer(f"личность '{persona.name}' уже активна.", show_alert=True) # Plain text answer
                     else: await message_or_callback_msg.reply_text(final_already_active_msg, reply_markup=ReplyKeyboardRemove())
                     return
                 else:
                     logger.info(f"Deactivating previous bot instance {existing_active_link.bot_instance_id} in chat {chat_id} before activating {local_persona_id}.")
                     existing_active_link.active = False
-                    db.flush() # Ensure deactivation is processed before linking the new one
+                    db.flush()
 
-            # Find or create BotInstance for the persona
-            user = get_or_create_user(db, user_id, username) # Need user.id for potential creation
+            # Find or create BotInstance
+            user = get_or_create_user(db, user_id, username)
             bot_instance = db.query(BotInstance).filter(
                 BotInstance.persona_config_id == local_persona_id
             ).first()
@@ -1211,15 +1140,13 @@ async def add_bot_to_chat(update: Update, context: ContextTypes.DEFAULT_TYPE, pe
                  bot_instance = create_bot_instance(db, user.id, local_persona_id, name=f"Inst:{persona.name}")
                  logger.info(f"Created BotInstance {bot_instance.id} for persona {local_persona_id}")
 
-            # Link the (potentially new) BotInstance to the chat
+            # Link the BotInstance to the chat
             chat_link = link_bot_instance_to_chat(db, bot_instance.id, chat_id)
 
             if chat_link:
-                 # Clear context for the newly linked/activated instance
                  deleted_ctx = db.query(ChatContext).filter(ChatContext.chat_bot_instance_id == chat_link.id).delete(synchronize_session='fetch')
-                 db.commit() # Commit the context deletion
+                 db.commit()
                  logger.debug(f"Cleared {deleted_ctx} context messages for chat_bot_instance {chat_link.id} upon linking.")
-                 # <<< ИЗМЕНЕНО: Форматируем и отправляем >>>
                  final_success_msg = success_added.format(name=escape_markdown_v2(persona.name), id=local_persona_id)
                  await context.bot.send_message(chat_id=chat_id, text=final_success_msg, reply_markup=ReplyKeyboardRemove())
                  if is_callback:
@@ -1229,7 +1156,6 @@ async def add_bot_to_chat(update: Update, context: ContextTypes.DEFAULT_TYPE, pe
                            logger.warning(f"Could not delete callback message after adding bot: {del_err}")
                  logger.info(f"Linked BotInstance {bot_instance.id} (Persona {local_persona_id}) to chat {chat_id} ('{chat_title}'). ChatBotInstance ID: {chat_link.id}")
             else:
-                 # link_bot_instance_to_chat handles rollback on failure
                  if is_callback:
                       await context.bot.send_message(chat_id=chat_id, text=error_link_failed)
                  else:
@@ -1237,19 +1163,16 @@ async def add_bot_to_chat(update: Update, context: ContextTypes.DEFAULT_TYPE, pe
                  logger.warning(f"Failed to link BotInstance {bot_instance.id} to chat {chat_id} - link_bot_instance_to_chat returned None.")
 
         except IntegrityError as e:
-             # Rollback handled by context manager
              logger.warning(f"IntegrityError potentially during addbot for persona {local_persona_id} to chat {chat_id}: {e}", exc_info=True)
              await context.bot.send_message(chat_id=chat_id, text=error_integrity)
         except SQLAlchemyError as e:
-             # Rollback handled by context manager
              logger.error(f"Database error during /addbot for persona {local_persona_id} to chat {chat_id}: {e}", exc_info=True)
              await context.bot.send_message(chat_id=chat_id, text=error_db)
         except Exception as e:
-             # Rollback handled by context manager
              logger.error(f"Error adding bot instance {local_persona_id} to chat {chat_id}: {e}", exc_info=True)
              await context.bot.send_message(chat_id=chat_id, text=error_general)
 
-# <<< ИЗМЕНЕНО: Добавлено экранирование для текста callback ответа >>>
+
 async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     if not query or not query.data: return
@@ -1262,42 +1185,36 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
 
     # --- Route callbacks ---
     if data.startswith("set_mood_"):
-        await query.answer() # Answer here, mood() will edit the message
+        await query.answer()
         await mood(update, context)
     elif data == "subscribe_info":
-        await query.answer() # Answer here, subscribe() will edit
+        await query.answer()
         await subscribe(update, context, from_callback=True)
     elif data == "subscribe_pay":
-        await query.answer(escape_markdown_v2("Создаю ссылку на оплату...")) # Specific answer (escaped)
+        await query.answer("Создаю ссылку на оплату...") # Plain text
         await generate_payment_link(update, context)
     elif data == "view_tos":
-        await query.answer() # Answer here, view_tos() will edit
+        await query.answer()
         await view_tos(update, context)
     elif data == "confirm_pay":
-        await query.answer() # Answer here, confirm_pay() will edit
+        await query.answer()
         await confirm_pay(update, context)
     elif data.startswith("add_bot_"):
-        # add_bot_to_chat handles its own answers/edits
-        await add_bot_to_chat(update, context) # No persona_id needed, extracted inside
+        await add_bot_to_chat(update, context)
     elif data.startswith("dummy_"):
-        await query.answer() # Just acknowledge the press
+        await query.answer()
     else:
-        # Check if it's handled by ConversationHandlers
         known_conv_prefixes = ("edit_persona_", "delete_persona_", "edit_field_", "edit_mood", "deletemood", "cancel_edit", "edit_persona_back")
         if any(data.startswith(p) for p in known_conv_prefixes):
-            # Let the ConversationHandler process it, don't answer here
              logger.debug(f"Callback '{data}' seems to be for a ConversationHandler, skipping direct handling.")
-             # ConversationHandler should call query.answer() itself
         else:
             logger.warning(f"Unhandled callback query data: {data} from user {user_id}")
             try:
-                 # <<< ИЗМЕНЕНО: Экранирование текста ответа >>>
-                 await query.answer(escape_markdown_v2("Неизвестное действие")) # Provide some feedback
+                 await query.answer("Неизвестное действие") # Plain text
             except Exception as e:
                  logger.warning(f"Failed to answer unhandled callback {query.id}: {e}")
 
 
-# <<< ИЗМЕНЕНО: Добавлено экранирование для даты и сообщений >>>
 async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message: return
     user_id = update.effective_user.id
@@ -1310,7 +1227,7 @@ async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     with next(get_db()) as db:
         try:
-            user = get_or_create_user(db, user_id, username) # Handles commit
+            user = get_or_create_user(db, user_id, username)
 
             # Ensure limits are up-to-date
             now = datetime.now(timezone.utc)
@@ -1318,41 +1235,38 @@ async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 logger.info(f"Resetting daily limit for user {user_id} during /profile check.")
                 user.daily_message_count = 0
                 user.last_message_reset = now
-                db.commit() # Commit reset
+                db.commit()
                 db.refresh(user)
 
             is_active_subscriber = user.is_active_subscriber
             status = "⭐ Premium" if is_active_subscriber else "🆓 Free"
-            # <<< ИЗМЕНЕНО: Экранируем дату и время >>>
+            # Экранируем дату и время
             expires_text_raw = f"активна до: {user.subscription_expires_at.strftime('%d.%m.%Y %H:%M')} UTC" if is_active_subscriber and user.subscription_expires_at else "нет активной подписки"
             expires_text = escape_markdown_v2(expires_text_raw)
 
-            # Get persona count
             persona_count = db.query(func.count(PersonaConfig.id)).filter(PersonaConfig.owner_id == user.id).scalar() or 0
 
             # Собираем текст с ** и экранированными частями
             text = (
                 f"👤 **твой профиль**\n\n"
-                f"статус: **{status}**\n" # ** оставляем
-                f"{expires_text}\n\n" # Дата уже экранирована
-                f"**лимиты:**\n" # ** оставляем
-                f"{escape_markdown_v2(f'сообщения сегодня: {user.daily_message_count}/{user.message_limit}')}\n" # Экранируем лимиты
-                f"{escape_markdown_v2(f'создано личностей: {persona_count}/{user.persona_limit}')}\n\n" # Экранируем лимиты
+                f"статус: **{status}**\n"
+                f"{expires_text}\n\n"
+                f"**лимиты:**\n"
+                f"{escape_markdown_v2(f'сообщения сегодня: {user.daily_message_count}/{user.message_limit}')}\n"
+                f"{escape_markdown_v2(f'создано личностей: {persona_count}/{user.persona_limit}')}\n\n"
             )
             if not is_active_subscriber:
-                text += escape_markdown_v2("🚀 хочешь больше? жми /subscribe !") # Экранируем
+                text += escape_markdown_v2("🚀 хочешь больше? жми /subscribe !")
 
             await update.message.reply_text(text)
         except SQLAlchemyError as e:
              logger.error(f"Database error during /profile for user {user_id}: {e}", exc_info=True)
-             # Rollback handled by context manager
              await update.message.reply_text(error_db)
         except Exception as e:
             logger.error(f"Error in /profile handler for user {user_id}: {e}", exc_info=True)
             await update.message.reply_text(error_general)
 
 
-# <<< ИЗМЕНЕНО: Добавлено экранирование для сообщений пользователю >>>
 async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE, from_callback: bool = False) -> None:
     user = update.effective_user
     user_id = user.id
@@ -1362,7 +1276,6 @@ async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE, from_cal
     message_to_update_or_reply = update.callback_query.message if from_callback else update.message
     if not message_to_update_or_reply: return
 
-    # Check Yookassa config readiness
     yookassa_ready = bool(YOOKASSA_SHOP_ID and YOOKASSA_SECRET_KEY and YOOKASSA_SHOP_ID.isdigit())
 
     error_payment_unavailable = escape_markdown_v2("К сожалению, функция оплаты сейчас недоступна. 😥 (проблема с настройками)")
@@ -1374,21 +1287,11 @@ async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE, from_cal
         logger.warning("Yookassa credentials not set or shop ID is not numeric in subscribe handler.")
     else:
         # Собираем текст с ** и экранированными частями
-        header = f"✨ **премиум подписка ({SUBSCRIPTION_PRICE_RUB:.0f} {SUBSCRIPTION_CURRENCY}/мес)** ✨\n\n" # ** оставляем
-        body = escape_markdown_v2(
-             "получи максимум возможностей:\n"
-            f"✅ **{PAID_DAILY_MESSAGE_LIMIT}** сообщений в день (вместо {FREE_DAILY_MESSAGE_LIMIT})\n" # Внутренний ** НЕ будет работать после экранирования
-            f"✅ **{PAID_PERSONA_LIMIT}** личностей (вместо {FREE_PERSONA_LIMIT})\n" # Внутренний ** НЕ будет работать
-            f"✅ полная настройка всех промптов\n"
-            f"✅ создание и редакт. своих настроений\n"
-            f"✅ приоритетная поддержка (если будет)\n\n"
-            f"подписка действует {SUBSCRIPTION_DURATION_DAYS} дней."
-            )
-        # Комбинируем. Так как body экранирован, внутренние ** не сработают.
-        # Если нужно сохранить форматирование ** внутри, нужно НЕ экранировать body, но это рискованно.
-        # Оставляем body экранированным для безопасности.
+        header = f"✨ **премиум подписка ({SUBSCRIPTION_PRICE_RUB:.0f} {SUBSCRIPTION_CURRENCY}/мес)** ✨\n\n"
+        # Оставляем ** в body для лимитов, экранируем остальное
+        body = escape_markdown_v2("получи максимум возможностей:\n✅ ") + f"**{PAID_DAILY_MESSAGE_LIMIT}**" + escape_markdown_v2(f" сообщений в день \\(вместо {FREE_DAILY_MESSAGE_LIMIT}\\)\n✅ ") + f"**{PAID_PERSONA_LIMIT}**" + escape_markdown_v2(f" личностей \\(вместо {FREE_PERSONA_LIMIT}\\)\n✅ полная настройка всех промптов\n✅ создание и редакт\\. своих настроений\n✅ приоритетная поддержка \\(если будет\\)\n\nподписка действует {SUBSCRIPTION_DURATION_DAYS} дней\\.")
         text = header + body
-        text_raw = "Текст /subscribe (неэкранированный)" # Placeholder
+        text_raw = "текст /subscribe (неэкранированный)" # Placeholder для лога
 
         keyboard = [
             [InlineKeyboardButton("📜 Условия использования", callback_data="view_tos")],
@@ -1399,17 +1302,18 @@ async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE, from_cal
     try:
         if from_callback:
             query = update.callback_query
-            # Сравниваем с финальным текстом для отправки
             if query.message.text != text or query.message.reply_markup != reply_markup:
                  await query.edit_message_text(text, reply_markup=reply_markup)
+            else:
+                 await query.answer()
         else:
             await message_to_update_or_reply.reply_text(text, reply_markup=reply_markup)
     except BadRequest as e:
-        logger.error(f"Failed sending subscribe message (BadRequest): {e} - Text: '{text_raw[:100]}...'")
-        # Попытка отправить без разметки
+        logger.error(f"Failed sending subscribe message (BadRequest): {e} - Text Raw: '{text_raw[:100]}...'")
         try:
             if message_to_update_or_reply:
-                 await context.bot.send_message(chat_id=message_to_update_or_reply.chat.id, text=text_raw, reply_markup=reply_markup, parse_mode=None)
+                 plain_text = text_raw.replace("**", "").replace("`", "") # Убираем маркдаун
+                 await context.bot.send_message(chat_id=message_to_update_or_reply.chat.id, text=plain_text, reply_markup=reply_markup, parse_mode=None)
         except Exception as fallback_e:
              logger.error(f"Failed sending fallback subscribe message: {fallback_e}")
     except Exception as e:
@@ -1420,7 +1324,7 @@ async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE, from_cal
             except Exception as send_e:
                  logger.error(f"Failed to send fallback subscribe message for user {user_id}: {send_e}")
 
-# <<< ИЗМЕНЕНО: Добавлено экранирование для сообщений пользователю >>>
+
 async def view_tos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     if not query or not query.message: return
@@ -1428,7 +1332,7 @@ async def view_tos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info(f"User {user_id} requested to view ToS.")
 
     tos_url = context.bot_data.get('tos_url')
-    error_tos_link = escape_markdown_v2("Не удалось отобразить ссылку на соглашение.")
+    error_tos_link = "Не удалось отобразить ссылку на соглашение." # Plain text for answer
     error_tos_load = escape_markdown_v2("❌ Не удалось загрузить ссылку на Пользовательское Соглашение. Попробуйте позже.")
     info_tos = escape_markdown_v2("Ознакомьтесь с Пользовательским Соглашением, открыв его по ссылке ниже:")
 
@@ -1440,14 +1344,13 @@ async def view_tos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         reply_markup = InlineKeyboardMarkup(keyboard)
         text = info_tos
         try:
-            # Сравниваем с текстом, который *должен* быть в сообщении (info_tos)
             if query.message.text != text or query.message.reply_markup != reply_markup:
                 await query.edit_message_text(text, reply_markup=reply_markup)
             else:
-                 await query.answer() # Отвечаем на колбек, если сообщение не изменилось
+                 await query.answer()
         except Exception as e:
             logger.error(f"Failed to show ToS link to user {user_id}: {e}")
-            await query.answer(error_tos_link, show_alert=True) # Answer plain text
+            await query.answer(error_tos_link, show_alert=True)
     else:
         logger.error(f"ToS URL not found in bot_data for user {user_id}.")
         text = error_tos_load
@@ -1460,9 +1363,9 @@ async def view_tos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 await query.answer()
         except Exception as e:
              logger.error(f"Failed to show ToS error message to user {user_id}: {e}")
-             await query.answer(escape_markdown_v2("Ошибка загрузки соглашения."), show_alert=True) # Answer plain text
+             await query.answer("Ошибка загрузки соглашения.", show_alert=True) # Plain text
 
-# <<< ИЗМЕНЕНО: Добавлено экранирование для сообщений пользователю >>>
+
 async def confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     if not query or not query.message: return
@@ -1486,7 +1389,6 @@ async def confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         logger.warning("Yookassa credentials not set or shop ID is not numeric in confirm_pay handler.")
     else:
         text = info_confirm
-        # Текст кнопок не требует экранирования
         keyboard = [
             [InlineKeyboardButton(f"💳 Оплатить {SUBSCRIPTION_PRICE_RUB:.0f} {SUBSCRIPTION_CURRENCY}", callback_data="subscribe_pay")]
         ]
@@ -1499,7 +1401,6 @@ async def confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         reply_markup = InlineKeyboardMarkup(keyboard)
 
     try:
-        # Сравниваем с текстом для отправки
         if query.message.text != text or query.message.reply_markup != reply_markup:
             await query.edit_message_text(
                 text,
@@ -1507,12 +1408,11 @@ async def confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 disable_web_page_preview=True
             )
         else:
-             await query.answer()
+            await query.answer()
     except Exception as e:
         logger.error(f"Failed to show final payment confirmation to user {user_id}: {e}")
 
 
-# <<< ИЗМЕНЕНО: Добавлено экранирование для сообщений пользователю >>>
 async def generate_payment_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if not query or not query.message: return
@@ -1537,10 +1437,12 @@ async def generate_payment_link(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
     try:
+        # Используем безопасный доступ к атрибутам Configuration
+        current_shop_id = int(YOOKASSA_SHOP_ID)
         if not hasattr(Configuration, 'secret_key') or not Configuration.secret_key or \
-           not hasattr(Configuration, 'account_id') or Configuration.account_id != int(YOOKASSA_SHOP_ID):
-             Configuration.configure(int(YOOKASSA_SHOP_ID), YOOKASSA_SECRET_KEY)
-             logger.info(f"Yookassa re-configured within generate_payment_link (Shop ID: {YOOKASSA_SHOP_ID}).")
+           not hasattr(Configuration, 'account_id') or Configuration.account_id != current_shop_id:
+             Configuration.configure(account_id=current_shop_id, secret_key=config.YOOKASSA_SECRET_KEY)
+             logger.info(f"Yookassa re-configured within generate_payment_link (Shop ID: {current_shop_id}).")
     except ValueError:
          logger.error(f"YOOKASSA_SHOP_ID ({config.YOOKASSA_SHOP_ID}) invalid integer.")
          await query.edit_message_text(error_yk_config, reply_markup=None)
@@ -1551,10 +1453,9 @@ async def generate_payment_link(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
     idempotence_key = str(uuid.uuid4())
-    # Описание и метаданные не требуют экранирования для YK, но для логов/отображения может понадобиться
     payment_description = f"Premium подписка @NunuAiBot на {SUBSCRIPTION_DURATION_DAYS} дней (User ID: {user_id})"
     payment_metadata = {'telegram_user_id': str(user_id)}
-    bot_username = context.bot_data.get('bot_username', "NunuAiBot") # Get from bot_data if available
+    bot_username = context.bot_data.get('bot_username', "NunuAiBot")
     return_url = f"https://t.me/{bot_username}"
 
     try:
@@ -1568,13 +1469,7 @@ async def generate_payment_link(update: Update, context: ContextTypes.DEFAULT_TY
                 "payment_subject": "service"
             })
         ]
-        # Используем email пользователя, если есть, иначе плейсхолдер
         user_email = f"user_{user_id}@telegram.bot" # Placeholder
-        # Optional: try getting real email if stored (not in current schema)
-        # with next(get_db()) as db_session:
-        #     user = db_session.query(User.email).filter(User.telegram_id == user_id).scalar() # Assuming email column exists
-        #     if user: user_email = user
-
         receipt_data = Receipt({
             "customer": {"email": user_email},
             "items": receipt_items,
@@ -1599,23 +1494,20 @@ async def generate_payment_link(update: Update, context: ContextTypes.DEFAULT_TY
 
         if not payment_response or not payment_response.confirmation or not payment_response.confirmation.confirmation_url:
              logger.error(f"Yookassa API returned invalid response for user {user_id}. Status: {payment_response.status if payment_response else 'N/A'}. Response: {payment_response}")
-             # <<< ИЗМЕНЕНО: Собираем и экранируем сообщение об ошибке >>>
              error_message = error_link_get
-             if payment_response and payment_response.status: error_message += escape_markdown_v2(f" (статус: {payment_response.status})")
-             error_message += escape_markdown_v2(".\nПопробуй позже.")
+             if payment_response and payment_response.status: error_message += escape_markdown_v2(f" \\(статус: {payment_response.status}\\)")
+             error_message += escape_markdown_v2("\\.\nПопробуй позже\\.")
              await query.edit_message_text(error_message, reply_markup=None)
              return
 
         confirmation_url = payment_response.confirmation.confirmation_url
         logger.info(f"Created Yookassa payment {payment_response.id} for user {user_id}. URL: {confirmation_url}")
 
-        # Кнопка не требует экранирования
         keyboard = [[InlineKeyboardButton("🔗 перейти к оплате", url=confirmation_url)]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(success_link, reply_markup=reply_markup)
     except Exception as e:
         logger.error(f"Error during Yookassa payment creation for user {user_id}: {e}", exc_info=True)
-        # <<< ИЗМЕНЕНО: Собираем и экранируем сообщение об ошибке >>>
         user_message = error_link_create
         if hasattr(e, 'response') and hasattr(e.response, 'json'):
             try:
@@ -1624,13 +1516,13 @@ async def generate_payment_link(update: Update, context: ContextTypes.DEFAULT_TY
                 err_desc = err_data.get('description')
                 if err_type == 'error':
                     logger.error(f"Yookassa API Error details: {err_data}")
-                    user_message += escape_markdown_v2(f"({err_desc or 'детали в логах'})")
+                    user_message += escape_markdown_v2(f"\\({err_desc or 'детали в логах'}\\)")
             except Exception: pass
         elif isinstance(e, httpx.RequestError):
-             user_message += escape_markdown_v2(" Проблема с сетевым подключением к ЮKassa.")
+             user_message += escape_markdown_v2(" Проблема с сетевым подключением к ЮKassa\\.")
         else:
-             user_message += escape_markdown_v2(" Произошла непредвиденная ошибка.")
-        user_message += escape_markdown_v2("\nПопробуй еще раз позже или свяжись с поддержкой.")
+             user_message += escape_markdown_v2(" Произошла непредвиденная ошибка\\.")
+        user_message += escape_markdown_v2("\nПопробуй еще раз позже или свяжись с поддержкой\\.")
         try:
             await query.edit_message_text(user_message, reply_markup=None)
         except Exception as send_e:
@@ -1644,19 +1536,18 @@ async def yookassa_webhook_placeholder(update: Update, context: ContextTypes.DEF
 
 
 # --- Edit Persona Conversation ---
-
-# <<< ИЗМЕНЕНО: Экранирование имен, ID, значений по умолчанию и сообщений об ошибках >>>
 async def _start_edit_convo(update: Update, context: ContextTypes.DEFAULT_TYPE, persona_id: int) -> int:
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id if update.effective_chat else update.effective_message.chat_id
 
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
-    context.user_data.clear() # Start fresh for this conversation
+    context.user_data.clear()
 
     error_not_found = escape_markdown_v2("личность с id `{id}` не найдена или не твоя.") # Placeholder
     error_db = escape_markdown_v2("ошибка базы данных при начале редактирования.")
     error_general = escape_markdown_v2("непредвиденная ошибка.")
-    prompt_edit = "редактируем **{name}** \\(id: `{id}`\\)\nвыбери, что изменить:" # Format string (экранируем скобки)
+    # Используем raw string для prompt_edit
+    prompt_edit = r"редактируем **{name}** \(id: `{id}`\)\nвыбери, что изменить:" # Placeholder
 
     try:
         with next(get_db()) as db:
@@ -1668,9 +1559,8 @@ async def _start_edit_convo(update: Update, context: ContextTypes.DEFAULT_TYPE, 
                  return ConversationHandler.END
 
             context.user_data['edit_persona_id'] = persona_id
-            keyboard = await _get_edit_persona_keyboard(persona_config) # Эта функция должна возвращать кнопки без экранирования текста
+            keyboard = await _get_edit_persona_keyboard(persona_config)
             reply_markup = InlineKeyboardMarkup(keyboard)
-            # <<< ИЗМЕНЕНО: Экранируем имя перед вставкой >>>
             msg_text = prompt_edit.format(name=escape_markdown_v2(persona_config.name), id=persona_id)
 
             if update.callback_query:
@@ -1679,7 +1569,7 @@ async def _start_edit_convo(update: Update, context: ContextTypes.DEFAULT_TYPE, 
                       if query.message.text != msg_text or query.message.reply_markup != reply_markup:
                            await query.edit_message_text(msg_text, reply_markup=reply_markup)
                       else:
-                           await query.answer() # Message already correct, just answer callback
+                           await query.answer()
                  except Exception as edit_err:
                       logger.warning(f"Could not edit message for edit start (persona {persona_id}): {edit_err}. Sending new message.")
                       await context.bot.send_message(chat_id, msg_text, reply_markup=reply_markup)
@@ -1697,13 +1587,14 @@ async def _start_edit_convo(update: Update, context: ContextTypes.DEFAULT_TYPE, 
          await context.bot.send_message(chat_id, error_general)
          return ConversationHandler.END
 
-# <<< ИЗМЕНЕНО: Экранирование сообщений об ошибках и инструкций >>>
+
 async def edit_persona_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not update.message: return ConversationHandler.END
     user_id = update.effective_user.id
     args = context.args
     logger.info(f"CMD /editpersona < User {user_id} with args: {args}")
-    usage_text = "укажи id личности: `/editpersona <id>`\nили используй кнопку из /mypersonas" # Не требует экранирования
+    # Используем raw string
+    usage_text = r"укажи id личности: `/editpersona <id>`\nили используй кнопку из /mypersonas"
     error_invalid_id = escape_markdown_v2("ID должен быть числом.")
     if not args or not args[0].isdigit():
         await update.message.reply_text(usage_text)
@@ -1715,11 +1606,11 @@ async def edit_persona_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
          return ConversationHandler.END
     return await _start_edit_convo(update, context, persona_id)
 
-# <<< ИЗМЕНЕНО: Экранирование сообщений об ошибках >>>
+
 async def edit_persona_button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     if not query or not query.data: return ConversationHandler.END
-    await query.answer("Начинаем редактирование...") # Plain text answer
+    await query.answer("Начинаем редактирование...")
     error_invalid_id = escape_markdown_v2("Ошибка: неверный ID личности в кнопке.")
     try:
         persona_id = int(query.data.split('_')[-1])
@@ -1730,7 +1621,7 @@ async def edit_persona_button_callback(update: Update, context: ContextTypes.DEF
         await query.edit_message_text(error_invalid_id)
         return ConversationHandler.END
 
-# <<< ИЗМЕНЕНО: Экранирование сообщений об ошибках и инструкций, имен, значений >>>
+
 async def edit_persona_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     if not query or not query.data: return EDIT_PERSONA_CHOICE
@@ -1745,75 +1636,75 @@ async def edit_persona_choice(update: Update, context: ContextTypes.DEFAULT_TYPE
     error_not_found = escape_markdown_v2("ошибка: личность не найдена или нет доступа.")
     error_db = escape_markdown_v2("ошибка базы данных при проверке данных.")
     error_general = escape_markdown_v2("Непредвиденная ошибка.")
-    info_premium_mood = escape_markdown_v2("⭐ Редактирование настроений доступно по подписке")
-    info_premium_field = escape_markdown_v2("⭐ Поле '{field_name}' доступно по подписке") # Placeholder
-    prompt_edit_value = "отправь новое значение для **{field_name}**.\\n_текущее:_\\n`{current_value}`" # Format string (экранируем \n _)
-    prompt_edit_max_msg = "отправь новое значение для **{field_name}** \\(число от 1 до 10\\):\\n_текущее: {current_value}_" # Format string (экранируем \n _ () )
+    info_premium_mood = "⭐ Редактирование настроений доступно по подписке" # Plain text for answer
+    info_premium_field = "⭐ Поле '{field_name}' доступно по подписке" # Placeholder for plain text answer
+    # Используем raw string
+    prompt_edit_value = r"отправь новое значение для **{field_name}**.\n_текущее:_\n`{current_value}`" # Placeholder
+    prompt_edit_max_msg = r"отправь новое значение для **{field_name}** \(число от 1 до 10\):\n_текущее: {current_value}_" # Placeholder
 
     if not persona_id:
          logger.warning(f"User {user_id} in edit_persona_choice, but edit_persona_id not found in user_data.")
          await query.edit_message_text(error_no_session, reply_markup=None)
          return ConversationHandler.END
 
-    # Fetch user and persona to check premium status and existence
+    # Fetch user and persona
     persona_config = None
     is_premium_user = False
     try:
         with next(get_db()) as db:
-            user = get_or_create_user(db, user_id) # Ensure user exists
+            user = get_or_create_user(db, user_id)
             persona_config = db.query(PersonaConfig).options(joinedload(PersonaConfig.owner)).filter(
                  PersonaConfig.id == persona_id,
-                 PersonaConfig.owner_id == user.id # Ensure ownership
+                 PersonaConfig.owner_id == user.id
             ).first()
 
             if not persona_config:
                 logger.warning(f"User {user_id} in edit_persona_choice: PersonaConfig {persona_id} not found or not owned.")
-                await query.answer("Личность не найдена", show_alert=True) # Plain text
+                await query.answer("Личность не найдена", show_alert=True)
                 await query.edit_message_text(error_not_found, reply_markup=None)
                 context.user_data.clear()
                 return ConversationHandler.END
-            is_premium_user = persona_config.owner.is_active_subscriber # Use property from owner relation
+            is_premium_user = persona_config.owner.is_active_subscriber
 
     except SQLAlchemyError as e:
          logger.error(f"DB error fetching user/persona in edit_persona_choice for persona {persona_id}: {e}", exc_info=True)
-         await query.answer("Ошибка базы данных", show_alert=True) # Plain text
+         await query.answer("Ошибка базы данных", show_alert=True)
          await query.edit_message_text(error_db, reply_markup=None)
-         return EDIT_PERSONA_CHOICE # Stay in the same state
+         return EDIT_PERSONA_CHOICE
     except Exception as e:
          logger.error(f"Unexpected error fetching user/persona in edit_persona_choice: {e}", exc_info=True)
-         await query.answer("Непредвиденная ошибка", show_alert=True) # Plain text
+         await query.answer("Непредвиденная ошибка", show_alert=True)
          await query.edit_message_text(error_general, reply_markup=None)
-         return ConversationHandler.END # End convo on unexpected error
+         return ConversationHandler.END
 
-    # Now handle the callback data
-    await query.answer() # Answer most callbacks here unless handled specifically below
+    # Handle callback data
+    await query.answer()
 
     if data == "cancel_edit":
         return await edit_persona_cancel(update, context)
 
     if data == "edit_moods":
-        if not is_premium_user and not is_admin(user_id): # Allow admin to edit
+        if not is_premium_user and not is_admin(user_id):
              logger.info(f"User {user_id} (non-premium) attempted to edit moods for persona {persona_id}.")
-             await query.answer(info_premium_mood, show_alert=True) # Plain text
-             return EDIT_PERSONA_CHOICE # Stay on the main edit menu
+             await query.answer(info_premium_mood, show_alert=True)
+             return EDIT_PERSONA_CHOICE
         else:
              logger.info(f"User {user_id} proceeding to edit moods for persona {persona_id}.")
              return await edit_moods_menu(update, context, persona_config=persona_config)
 
     if data.startswith("edit_field_"):
         field = data.replace("edit_field_", "")
-        # Используем имя из FIELD_MAP (оно уже экранировано там)
+        # Получаем экранированное имя из FIELD_MAP
         field_display_name = FIELD_MAP.get(field, escape_markdown_v2(field))
         logger.info(f"User {user_id} selected field '{field}' for persona {persona_id}.")
 
-        # Check premium fields
         advanced_fields = ["should_respond_prompt_template", "spam_prompt_template",
                            "photo_prompt_template", "voice_prompt_template", "max_response_messages"]
-        if field in advanced_fields and not is_premium_user and not is_admin(user_id): # Allow admin
+        if field in advanced_fields and not is_premium_user and not is_admin(user_id):
              logger.info(f"User {user_id} (non-premium) attempted to edit premium field '{field}' for persona {persona_id}.")
-             final_premium_msg = info_premium_field.format(field_name=field_display_name)
-             await query.answer(final_premium_msg, show_alert=True) # Plain text
-             return EDIT_PERSONA_CHOICE # Stay on main edit menu
+             # Форматируем plain text ответ
+             await query.answer(info_premium_field.format(field_name=field_display_name.replace('\\','')), show_alert=True) # Убираем экранирование для ответа
+             return EDIT_PERSONA_CHOICE
 
         context.user_data['edit_field'] = field
         back_button = InlineKeyboardButton("⬅️ Назад", callback_data="edit_persona_back")
@@ -1821,24 +1712,21 @@ async def edit_persona_choice(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         if field == "max_response_messages":
             current_value = getattr(persona_config, field, 3)
-            # <<< ИЗМЕНЕНО: Форматируем и отправляем >>>
             final_prompt = prompt_edit_max_msg.format(field_name=field_display_name, current_value=current_value)
             await query.edit_message_text(final_prompt, reply_markup=reply_markup)
             return EDIT_MAX_MESSAGES
         else:
             current_value = getattr(persona_config, field, "")
-            # <<< ИЗМЕНЕНО: Экранируем текущее значение перед отображением в `` >>>
             current_value_display = escape_markdown_v2(str(current_value) if len(str(current_value)) < 300 else str(current_value)[:300] + "...")
-            # <<< ИЗМЕНЕНО: Форматируем и отправляем >>>
             final_prompt = prompt_edit_value.format(field_name=field_display_name, current_value=current_value_display)
             await query.edit_message_text(final_prompt, reply_markup=reply_markup)
             return EDIT_FIELD
 
     if data == "edit_persona_back":
          logger.info(f"User {user_id} pressed back button in edit_persona_choice for persona {persona_id}.")
-         keyboard = await _get_edit_persona_keyboard(persona_config) # Use already fetched config
-         prompt_edit_back = "редактируем **{name}** \\(id: `{id}`\\)\nвыбери, что изменить:" # Экранируем скобки
-         # <<< ИЗМЕНЕНО: Экранируем имя >>>
+         keyboard = await _get_edit_persona_keyboard(persona_config)
+         # Используем raw string
+         prompt_edit_back = r"редактируем **{name}** \(id: `{id}`\)\nвыбери, что изменить:"
          final_back_msg = prompt_edit_back.format(name=escape_markdown_v2(persona_config.name), id=persona_id)
          await query.edit_message_text(final_back_msg, reply_markup=InlineKeyboardMarkup(keyboard))
          context.user_data.pop('edit_field', None)
@@ -1848,7 +1736,7 @@ async def edit_persona_choice(update: Update, context: ContextTypes.DEFAULT_TYPE
     await query.message.reply_text(escape_markdown_v2("неизвестный выбор. попробуй еще раз."))
     return EDIT_PERSONA_CHOICE
 
-# <<< ИЗМЕНЕНО: Экранирование сообщений и имен >>>
+
 async def edit_field_update(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not update.message or not update.message.text: return EDIT_FIELD
     new_value = update.message.text.strip()
@@ -1865,15 +1753,15 @@ async def edit_field_update(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     error_name_taken = escape_markdown_v2("имя '{name}' уже занято другой твоей личностью. попробуй другое:") # Placeholder
     error_db = escape_markdown_v2("❌ ошибка базы данных при обновлении. попробуй еще раз.")
     error_general = escape_markdown_v2("❌ непредвиденная ошибка при обновлении.")
-    success_update = "✅ поле **{field_name}** для личности **{persona_name}** обновлено!" # Format string
-    prompt_next_edit = "что еще изменить для **{name}** \\(id: `{id}`\\)?" # Format string
+    # Используем raw string
+    success_update = r"✅ поле **{field_name}** для личности **{persona_name}** обновлено!" # Placeholder
+    prompt_next_edit = r"что еще изменить для **{name}** \(id: `{id}`\)?" # Placeholder
 
     if not field or not persona_id:
         logger.warning(f"User {user_id} in edit_field_update, but edit_field ('{field}') or edit_persona_id ('{persona_id}') missing.")
         await update.message.reply_text(error_no_session, reply_markup=ReplyKeyboardRemove())
         return ConversationHandler.END
 
-    # Используем экранированное имя поля из FIELD_MAP
     field_display_name = FIELD_MAP.get(field, escape_markdown_v2(field))
 
     # Validation logic
@@ -1905,39 +1793,35 @@ async def edit_field_update(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                  context.user_data.clear()
                  return ConversationHandler.END
 
-            # Check name uniqueness if changing name
+            # Check name uniqueness
             if field == "name" and new_value.lower() != persona_config.name.lower():
-                user = get_or_create_user(db, user_id) # Need user.id
+                user = get_or_create_user(db, user_id)
                 existing = get_persona_by_name_and_owner(db, user.id, new_value)
                 if existing:
                     logger.info(f"User {user_id} tried to set name to '{new_value}', but it's already taken by persona {existing.id}.")
                     back_button = InlineKeyboardButton("⬅️ Назад", callback_data="edit_persona_back")
-                    # <<< ИЗМЕНЕНО: Форматируем и отправляем >>>
                     final_name_taken_msg = error_name_taken.format(name=escape_markdown_v2(new_value))
                     await update.message.reply_text(final_name_taken_msg, reply_markup=InlineKeyboardMarkup([[back_button]]))
-                    return EDIT_FIELD # Stay in edit field state
+                    return EDIT_FIELD
 
-            # Update the field
+            # Update field
             setattr(persona_config, field, new_value)
-            db.commit() # Commit the change
+            db.commit()
             logger.info(f"User {user_id} successfully updated field '{field}' for persona {persona_id}.")
 
-            # <<< ИЗМЕНЕНО: Форматируем и отправляем сообщение об успехе (экранируем имена) >>>
             final_success_msg = success_update.format(field_name=field_display_name, persona_name=escape_markdown_v2(persona_config.name))
             await update.message.reply_text(final_success_msg)
 
             # Return to main edit menu
             context.user_data.pop('edit_field', None)
-            db.refresh(persona_config) # Refresh to get latest state for keyboard
+            db.refresh(persona_config)
             keyboard = await _get_edit_persona_keyboard(persona_config)
-            # <<< ИЗМЕНЕНО: Форматируем и отправляем следующий промпт (экранируем имя) >>>
             final_next_prompt = prompt_next_edit.format(name=escape_markdown_v2(persona_config.name), id=persona_id)
             await update.message.reply_text(final_next_prompt, reply_markup=InlineKeyboardMarkup(keyboard))
             return EDIT_PERSONA_CHOICE
 
     except SQLAlchemyError as e:
          logger.error(f"Database error updating field {field} for persona {persona_id}: {e}", exc_info=True)
-         # Rollback handled by context manager
          await update.message.reply_text(error_db)
          return await _try_return_to_edit_menu(update, context, user_id, persona_id)
     except Exception as e:
@@ -1946,7 +1830,7 @@ async def edit_field_update(update: Update, context: ContextTypes.DEFAULT_TYPE) 
          context.user_data.clear()
          return ConversationHandler.END
 
-# <<< ИЗМЕНЕНО: Экранирование сообщений и имен >>>
+
 async def edit_max_messages_update(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not update.message or not update.message.text: return EDIT_MAX_MESSAGES
     new_value_str = update.message.text.strip()
@@ -1961,8 +1845,9 @@ async def edit_max_messages_update(update: Update, context: ContextTypes.DEFAULT
     error_invalid_value = escape_markdown_v2("неверное значение. введи число от 1 до 10:")
     error_db = escape_markdown_v2("❌ ошибка базы данных при обновлении. попробуй еще раз.")
     error_general = escape_markdown_v2("❌ непредвиденная ошибка при обновлении.")
-    success_update = "✅ макс\\. сообщений в ответе для **{name}** установлено: **{value}**" # Format string
-    prompt_next_edit = "что еще изменить для **{name}** \\(id: `{id}`\\)?" # Format string
+    # Используем raw string
+    success_update = r"✅ макс\. сообщений в ответе для **{name}** установлено: **{value}**" # Placeholder
+    prompt_next_edit = r"что еще изменить для **{name}** \(id: `{id}`\)?" # Placeholder
 
     if not persona_id:
         logger.warning(f"User {user_id} in edit_max_messages_update, but edit_persona_id missing.")
@@ -1976,7 +1861,7 @@ async def edit_max_messages_update(update: Update, context: ContextTypes.DEFAULT
         logger.debug(f"Validation failed for max_response_messages: '{new_value_str}' is not int 1-10.")
         back_button = InlineKeyboardButton("⬅️ Назад", callback_data="edit_persona_back")
         await update.message.reply_text(error_invalid_value, reply_markup=InlineKeyboardMarkup([[back_button]]))
-        return EDIT_MAX_MESSAGES # Stay in this state
+        return EDIT_MAX_MESSAGES
 
     try:
         with next(get_db()) as db:
@@ -1988,24 +1873,21 @@ async def edit_max_messages_update(update: Update, context: ContextTypes.DEFAULT
                  return ConversationHandler.END
 
             persona_config.max_response_messages = new_value
-            db.commit() # Commit change
+            db.commit()
             logger.info(f"User {user_id} updated max_response_messages to {new_value} for persona {persona_id}.")
 
-            # <<< ИЗМЕНЕНО: Форматируем и отправляем (экранируем имя) >>>
             final_success_msg = success_update.format(name=escape_markdown_v2(persona_config.name), value=new_value)
             await update.message.reply_text(final_success_msg)
 
             # Return to main edit menu
             db.refresh(persona_config)
             keyboard = await _get_edit_persona_keyboard(persona_config)
-            # <<< ИЗМЕНЕНО: Форматируем и отправляем (экранируем имя) >>>
             final_next_prompt = prompt_next_edit.format(name=escape_markdown_v2(persona_config.name), id=persona_id)
             await update.message.reply_text(final_next_prompt, reply_markup=InlineKeyboardMarkup(keyboard))
             return EDIT_PERSONA_CHOICE
 
     except SQLAlchemyError as e:
          logger.error(f"Database error updating max_response_messages for persona {persona_id}: {e}", exc_info=True)
-         # Rollback handled by context manager
          await update.message.reply_text(error_db)
          return await _try_return_to_edit_menu(update, context, user_id, persona_id)
     except Exception as e:
@@ -2014,13 +1896,13 @@ async def edit_max_messages_update(update: Update, context: ContextTypes.DEFAULT
          context.user_data.clear()
          return ConversationHandler.END
 
-# <<< ИЗМЕНЕНО: Текст кнопок не требует экранирования, сама функция не изменена >>>
+
 async def _get_edit_persona_keyboard(persona_config: PersonaConfig) -> List[List[InlineKeyboardButton]]:
     if not persona_config:
         logger.error("_get_edit_persona_keyboard called with None persona_config")
         return [[InlineKeyboardButton("❌ Ошибка: Личность не найдена", callback_data="cancel_edit")]]
 
-    max_resp_msg = getattr(persona_config, 'max_response_messages', 3) # Default to 3 if not set
+    max_resp_msg = getattr(persona_config, 'max_response_messages', 3)
 
     keyboard = [
         [InlineKeyboardButton("📝 Имя", callback_data="edit_field_name"), InlineKeyboardButton("📜 Описание", callback_data="edit_field_description")],
@@ -2034,7 +1916,7 @@ async def _get_edit_persona_keyboard(persona_config: PersonaConfig) -> List[List
     ]
     return keyboard
 
-# <<< ИЗМЕНЕНО: Текст кнопок не требует экранирования, сама функция не изменена >>>
+
 async def _get_edit_moods_keyboard_internal(persona_config: PersonaConfig) -> List[List[InlineKeyboardButton]]:
      if not persona_config: return []
      try:
@@ -2058,13 +1940,14 @@ async def _get_edit_moods_keyboard_internal(persona_config: PersonaConfig) -> Li
      keyboard.append([InlineKeyboardButton("⬅️ Назад", callback_data="edit_persona_back")])
      return keyboard
 
-# <<< ИЗМЕНЕНО: Экранирование сообщений и имен >>>
+
 async def _try_return_to_edit_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int, persona_id: int) -> int:
     logger.debug(f"Attempting to return to main edit menu for user {user_id}, persona {persona_id} after error.")
     message_target = update.effective_message
     error_cannot_return = escape_markdown_v2("Не удалось вернуться к меню редактирования (личность не найдена).")
     error_cannot_return_general = escape_markdown_v2("Не удалось вернуться к меню редактирования.")
-    prompt_edit = "редактируем **{name}** \\(id: `{id}`\\)\nвыбери, что изменить:" # Format string
+    # Используем raw string
+    prompt_edit = r"редактируем **{name}** \(id: `{id}`\)\nвыбери, что изменить:"
 
     if not message_target:
         logger.warning("Cannot return to edit menu: effective_message is None.")
@@ -2075,10 +1958,9 @@ async def _try_return_to_edit_menu(update: Update, context: ContextTypes.DEFAULT
             persona_config = get_persona_by_id_and_owner(db, user_id, persona_id)
             if persona_config:
                 keyboard = await _get_edit_persona_keyboard(persona_config)
-                # <<< ИЗМЕНЕНО: Экранируем имя >>>
                 final_prompt = prompt_edit.format(name=escape_markdown_v2(persona_config.name), id=persona_id)
                 await message_target.reply_text(final_prompt, reply_markup=InlineKeyboardMarkup(keyboard))
-                return EDIT_PERSONA_CHOICE # Return to the choice state
+                return EDIT_PERSONA_CHOICE
             else:
                 logger.warning(f"Persona {persona_id} not found when trying to return to main edit menu.")
                 await message_target.reply_text(error_cannot_return)
@@ -2090,13 +1972,14 @@ async def _try_return_to_edit_menu(update: Update, context: ContextTypes.DEFAULT
         context.user_data.clear()
         return ConversationHandler.END
 
-# <<< ИЗМЕНЕНО: Экранирование сообщений и имен >>>
+
 async def _try_return_to_mood_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int, persona_id: int) -> int:
      logger.debug(f"Attempting to return to mood menu for user {user_id}, persona {persona_id} after error.")
      message_target = update.effective_message
      error_cannot_return = escape_markdown_v2("Не удалось вернуться к меню настроений (личность не найдена).")
      error_cannot_return_general = escape_markdown_v2("Не удалось вернуться к меню настроений.")
-     prompt_mood_menu = "управление настроениями для **{name}**:" # Format string
+     # Используем raw string
+     prompt_mood_menu = r"управление настроениями для **{name}**:"
 
      if not message_target:
          logger.warning("Cannot return to mood menu: effective_message is None.")
@@ -2107,10 +1990,9 @@ async def _try_return_to_mood_menu(update: Update, context: ContextTypes.DEFAULT
              persona_config = get_persona_by_id_and_owner(db, user_id, persona_id)
              if persona_config:
                  keyboard = await _get_edit_moods_keyboard_internal(persona_config)
-                 # <<< ИЗМЕНЕНО: Экранируем имя >>>
                  final_prompt = prompt_mood_menu.format(name=escape_markdown_v2(persona_config.name))
                  await message_target.reply_text(final_prompt, reply_markup=InlineKeyboardMarkup(keyboard))
-                 return EDIT_MOOD_CHOICE # Return to mood choice state
+                 return EDIT_MOOD_CHOICE
              else:
                  logger.warning(f"Persona {persona_id} not found when trying to return to mood menu.")
                  await message_target.reply_text(error_cannot_return)
@@ -2122,10 +2004,10 @@ async def _try_return_to_mood_menu(update: Update, context: ContextTypes.DEFAULT
          context.user_data.clear()
          return ConversationHandler.END
 
-# <<< ИЗМЕНЕНО: Экранирование сообщений и имен >>>
+
 async def edit_moods_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, persona_config: Optional[PersonaConfig] = None) -> int:
     query = update.callback_query
-    if not query: return ConversationHandler.END # Should be called from callback
+    if not query: return ConversationHandler.END
 
     persona_id = context.user_data.get('edit_persona_id')
     user_id = query.from_user.id
@@ -2135,8 +2017,9 @@ async def edit_moods_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, pe
     error_no_session = escape_markdown_v2("ошибка: сессия редактирования потеряна.")
     error_not_found = escape_markdown_v2("ошибка: личность не найдена или нет доступа.")
     error_db = escape_markdown_v2("Ошибка базы данных при загрузке настроений.")
-    info_premium = escape_markdown_v2("⭐ Доступно по подписке")
-    prompt_mood_menu = "управление настроениями для **{name}**:" # Format string
+    info_premium = "⭐ Доступно по подписке" # Plain text for answer
+    # Используем raw string
+    prompt_mood_menu = r"управление настроениями для **{name}**:"
 
     if not persona_id:
         logger.warning(f"User {user_id} in edit_moods_menu, but edit_persona_id missing.")
@@ -2150,17 +2033,17 @@ async def edit_moods_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, pe
                 local_persona_config = get_persona_by_id_and_owner(db, user_id, persona_id)
                 if not local_persona_config:
                     logger.warning(f"User {user_id}: PersonaConfig {persona_id} not found/owned in edit_moods_menu fetch.")
-                    await query.answer("Личность не найдена", show_alert=True) # Plain text
+                    await query.answer("Личность не найдена", show_alert=True)
                     await query.edit_message_text(error_not_found, reply_markup=None)
                     context.user_data.clear()
                     return ConversationHandler.END
         except Exception as e:
              logger.error(f"DB Error fetching persona in edit_moods_menu: {e}", exc_info=True)
-             await query.answer("Ошибка базы данных", show_alert=True) # Plain text
+             await query.answer("Ошибка базы данных", show_alert=True)
              await query.edit_message_text(error_db, reply_markup=None)
              return await _try_return_to_edit_menu(update, context, user_id, persona_id)
 
-    # Check premium status again just in case
+    # Check premium status
     try:
         with next(get_db()) as db:
              if not hasattr(local_persona_config, 'owner') or not local_persona_config.owner:
@@ -2171,7 +2054,7 @@ async def edit_moods_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, pe
 
              if not is_prem and not is_admin(user_id):
                  logger.warning(f"User {user_id} (non-premium) reached mood editor for {persona_id} unexpectedly.")
-                 await query.answer(info_premium, show_alert=True) # Plain text
+                 await query.answer(info_premium, show_alert=True)
                  return await _try_return_to_edit_menu(update, context, user_id, persona_id)
     except Exception as e:
         logger.error(f"Error checking premium status in edit_moods_menu: {e}", exc_info=True)
@@ -2179,24 +2062,23 @@ async def edit_moods_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, pe
     logger.debug(f"Showing moods menu for persona {persona_id}")
     keyboard = await _get_edit_moods_keyboard_internal(local_persona_config)
     reply_markup = InlineKeyboardMarkup(keyboard)
-    # <<< ИЗМЕНЕНО: Экранируем имя >>>
     msg_text = prompt_mood_menu.format(name=escape_markdown_v2(local_persona_config.name))
 
     try:
         if query.message.text != msg_text or query.message.reply_markup != reply_markup:
             await query.edit_message_text(msg_text, reply_markup=reply_markup)
         else:
-            await query.answer() # Answer if message is identical
+            await query.answer()
     except Exception as e:
          logger.error(f"Error editing moods menu message for persona {persona_id}: {e}")
          try:
-            await query.message.reply_text(msg_text, reply_markup=reply_markup) # Fallback
+            await query.message.reply_text(msg_text, reply_markup=reply_markup)
          except Exception as send_e:
             logger.error(f"Failed to send fallback moods menu message: {send_e}")
 
     return EDIT_MOOD_CHOICE
 
-# <<< ИЗМЕНЕНО: Экранирование сообщений, имен, промптов >>>
+
 async def edit_mood_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     if not query or not query.data: return EDIT_MOOD_CHOICE
@@ -2211,40 +2093,41 @@ async def edit_mood_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     error_not_found = escape_markdown_v2("ошибка: личность не найдена или нет доступа.")
     error_db = escape_markdown_v2("Ошибка базы данных.")
     error_unhandled_choice = escape_markdown_v2("неизвестный выбор настроения.")
-    prompt_new_name = escape_markdown_v2("введи **название** нового настроения (одно слово, латиница/кириллица, цифры, дефис, подчеркивание, без пробелов):") # ** не будет работать
-    prompt_new_prompt = "редактирование настроения: **{name}**\\n\\n_текущий промпт:_\\n`{prompt}`\\n\\nотправь **новый текст промпта**:" # Format string
-    prompt_confirm_delete = "точно удалить настроение **'{name}'**?" # Format string
+    # Используем raw string
+    prompt_new_name = r"введи **название** нового настроения \(одно слово, латиница/кириллица, цифры, дефис, подчеркивание, без пробелов\):"
+    prompt_new_prompt = r"редактирование настроения: **{name}**\n\n_текущий промпт:_\n`{prompt}`\n\nотправь **новый текст промпта**:" # Placeholder
+    prompt_confirm_delete = r"точно удалить настроение **'{name}'**\?" # Placeholder
 
     if not persona_id:
         logger.warning(f"User {user_id} in edit_mood_choice, but edit_persona_id missing.")
         await query.edit_message_text(error_no_session)
         return ConversationHandler.END
 
-    # Fetch persona config for context
+    # Fetch persona config
     persona_config = None
     try:
         with next(get_db()) as db:
              persona_config = get_persona_by_id_and_owner(db, user_id, persona_id)
              if not persona_config:
                  logger.warning(f"User {user_id}: PersonaConfig {persona_id} not found/owned in edit_mood_choice.")
-                 await query.answer("Личность не найдена", show_alert=True) # Plain text
+                 await query.answer("Личность не найдена", show_alert=True)
                  await query.edit_message_text(error_not_found, reply_markup=None)
                  context.user_data.clear()
                  return ConversationHandler.END
     except Exception as e:
          logger.error(f"DB Error fetching persona in edit_mood_choice: {e}", exc_info=True)
-         await query.answer("Ошибка базы данных", show_alert=True) # Plain text
+         await query.answer("Ошибка базы данных", show_alert=True)
          await query.edit_message_text(error_db, reply_markup=None)
-         return EDIT_MOOD_CHOICE # Stay in mood menu
+         return EDIT_MOOD_CHOICE
 
-    await query.answer() # Answer most mood callbacks here
+    await query.answer()
 
     # --- Handle Mood Menu Actions ---
     if data == "edit_persona_back":
         logger.debug(f"User {user_id} going back from mood menu to main edit menu for {persona_id}.")
-        keyboard = await _get_edit_persona_keyboard(persona_config) # Use fetched config
-        prompt_edit = "редактируем **{name}** \\(id: `{id}`\\)\nвыбери, что изменить:" # Format string
-        # <<< ИЗМЕНЕНО: Экранируем имя >>>
+        keyboard = await _get_edit_persona_keyboard(persona_config)
+        # Используем raw string
+        prompt_edit = r"редактируем **{name}** \(id: `{id}`\)\nвыбери, что изменить:"
         final_prompt = prompt_edit.format(name=escape_markdown_v2(persona_config.name), id=persona_id)
         await query.edit_message_text(final_prompt, reply_markup=InlineKeyboardMarkup(keyboard))
         context.user_data.pop('edit_mood_name', None)
@@ -2253,35 +2136,32 @@ async def edit_mood_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     if data == "editmood_add":
         logger.debug(f"User {user_id} starting to add mood for {persona_id}.")
-        context.user_data['edit_mood_name'] = None # Clear any previous edit name
+        context.user_data['edit_mood_name'] = None
         back_button = InlineKeyboardButton("⬅️ Назад", callback_data="edit_moods_back_cancel")
-        # <<< ИЗМЕНЕНО: Отправляем экранированный промпт (теряя **) >>>
         await query.edit_message_text(prompt_new_name, reply_markup=InlineKeyboardMarkup([[back_button]]))
         return EDIT_MOOD_NAME
 
     if data.startswith("editmood_select_"):
         mood_name_safe = data.split("editmood_select_", 1)[1]
-        context.user_data['edit_mood_name'] = mood_name_safe # Store the name being edited
+        context.user_data['edit_mood_name'] = mood_name_safe
         logger.debug(f"User {user_id} selected mood '{mood_name_safe}' to edit for {persona_id}.")
 
-        current_prompt = escape_markdown_v2("_не найдено_")
-        original_mood_name = mood_name_safe # Default to safe name
+        current_prompt_raw = "_не найдено_"
+        original_mood_name = mood_name_safe
         try:
             current_moods = json.loads(persona_config.mood_prompts_json or '{}')
             original_mood_name = next((k for k in current_moods if re.sub(r'[^\w-]', '', k) == mood_name_safe), mood_name_safe)
-            # <<< ИЗМЕНЕНО: Экранируем промпт перед отображением >>>
             current_prompt_raw = current_moods.get(original_mood_name, "_нет промпта_")
-            current_prompt = escape_markdown_v2(current_prompt_raw)
-            context.user_data['edit_mood_name'] = original_mood_name # Store original name now we found it
+            context.user_data['edit_mood_name'] = original_mood_name
 
         except Exception as e:
             logger.error(f"Error reading moods JSON for persona {persona_id} in editmood_select: {e}")
-            current_prompt = escape_markdown_v2("_ошибка чтения промпта_")
+            current_prompt_raw = "_ошибка чтения промпта_"
 
         back_button = InlineKeyboardButton("⬅️ Назад", callback_data="edit_moods_back_cancel")
-        prompt_display = current_prompt if len(current_prompt_raw) < 300 else escape_markdown_v2(current_prompt_raw[:300] + "...")
-        display_name = escape_markdown_v2(context.user_data.get('edit_mood_name', mood_name_safe)) # Show original if found, escaped
-        # <<< ИЗМЕНЕНО: Форматируем и отправляем (имя и промпт уже экранированы) >>>
+        # Экранируем промпт для отображения в ``, имя для **
+        prompt_display = escape_markdown_v2(current_prompt_raw[:300] + "..." if len(current_prompt_raw) > 300 else current_prompt_raw)
+        display_name = escape_markdown_v2(context.user_data.get('edit_mood_name', mood_name_safe))
         final_prompt = prompt_new_prompt.format(name=display_name, prompt=prompt_display)
         await query.edit_message_text(final_prompt, reply_markup=InlineKeyboardMarkup([[back_button]]))
         return EDIT_MOOD_PROMPT
@@ -2294,12 +2174,12 @@ async def edit_mood_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -
              original_mood_name = next((k for k in current_moods if re.sub(r'[^\w-]', '', k) == mood_name_safe), mood_name_safe)
          except Exception: pass
 
-         context.user_data['delete_mood_name'] = original_mood_name # Store original name for deletion
+         context.user_data['delete_mood_name'] = original_mood_name
          logger.debug(f"User {user_id} initiated delete for mood '{original_mood_name}' (safe: {mood_name_safe}) for {persona_id}. Asking confirmation.")
-         # <<< ИЗМЕНЕНО: Экранируем имя в кнопке и сообщении >>>
          escaped_original_name = escape_markdown_v2(original_mood_name)
+         # Текст кнопок не экранируем
          keyboard = [
-             [InlineKeyboardButton(f"✅ да, удалить '{escaped_original_name}'", callback_data=f"deletemood_delete_{mood_name_safe}")],
+             [InlineKeyboardButton(f"✅ да, удалить '{original_mood_name}'", callback_data=f"deletemood_delete_{mood_name_safe}")],
              [InlineKeyboardButton("❌ нет, отмена", callback_data="edit_moods_back_cancel")]
             ]
          final_confirm_prompt = prompt_confirm_delete.format(name=escaped_original_name)
@@ -2314,9 +2194,9 @@ async def edit_mood_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     logger.warning(f"User {user_id} sent unhandled callback '{data}' in EDIT_MOOD_CHOICE for {persona_id}.")
     await query.message.reply_text(error_unhandled_choice)
-    return await edit_moods_menu(update, context, persona_config=persona_config) # Return to mood menu
+    return await edit_moods_menu(update, context, persona_config=persona_config)
 
-# <<< ИЗМЕНЕНО: Экранирование сообщений и имен >>>
+
 async def edit_mood_name_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not update.message or not update.message.text: return EDIT_MOOD_NAME
     mood_name_raw = update.message.text.strip()
@@ -2328,11 +2208,13 @@ async def edit_mood_name_received(update: Update, context: ContextTypes.DEFAULT_
 
     error_no_session = escape_markdown_v2("ошибка: сессия редактирования потеряна.")
     error_not_found = escape_markdown_v2("ошибка: личность не найдена.")
-    error_validation = escape_markdown_v2("название: 1-30 символов, только буквы/цифры/дефис/подчеркивание (кириллица/латиница), без пробелов. попробуй еще:")
+    # Используем raw string
+    error_validation = r"название: 1\-30 символов, только буквы/цифры/дефис/подчеркивание \(кириллица/латиница\), без пробелов\. попробуй еще:"
     error_name_exists = escape_markdown_v2("настроение '{name}' уже существует. выбери другое:") # Placeholder
     error_db = escape_markdown_v2("ошибка базы данных при проверке имени.")
     error_general = escape_markdown_v2("непредвиденная ошибка.")
-    prompt_for_prompt = "отлично\\! теперь отправь **текст промпта** для настроения **'{name}'**:" # Format string
+    # Используем raw string
+    prompt_for_prompt = r"отлично\! теперь отправь **текст промпта** для настроения **'{name}'**:" # Placeholder
 
     if not persona_id:
         logger.warning(f"User {user_id} in edit_mood_name_received, but edit_persona_id missing.")
@@ -2345,7 +2227,7 @@ async def edit_mood_name_received(update: Update, context: ContextTypes.DEFAULT_
         await update.message.reply_text(error_validation, reply_markup=InlineKeyboardMarkup([[back_button]]))
         return EDIT_MOOD_NAME
 
-    mood_name = mood_name_raw # Use the validated name
+    mood_name = mood_name_raw
 
     try:
         with next(get_db()) as db:
@@ -2365,35 +2247,32 @@ async def edit_mood_name_received(update: Update, context: ContextTypes.DEFAULT_
             if any(existing_name.lower() == mood_name.lower() for existing_name in current_moods):
                 logger.info(f"User {user_id} tried mood name '{mood_name}' which already exists for persona {persona_id}.")
                 back_button = InlineKeyboardButton("⬅️ Назад", callback_data="edit_moods_back_cancel")
-                # <<< ИЗМЕНЕНО: Форматируем и отправляем >>>
                 final_exists_msg = error_name_exists.format(name=escape_markdown_v2(mood_name))
                 await update.message.reply_text(final_exists_msg, reply_markup=InlineKeyboardMarkup([[back_button]]))
-                return EDIT_MOOD_NAME # Stay in name state
+                return EDIT_MOOD_NAME
 
-            # Store the new mood name and proceed to prompt input
+            # Store name and proceed
             context.user_data['edit_mood_name'] = mood_name
             logger.debug(f"Stored mood name '{mood_name}' for user {user_id}. Asking for prompt.")
             back_button = InlineKeyboardButton("⬅️ Назад", callback_data="edit_moods_back_cancel")
-            # <<< ИЗМЕНЕНО: Форматируем и отправляем (экранируем имя) >>>
             final_prompt = prompt_for_prompt.format(name=escape_markdown_v2(mood_name))
             await update.message.reply_text(final_prompt, reply_markup=InlineKeyboardMarkup([[back_button]]))
             return EDIT_MOOD_PROMPT
 
     except SQLAlchemyError as e:
         logger.error(f"DB error checking mood name uniqueness for persona {persona_id}: {e}", exc_info=True)
-        # Rollback handled by context manager
         await update.message.reply_text(error_db, reply_markup=ReplyKeyboardRemove())
-        return EDIT_MOOD_NAME # Stay in name state on DB error
+        return EDIT_MOOD_NAME
     except Exception as e:
         logger.error(f"Unexpected error checking mood name for persona {persona_id}: {e}", exc_info=True)
         await update.message.reply_text(error_general, reply_markup=ReplyKeyboardRemove())
         return ConversationHandler.END
 
-# <<< ИЗМЕНЕНО: Экранирование сообщений и имен >>>
+
 async def edit_mood_prompt_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not update.message or not update.message.text: return EDIT_MOOD_PROMPT
     mood_prompt = update.message.text.strip()
-    mood_name = context.user_data.get('edit_mood_name') # Should be original case name if edited, or new name
+    mood_name = context.user_data.get('edit_mood_name')
     persona_id = context.user_data.get('edit_persona_id')
     user_id = update.effective_user.id
 
@@ -2404,7 +2283,8 @@ async def edit_mood_prompt_received(update: Update, context: ContextTypes.DEFAUL
     error_validation = escape_markdown_v2("промпт настроения: 1-1500 символов. попробуй еще:")
     error_db = escape_markdown_v2("❌ ошибка базы данных при сохранении настроения.")
     error_general = escape_markdown_v2("❌ ошибка при сохранении настроения.")
-    success_saved = "✅ настроение **{name}** сохранено!" # Format string
+    # Используем raw string
+    success_saved = r"✅ настроение **{name}** сохранено!" # Placeholder
 
     if not mood_name or not persona_id:
         logger.warning(f"User {user_id} in edit_mood_prompt_received, but mood_name ('{mood_name}') or persona_id ('{persona_id}') missing.")
@@ -2415,7 +2295,7 @@ async def edit_mood_prompt_received(update: Update, context: ContextTypes.DEFAUL
         logger.debug(f"Validation failed for mood prompt (length={len(mood_prompt)}).")
         back_button = InlineKeyboardButton("⬅️ Назад", callback_data="edit_moods_back_cancel")
         await update.message.reply_text(error_validation, reply_markup=InlineKeyboardMarkup([[back_button]]))
-        return EDIT_MOOD_PROMPT # Stay in prompt state
+        return EDIT_MOOD_PROMPT
 
     try:
         with next(get_db()) as db:
@@ -2432,24 +2312,22 @@ async def edit_mood_prompt_received(update: Update, context: ContextTypes.DEFAUL
                  logger.warning(f"Invalid JSON for persona {persona_id} when saving mood prompt, resetting moods.")
                  current_moods = {}
 
-            # Add or update the mood
+            # Add or update mood
             current_moods[mood_name] = mood_prompt
-            persona_config.set_moods(db, current_moods) # Handles JSON conversion and flag_modified
-            db.commit() # Commit the mood update
+            persona_config.set_moods(db, current_moods)
+            db.commit()
 
-            context.user_data.pop('edit_mood_name', None) # Clear mood name from context
+            context.user_data.pop('edit_mood_name', None)
             logger.info(f"User {user_id} updated/added mood '{mood_name}' for persona {persona_id}.")
-            # <<< ИЗМЕНЕНО: Форматируем и отправляем (экранируем имя) >>>
             final_success_msg = success_saved.format(name=escape_markdown_v2(mood_name))
             await update.message.reply_text(final_success_msg)
 
             # Return to mood menu
-            db.refresh(persona_config) # Refresh to show updated list
+            db.refresh(persona_config)
             return await edit_moods_menu(update, context, persona_config=persona_config)
 
     except SQLAlchemyError as e:
         logger.error(f"Database error saving mood '{mood_name}' for persona {persona_id}: {e}", exc_info=True)
-        # Rollback handled by context manager
         await update.message.reply_text(error_db)
         return await _try_return_to_mood_menu(update, context, user_id, persona_id)
     except Exception as e:
@@ -2457,10 +2335,10 @@ async def edit_mood_prompt_received(update: Update, context: ContextTypes.DEFAUL
         await update.message.reply_text(error_general)
         return await _try_return_to_mood_menu(update, context, user_id, persona_id)
 
-# <<< ИЗМЕНЕНО: Экранирование сообщений и имен >>>
+
 async def delete_mood_confirmed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    if not query or not query.data: return DELETE_MOOD_CONFIRM # Stay if no data
+    if not query or not query.data: return DELETE_MOOD_CONFIRM
 
     data = query.data
     mood_name_to_delete = context.user_data.get('delete_mood_name')
@@ -2470,11 +2348,12 @@ async def delete_mood_confirmed(update: Update, context: ContextTypes.DEFAULT_TY
     logger.info(f"--- delete_mood_confirmed: User={user_id}, PersonaID={persona_id}, MoodToDelete='{mood_name_to_delete}' ---")
 
     error_no_session = escape_markdown_v2("ошибка: неверные данные для удаления или сессия потеряна.")
-    error_not_found = escape_markdown_v2("ошибка: личность не найдена или нет доступа.")
+    error_not_found_persona = escape_markdown_v2("ошибка: личность не найдена или нет доступа.")
     error_db = escape_markdown_v2("❌ ошибка базы данных при удалении настроения.")
     error_general = escape_markdown_v2("❌ ошибка при удалении настроения.")
-    info_not_found = escape_markdown_v2("настроение '{name}' не найдено (уже удалено?).") # Placeholder
-    success_delete = "🗑️ настроение **{name}** удалено." # Format string
+    info_not_found_mood = escape_markdown_v2("настроение '{name}' не найдено (уже удалено?).") # Placeholder
+    # Используем raw string
+    success_delete = r"🗑️ настроение **{name}** удалено." # Placeholder
 
     safe_mood_name_from_callback = ""
     if data.startswith("deletemood_delete_"):
@@ -2482,11 +2361,11 @@ async def delete_mood_confirmed(update: Update, context: ContextTypes.DEFAULT_TY
 
     if not mood_name_to_delete or not persona_id or not safe_mood_name_from_callback:
         logger.warning(f"User {user_id}: Missing state in delete_mood_confirmed. Mood='{mood_name_to_delete}', SafeCB='{safe_mood_name_from_callback}', PersonaID='{persona_id}'")
-        await query.answer("Ошибка сессии", show_alert=True) # Plain text
+        await query.answer("Ошибка сессии", show_alert=True)
         await query.edit_message_text(error_no_session, reply_markup=None)
         return await _try_return_to_mood_menu(update, context, user_id, persona_id)
 
-    await query.answer("Удаляем...") # Plain text
+    await query.answer("Удаляем...")
 
     logger.warning(f"User {user_id} confirmed deletion of mood '{mood_name_to_delete}' for persona {persona_id}.")
 
@@ -2495,7 +2374,7 @@ async def delete_mood_confirmed(update: Update, context: ContextTypes.DEFAULT_TY
             persona_config = get_persona_by_id_and_owner(db, user_id, persona_id)
             if not persona_config:
                 logger.warning(f"User {user_id}: Persona {persona_id} not found/owned during mood deletion.")
-                await query.edit_message_text(error_not_found, reply_markup=None)
+                await query.edit_message_text(error_not_found_persona, reply_markup=None)
                 context.user_data.clear()
                 return ConversationHandler.END
 
@@ -2507,20 +2386,18 @@ async def delete_mood_confirmed(update: Update, context: ContextTypes.DEFAULT_TY
 
             if mood_name_to_delete in current_moods:
                 del current_moods[mood_name_to_delete]
-                persona_config.set_moods(db, current_moods) # Update JSON
-                db.commit() # Commit deletion
+                persona_config.set_moods(db, current_moods)
+                db.commit()
 
-                context.user_data.pop('delete_mood_name', None) # Clear state
+                context.user_data.pop('delete_mood_name', None)
                 logger.info(f"Successfully deleted mood '{mood_name_to_delete}' for persona {persona_id}.")
-                # <<< ИЗМЕНЕНО: Форматируем и отправляем (экранируем имя) >>>
                 final_success_msg = success_delete.format(name=escape_markdown_v2(mood_name_to_delete))
                 await query.edit_message_text(final_success_msg)
             else:
                 logger.warning(f"Mood '{mood_name_to_delete}' not found for deletion in persona {persona_id} (maybe already deleted).")
-                # <<< ИЗМЕНЕНО: Форматируем и отправляем (экранируем имя) >>>
-                final_not_found_msg = info_not_found.format(name=escape_markdown_v2(mood_name_to_delete))
+                final_not_found_msg = info_not_found_mood.format(name=escape_markdown_v2(mood_name_to_delete))
                 await query.edit_message_text(final_not_found_msg, reply_markup=None)
-                context.user_data.pop('delete_mood_name', None) # Clear state anyway
+                context.user_data.pop('delete_mood_name', None)
 
             # Return to mood menu
             db.refresh(persona_config)
@@ -2528,7 +2405,6 @@ async def delete_mood_confirmed(update: Update, context: ContextTypes.DEFAULT_TY
 
     except SQLAlchemyError as e:
         logger.error(f"Database error deleting mood '{mood_name_to_delete}' for persona {persona_id}: {e}", exc_info=True)
-        # Rollback handled by context manager
         await query.edit_message_text(error_db, reply_markup=None)
         return await _try_return_to_mood_menu(update, context, user_id, persona_id)
     except Exception as e:
@@ -2536,7 +2412,7 @@ async def delete_mood_confirmed(update: Update, context: ContextTypes.DEFAULT_TY
         await query.edit_message_text(error_general, reply_markup=None)
         return await _try_return_to_mood_menu(update, context, user_id, persona_id)
 
-# <<< ИЗМЕНЕНО: Экранирование сообщений >>>
+
 async def edit_persona_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     message = update.effective_message
     user_id = update.effective_user.id
@@ -2545,11 +2421,9 @@ async def edit_persona_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE
     try:
         if update.callback_query:
             query = update.callback_query
-            await query.answer() # Acknowledge callback
-            # Сравниваем с экранированным сообщением
+            await query.answer()
             if query.message and query.message.text != cancel_message:
                 await query.edit_message_text(cancel_message, reply_markup=None)
-            # Если сообщение уже такое, ничего не делаем (answer уже был)
         elif message:
             await message.reply_text(cancel_message, reply_markup=ReplyKeyboardRemove())
     except Exception as e:
@@ -2560,28 +2434,28 @@ async def edit_persona_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE
             except Exception as send_e:
                 logger.error(f"Failed to send fallback cancel message: {send_e}")
 
-    context.user_data.clear() # Clear conversation state
+    context.user_data.clear()
     return ConversationHandler.END
 
 
 # --- Delete Persona Conversation ---
-
-# <<< ИЗМЕНЕНО: Экранирование сообщений и имен >>>
 async def _start_delete_convo(update: Update, context: ContextTypes.DEFAULT_TYPE, persona_id: int) -> int:
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id if update.effective_chat else update.effective_message.chat_id
 
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
-    context.user_data.clear() # Start fresh
+    context.user_data.clear()
 
     error_not_found = escape_markdown_v2("личность с id `{id}` не найдена или не твоя.") # Placeholder
     error_db = escape_markdown_v2("ошибка базы данных.")
     error_general = escape_markdown_v2("непредвиденная ошибка.")
-    prompt_delete = ( # Format string
-        "🚨 **ВНИМАНИЕ\\!** 🚨\\n"
-        "удалить личность **'{name}'** \\(id: `{id}`\\)\\?\n\n"
-        "это действие **НЕОБРАТИМО**\\!"
-    )
+    # Используем raw string
+    prompt_delete = r"""
+🚨 **ВНИМАНИЕ\!** 🚨
+удалить личность **'{name}'** \(id: `{id}`\)\?
+
+это действие **НЕОБРАТИМО**\!
+    """ # Placeholder
 
     try:
         with next(get_db()) as db:
@@ -2593,14 +2467,12 @@ async def _start_delete_convo(update: Update, context: ContextTypes.DEFAULT_TYPE
                  return ConversationHandler.END
 
             context.user_data['delete_persona_id'] = persona_id
-            # <<< ИЗМЕНЕНО: Экранируем имя в тексте кнопки >>>
-            escaped_name_btn = escape_markdown_v2(persona_config.name)
+            # Текст кнопок не экранируем
             keyboard = [
-                 [InlineKeyboardButton(f"‼️ ДА, УДАЛИТЬ '{escaped_name_btn}' ‼️", callback_data=f"delete_persona_confirm_{persona_id}")],
+                 [InlineKeyboardButton(f"‼️ ДА, УДАЛИТЬ '{persona_config.name}' ‼️", callback_data=f"delete_persona_confirm_{persona_id}")],
                  [InlineKeyboardButton("❌ НЕТ, ОСТАВИТЬ", callback_data="delete_persona_cancel")]
              ]
             reply_markup = InlineKeyboardMarkup(keyboard)
-             # <<< ИЗМЕНЕНО: Форматируем и отправляем (экранируем имя) >>>
             msg_text = prompt_delete.format(name=escape_markdown_v2(persona_config.name), id=persona_id)
 
             if update.callback_query:
@@ -2627,13 +2499,14 @@ async def _start_delete_convo(update: Update, context: ContextTypes.DEFAULT_TYPE
          await context.bot.send_message(chat_id, error_general)
          return ConversationHandler.END
 
-# <<< ИЗМЕНЕНО: Экранирование сообщений >>>
+
 async def delete_persona_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not update.message: return ConversationHandler.END
     user_id = update.effective_user.id
     args = context.args
     logger.info(f"CMD /deletepersona < User {user_id} with args: {args}")
-    usage_text = "укажи id личности: `/deletepersona <id>`\nили используй кнопку из /mypersonas" # Не требует экранирования
+    # Используем raw string
+    usage_text = r"укажи id личности: `/deletepersona <id>`\nили используй кнопку из /mypersonas"
     error_invalid_id = escape_markdown_v2("ID должен быть числом.")
     if not args or not args[0].isdigit():
         await update.message.reply_text(usage_text)
@@ -2645,7 +2518,7 @@ async def delete_persona_start(update: Update, context: ContextTypes.DEFAULT_TYP
         return ConversationHandler.END
     return await _start_delete_convo(update, context, persona_id)
 
-# <<< ИЗМЕНЕНО: Экранирование сообщений >>>
+
 async def delete_persona_button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     if not query or not query.data: return ConversationHandler.END
@@ -2660,10 +2533,10 @@ async def delete_persona_button_callback(update: Update, context: ContextTypes.D
         await query.edit_message_text(error_invalid_id)
         return ConversationHandler.END
 
-# <<< ИЗМЕНЕНО: Экранирование сообщений и имен >>>
+
 async def delete_persona_confirmed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    if not query or not query.data: return DELETE_PERSONA_CONFIRM # Stay if no data
+    if not query or not query.data: return DELETE_PERSONA_CONFIRM
 
     data = query.data
     user_id = query.from_user.id
@@ -2695,14 +2568,14 @@ async def delete_persona_confirmed(update: Update, context: ContextTypes.DEFAULT
              if persona_to_delete:
                  persona_name_deleted = persona_to_delete.name
                  logger.info(f"Attempting database deletion for persona {persona_id} ('{persona_name_deleted}')...")
-                 if delete_persona_config(db, persona_id, user.id): # Function handles commit
+                 if delete_persona_config(db, persona_id, user.id):
                      logger.info(f"User {user_id} successfully deleted persona {persona_id} ('{persona_name_deleted}').")
                      deleted_ok = True
                  else:
                      logger.error(f"delete_persona_config returned False for persona {persona_id}, user internal ID {user.id}.")
              else:
                  logger.warning(f"User {user_id} confirmed delete, but persona {persona_id} not found (maybe already deleted). Assuming OK.")
-                 deleted_ok = True # Treat as OK if already gone
+                 deleted_ok = True
 
     except SQLAlchemyError as e:
         logger.error(f"Database error during delete_persona_confirmed fetch/delete for {persona_id}: {e}", exc_info=True)
@@ -2710,7 +2583,6 @@ async def delete_persona_confirmed(update: Update, context: ContextTypes.DEFAULT
         logger.error(f"Unexpected error during delete_persona_confirmed for {persona_id}: {e}", exc_info=True)
 
     if deleted_ok:
-        # <<< ИЗМЕНЕНО: Форматируем и отправляем (экранируем имя) >>>
         final_success_msg = success_deleted.format(name=escape_markdown_v2(persona_name_deleted))
         await query.edit_message_text(final_success_msg, reply_markup=None)
     else:
@@ -2719,7 +2591,7 @@ async def delete_persona_confirmed(update: Update, context: ContextTypes.DEFAULT
     context.user_data.clear()
     return ConversationHandler.END
 
-# <<< ИЗМЕНЕНО: Экранирование сообщений >>>
+
 async def delete_persona_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     if not query: return ConversationHandler.END
@@ -2733,7 +2605,6 @@ async def delete_persona_cancel(update: Update, context: ContextTypes.DEFAULT_TY
     return ConversationHandler.END
 
 
-# <<< ИЗМЕНЕНО: Экранирование сообщений и имен >>>
 async def mute_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message: return
     chat_id = str(update.effective_chat.id)
@@ -2746,7 +2617,8 @@ async def mute_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     error_db = escape_markdown_v2("Ошибка базы данных при попытке заглушить бота.")
     error_general = escape_markdown_v2("Непредвиденная ошибка при выполнении команды.")
     info_already_muted = escape_markdown_v2("Личность '{name}' уже заглушена в этом чате.") # Placeholder
-    success_muted = escape_markdown_v2("✅ Личность '{name}' больше не будет отвечать в этом чате \\(но будет запоминать сообщения\\)\\. Используйте /unmutebot, чтобы вернуть\\.") # Placeholder
+    # Используем raw string
+    success_muted = r"✅ Личность '{name}' больше не будет отвечать в этом чате \(но будет запоминать сообщения\)\. Используйте /unmutebot, чтобы вернуть\." # Placeholder
 
     with next(get_db()) as db:
         try:
@@ -2770,26 +2642,22 @@ async def mute_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
             if not chat_instance.is_muted:
                 chat_instance.is_muted = True
-                db.commit() # Commit the mute status
+                db.commit()
                 logger.info(f"Persona '{persona.name}' muted in chat {chat_id} by user {user_id}.")
-                # <<< ИЗМЕНЕНО: Форматируем и отправляем (экранируем имя) >>>
                 final_success_msg = success_muted.format(name=escape_markdown_v2(persona.name))
                 await update.message.reply_text(final_success_msg, reply_markup=ReplyKeyboardRemove())
             else:
-                # <<< ИЗМЕНЕНО: Форматируем и отправляем (экранируем имя) >>>
                 final_already_muted_msg = info_already_muted.format(name=escape_markdown_v2(persona.name))
                 await update.message.reply_text(final_already_muted_msg, reply_markup=ReplyKeyboardRemove())
 
         except SQLAlchemyError as e:
             logger.error(f"Database error during /mutebot for chat {chat_id}: {e}", exc_info=True)
-            # Rollback handled by context manager
             await update.message.reply_text(error_db)
         except Exception as e:
             logger.error(f"Unexpected error during /mutebot for chat {chat_id}: {e}", exc_info=True)
             await update.message.reply_text(error_general)
 
 
-# <<< ИЗМЕНЕНО: Экранирование сообщений и имен >>>
 async def unmute_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message: return
     chat_id = str(update.effective_chat.id)
@@ -2811,7 +2679,7 @@ async def unmute_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
                     joinedload(ChatBotInstance.bot_instance_ref)
                     .joinedload(BotInstance.owner),
                     joinedload(ChatBotInstance.bot_instance_ref)
-                    .joinedload(BotInstance.persona_config) # Load persona for name
+                    .joinedload(BotInstance.persona_config)
                 )\
                 .filter(ChatBotInstance.chat_id == chat_id, ChatBotInstance.active == True)\
                 .first()
@@ -2833,19 +2701,16 @@ async def unmute_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             # Perform unmute
             if active_instance.is_muted:
                 active_instance.is_muted = False
-                db.commit() # Commit unmute status
+                db.commit()
                 logger.info(f"Persona '{persona_name}' unmuted in chat {chat_id} by user {user_id}.")
-                # <<< ИЗМЕНЕНО: Форматируем и отправляем (экранируем имя) >>>
                 final_success_msg = success_unmuted.format(name=escaped_persona_name)
                 await update.message.reply_text(final_success_msg, reply_markup=ReplyKeyboardRemove())
             else:
-                # <<< ИЗМЕНЕНО: Форматируем и отправляем (экранируем имя) >>>
                 final_not_muted_msg = info_not_muted.format(name=escaped_persona_name)
                 await update.message.reply_text(final_not_muted_msg, reply_markup=ReplyKeyboardRemove())
 
         except SQLAlchemyError as e:
             logger.error(f"Database error during /unmutebot for chat {chat_id}: {e}", exc_info=True)
-            # Rollback handled by context manager
             await update.message.reply_text(error_db)
         except Exception as e:
             logger.error(f"Unexpected error during /unmutebot for chat {chat_id}: {e}", exc_info=True)
