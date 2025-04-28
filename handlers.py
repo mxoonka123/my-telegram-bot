@@ -50,7 +50,7 @@ from utils import postprocess_response, extract_gif_links, get_time_info, escape
 
 logger = logging.getLogger(__name__)
 
-# +++ ДОБАВЛЕНА ФУНКЦИЯ ПРОВЕРКИ ПОДПИСКИ (С УЛУЧШЕННЫМ ЛОГИРОВАНИЕМ) +++
+# +++ ДОБАВЛЕНА ФУНКЦИЯ ПРОВЕРКИ ПОДПИСКИ (С УЛУЧШЕННЫМ ЛОГИРОВАНИЕМ И ИСПРАВЛЕНИЕМ СТАТУСА) +++
 async def check_channel_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     """Checks if the user is subscribed to the required channel."""
     if not CHANNEL_ID:
@@ -68,9 +68,9 @@ async def check_channel_subscription(update: Update, context: ContextTypes.DEFAU
     logger.debug(f"Checking subscription status for user {user_id} in channel {CHANNEL_ID}")
     try:
         member = await context.bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
-        allowed_statuses = [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR]
+        # <<< ИЗМЕНЕНО: Заменяем CREATOR на OWNER >>>
+        allowed_statuses = [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]
 
-        # <<< ИЗМЕНЕНО: Добавлено логирование статуса пользователя >>>
         logger.debug(f"User {user_id} status in {CHANNEL_ID}: {member.status}")
 
         if member.status in allowed_statuses:
