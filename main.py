@@ -16,7 +16,10 @@ from telegram.ext import (
     Application, CommandHandler, MessageHandler, ContextTypes, filters,
     CallbackQueryHandler, ConversationHandler, Defaults
 )
-from telegram.constants import ParseMode as TelegramParseMode
+# <<< ИЗМЕНЕНО: Добавлен импорт для проверки подписки >>>
+from telegram.constants import ParseMode as TelegramParseMode, ChatMemberStatus
+from telegram.error import TelegramError # <<< ИЗМЕНЕНО: Добавлен импорт
+
 # Оставляем импорт Telegraph только для get_account_info и exceptions
 from telegraph_api import Telegraph, exceptions as telegraph_exceptions
 # Pydantic импортирован в requirements.txt, но здесь не используется напрямую
@@ -55,7 +58,8 @@ def handle_yookassa_webhook():
             return Response("Server configuration error", status=500)
         try:
              current_shop_id = int(config.YOOKASSA_SHOP_ID)
-             if not YookassaConfig.secret_key or YookassaConfig.account_id != current_shop_id:
+             if not hasattr(YookassaConfig, 'secret_key') or not YookassaConfig.secret_key or \
+                not hasattr(YookassaConfig, 'account_id') or YookassaConfig.account_id != current_shop_id:
                   YookassaConfig.configure(account_id=current_shop_id, secret_key=config.YOOKASSA_SECRET_KEY)
                   flask_logger.info("Yookassa SDK re-configured within webhook handler.")
         except ValueError:
@@ -89,14 +93,29 @@ def handle_yookassa_webhook():
                     if user:
                         if db.activate_subscription(db_session, user.id): # activate_subscription handles commit
                             flask_logger.info(f"Subscription activated for user {telegram_user_id} (DB ID: {user.id}) via webhook payment {payment.id}.")
+                            # <<< ИЗМЕНЕНО: Уведомление пользователя об активации >>>
+                            app = application # Получаем application из глобальной области видимости (надеемся, что доступно)
+                            if app and app.bot:
+                                success_text = handlers.escape_markdown_v2(
+                                    f"✅ Ваша премиум подписка успешно активирована! "
+                                    f"Срок действия: {config.SUBSCRIPTION_DURATION_DAYS} дней.\n\n"
+                                    "Спасибо за поддержку! 🎉\n\n"
+                                    "Используйте /profile для просмотра статуса."
+                                )
+                                asyncio.run(app.bot.send_message(chat_id=telegram_user_id, text=success_text))
+                            else:
+                                flask_logger.warning("Cannot send activation confirmation: Bot application not found in webhook context.")
+
                         else:
                             flask_logger.error(f"db.activate_subscription failed for user {telegram_user_id} (DB ID: {user.id}) payment {payment.id}.")
                     else:
                         flask_logger.error(f"User with TG ID {telegram_user_id} not found for payment {payment.id}.")
             except SQLAlchemyError as e:
                  flask_logger.error(f"DB error during subscription activation webhook user {telegram_user_id} payment {payment.id}: {e}", exc_info=True)
+            except TelegramError as te:
+                 flask_logger.error(f"Telegram error sending activation message to {telegram_user_id}: {te}")
             except Exception as e:
-                 flask_logger.error(f"Unexpected error during DB operation webhook user {telegram_user_id} payment {payment.id}: {e}", exc_info=True)
+                 flask_logger.error(f"Unexpected error during DB operation or notification webhook user {telegram_user_id} payment {payment.id}: {e}", exc_info=True)
                  # Rollback handled by context manager if needed
 
         elif notification_object.event == 'payment.canceled':
@@ -122,10 +141,6 @@ def run_flask():
     flask_logger.info(f"Starting Flask server on 0.0.0.0:{port}")
     try:
         # Use waitress or gunicorn in production instead of Flask's dev server
-        # For Railway, it often uses gunicorn automatically based on Procfile
-        # flask_app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
-        # Assuming gunicorn handles execution via Procfile, this function might just be for local testing
-        # If run directly on Railway without gunicorn, use waitress:
         from waitress import serve
         serve(flask_app, host='0.0.0.0', port=port)
     except Exception as e:
@@ -151,7 +166,7 @@ logger = logging.getLogger(__name__)
 
 # --- Telegra.ph Setup ---
 async def setup_telegraph_page(application: Application):
-    # Эта функция остается без изменений по сравнению с предыдущей версией
+    # <<< ИЗМЕНЕНО: Убрано replace для **, так как это делается ниже >>>
     logger.info("Setting up Telegra.ph ToS page...")
     application.bot_data['tos_url'] = None
     access_token = config.TELEGRAPH_ACCESS_TOKEN
@@ -159,34 +174,72 @@ async def setup_telegraph_page(application: Application):
         logger.error("TELEGRAPH_ACCESS_TOKEN not set. Cannot create/update ToS page.")
         return
     try:
-        telegraph = Telegraph(access_token=access_token)
-        account_info = await telegraph.get_account_info(fields=['author_name', 'page_count'])
-        logger.info(f"Telegraph account info check successful: {account_info}")
+        # Use httpx to check token validity briefly if telegraph-api causes issues
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                "https://api.telegra.ph/getAccountInfo",
+                data={"access_token": access_token, "fields": '["short_name"]'}
+            )
+        if response.status_code == 200 and response.json().get("ok"):
+            logger.info(f"Telegraph account info check successful via httpx.")
+        else:
+             logger.error(f"Failed to get Telegraph account info via httpx (token might be invalid): {response.status_code} - {response.text}")
+             # Fallback to trying the library method just in case
+             try:
+                 telegraph = Telegraph(access_token=access_token)
+                 account_info = await telegraph.get_account_info(fields=['author_name', 'page_count'])
+                 logger.info(f"Telegraph account info check successful via library: {account_info}")
+             except Exception as lib_e:
+                  logger.error(f"Failed to get Telegraph account info via library as well: {lib_e}", exc_info=True)
+                  return # Stop if token is definitely bad
     except Exception as e:
-        logger.error(f"Failed to get Telegraph account info (token might be invalid): {e}", exc_info=True)
-        return
+        logger.error(f"Initial check for Telegraph account info failed: {e}", exc_info=True)
+        # Optionally try to proceed anyway if it's just a check issue
+        # return
 
     author_name = "@NunuAiBot"
     tos_title = f"Пользовательское Соглашение @NunuAiBot"
     page_url = None
     try:
-        tos_content_raw = handlers.TOS_TEXT
-        if not tos_content_raw or not isinstance(tos_content_raw, str):
-             logger.error("handlers.TOS_TEXT is empty or not a string. Cannot create ToS page.")
+        # handlers.TOS_TEXT уже содержит отформатированный текст БЕЗ Markdown V2
+        # НО содержит ** которые нужно убрать ИМЕННО для Telegra.ph
+        tos_content_raw_for_telegraph = handlers.TOS_TEXT_RAW # Берем исходный с **
+        if not tos_content_raw_for_telegraph or not isinstance(tos_content_raw_for_telegraph, str):
+             logger.error("handlers.TOS_TEXT_RAW is empty or not a string. Cannot create ToS page.")
              return
-        tos_content_formatted=tos_content_raw.format(subscription_duration=config.SUBSCRIPTION_DURATION_DAYS,subscription_price=f"{config.SUBSCRIPTION_PRICE_RUB:.0f}",subscription_currency=config.SUBSCRIPTION_CURRENCY).replace("**", "")
-        paragraphs_raw = tos_content_formatted.splitlines()
+
+        # Форматируем и убираем ** для Telegra.ph
+        tos_content_formatted_for_telegraph = tos_content_raw_for_telegraph.format(
+            subscription_duration=config.SUBSCRIPTION_DURATION_DAYS,
+            subscription_price=f"{config.SUBSCRIPTION_PRICE_RUB:.0f}",
+            subscription_currency=config.SUBSCRIPTION_CURRENCY
+        ).replace("**", "") # Убираем жирный шрифт
+
+        paragraphs_raw = tos_content_formatted_for_telegraph.splitlines()
+        # Создаем узлы <p> для Telegra.ph
         content_node_array = [{"tag": "p", "children": [p.strip()]} for p in paragraphs_raw if p.strip()]
+
         if not content_node_array:
             logger.error("content_node_array empty after processing. Cannot create page.")
             return
 
         telegraph_api_url = "https://api.telegra.ph/createPage"
-        payload={"access_token": access_token,"title": tos_title,"author_name": author_name,"content": json.dumps(content_node_array),"return_content": False}
+        # Сериализуем узлы в JSON строку для API
+        content_json_string = json.dumps(content_node_array, ensure_ascii=False)
+
+        payload = {
+            "access_token": access_token,
+            "title": tos_title,
+            "author_name": author_name,
+            "content": content_json_string, # Передаем JSON строку
+            "return_content": False
+        }
         logger.info(f"Sending direct request to {telegraph_api_url}...")
         logger.debug(f"Payload (content truncated): access_token=..., title='{tos_title}', author_name='{author_name}', content='{payload['content'][:100]}...', return_content=False")
+
         async with httpx.AsyncClient() as client:
             response = await client.post(telegraph_api_url, data=payload)
+
         logger.info(f"Telegraph API direct response status: {response.status_code}")
         if response.status_code == 200:
             try:
@@ -201,7 +254,9 @@ async def setup_telegraph_page(application: Application):
                 else:
                     error_message = response_data.get("error", "Unknown error")
                     logger.error(f"Telegraph API direct request returned error: {error_message}")
+                    if "CONTENT_INVALID" in error_message: logger.error(f">>> Received CONTENT_INVALID! Check payload JSON: {payload['content']}")
                     if "CONTENT_TEXT_REQUIRED" in error_message: logger.error(f">>> Received CONTENT_TEXT_REQUIRED! Check payload: {payload['content']}")
+
             except json.JSONDecodeError: logger.error(f"Failed to decode JSON response from Telegraph API direct request. Response text: {response.text}")
             except Exception as parse_err: logger.error(f"Error parsing successful Telegraph API direct response: {parse_err}", exc_info=True)
         else: logger.error(f"Telegraph API direct request failed status {response.status_code}. Text: {response.text}")
@@ -218,6 +273,8 @@ async def setup_telegraph_page(application: Application):
 # --- Bot Initialization ---
 async def post_init(application: Application):
     """Post-initialization tasks."""
+    global application_instance # <<< ДОБАВЛЕНО: Сохраняем application для вебхука
+    application_instance = application
     try:
         me = await application.bot.get_me()
         logger.info(f"Bot started as @{me.username} (ID: {me.id})")
@@ -236,6 +293,8 @@ async def post_init(application: Application):
         logger.info("Background tasks scheduled.")
     else:
         logger.warning("JobQueue not available, background tasks not scheduled.")
+
+application_instance = None # <<< ДОБАВЛЕНО: Глобальная переменная для доступа из вебхука
 
 # <<< ИЗМЕНЕНО: Обновлены Conversation Handlers и добавлены новые callback handlers >>>
 def main() -> None:
