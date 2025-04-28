@@ -68,10 +68,11 @@ async def check_channel_subscription(update: Update, context: ContextTypes.DEFAU
     logger.debug(f"Checking subscription status for user {user_id} in channel {CHANNEL_ID}")
     try:
         member = await context.bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
-        # <<< ИЗМЕНЕНО: Заменяем CREATOR на OWNER >>>
-        allowed_statuses = [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]
+        # <<< ИЗМЕНЕНО: Логируем весь объект ChatMember >>>
+        logger.debug(f"get_chat_member response for user {user_id} in {CHANNEL_ID}: {member}")
 
-        logger.debug(f"User {user_id} status in {CHANNEL_ID}: {member.status}")
+        allowed_statuses = [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]
+        logger.debug(f"User {user_id} status in {CHANNEL_ID}: {member.status}") # Оставляем и это логгирование
 
         if member.status in allowed_statuses:
             logger.debug(f"User {user_id} IS subscribed to {CHANNEL_ID} (status: {member.status})")
@@ -100,7 +101,6 @@ async def check_channel_subscription(update: Update, context: ContextTypes.DEFAU
                  except Exception as send_err: logger.error(f"Failed to send 'Member list inaccessible' error message: {send_err}")
          elif "user not found" in error_message:
              logger.info(f"-> Specific BadRequest: User {user_id} not found in channel {CHANNEL_ID}.")
-             # Сообщение пользователю не требуется, функция просто вернет False
          else:
              # Другие BadRequest
              if update.effective_message:
@@ -881,7 +881,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
      # +++ КОНЕЦ ПРОВЕРКИ ПОДПИСКИ +++
 
      await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
-     # <<< ИЗМЕНЕНО: Экранируем < и > вручную >>>
+     # <<< ИЗМЕНЕНО: Экранируем [ и ] с помощью \\ >>>
      help_text = r"""
 **🤖 основные команды:**
 /start \- приветствие и твой статус
@@ -890,14 +890,14 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 /subscribe \- инфо о подписке и оплата
 
 **👤 управление личностями:**
-/createpersona \<имя\> \[описание] \- создать новую
+/createpersona \<имя\> \\\[описание\\] \- создать новую
 /mypersonas \- список твоих личностей и кнопки управления \(редакт\., удалить, добавить в чат\)
 /editpersona \<id\> \- редактировать личность по ID \(или через /mypersonas\)
 /deletepersona \<id\> \- удалить личность по ID \(или через /mypersonas\)
 
 **💬 управление в чате \(где есть личность\):**
 /addbot \<id\> \- добавить личность в текущий чат \(или через /mypersonas\)
-/mood \[настроение] \- сменить настроение активной личности
+/mood \\\[настроение\\] \- сменить настроение активной личности
 /reset \- очистить память \(контекст\) личности в этом чате
 /mutebot \- заставить личность молчать в чате
 /unmutebot \- разрешить личности отвечать в чате
@@ -2058,14 +2058,14 @@ async def edit_persona_button_callback(update: Update, context: ContextTypes.DEF
     query = update.callback_query
     if not query or not query.data: return ConversationHandler.END
     await query.answer("Начинаем редактирование...") # Plain text
-    error_invalid_id = escape_markdown_v2("Ошибка: неверный ID личности в кнопке.")
+    error_invalid_id_callback = escape_markdown_v2("Ошибка: неверный ID личности в кнопке.") # <<< ИЗМЕНЕНО
     try:
         persona_id = int(query.data.split('_')[-1])
         logger.info(f"CALLBACK edit_persona < User {query.from_user.id} for persona_id: {persona_id}")
-        return await _start_edit_convo(update, context, persona_id)
+        return await _start_edit_convo(update, context, persona_id) # <<< ИЗМЕНЕНО: Передаем update
     except (IndexError, ValueError):
         logger.error(f"Could not parse persona_id from edit_persona callback data: {query.data}")
-        await query.edit_message_text(error_invalid_id)
+        await query.edit_message_text(error_invalid_id_callback) # <<< ИЗМЕНЕНО
         return ConversationHandler.END
 
 
@@ -3026,11 +3026,14 @@ async def edit_persona_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 # --- Delete Persona Conversation ---
 async def _start_delete_convo(update: Update, context: ContextTypes.DEFAULT_TYPE, persona_id: int) -> int:
+    # <<< ИЗМЕНЕНО: Получаем user_id и chat_id из update.effective_user/chat >>>
     user_id = update.effective_user.id
-    chat_id = update.effective_chat.id if update.effective_chat else update.effective_message.chat_id
+    chat_id = update.effective_chat.id
+    is_callback = update.callback_query is not None
+    # <<< ИЗМЕНЕНО: Определяем reply_target корректно >>>
+    reply_target = update.callback_query.message if is_callback else update.effective_message
 
     # +++ ПРОВЕРКА ПОДПИСКИ (пропускаем для callback) +++
-    is_callback = update.callback_query is not None
     if not is_callback:
         if not await check_channel_subscription(update, context):
             await send_subscription_required_message(update, context)
@@ -3060,7 +3063,6 @@ async def _start_delete_convo(update: Update, context: ContextTypes.DEFAULT_TYPE
 
             if not persona_config:
                  final_error_msg = error_not_found_fmt.format(id=persona_id)
-                 reply_target = update.callback_query.message if is_callback else update.effective_message
                  if is_callback: await update.callback_query.answer("Личность не найдена", show_alert=True)
                  await reply_target.reply_text(final_error_msg, reply_markup=ReplyKeyboardRemove())
                  return ConversationHandler.END
@@ -3075,7 +3077,6 @@ async def _start_delete_convo(update: Update, context: ContextTypes.DEFAULT_TYPE
             reply_markup = InlineKeyboardMarkup(keyboard)
             msg_text = prompt_delete_fmt.format(name=escape_markdown_v2(persona_config.name), id=persona_id)
 
-            reply_target = update.callback_query.message if is_callback else update.effective_message
             if is_callback:
                  query = update.callback_query
                  try:
@@ -3121,17 +3122,20 @@ async def delete_persona_start(update: Update, context: ContextTypes.DEFAULT_TYP
 
 
 async def delete_persona_button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
+    query = update.callback_query # <<< Получаем query из update
     if not query or not query.data: return ConversationHandler.END
     await query.answer("Начинаем удаление...") # Plain text
-    error_invalid_id = escape_markdown_v2("Ошибка: неверный ID личности в кнопке.")
+    # <<< ИЗМЕНЕНО: Текст ошибки для callback >>>
+    error_invalid_id_callback = escape_markdown_v2("Ошибка: неверный ID личности в кнопке.")
     try:
         persona_id = int(query.data.split('_')[-1])
         logger.info(f"CALLBACK delete_persona < User {query.from_user.id} for persona_id: {persona_id}")
+        # <<< ИЗМЕНЕНО: Передаем update, а не query >>>
         return await _start_delete_convo(update, context, persona_id)
     except (IndexError, ValueError):
         logger.error(f"Could not parse persona_id from delete_persona callback data: {query.data}")
-        await query.edit_message_text(error_invalid_id)
+        # <<< ИЗМЕНЕНО: Используем правильный текст ошибки >>>
+        await query.edit_message_text(error_invalid_id_callback)
         return ConversationHandler.END
 
 
