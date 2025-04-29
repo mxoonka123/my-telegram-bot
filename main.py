@@ -1,3 +1,5 @@
+# --- START OF FILE main.py ---
+
 import logging
 import asyncio
 import os
@@ -10,6 +12,7 @@ import json
 from sqlalchemy.exc import SQLAlchemyError, OperationalError
 import aiohttp
 import httpx # Используется для Telegra.ph
+from typing import Optional # <<< ДОБАВЛЕНО ИСПРАВЛЕНИЕ
 
 from telegram import Update
 from telegram.ext import (
@@ -133,29 +136,42 @@ def handle_yookassa_webhook():
                         # Пытаемся получить текущий цикл событий или создать новый
                         loop = asyncio.get_running_loop()
                     except RuntimeError: # 'RuntimeError: There is no current event loop...'
-                        loop = asyncio.new_event_loop()
-                        asyncio.set_event_loop(loop)
+                        loop = None # Не создаем новый цикл здесь
 
-                    # Используем loop.run_until_complete для выполнения задачи
-                    future = asyncio.run_coroutine_threadsafe(
-                        app.bot.send_message(chat_id=telegram_user_id, text=success_text, parse_mode=ParseMode.MARKDOWN_V2),
-                        loop
-                    )
-                    try:
-                        future.result(timeout=10) # Ждем завершения с таймаутом
-                        flask_logger.info(f"Sent activation confirmation to user {telegram_user_id}")
-                    except TimeoutError:
-                        flask_logger.error(f"Timeout sending activation confirmation to user {telegram_user_id}")
-                    except TelegramError as te:
-                        flask_logger.error(f"Telegram error sending activation message to {telegram_user_id}: {te}")
-                        if isinstance(te, BadRequest) and "parse" in te.message.lower():
-                           flask_logger.error(f"--> Failed activation text (escaped): '{success_text[:200]}...'")
-                    except Exception as send_e:
-                        flask_logger.error(f"Failed to send activation message to user {telegram_user_id}: {send_e}", exc_info=True)
-                    finally:
-                         # Если мы создали новый цикл, его надо закрыть
-                         if not asyncio.get_event_loop().is_running():
-                             loop.close()
+                    if loop and loop.is_running():
+                         # Если цикл есть и запущен (т.е. основной поток бота), используем его
+                         future = asyncio.run_coroutine_threadsafe(
+                            app.bot.send_message(chat_id=telegram_user_id, text=success_text, parse_mode=ParseMode.MARKDOWN_V2),
+                            loop
+                         )
+                         try:
+                             future.result(timeout=10) # Ждем завершения с таймаутом
+                             flask_logger.info(f"Sent activation confirmation to user {telegram_user_id}")
+                         except asyncio.TimeoutError:
+                             flask_logger.error(f"Timeout sending activation confirmation to user {telegram_user_id}")
+                         except TelegramError as te:
+                             flask_logger.error(f"Telegram error sending activation message to {telegram_user_id}: {te}")
+                             if isinstance(te, BadRequest) and "parse" in te.message.lower():
+                                flask_logger.error(f"--> Failed activation text (escaped): '{success_text[:200]}...'")
+                         except Exception as send_e:
+                             flask_logger.error(f"Failed to send activation message to user {telegram_user_id}: {send_e}", exc_info=True)
+                    else:
+                         # Если цикла нет или он не запущен (например, при чистом запуске Flask без бота)
+                         # создаем временный цикл только для этой задачи
+                         flask_logger.warning("No running event loop found for webhook notification. Creating temporary loop.")
+                         temp_loop = asyncio.new_event_loop()
+                         try:
+                              temp_loop.run_until_complete(app.bot.send_message(chat_id=telegram_user_id, text=success_text, parse_mode=ParseMode.MARKDOWN_V2))
+                              flask_logger.info(f"Sent activation confirmation to user {telegram_user_id} using temporary loop.")
+                         except TelegramError as te:
+                              flask_logger.error(f"Telegram error sending activation message (temp loop) to {telegram_user_id}: {te}")
+                              if isinstance(te, BadRequest) and "parse" in te.message.lower():
+                                  flask_logger.error(f"--> Failed activation text (escaped, temp loop): '{success_text[:200]}...'")
+                         except Exception as send_e:
+                              flask_logger.error(f"Failed to send activation message (temp loop) to user {telegram_user_id}: {send_e}", exc_info=True)
+                         finally:
+                              temp_loop.close()
+
 
                 else:
                     flask_logger.warning("Cannot send activation confirmation: Bot application instance not found in webhook context.")
