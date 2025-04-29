@@ -1,5 +1,3 @@
-# --- START OF FILE utils.py ---
-
 import re
 import urllib.parse
 from datetime import datetime, timezone, timedelta
@@ -9,18 +7,18 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# +++ ДОБАВЬ ЭТУ ФУНКЦИЮ +++
+# +++ Экранирование для MarkdownV2 +++
 def escape_markdown_v2(text: str) -> str:
     """Escapes characters reserved in Telegram MarkdownV2."""
+    if not isinstance(text, str):
+        return ""
     # Список символов, требующих экранирования в MarkdownV2
     # Источник: https://core.telegram.org/bots/api#markdownv2-style
+    # Добавлены . и ! т.к. они тоже могут вызывать проблемы в некоторых контекстах
     escape_chars = r'_*[]()~`>#+-=|{}.!'
     # Экранируем символы, добавляя перед ними \
-    # Важно: сам \ тоже нужно экранировать, если он используется как обычный символ,
-    # но для простоты и в большинстве случаев достаточно экранировать только указанные символы.
-    # Используем re.escape для корректной обработки символов внутри [...] в regex
     return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text)
-# +++ КОНЕЦ ДОБАВЛЕННОЙ ФУНКЦИИ +++
+# +++ Конец +++
 
 def get_time_info():
     now_utc = datetime.now(timezone.utc)
@@ -91,7 +89,7 @@ def postprocess_response(response: str) -> List[str]:
     # Adjust thresholds as needed
     max_length = 350 # Allow slightly longer messages if needed
     ideal_length = 200 # Try to stay around this
-    min_length = 20 # Avoid tiny messages unless it's the whole response
+    min_length = 10 # Avoid tiny messages unless it's the whole response
 
     for sentence in sentences:
         sentence = sentence.strip()
@@ -118,15 +116,14 @@ def postprocess_response(response: str) -> List[str]:
     if current_message:
         merged_messages.append(current_message)
 
-    # 4. Final cleanup: lowercase and strip again, filter empty
-    final_messages = [msg.strip().lower() for msg in merged_messages if msg.strip()]
+    # 4. Final cleanup: Strip again, filter empty
+    # <<< ИЗМЕНЕНО: НЕ делаем lowercase здесь, т.к. это может сломать Markdown >>>
+    final_messages = [msg.strip() for msg in merged_messages if msg.strip()]
 
     # 5. Sanity check: If somehow the result is empty but input wasn't, return original split differently
     if not final_messages and response:
          logger.warning("Postprocessing resulted in empty list, returning basic split.")
          # Fallback to splitting by space if all else fails
-         return [part.lower() for part in response.split() if part]
+         return [part for part in response.split() if part]
 
     return final_messages
-
-# --- END OF FILE utils.py ---
