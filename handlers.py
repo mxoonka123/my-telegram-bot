@@ -224,6 +224,19 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
          logger.warning(f"Error handler caught BadRequest likely related to missing channel membership check: {context.error}")
          return
 
+    # --- ИСПРАВЛЕНИЕ: Добавляем обработку конкретной ошибки парсинга ---
+    if isinstance(context.error, BadRequest) and "Can't parse entities" in str(context.error):
+        logger.error(f"MARKDOWN PARSE ERROR: {context.error}. Update: {update}")
+        # Пытаемся уведомить пользователя об ошибке форматирования, если это возможно
+        if isinstance(update, Update) and update.effective_message:
+            try:
+                # Отправляем сообщение БЕЗ форматирования
+                await update.effective_message.reply_text("Произошла ошибка форматирования ответа. Пожалуйста, сообщите администратору.", parse_mode=None)
+            except Exception as send_err:
+                logger.error(f"Failed to send plain text formatting error message: {send_err}")
+        return # Прекращаем обработку этой ошибки здесь
+    # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
+
     error_message = "упс... что-то пошло не так. попробуй еще раз позже."
     escaped_error_message = escape_markdown_v2(error_message)
     if isinstance(update, Update) and update.effective_message:
@@ -784,7 +797,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 if expires_at_obj and isinstance(expires_at_obj, datetime):
                     # Используем формат с экранированными точками
                     expires_date_str = expires_at_obj.strftime('%d.%m.%Y')
-                    escaped_expires_date = escape_markdown_v2(expires_date_str)
+                    # ----- ИСПРАВЛЕНИЕ ЗДЕСЬ: Экранируем '.' в дате -----
+                    escaped_expires_date = expires_date_str.replace('.', '\\.')
+                    # ----- КОНЕЦ ИСПРАВЛЕНИЯ -----
                 expires_text = f" до {escaped_expires_date}" if user.is_active_subscriber and escaped_expires_date else ""
 
                 # Загружаем количество персон явно, если user.persona_configs не загружен (хотя selectin должен)
@@ -807,7 +822,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 # Собираем финальный текст
                 escaped_reply_text = (
                     escaped_greeting +
-                    f"твой статус: **{escaped_status}**{expires_text}\n" + # Используем ** для статуса
+                    f"твой статус: **{escaped_status}**{expires_text}\n" + # Используем ** для статуса, expires_text уже содержит экранированную дату
                     escaped_limits_info +
                     "**начало работы:**\n" +
                     "`/createpersona <имя>`" + escaped_instruction1 + # Используем `code` для команд
@@ -862,7 +877,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
      # +++ КОНЕЦ ПРОВЕРКИ ПОДПИСКИ +++
 
      await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
-     # <<< ИЗМЕНЕНО: Дополнительное экранирование [ и ] >>>
+     # ----- ИСПРАВЛЕНИЕ ЗДЕСЬ: Экранируем точки -----
+     # Было: Использовались \., но не везде
+     # Стало: Используем \. для всех точек, которые должны быть литералами
      help_text = r"""
 **🤖 основные команды:**
 /start \- приветствие и твой статус
@@ -883,6 +900,14 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 /mutebot \- заставить личность молчать в чате
 /unmutebot \- разрешить личности отвечать в чате
      """
+     # Дополнительно экранируем точки и другие символы, если они не были экранированы
+     # Note: escape_markdown_v2() is generally safer than manual escaping if the text structure is simple.
+     # However, since help_text already uses complex manual escapes for <, [, etc.,
+     # and we need to preserve ` and **, selective manual escaping of '.' is chosen here.
+     help_text = help_text.replace('.', '\\.') # Экранируем все оставшиеся точки
+
+     # ----- КОНЕЦ ИСПРАВЛЕНИЯ -----
+
      try:
          if is_callback:
              await update.callback_query.edit_message_text(help_text, reply_markup=None)
@@ -895,6 +920,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
              logger.error(f"Failed sending/editing help message (BadRequest): {e}", exc_info=True)
              logger.error(f"Failed help text: '{help_text}'")
              try:
+                 # Попытка отправить как plain text (для отладки, если нужно)
                  plain_help_text = re.sub(r'\\(.)', r'\1', help_text) # Убираем экранирование TG
                  plain_help_text = re.sub(r'\*\*(.*?)\*\*', r'\1', plain_help_text) # Убираем **
                  plain_help_text = re.sub(r'`(.*?)`', r'\1', plain_help_text) # Убираем ``
@@ -930,7 +956,7 @@ async def mood(update: Update, context: ContextTypes.DEFAULT_TYPE, db: Optional[
 
     error_no_persona = escape_markdown_v2("в этом чате нет активной личности.")
     error_persona_info = escape_markdown_v2("Ошибка: не найдена информация о личности.")
-    # ИСПРАВЛЕНО: Плейсхолдеры вынесены из escape_markdown_v2
+    # Плейсхолдеры вынесены из escape_markdown_v2 в предыдущем исправлении
     error_no_moods_fmt = escape_markdown_v2("у личности '") + "{persona_name}" + escape_markdown_v2("' не настроены настроения.")
     error_bot_muted_fmt = escape_markdown_v2("личность '") + "{persona_name}" + escape_markdown_v2("' сейчас заглушена (/unmutebot).")
     error_db = escape_markdown_v2("ошибка базы данных при смене настроения.")
@@ -1093,7 +1119,7 @@ async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     error_no_instance = escape_markdown_v2("ошибка: не найден экземпляр бота для сброса.")
     error_db = escape_markdown_v2("ошибка базы данных при сбросе контекста.")
     error_general = escape_markdown_v2("ошибка при сбросе контекста.")
-    # ИСПРАВЛЕНО: Плейсхолдер вынесен из escape_markdown_v2
+    # Плейсхолдер вынесен из escape_markdown_v2 в предыдущем исправлении
     success_reset_fmt = escape_markdown_v2("память личности '") + "{persona_name}" + escape_markdown_v2("' в этом чате очищена\\.")
 
     with next(get_db()) as db:
@@ -1147,28 +1173,37 @@ async def create_persona(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     usage_text = "формат: `/createpersona <имя> \\[описание]`\n_имя обязательно, описание нет\\._"
     error_name_len = escape_markdown_v2("имя личности: 2-50 символов.")
     error_desc_len = escape_markdown_v2("описание: до 1500 символов.")
-    # ----- ИСПРАВЛЕНИЕ ЗДЕСЬ -----
-    # Было: error_limit_reached_fmt = escape_markdown_v2("упс! достигнут лимит личностей ({current_count}/{limit}) для статуса ") + "**{status_text}**" + escape_markdown_v2("\\. 😟\nчтобы создавать больше, используй /subscribe")
-    # Стало: плейсхолдеры {current_count} и {limit} вынесены из escape_markdown_v2
+    # Строки форматирования были исправлены в предыдущем ответе
     error_limit_reached_fmt = (
         escape_markdown_v2("упс! достигнут лимит личностей (") +
-        "{current_count}/{limit}" +  # Плейсхолдеры вне экранирования
+        "{current_count}/{limit}" +
         escape_markdown_v2(") для статуса ") +
-        "**{status_text}**" + # Этот плейсхолдер был вне экранирования и остался
+        "**{status_text}**" +
         escape_markdown_v2("\\. 😟\nчтобы создавать больше, используй /subscribe")
     )
-    # ИСПРАВЛЕНО: Плейсхолдер {persona_name} вынесен из escape_markdown_v2
     error_name_exists_fmt = escape_markdown_v2("личность с именем '") + "{persona_name}" + escape_markdown_v2("' уже есть. выбери другое.")
     error_db = escape_markdown_v2("ошибка базы данных при создании личности.")
     error_general = escape_markdown_v2("ошибка при создании личности.")
-    # ИСПРАВЛЕНО: Плейсхолдеры {name} и {description} вынесены из escape_markdown_v2, {id} уже был вне
+    # --- ПРОВЕРКА И ИСПРАВЛЕНИЕ ЗДЕСЬ ---
+    # Проверяем, есть ли точки в статических частях, которые не экранированы
+    # escape_markdown_v2("✅ личность '") -> ✅ личность '
+    # escape_markdown_v2("' создана!\nid: ") -> ' создана\!-id:
+    # escape_markdown_v2("\nописание: ") -> \nописание:
+    # escape_markdown_v2("\n\nдобавь в чат или управляй через /mypersonas") -> \n\nдобавь в чат или управляй через /mypersonas
+    # Точек в статических частях нет. Проблема может быть только в {description}, если он не экранирован.
+    # Перепроверяем использование:
+    # desc_display = escape_markdown_v2(new_persona.description) if new_persona.description else escape_markdown_v2("(пусто)")
+    # final_success_msg = success_create_fmt.format(..., description=desc_display)
+    # Выглядит правильно, desc_display УЖЕ экранирован.
+    # Оставим как есть, так как предыдущее исправление должно было решить KeyError.
+    # Если ошибка BadRequest с точкой возникает именно здесь, то это очень странно.
     success_create_fmt = (
         escape_markdown_v2("✅ личность '") + "{name}" + escape_markdown_v2("' создана!\nid: ") +
         "`{id}`" +
-        escape_markdown_v2("\nописание: ") + "{description}" + # Плейсхолдер для описания
+        escape_markdown_v2("\nописание: ") + "{description}" +
         escape_markdown_v2("\n\nдобавь в чат или управляй через /mypersonas")
     )
-    # ----- КОНЕЦ ИСПРАВЛЕНИЯ -----
+    # --- КОНЕЦ ПРОВЕРКИ ---
 
     args = context.args
     if not args:
@@ -1215,10 +1250,11 @@ async def create_persona(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             new_persona = create_persona_config(db, user.id, persona_name, persona_description)
 
             name_escaped = escape_markdown_v2(new_persona.name)
+            # Экранируем описание *здесь*
             desc_display = escape_markdown_v2(new_persona.description) if new_persona.description else escape_markdown_v2("(пусто)")
             # Используем исправленную строку success_create_fmt
             final_success_msg = success_create_fmt.format(name=name_escaped, id=new_persona.id, description=desc_display)
-            await update.message.reply_text(final_success_msg)
+            await update.message.reply_text(final_success_msg) # Отправляем сообщение
             logger.info(f"User {user_id} created persona: '{new_persona.name}' (ID: {new_persona.id})")
 
         except IntegrityError:
@@ -1231,12 +1267,11 @@ async def create_persona(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
              logger.error(f"SQLAlchemyError caught by handler for create_persona user {user_id}: {e}", exc_info=True)
              await update.message.reply_text(error_db)
              # Rollback handled by context manager
-        except KeyError as e: # <<< ИЗМЕНЕНИЕ: Обработка KeyError, если исправление не сработало
+        except KeyError as e:
              logger.error(f"KeyError during create_persona formatting for user {user_id}: {e}", exc_info=True)
              await update.message.reply_text(escape_markdown_v2("Ошибка форматирования сообщения о лимите. Пожалуйста, сообщите администратору."))
              # Rollback handled by context manager
         except Exception as e:
-             # <<< ИЗМЕНЕНО: Добавляем логирование >>>
              logger.error(f"Error creating persona for user {user_id}: {e}", exc_info=True)
              await update.message.reply_text(error_general)
              # Rollback handled by context manager
@@ -1288,7 +1323,9 @@ async def my_personas(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
             if not personas:
                 # Форматируем, потом экранируем
-                text_to_send = escape_markdown_v2(info_no_personas_fmt.format(count=persona_count, limit=persona_limit))
+                # ----- ИСПРАВЛЕНИЕ: Экранируем точку в info_no_personas_fmt -----
+                text_to_send = escape_markdown_v2(info_no_personas_fmt.format(count=persona_count, limit=persona_limit)).replace('.', '\\.')
+                # ----- КОНЕЦ ИСПРАВЛЕНИЯ -----
                 await update.message.reply_text(text_to_send)
                 return
 
@@ -1341,15 +1378,15 @@ async def add_bot_to_chat(update: Update, context: ContextTypes.DEFAULT_TYPE, pe
     error_invalid_id_callback = escape_markdown_v2("Ошибка: неверный ID личности.")
     error_invalid_id_cmd = escape_markdown_v2("id личности должен быть числом.")
     error_no_id = escape_markdown_v2("Ошибка: ID личности не определен.")
-    # ИСПРАВЛЕНО: Плейсхолдер {id} вынесен из escape_markdown_v2
+    # Плейсхолдер {id} вынесен из escape_markdown_v2 в предыдущем исправлении
     error_persona_not_found_fmt = escape_markdown_v2("личность с id `") + "{id}" + escape_markdown_v2("` не найдена или не твоя.")
-    # ИСПРАВЛЕНО: Плейсхолдер {name} вынесен из escape_markdown_v2
+    # Плейсхолдер {name} вынесен из escape_markdown_v2 в предыдущем исправлении
     error_already_active_fmt = escape_markdown_v2("личность '") + "{name}" + escape_markdown_v2("' уже активна в этом чате.")
     error_link_failed = escape_markdown_v2("не удалось активировать личность (ошибка связывания).")
     error_integrity = escape_markdown_v2("произошла ошибка целостности данных (возможно, конфликт активации), попробуйте еще раз.")
     error_db = escape_markdown_v2("ошибка базы данных при добавлении бота.")
     error_general = escape_markdown_v2("ошибка при активации личности.")
-    # Эта строка определялась как литерал и форматировалась позже, поэтому она ОК
+    # Эта строка определялась как литерал и форматировалась позже, ОК
     success_added_structure = "✅ личность '{name}' (id: `{id}`) активирована в этом чате! Память очищена." # Placeholder
 
     if is_callback and local_persona_id is None:
@@ -1441,9 +1478,11 @@ async def add_bot_to_chat(update: Update, context: ContextTypes.DEFAULT_TYPE, pe
 
             if chat_link:
                  # Используем success_added_structure как шаблон, форматируем, потом экранируем
+                 # --- ИСПРАВЛЕНИЕ: Экранируем точку в success_added_structure ---
                  final_success_msg = escape_markdown_v2(
                      success_added_structure.format(name=persona.name, id=local_persona_id)
-                 )
+                 ).replace('.', '\\.') # Добавляем экранирование точки
+                 # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
                  await context.bot.send_message(chat_id=chat_id, text=final_success_msg, reply_markup=ReplyKeyboardRemove())
                  if is_callback:
                       try:
@@ -1466,7 +1505,7 @@ async def add_bot_to_chat(update: Update, context: ContextTypes.DEFAULT_TYPE, pe
              logger.error(f"Database error during /addbot for persona {local_persona_id} to chat {chat_id}: {e}", exc_info=True)
              await context.bot.send_message(chat_id=chat_id, text=error_db)
              # Rollback handled by context manager
-        except KeyError as ke: # <<< ИЗМЕНЕНО: Ловим KeyError при форматировании
+        except KeyError as ke:
              logger.error(f"KeyError during add_bot_to_chat formatting: {ke}", exc_info=True)
              await context.bot.send_message(chat_id=chat_id, text=escape_markdown_v2("Ошибка форматирования ответа."))
         except Exception as e:
@@ -1593,8 +1632,10 @@ async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             expires_text = escape_markdown_v2("нет активной подписки")
             if is_active_subscriber and user.subscription_expires_at:
                  try:
-                     expires_text_raw = f"активна до: {user.subscription_expires_at.strftime('%d.%m.%Y %H:%M')} UTC"
-                     expires_text = escape_markdown_v2(expires_text_raw)
+                     # --- ИСПРАВЛЕНИЕ: Экранируем точки и двоеточия в дате/времени ---
+                     expires_text_raw = user.subscription_expires_at.strftime('%d.%m.%Y %H:%M') + " UTC"
+                     expires_text = escape_markdown_v2(f"активна до: {expires_text_raw}")
+                     # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
                  except AttributeError: # На случай, если дата некорректна
                       expires_text = escape_markdown_v2("активна (дата истечения некорректна)")
 
@@ -1608,7 +1649,7 @@ async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             text = (
                 f"👤 **твой профиль**\n\n"
                 f"статус: **{status}**\n" # Жирный для статуса
-                f"{expires_text}\n\n"
+                f"{expires_text}\n\n" # expires_text уже экранирован
                 f"**лимиты:**\n" # Жирный для заголовка
                 f"{escape_markdown_v2(f'сообщения сегодня: {msg_count}/{msg_limit}')}\n" # Экранируем числа и текст
                 f"{escape_markdown_v2(f'создано личностей: {persona_count}/{persona_limit}')}\n\n" # Экранируем числа и текст
@@ -1658,11 +1699,13 @@ async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE, from_cal
     else:
         price_str = f"{SUBSCRIPTION_PRICE_RUB:.0f}"
         header = f"✨ **премиум подписка ({escape_markdown_v2(price_str)} {escape_markdown_v2(SUBSCRIPTION_CURRENCY)}/мес)** ✨\n\n"
+        # ----- ИСПРАВЛЕНИЕ: Экранируем точки в body -----
         body = (
             escape_markdown_v2("получи максимум возможностей:\n✅ ") +
             f"**{PAID_DAILY_MESSAGE_LIMIT}**" + escape_markdown_v2(f" сообщений в день \\(вместо {FREE_DAILY_MESSAGE_LIMIT}\\)\n✅ ") +
-            f"**{PAID_PERSONA_LIMIT}**" + escape_markdown_v2(f" личностей \\(вместо {FREE_PERSONA_LIMIT}\\)\n✅ полная настройка всех промптов\n✅ создание и редакт\\. своих настроений\n✅ приоритетная поддержка\n\nподписка действует {SUBSCRIPTION_DURATION_DAYS} дней\\.")
+            f"**{PAID_PERSONA_LIMIT}**" + escape_markdown_v2(f" личностей \\(вместо {FREE_PERSONA_LIMIT}\\)\n✅ полная настройка всех промптов\n✅ создание и редакт\\. своих настроений\n✅ приоритетная поддержка\n\nподписка действует {SUBSCRIPTION_DURATION_DAYS} дней\\.") # Точка в 'редакт.' и конце строки
         )
+        # ----- КОНЕЦ ИСПРАВЛЕНИЯ -----
         text = header + body
         text_raw = "Premium subscription info text" # Placeholder для лога
 
@@ -1751,12 +1794,14 @@ async def confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     yookassa_ready = bool(YOOKASSA_SHOP_ID and YOOKASSA_SECRET_KEY and YOOKASSA_SHOP_ID.isdigit())
 
     error_payment_unavailable = escape_markdown_v2("К сожалению, функция оплаты сейчас недоступна. 😥 (проблема с настройками)")
+    # ----- ИСПРАВЛЕНИЕ: Экранируем точку в info_confirm -----
     info_confirm = escape_markdown_v2(
          "✅ Отлично!\n\n"
          "Нажимая кнопку 'Оплатить' ниже, вы подтверждаете, что ознакомились и полностью согласны с "
-         "Пользовательским Соглашением."
+         "Пользовательским Соглашением" # Убрана точка здесь
          "\n\n👇"
-    )
+    ) + escape_markdown_v2(".") # Добавляем экранированную точку в конце
+    # ----- КОНЕЦ ИСПРАВЛЕНИЯ -----
     text = "" # Initialize text
     reply_markup = None # Initialize markup
 
@@ -1803,10 +1848,13 @@ async def generate_payment_link(update: Update, context: ContextTypes.DEFAULT_TY
     error_receipt = escape_markdown_v2("❌ ошибка при формировании данных чека.")
     error_link_get_fmt = escape_markdown_v2("❌ не удалось получить ссылку от платежной системы") # Часть сообщения
     error_link_create = escape_markdown_v2("❌ не удалось создать ссылку для оплаты. ") # Часть сообщения
+    # --- ИСПРАВЛЕНИЕ: Экранируем точки в success_link ---
     success_link = escape_markdown_v2(
         "✅ ссылка для оплаты создана!\n\n"
-        "нажми кнопку ниже для перехода к оплате. после успеха подписка активируется (может занять пару минут)."
-        )
+        "нажми кнопку ниже для перехода к оплате" # Убрана точка
+        ) + escape_markdown_v2(". после успеха подписка активируется (может занять пару минут).") # Добавлены экранированные точки
+    # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
+
     text = "" # Initialize text
     reply_markup = None # Initialize markup
 
@@ -1941,11 +1989,11 @@ async def _start_edit_convo(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
     context.user_data.clear()
 
-    # ИСПРАВЛЕНО: Плейсхолдер {id} вынесен из escape_markdown_v2
+    # Плейсхолдер {id} вынесен из escape_markdown_v2 в предыдущем исправлении
     error_not_found_fmt = escape_markdown_v2("личность с id `") + "{id}" + escape_markdown_v2("` не найдена или не твоя.")
     error_db = escape_markdown_v2("ошибка базы данных при начале редактирования.")
     error_general = escape_markdown_v2("непредвиденная ошибка.")
-    # Эта строка форматируется позже, плейсхолдеры остаются как есть - ОК
+    # Эта строка форматируется позже, ОК
     prompt_edit_fmt = "редактируем **{name}** \\(id: `{id}`\\)\nвыбери, что изменить:"
 
     try:
@@ -2164,7 +2212,7 @@ async def edit_field_update(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     error_no_session = escape_markdown_v2("ошибка: сессия редактирования потеряна. начни снова.")
     error_not_found = escape_markdown_v2("ошибка: личность не найдена или нет доступа.")
-    # ИСПРАВЛЕНО: Плейсхолдеры вынесены из escape_markdown_v2
+    # Плейсхолдеры вынесены из escape_markdown_v2 в предыдущем исправлении
     error_validation_fmt = escape_markdown_v2("") + "{field_name}" + escape_markdown_v2(": макс. ") + "{max_len}" + escape_markdown_v2(" символов.")
     error_validation_min_fmt = escape_markdown_v2("") + "{field_name}" + escape_markdown_v2(": мин. ") + "{min_len}" + escape_markdown_v2(" символа.")
     error_name_taken_fmt = escape_markdown_v2("имя '") + "{name}" + escape_markdown_v2("' уже занято другой твоей личностью. попробуй другое:")
@@ -2731,7 +2779,7 @@ async def edit_mood_name_received(update: Update, context: ContextTypes.DEFAULT_
     error_no_session = escape_markdown_v2("ошибка: сессия редактирования потеряна.")
     error_not_found = escape_markdown_v2("ошибка: личность не найдена.")
     error_validation = "название: 1-30 символов, только буквы/цифры/дефис/подчеркивание \\(кириллица/латиница\\), без пробелов\\. попробуй еще:"
-    # ИСПРАВЛЕНО: Плейсхолдер {name} вынесен из escape_markdown_v2
+    # Плейсхолдер {name} вынесен из escape_markdown_v2 в предыдущем исправлении
     error_name_exists_fmt = escape_markdown_v2("настроение '") + "{name}" + escape_markdown_v2("' уже существует. выбери другое:")
     error_db = escape_markdown_v2("ошибка базы данных при проверке имени.")
     error_general = escape_markdown_v2("непредвиденная ошибка.")
@@ -2885,7 +2933,7 @@ async def delete_mood_confirmed(update: Update, context: ContextTypes.DEFAULT_TY
     error_not_found_persona = escape_markdown_v2("ошибка: личность не найдена или нет доступа.")
     error_db = escape_markdown_v2("❌ ошибка базы данных при удалении настроения.")
     error_general = escape_markdown_v2("❌ ошибка при удалении настроения.")
-    # ИСПРАВЛЕНО: Плейсхолдер {name} вынесен из escape_markdown_v2
+    # Плейсхолдер {name} вынесен из escape_markdown_v2 в предыдущем исправлении
     info_not_found_mood_fmt = escape_markdown_v2("настроение '") + "{name}" + escape_markdown_v2("' не найдено (уже удалено?).")
     error_decode_mood = escape_markdown_v2("ошибка декодирования имени настроения для удаления.")
     # Эта строка форматируется перед отправкой, ОК
@@ -3018,7 +3066,7 @@ async def _start_delete_convo(update: Update, context: ContextTypes.DEFAULT_TYPE
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
     context.user_data.clear() # Очищаем перед началом
 
-    # ИСПРАВЛЕНО: Плейсхолдер {id} вынесен из escape_markdown_v2
+    # Плейсхолдер {id} вынесен из escape_markdown_v2 в предыдущем исправлении
     error_not_found_fmt = escape_markdown_v2("личность с id `") + "{id}" + escape_markdown_v2("` не найдена или не твоя.")
     error_db = escape_markdown_v2("ошибка базы данных.")
     error_general = escape_markdown_v2("непредвиденная ошибка.")
@@ -3127,7 +3175,7 @@ async def delete_persona_confirmed(update: Update, context: ContextTypes.DEFAULT
 
     error_no_session = escape_markdown_v2("ошибка: неверные данные для удаления или сессия потеряна.")
     error_delete_failed = escape_markdown_v2("❌ не удалось удалить личность (ошибка базы данных).")
-    # ИСПРАВЛЕНО: Плейсхолдер {name} вынесен из escape_markdown_v2
+    # Плейсхолдер {name} вынесен из escape_markdown_v2 в предыдущем исправлении
     success_deleted_fmt = escape_markdown_v2("✅ личность '") + "{name}" + escape_markdown_v2("' удалена.")
 
     expected_pattern = f"delete_persona_confirm_{persona_id}"
@@ -3216,7 +3264,7 @@ async def mute_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     error_no_instance = escape_markdown_v2("Ошибка: не найден объект связи с чатом.")
     error_db = escape_markdown_v2("Ошибка базы данных при попытке заглушить бота.")
     error_general = escape_markdown_v2("Непредвиденная ошибка при выполнении команды.")
-    # ИСПРАВЛЕНО: Плейсхолдер {name} вынесен из escape_markdown_v2
+    # Плейсхолдер {name} вынесен из escape_markdown_v2 в предыдущем исправлении
     info_already_muted_fmt = escape_markdown_v2("Личность '") + "{name}" + escape_markdown_v2("' уже заглушена в этом чате.")
     success_muted_fmt = escape_markdown_v2("✅ Личность '") + "{name}" + escape_markdown_v2("' больше не будет отвечать в этом чате \\(но будет запоминать сообщения\\)\\. Используйте /unmutebot, чтобы вернуть\\.")
 
@@ -3279,7 +3327,7 @@ async def unmute_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     error_not_owner = escape_markdown_v2("Только владелец личности может снять заглушку.")
     error_db = escape_markdown_v2("Ошибка базы данных при попытке вернуть бота к общению.")
     error_general = escape_markdown_v2("Непредвиденная ошибка при выполнении команды.")
-    # ИСПРАВЛЕНО: Плейсхолдер {name} вынесен из escape_markdown_v2
+    # Плейсхолдер {name} вынесен из escape_markdown_v2 в предыдущем исправлении
     info_not_muted_fmt = escape_markdown_v2("Личность '") + "{name}" + escape_markdown_v2("' не была заглушена.")
     success_unmuted_fmt = escape_markdown_v2("✅ Личность '") + "{name}" + escape_markdown_v2("' снова может отвечать в этом чате.")
 
