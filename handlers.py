@@ -1174,6 +1174,7 @@ async def create_persona(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     error_name_len = escape_markdown_v2("имя личности: 2-50 символов.")
     error_desc_len = escape_markdown_v2("описание: до 1500 символов.")
     # Строки форматирования были исправлены в предыдущем ответе
+    # --- ЭТОТ ФОРМАТ СТРОКИ НЕ ИСПОЛЬЗУЕТСЯ, НО ОСТАВИМ ЕГО ОПРЕДЕЛЕНИЕ ---
     error_limit_reached_fmt = (
         escape_markdown_v2("упс! достигнут лимит личностей (") +
         "{current_count}/{limit}" +
@@ -1184,26 +1185,12 @@ async def create_persona(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     error_name_exists_fmt = escape_markdown_v2("личность с именем '") + "{persona_name}" + escape_markdown_v2("' уже есть. выбери другое.")
     error_db = escape_markdown_v2("ошибка базы данных при создании личности.")
     error_general = escape_markdown_v2("ошибка при создании личности.")
-    # --- ПРОВЕРКА И ИСПРАВЛЕНИЕ ЗДЕСЬ ---
-    # Проверяем, есть ли точки в статических частях, которые не экранированы
-    # escape_markdown_v2("✅ личность '") -> ✅ личность '
-    # escape_markdown_v2("' создана!\nid: ") -> ' создана\!-id:
-    # escape_markdown_v2("\nописание: ") -> \nописание:
-    # escape_markdown_v2("\n\nдобавь в чат или управляй через /mypersonas") -> \n\nдобавь в чат или управляй через /mypersonas
-    # Точек в статических частях нет. Проблема может быть только в {description}, если он не экранирован.
-    # Перепроверяем использование:
-    # desc_display = escape_markdown_v2(new_persona.description) if new_persona.description else escape_markdown_v2("(пусто)")
-    # final_success_msg = success_create_fmt.format(..., description=desc_display)
-    # Выглядит правильно, desc_display УЖЕ экранирован.
-    # Оставим как есть, так как предыдущее исправление должно было решить KeyError.
-    # Если ошибка BadRequest с точкой возникает именно здесь, то это очень странно.
     success_create_fmt = (
         escape_markdown_v2("✅ личность '") + "{name}" + escape_markdown_v2("' создана!\nid: ") +
         "`{id}`" +
         escape_markdown_v2("\nописание: ") + "{description}" +
         escape_markdown_v2("\n\nдобавь в чат или управляй через /mypersonas")
     )
-    # --- КОНЕЦ ПРОВЕРКИ ---
 
     args = context.args
     if not args:
@@ -1229,15 +1216,27 @@ async def create_persona(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                  # Перезагружаем с selectinload для корректной проверки лимита
                  user = db.query(User).options(selectinload(User.persona_configs)).filter(User.telegram_id == user_id).one()
 
+            # --- ИСПРАВЛЕННЫЙ БЛОК ПРОВЕРКИ ЛИМИТА ---
             if not user.can_create_persona:
                  current_count = len(user.persona_configs) # Используем загруженные данные
                  limit = user.persona_limit
                  logger.warning(f"User {user_id} cannot create persona, limit reached ({current_count}/{limit}).")
-                 status_text_escaped = escape_markdown_v2("⭐ Premium" if user.is_active_subscriber else "🆓 Free")
-                 # Используем исправленную строку error_limit_reached_fmt
-                 final_limit_msg = error_limit_reached_fmt.format(current_count=current_count, limit=limit, status_text=status_text_escaped)
+
+                 # 1. Get the raw status text
+                 status_text_raw = "⭐ Premium" if user.is_active_subscriber else "🆓 Free"
+
+                 # 2. Escape the parts *around* the bold status text and the content *inside* bold
+                 part1_escaped = escape_markdown_v2(f"упс! достигнут лимит личностей ({current_count}/{limit}) для статуса ")
+                 status_text_content_escaped = escape_markdown_v2(status_text_raw) # Escape content
+                 part3_escaped = escape_markdown_v2(". 😟\nчтобы создавать больше, используй /subscribe") # Escape the dot here!
+
+                 # 3. Combine with the intended ** markup
+                 final_limit_msg = part1_escaped + f"**{status_text_content_escaped}**" + part3_escaped
+
+                 # 4. Send the correctly constructed message
                  await update.message.reply_text(final_limit_msg, reply_markup=ReplyKeyboardRemove())
                  return
+            # --- КОНЕЦ ИСПРАВЛЕННОГО БЛОКА ---
 
             existing_persona = get_persona_by_name_and_owner(db, user.id, persona_name)
             if existing_persona:
@@ -1270,6 +1269,16 @@ async def create_persona(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         except KeyError as e:
              logger.error(f"KeyError during create_persona formatting for user {user_id}: {e}", exc_info=True)
              await update.message.reply_text(escape_markdown_v2("Ошибка форматирования сообщения о лимите. Пожалуйста, сообщите администратору."))
+             # Rollback handled by context manager
+        # Catching the specific error that caused the traceback
+        except BadRequest as e:
+             # Log the specific error and the message that caused it
+             logger.error(f"BadRequest sending message in create_persona for user {user_id}: {e}", exc_info=True)
+             # Attempt to send a simpler error message
+             try:
+                 await update.message.reply_text(escape_markdown_v2("Произошла ошибка при отправке сообщения (возможно, лимит). Попробуйте снова."), reply_markup=ReplyKeyboardRemove())
+             except Exception as fallback_e:
+                 logger.error(f"Failed to send fallback error message in create_persona: {fallback_e}")
              # Rollback handled by context manager
         except Exception as e:
              logger.error(f"Error creating persona for user {user_id}: {e}", exc_info=True)
