@@ -9,6 +9,7 @@ from datetime import datetime, timezone, timedelta, date
 from typing import List, Dict, Any, Optional, Union, Tuple
 import psycopg
 
+# Import defaults, they will be used during creation now
 from config import (
     DATABASE_URL,
     DEFAULT_MOOD_PROMPTS,
@@ -19,6 +20,9 @@ from config import (
     MAX_CONTEXT_MESSAGES_SENT_TO_LLM,
     ADMIN_USER_ID
 )
+# Import utils needed for pre-formatting prompts
+from utils import get_time_info # Needed for default spam/photo/voice prompts if they use time_info
+from persona import Persona # Needed to call get_persona_description_short during creation
 
 
 logger = logging.getLogger(__name__)
@@ -66,25 +70,28 @@ class User(Base):
             return True
         count = 0
         try:
-            if hasattr(self, '_sa_instance_state'):
-                 state = self._sa_instance_state
-                 # Проверяем, что связь загружена и не None
+            # Ensure the relationship is loaded before accessing len()
+            if hasattr(self, '_sa_instance_state') and self._sa_instance_state.persistent:
+                 # If the attribute is loaded (due to selectinload), access it directly
                  if 'persona_configs' in self.__dict__ and self.persona_configs is not None:
                      count = len(self.persona_configs)
-                 # Если связь не загружена, но объект в сессии, делаем запрос
-                 elif state.session:
-                     db_session = state.session
-                     count = db_session.query(func.count(PersonaConfig.id)).filter(PersonaConfig.owner_id == self.id).scalar() or 0
-                     logger.debug(f"Queried persona count ({count}) for User {self.id} directly as relation was not loaded/present.")
+                 # If not loaded but in session, query count
+                 elif self._sa_instance_state.session:
+                      db_session = self._sa_instance_state.session
+                      count = db_session.query(func.count(PersonaConfig.id)).filter(PersonaConfig.owner_id == self.id).scalar() or 0
+                      logger.debug(f"Queried persona count ({count}) for User {self.id} as relation was not loaded.")
                  else:
-                     logger.warning(f"Accessing can_create_persona for potentially detached User {self.id} (TG ID: {self.telegram_id}). Cannot reliably determine count.")
-                     return False
+                      logger.warning(f"Accessing can_create_persona for detached User {self.id}. Cannot reliably determine count.")
+                      return False # Cannot determine count reliably
             else:
-                 logger.warning(f"Accessing can_create_persona for User {self.id} without instance state. Assuming 0 count.")
-                 count = 0
+                # Object might be transient or detached without session info
+                logger.warning(f"Accessing can_create_persona for User {self.id} without required state info. Assuming count is 0.")
+                # In a transient state, the collection is likely empty anyway
+                count = len(self.persona_configs) if self.persona_configs is not None else 0
 
         except Exception as e:
-             logger.error(f"Error accessing persona_configs for User {self.id} (TG ID: {self.telegram_id}) in can_create_persona: {e}", exc_info=True)
+             logger.error(f"Error accessing/counting persona_configs for User {self.id} (TG ID: {self.telegram_id}) in can_create_persona: {e}", exc_info=True)
+             # Attempt fallback query if session exists
              try:
                  if hasattr(self, '_sa_instance_state') and self._sa_instance_state.session:
                      db_session = self._sa_instance_state.session
@@ -110,12 +117,13 @@ class PersonaConfig(Base):
     name = Column(String, nullable=False)
     description = Column(Text, nullable=True)
 
-    system_prompt_template = Column(Text, nullable=False, default=DEFAULT_SYSTEM_PROMPT_TEMPLATE)
+    # These will now store the *pre-formatted* prompts specific to this persona
+    system_prompt_template = Column(Text, nullable=False)
     mood_prompts_json = Column(Text, default=json.dumps(DEFAULT_MOOD_PROMPTS, ensure_ascii=False))
-    should_respond_prompt_template = Column(Text, nullable=False, default=DEFAULT_SHOULD_RESPOND_PROMPT_TEMPLATE)
-    spam_prompt_template = Column(Text, nullable=True, default=DEFAULT_SPAM_PROMPT_TEMPLATE)
-    photo_prompt_template = Column(Text, nullable=True, default=DEFAULT_PHOTO_PROMPT_TEMPLATE)
-    voice_prompt_template = Column(Text, nullable=True, default=DEFAULT_VOICE_PROMPT_TEMPLATE)
+    should_respond_prompt_template = Column(Text, nullable=False)
+    spam_prompt_template = Column(Text, nullable=True)
+    photo_prompt_template = Column(Text, nullable=True)
+    voice_prompt_template = Column(Text, nullable=True)
     max_response_messages = Column(Integer, default=3, nullable=False)
 
     owner = relationship("User", back_populates="persona_configs", lazy="selectin")
@@ -320,19 +328,21 @@ def get_or_create_user(db: Session, telegram_id: int, username: str = None) -> U
                 user.is_subscribed = True
                 user.subscription_expires_at = datetime(2099, 12, 31, tzinfo=timezone.utc)
             db.add(user)
-            db.flush()
+            db.flush() # Flush to get the ID, but don't commit yet
             logger.info(f"New user created and flushed (Telegram ID: {telegram_id}). Pending commit.")
         else:
+            # Update username if it has changed
+            if user.username != username and username is not None:
+                 logger.info(f"Updating username for user {telegram_id} from '{user.username}' to '{username}'. Pending commit.")
+                 user.username = username
+                 flag_modified(user, "username") # Mark as modified
+            # Ensure admin is always subscribed
             if user.telegram_id == ADMIN_USER_ID and not user.is_active_subscriber:
                 logger.info(f"Ensuring admin user {telegram_id} is subscribed.")
                 user.is_subscribed = True
                 user.subscription_expires_at = datetime(2099, 12, 31, tzinfo=timezone.utc)
-                db.flush() # Flush change if made
-
-            if user.username != username and username is not None:
-                 logger.info(f"Updating username for user {telegram_id} from '{user.username}' to '{username}'. Pending commit.")
-                 user.username = username
-                 db.flush() # Flush change if made
+                flag_modified(user, "is_subscribed")
+                flag_modified(user, "subscription_expires_at")
 
     except SQLAlchemyError as e:
          logger.error(f"DB Error in get_or_create_user for {telegram_id}: {e}", exc_info=True)
@@ -366,7 +376,6 @@ def check_and_update_user_limits(db: Session, user: User) -> bool:
     if not can_send:
          logger.info(f"User {user.telegram_id} message limit reached ({user.daily_message_count}/{user.message_limit}).")
 
-    # Если было обновление, помечаем объект как измененный
     if updated:
         flag_modified(user, "daily_message_count")
         flag_modified(user, "last_message_reset")
@@ -379,13 +388,11 @@ def activate_subscription(db: Session, user_id: int) -> bool:
     """Activates subscription for a user based on internal DB ID and commits."""
     user = None
     try:
-        # Используем .with_for_update() для блокировки строки на время транзакции
         user = db.query(User).filter(User.id == user_id).with_for_update().first()
         if user:
             logger.info(f"Activating subscription for user {user.telegram_id} (DB ID: {user_id})")
             now = datetime.now(timezone.utc)
             start_date = now
-            # Если подписка уже активна, продлеваем от даты окончания
             if user.is_active_subscriber and user.subscription_expires_at:
                 start_date = max(now, user.subscription_expires_at)
 
@@ -393,9 +400,9 @@ def activate_subscription(db: Session, user_id: int) -> bool:
 
             user.is_subscribed = True
             user.subscription_expires_at = expiry_date
-            user.daily_message_count = 0 # Сбрасываем счетчик при активации
-            user.last_message_reset = now # Обновляем время сброса
-            db.commit() # Коммитим изменения
+            user.daily_message_count = 0
+            user.last_message_reset = now
+            db.commit()
             logger.info(f"Subscription activated/extended for user {user.telegram_id} until {expiry_date}")
             return True
         else:
@@ -403,14 +410,14 @@ def activate_subscription(db: Session, user_id: int) -> bool:
              return False
     except SQLAlchemyError as e:
          logger.error(f"Failed to commit subscription activation for DB user {user_id}: {e}", exc_info=True)
-         db.rollback() # Откатываем в случае ошибки
+         db.rollback()
          return False
 
 
 def get_active_chat_bot_instance_with_relations(db: Session, chat_id: Union[str, int]) -> Optional[ChatBotInstance]:
     """Fetches the active ChatBotInstance for a chat, loading related objects."""
     try:
-        chat_id_str = str(chat_id) # Убеждаемся, что это строка
+        chat_id_str = str(chat_id)
 
         return db.query(ChatBotInstance)\
             .options(
@@ -464,8 +471,6 @@ def add_message_to_context(db: Session, chat_bot_instance_id: int, role: str, co
         current_count = chat_instance.context.count()
 
         if current_count >= MAX_CONTEXT_MESSAGES_STORED:
-             # Оптимизация: Находим N-е сообщение (N=MAX_CONTEXT_MESSAGES_STORED)
-             # и удаляем все сообщения с message_order < чем у N-го сообщения.
              message_to_keep_from = chat_instance.context \
                                       .order_by(ChatContext.message_order.desc()) \
                                       .limit(1) \
@@ -474,15 +479,13 @@ def add_message_to_context(db: Session, chat_bot_instance_id: int, role: str, co
 
              if message_to_keep_from:
                  threshold_order = message_to_keep_from.message_order
-                 # Используем delete() на объекте Query, что более эффективно
                  deleted_count = chat_instance.context \
                                    .filter(ChatContext.message_order < threshold_order) \
-                                   .delete(synchronize_session=False) # False т.к. у нас lazy="dynamic"
+                                   .delete(synchronize_session=False)
                  logger.debug(f"Pruned {deleted_count} old context messages for instance {chat_bot_instance_id} (threshold order {threshold_order}). Pending commit.")
              else:
                  logger.warning(f"Could not determine threshold order for pruning context for instance {chat_bot_instance_id}")
 
-        # Находим максимальный текущий message_order для нового сообщения
         max_order_record = chat_instance.context.order_by(ChatContext.message_order.desc()).first()
         max_order = max_order_record.message_order if max_order_record else 0
 
@@ -494,12 +497,11 @@ def add_message_to_context(db: Session, chat_bot_instance_id: int, role: str, co
             timestamp=datetime.now(timezone.utc)
         )
         db.add(new_message)
-        # НЕ делаем flush здесь, чтобы все изменения были атомарны в рамках вызывающей функции
         logger.debug(f"Prepared new context message (order {max_order + 1}, role {role}) for instance {chat_bot_instance_id}. Pending commit.")
 
     except SQLAlchemyError as e:
         logger.error(f"DB error preparing message for context for instance {chat_bot_instance_id}: {e}", exc_info=True)
-        raise # Передаем исключение выше для обработки (rollback)
+        raise
 
 
 def get_mood_for_chat_bot(db: Session, chat_bot_instance_id: int) -> str:
@@ -515,13 +517,12 @@ def get_mood_for_chat_bot(db: Session, chat_bot_instance_id: int) -> str:
 def set_mood_for_chat_bot(db: Session, chat_bot_instance_id: int, mood: str):
     """Sets the mood for a ChatBotInstance and commits the change."""
     try:
-        # Используем with_for_update для блокировки строки
         chat_bot = db.query(ChatBotInstance).filter(ChatBotInstance.id == chat_bot_instance_id).with_for_update().first()
         if chat_bot:
             if chat_bot.current_mood != mood:
                 logger.info(f"Setting mood from '{chat_bot.current_mood}' to '{mood}' for ChatBotInstance {chat_bot_instance_id}")
                 chat_bot.current_mood = mood
-                db.commit() # Коммитим изменение настроения
+                db.commit()
                 logger.info(f"Successfully set mood to '{mood}' for ChatBotInstance {chat_bot_instance_id}")
             else:
                  logger.debug(f"Mood already set to '{mood}' for ChatBotInstance {chat_bot_instance_id}. No change.")
@@ -529,7 +530,7 @@ def set_mood_for_chat_bot(db: Session, chat_bot_instance_id: int, mood: str):
             logger.warning(f"ChatBotInstance {chat_bot_instance_id} not found to set mood.")
     except SQLAlchemyError as e:
         logger.error(f"Failed to commit mood change for {chat_bot_instance_id}: {e}", exc_info=True)
-        db.rollback() # Откатываем в случае ошибки
+        db.rollback()
 
 
 def get_all_active_chat_bot_instances(db: Session) -> List[ChatBotInstance]:
@@ -549,22 +550,70 @@ def get_all_active_chat_bot_instances(db: Session) -> List[ChatBotInstance]:
         return []
 
 def create_persona_config(db: Session, owner_id: int, name: str, description: str = None) -> PersonaConfig:
-    """Creates a new PersonaConfig and commits."""
+    """Creates a new PersonaConfig, pre-formats default prompts, and commits."""
     logger.info(f"Attempting to create persona '{name}' for owner_id {owner_id}")
     if description is None:
         description = f"ai бот по имени {name}."
 
+    # Create a temporary PersonaConfig object to utilize helper methods
+    # This object is NOT added to the session.
+    temp_persona_for_helpers = PersonaConfig(name=name, description=description)
+    # Use a simple trick to get short description without a full Persona object
+    temp_persona_instance = Persona(temp_persona_for_helpers)
+    desc_short = temp_persona_instance.get_persona_description_short()
+
+    # --- Pre-format default prompts ---
+    # Note: These use the *default* templates from config.py
+    # and fill them with the *specific* name/description of this new persona.
+    # This makes the stored prompt unique from the start.
+    # We don't need all placeholders, just the core persona ones.
+    placeholders = {
+        "persona_name": name,
+        "persona_description": description,
+        "persona_description_short": desc_short,
+        # We don't have mood, time, user info etc. at creation,
+        # so format_map handles missing keys gracefully (removes them or keeps placeholder if format fails)
+    }
+    try:
+        formatted_system = DEFAULT_SYSTEM_PROMPT_TEMPLATE.format_map(placeholders)
+        formatted_should_respond = DEFAULT_SHOULD_RESPOND_PROMPT_TEMPLATE.format_map(placeholders)
+        formatted_spam = DEFAULT_SPAM_PROMPT_TEMPLATE.format_map(placeholders) if DEFAULT_SPAM_PROMPT_TEMPLATE else None
+        formatted_photo = DEFAULT_PHOTO_PROMPT_TEMPLATE.format_map(placeholders) if DEFAULT_PHOTO_PROMPT_TEMPLATE else None
+        formatted_voice = DEFAULT_VOICE_PROMPT_TEMPLATE.format_map(placeholders) if DEFAULT_VOICE_PROMPT_TEMPLATE else None
+    except KeyError as e:
+        logger.error(f"Missing key during initial prompt formatting for '{name}': {e}. Using template as is.", exc_info=True)
+        # Fallback to using the raw templates if formatting fails
+        formatted_system = DEFAULT_SYSTEM_PROMPT_TEMPLATE
+        formatted_should_respond = DEFAULT_SHOULD_RESPOND_PROMPT_TEMPLATE
+        formatted_spam = DEFAULT_SPAM_PROMPT_TEMPLATE
+        formatted_photo = DEFAULT_PHOTO_PROMPT_TEMPLATE
+        formatted_voice = DEFAULT_VOICE_PROMPT_TEMPLATE
+    except Exception as e:
+         logger.error(f"Unexpected error during initial prompt formatting for '{name}': {e}. Using template as is.", exc_info=True)
+         formatted_system = DEFAULT_SYSTEM_PROMPT_TEMPLATE
+         formatted_should_respond = DEFAULT_SHOULD_RESPOND_PROMPT_TEMPLATE
+         formatted_spam = DEFAULT_SPAM_PROMPT_TEMPLATE
+         formatted_photo = DEFAULT_PHOTO_PROMPT_TEMPLATE
+         formatted_voice = DEFAULT_VOICE_PROMPT_TEMPLATE
+
+    # Create the actual PersonaConfig object to be saved
     persona = PersonaConfig(
         owner_id=owner_id,
         name=name,
         description=description,
-        mood_prompts_json = json.dumps(DEFAULT_MOOD_PROMPTS, ensure_ascii=False, sort_keys=True)
+        mood_prompts_json=json.dumps(DEFAULT_MOOD_PROMPTS, ensure_ascii=False, sort_keys=True),
+        system_prompt_template=formatted_system,
+        should_respond_prompt_template=formatted_should_respond,
+        spam_prompt_template=formatted_spam,
+        photo_prompt_template=formatted_photo,
+        voice_prompt_template=formatted_voice,
+        max_response_messages=3 # Default value
     )
     try:
         db.add(persona)
         db.commit()
         db.refresh(persona)
-        logger.info(f"Successfully created PersonaConfig '{name}' with ID {persona.id} for owner_id {owner_id}")
+        logger.info(f"Successfully created PersonaConfig '{name}' with ID {persona.id} for owner_id {owner_id} and pre-formatted prompts.")
         return persona
     except IntegrityError as e:
         logger.warning(f"IntegrityError creating persona '{name}' for owner {owner_id}: {e}", exc_info=False)
@@ -579,7 +628,6 @@ def create_persona_config(db: Session, owner_id: int, name: str, description: st
 def get_personas_by_owner(db: Session, owner_id: int) -> List[PersonaConfig]:
     """Gets all personas owned by a user."""
     try:
-        # Убедимся, что владелец тоже загружен, если понадобится где-то дальше
         return db.query(PersonaConfig).options(selectinload(PersonaConfig.owner)).filter(PersonaConfig.owner_id == owner_id).order_by(PersonaConfig.name).all()
     except SQLAlchemyError as e:
         logger.error(f"DB error getting personas for owner {owner_id}: {e}", exc_info=True)
@@ -622,7 +670,6 @@ def delete_persona_config(db: Session, persona_id: int, owner_id: int) -> bool:
     """Deletes a PersonaConfig by its ID and owner's internal ID, and commits."""
     logger.warning(f"Attempting to delete PersonaConfig {persona_id} owned by User ID {owner_id}")
     try:
-        # Блокируем строку перед удалением
         persona = db.query(PersonaConfig).filter(
             PersonaConfig.id == persona_id,
             PersonaConfig.owner_id == owner_id
@@ -631,14 +678,13 @@ def delete_persona_config(db: Session, persona_id: int, owner_id: int) -> bool:
         if persona:
             persona_name = persona.name
             logger.info(f"Deleting PersonaConfig {persona_id} ('{persona_name}')...")
-            db.delete(persona) # SQLAlchemy handles related BotInstances/ChatBotInstances/Context due to cascade
+            db.delete(persona)
             db.commit()
             logger.info(f"Successfully deleted PersonaConfig {persona_id} (Name: '{persona_name}')")
             return True
         else:
             logger.warning(f"PersonaConfig {persona_id} not found or not owned by User ID {owner_id} for deletion.")
-            # Не откатываем, т.к. возможно, она уже удалена
-            return False # Возвращаем False, т.к. удаление не произошло в этой транзакции
+            return False
     except SQLAlchemyError as e:
         logger.error(f"Failed to commit deletion of PersonaConfig {persona_id}: {e}", exc_info=True)
         db.rollback()
@@ -685,9 +731,8 @@ def link_bot_instance_to_chat(db: Session, bot_instance_id: int, chat_id: Union[
     """Links a BotInstance to a chat. Commits the change."""
     chat_link = None
     try:
-        chat_id_str = str(chat_id) # Всегда работаем со строкой
+        chat_id_str = str(chat_id)
 
-        # Блокируем строку на время проверки и обновления/создания
         chat_link = db.query(ChatBotInstance).filter(
             ChatBotInstance.chat_id == chat_id_str,
             ChatBotInstance.bot_instance_id == bot_instance_id
@@ -701,7 +746,6 @@ def link_bot_instance_to_chat(db: Session, bot_instance_id: int, chat_id: Union[
                  chat_link.current_mood = "нейтрально"
                  chat_link.is_muted = False
                  needs_commit = True
-                 # Очищаем контекст при реактивации
                  deleted_ctx_result = chat_link.context.delete(synchronize_session='fetch')
                  deleted_ctx = deleted_ctx_result if isinstance(deleted_ctx_result, int) else 0
                  logger.debug(f"Cleared {deleted_ctx} context messages for reactivated ChatBotInstance {chat_link.id}.")
@@ -710,7 +754,7 @@ def link_bot_instance_to_chat(db: Session, bot_instance_id: int, chat_id: Union[
                 deleted_ctx_result = chat_link.context.delete(synchronize_session='fetch')
                 deleted_ctx = deleted_ctx_result if isinstance(deleted_ctx_result, int) else 0
                 logger.debug(f"Cleared {deleted_ctx} context messages for already active ChatBotInstance {chat_link.id}.")
-                needs_commit = True # Нужен коммит для удаления контекста
+                needs_commit = True
 
             if needs_commit: db.commit()
 
@@ -724,9 +768,8 @@ def link_bot_instance_to_chat(db: Session, bot_instance_id: int, chat_id: Union[
                 is_muted=False
             )
             db.add(chat_link)
-            db.commit() # Коммитим создание новой связи
+            db.commit()
 
-        # Обновляем объект после коммита, чтобы получить ID и актуальное состояние
         if chat_link:
             db.refresh(chat_link)
         return chat_link
@@ -734,7 +777,6 @@ def link_bot_instance_to_chat(db: Session, bot_instance_id: int, chat_id: Union[
     except IntegrityError as e:
          logger.warning(f"IntegrityError linking bot instance {bot_instance_id} to chat {chat_id_str}: {e}")
          db.rollback()
-         # Не возвращаем chat_link, т.к. он не был успешно создан/обновлен
          return None
     except SQLAlchemyError as e:
          logger.error(f"Failed linking bot instance {bot_instance_id} to chat {chat_id_str}: {e}", exc_info=True)
@@ -745,9 +787,8 @@ def link_bot_instance_to_chat(db: Session, bot_instance_id: int, chat_id: Union[
 def unlink_bot_instance_from_chat(db: Session, chat_id: Union[str, int], bot_instance_id: int) -> bool:
     """Deactivates a ChatBotInstance link and commits."""
     try:
-        chat_id_str = str(chat_id) # Всегда строка
+        chat_id_str = str(chat_id)
 
-        # Блокируем строку
         chat_link = db.query(ChatBotInstance).filter(
             ChatBotInstance.chat_id == chat_id_str,
             ChatBotInstance.bot_instance_id == bot_instance_id,
@@ -757,7 +798,7 @@ def unlink_bot_instance_from_chat(db: Session, chat_id: Union[str, int], bot_ins
         if chat_link:
             logger.info(f"Deactivating ChatBotInstance {chat_link.id} for bot {bot_instance_id} in chat {chat_id_str}")
             chat_link.active = False
-            db.commit() # Коммитим деактивацию
+            db.commit()
             return True
         else:
             logger.warning(f"No active ChatBotInstance found for bot {bot_instance_id} in chat {chat_id_str} to deactivate.")
