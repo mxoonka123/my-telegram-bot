@@ -7,18 +7,13 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# +++ Экранирование для MarkdownV2 +++
 def escape_markdown_v2(text: str) -> str:
     """Escapes characters reserved in Telegram MarkdownV2."""
     if not isinstance(text, str):
         return ""
-    # Список символов, требующих экранирования в MarkdownV2
-    # Источник: https://core.telegram.org/bots/api#markdownv2-style
-    # Добавлены . и ! т.к. они тоже могут вызывать проблемы в некоторых контекстах
+    # _ * [ ] ( ) ~ ` > # + - = | { } . !
     escape_chars = r'_*[]()~`>#+-=|{}.!'
-    # Экранируем символы, добавляя перед ними \
     return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text)
-# +++ Конец +++
 
 def get_time_info():
     now_utc = datetime.now(timezone.utc)
@@ -26,14 +21,14 @@ def get_time_info():
 
     timezones = {
         "мск": timedelta(hours=3),
-        "берлин": timedelta(hours=2), # CET with DST usually
-        "нью-йорк": timedelta(hours=-4) # EDT usually
+        "берлин": timedelta(hours=2),
+        "нью-йорк": timedelta(hours=-4)
     }
 
     for name, offset in timezones.items():
         try:
             local_time = now_utc.astimezone(timezone(offset))
-            time_parts.append(f"{name} {local_time.strftime('%H:%M %d.%m')}") # Shorter format
+            time_parts.append(f"{name} {local_time.strftime('%H:%M %d.%m')}")
         except Exception as e:
              logger.warning(f"Could not calculate time for tz offset {offset}: {e}")
              time_parts.append(f"{name} N/A")
@@ -44,17 +39,14 @@ def get_time_info():
 def extract_gif_links(text: str) -> List[str]:
     if not isinstance(text, str): return []
     try:
-        # Minimal decoding, avoid errors
         text = urllib.parse.unquote(text)
     except Exception:
-        pass # Ignore decoding errors if input is malformed
+        pass
 
-    # Common GIF patterns
     gif_patterns = [
-        r'(https?://[^\s<>"\']+\.gif(?:[?#][^\s<>"\']*)?)', # Direct .gif
-        r'(https?://media\.giphy\.com/media/[a-zA-Z0-9]+(?:/giphy\.gif)?(?:[?#][^\s<>"\']*)?)', # Giphy
-        # r'(https?://(?:www\.)?tenor\.com/view/[a-zA-Z0-9-]+(?:/[a-zA-Z0-9-]+)?)', # Tenor (often links to page, not direct gif) - maybe exclude
-        r'(https?://(?:i\.)?imgur\.com/[a-zA-Z0-9]+\.gif(?:[?#][^\s<>"\']*)?)' # Imgur direct .gif
+        r'(https?://[^\s<>"\']+\.gif(?:[?#][^\s<>"\']*)?)',
+        r'(https?://media\.giphy\.com/media/[a-zA-Z0-9]+(?:/giphy\.gif)?(?:[?#][^\s<>"\']*)?)',
+        r'(https?://(?:i\.)?imgur\.com/[a-zA-Z0-9]+\.gif(?:[?#][^\s<>"\']*)?)'
     ]
 
     gif_links = set()
@@ -65,31 +57,29 @@ def extract_gif_links(text: str) -> List[str]:
          except Exception as e:
               logger.error(f"Regex error in extract_gif_links for pattern '{pattern}': {e}")
 
-
-    # Basic validation and remove duplicates
     valid_links = [link for link in gif_links if isinstance(link, str) and link.startswith(('http://', 'https://')) and ' ' not in link]
 
-    return list(set(valid_links)) # Return unique list
+    return list(set(valid_links))
 
 def postprocess_response(response: str) -> List[str]:
     if not response or not isinstance(response, str):
         return []
 
-    # 1. Normalize whitespace: Replace multiple spaces/newlines with single space
+    # 1. Normalize whitespace more aggressively
     response = re.sub(r'\s+', ' ', response).strip()
+    # Remove potential leading/trailing markdown-like characters leftover from generation
+    response = response.strip('_*`')
 
     # 2. Split into potential sentences/clauses
-    # Split by common sentence endings followed by space. Keep the punctuation.
-    # Also split by double newlines if they somehow survived normalization (less likely now)
     sentences = re.split(r'(?<=[.!?…])\s+', response)
 
-    # 3. Process segments: Merge short ones, ensure no excessively long ones
+    # 3. Process segments
     merged_messages = []
     current_message = ""
-    # Adjust thresholds as needed
-    max_length = 350 # Allow slightly longer messages if needed
-    ideal_length = 200 # Try to stay around this
-    min_length = 10 # Avoid tiny messages unless it's the whole response
+    # <<< ИЗМЕНЕНО: Увеличена максимальная длина сегмента >>>
+    max_length = 450 # Allow longer segments before force splitting
+    ideal_length = 250 # Try to keep segments around this length
+    min_length = 10
 
     for sentence in sentences:
         sentence = sentence.strip()
@@ -99,31 +89,24 @@ def postprocess_response(response: str) -> List[str]:
         potential_length = len(current_message) + len(sentence) + (1 if current_message else 0)
 
         if not current_message:
-            # Start new message
             current_message = sentence
         elif potential_length <= ideal_length:
-            # Add to current message if it fits nicely
             current_message += " " + sentence
         elif len(current_message) < min_length and potential_length <= max_length:
-             # If current message is very short, allow adding if it doesn't exceed max length too much
              current_message += " " + sentence
         else:
-            # Current message is long enough, or adding makes it too long. Finalize current.
             merged_messages.append(current_message)
-            current_message = sentence # Start new message with current sentence
+            current_message = sentence
 
-    # Add the last remaining message
     if current_message:
         merged_messages.append(current_message)
 
-    # 4. Final cleanup: Strip again, filter empty
-    # <<< ИЗМЕНЕНО: НЕ делаем lowercase здесь, т.к. это может сломать Markdown >>>
+    # 4. Final cleanup
     final_messages = [msg.strip() for msg in merged_messages if msg.strip()]
 
-    # 5. Sanity check: If somehow the result is empty but input wasn't, return original split differently
+    # 5. Sanity check
     if not final_messages and response:
          logger.warning("Postprocessing resulted in empty list, returning basic split.")
-         # Fallback to splitting by space if all else fails
          return [part for part in response.split() if part]
 
     return final_messages
