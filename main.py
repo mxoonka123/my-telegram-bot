@@ -109,12 +109,16 @@ def handle_yookassa_webhook():
             if activation_success:
                 app = application_instance
                 if app and app.bot:
-                    success_text = (
-                        escape_markdown_v2("✅ Ваша премиум подписка успешно активирована\\!\n") +
-                        escape_markdown_v2(f"Срок действия: {config.SUBSCRIPTION_DURATION_DAYS} дней\\.\n\n") +
-                        escape_markdown_v2("Спасибо за поддержку\\! 🎉\n\n") +
-                        escape_markdown_v2("Используйте /profile для просмотра статуса\\.")
+                    # Construct raw text
+                    success_text_raw = (
+                        f"✅ Ваша премиум подписка успешно активирована!\n"
+                        f"Срок действия: {config.SUBSCRIPTION_DURATION_DAYS} дней.\n\n"
+                        f"Спасибо за поддержку! 🎉\n\n"
+                        f"Используйте /profile для просмотра статуса."
                     )
+                    # Escape the whole string
+                    success_text_escaped = escape_markdown_v2(success_text_raw)
+
                     try:
                         loop = asyncio.get_running_loop()
                     except RuntimeError:
@@ -122,7 +126,7 @@ def handle_yookassa_webhook():
 
                     if loop and loop.is_running():
                          future = asyncio.run_coroutine_threadsafe(
-                            app.bot.send_message(chat_id=telegram_user_id, text=success_text, parse_mode=ParseMode.MARKDOWN_V2),
+                            app.bot.send_message(chat_id=telegram_user_id, text=success_text_escaped, parse_mode=ParseMode.MARKDOWN_V2),
                             loop
                          )
                          try:
@@ -133,19 +137,19 @@ def handle_yookassa_webhook():
                          except TelegramError as te:
                              flask_logger.error(f"Telegram error sending activation message to {telegram_user_id}: {te}")
                              if isinstance(te, BadRequest) and hasattr(te, 'message') and "parse" in te.message.lower():
-                                flask_logger.error(f"--> Failed activation text (escaped): '{success_text[:200]}...'")
+                                flask_logger.error(f"--> Failed activation text (escaped): '{success_text_escaped[:200]}...'")
                          except Exception as send_e:
                              flask_logger.error(f"Failed to send activation message to user {telegram_user_id}: {send_e}", exc_info=True)
                     else:
                          flask_logger.warning("No running event loop found for webhook notification. Creating temporary loop.")
                          temp_loop = asyncio.new_event_loop()
                          try:
-                              temp_loop.run_until_complete(app.bot.send_message(chat_id=telegram_user_id, text=success_text, parse_mode=ParseMode.MARKDOWN_V2))
+                              temp_loop.run_until_complete(app.bot.send_message(chat_id=telegram_user_id, text=success_text_escaped, parse_mode=ParseMode.MARKDOWN_V2))
                               flask_logger.info(f"Sent activation confirmation to user {telegram_user_id} using temporary loop.")
                          except TelegramError as te:
                               flask_logger.error(f"Telegram error sending activation message (temp loop) to {telegram_user_id}: {te}")
                               if isinstance(te, BadRequest) and hasattr(te, 'message') and "parse" in te.message.lower():
-                                  flask_logger.error(f"--> Failed activation text (escaped, temp loop): '{success_text[:200]}...'")
+                                  flask_logger.error(f"--> Failed activation text (escaped, temp loop): '{success_text_escaped[:200]}...'")
                          except Exception as send_e:
                               flask_logger.error(f"Failed to send activation message (temp loop) to user {telegram_user_id}: {send_e}", exc_info=True)
                          finally:
@@ -217,7 +221,8 @@ async def setup_telegraph_page(application: Application):
     page_url = None
 
     try:
-        tos_content_raw_for_telegraph = handlers.TOS_TEXT_RAW
+        # Use raw TOS text (without bold) for Telegraph
+        tos_content_raw_for_telegraph = handlers.TOS_TEXT_RAW.replace("**", "") # Remove bold markers
         if not tos_content_raw_for_telegraph or not isinstance(tos_content_raw_for_telegraph, str):
              logger.error("handlers.TOS_TEXT_RAW is empty or not a string. Cannot create ToS page.")
              return
@@ -226,7 +231,7 @@ async def setup_telegraph_page(application: Application):
             subscription_duration=config.SUBSCRIPTION_DURATION_DAYS,
             subscription_price=f"{config.SUBSCRIPTION_PRICE_RUB:.0f}",
             subscription_currency=config.SUBSCRIPTION_CURRENCY
-        ).replace("**", "")
+        )
 
         paragraphs_raw = tos_content_formatted_for_telegraph.strip().splitlines()
         content_node_array = [{"tag": "p", "children": [p.strip()]} for p in paragraphs_raw if p.strip()]
@@ -330,6 +335,7 @@ def main() -> None:
         logger.critical("TELEGRAM_TOKEN not found in config. Exiting.")
         return
 
+    # Use MarkdownV2 as default, escaping will be handled in handlers
     bot_defaults = Defaults(parse_mode=ParseMode.MARKDOWN_V2)
 
     application = (
@@ -345,6 +351,7 @@ def main() -> None:
     )
     logger.info("Telegram Application built.")
 
+    # Conversation Handlers remain structurally the same
     edit_persona_conv_handler = ConversationHandler(
         entry_points=[
             CommandHandler('editpersona', handlers.edit_persona_start),
@@ -407,28 +414,35 @@ def main() -> None:
 
     logger.info("Registering handlers...")
 
+    # Commands
     application.add_handler(CommandHandler("start", handlers.start, block=False))
     application.add_handler(CommandHandler("help", handlers.help_command, block=False))
+    application.add_handler(CommandHandler("menu", handlers.menu_command, block=False)) # Add /menu command
     application.add_handler(CommandHandler("profile", handlers.profile, block=False))
     application.add_handler(CommandHandler("subscribe", handlers.subscribe, block=False))
     application.add_handler(CommandHandler("createpersona", handlers.create_persona, block=False))
     application.add_handler(CommandHandler("mypersonas", handlers.my_personas, block=False))
 
+    # Conversation handlers need to be added before general handlers
     application.add_handler(edit_persona_conv_handler)
     application.add_handler(delete_persona_conv_handler)
 
+    # Other commands
     application.add_handler(CommandHandler("addbot", handlers.add_bot_to_chat, block=False))
     application.add_handler(CommandHandler("mood", handlers.mood, block=False))
     application.add_handler(CommandHandler("reset", handlers.reset, block=False))
     application.add_handler(CommandHandler("mutebot", handlers.mute_bot, block=False))
     application.add_handler(CommandHandler("unmutebot", handlers.unmute_bot, block=False))
 
+    # Message Handlers
     application.add_handler(MessageHandler(filters.PHOTO & ~filters.COMMAND, handlers.handle_photo, block=False))
     application.add_handler(MessageHandler(filters.VOICE & ~filters.COMMAND, handlers.handle_voice, block=False))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.handle_message, block=False))
 
+    # Callback Query Handler (handles button presses and menu navigation)
     application.add_handler(CallbackQueryHandler(handlers.handle_callback_query))
 
+    # Error Handler (last)
     application.add_error_handler(handlers.error_handler)
 
     logger.info("Handlers registered.")
@@ -438,7 +452,7 @@ def main() -> None:
         allowed_updates=Update.ALL_TYPES,
         drop_pending_updates=True,
         timeout=20,
-        read_timeout=30,
+        read_timeout=30, # Use ApplicationBuilder.read_timeout instead in future versions
     )
     logger.info("----- Bot Stopped -----")
 
