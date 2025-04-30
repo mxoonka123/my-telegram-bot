@@ -20,9 +20,9 @@ from config import (
     MAX_CONTEXT_MESSAGES_SENT_TO_LLM,
     ADMIN_USER_ID
 )
-# Import utils needed for pre-formatting prompts
-from utils import get_time_info # Needed for default spam/photo/voice prompts if they use time_info
-from persona import Persona # Needed to call get_persona_description_short during creation
+# Removed imports causing circular dependency
+# from utils import get_time_info
+# from persona import Persona
 
 
 logger = logging.getLogger(__name__)
@@ -70,28 +70,22 @@ class User(Base):
             return True
         count = 0
         try:
-            # Ensure the relationship is loaded before accessing len()
             if hasattr(self, '_sa_instance_state') and self._sa_instance_state.persistent:
-                 # If the attribute is loaded (due to selectinload), access it directly
                  if 'persona_configs' in self.__dict__ and self.persona_configs is not None:
                      count = len(self.persona_configs)
-                 # If not loaded but in session, query count
                  elif self._sa_instance_state.session:
                       db_session = self._sa_instance_state.session
                       count = db_session.query(func.count(PersonaConfig.id)).filter(PersonaConfig.owner_id == self.id).scalar() or 0
                       logger.debug(f"Queried persona count ({count}) for User {self.id} as relation was not loaded.")
                  else:
                       logger.warning(f"Accessing can_create_persona for detached User {self.id}. Cannot reliably determine count.")
-                      return False # Cannot determine count reliably
+                      return False
             else:
-                # Object might be transient or detached without session info
                 logger.warning(f"Accessing can_create_persona for User {self.id} without required state info. Assuming count is 0.")
-                # In a transient state, the collection is likely empty anyway
                 count = len(self.persona_configs) if self.persona_configs is not None else 0
 
         except Exception as e:
              logger.error(f"Error accessing/counting persona_configs for User {self.id} (TG ID: {self.telegram_id}) in can_create_persona: {e}", exc_info=True)
-             # Attempt fallback query if session exists
              try:
                  if hasattr(self, '_sa_instance_state') and self._sa_instance_state.session:
                      db_session = self._sa_instance_state.session
@@ -117,13 +111,13 @@ class PersonaConfig(Base):
     name = Column(String, nullable=False)
     description = Column(Text, nullable=True)
 
-    # These will now store the *pre-formatted* prompts specific to this persona
-    system_prompt_template = Column(Text, nullable=False)
+    # Store the TEMPLATES here, formatting happens in handlers/persona class
+    system_prompt_template = Column(Text, nullable=False, default=DEFAULT_SYSTEM_PROMPT_TEMPLATE)
     mood_prompts_json = Column(Text, default=json.dumps(DEFAULT_MOOD_PROMPTS, ensure_ascii=False))
-    should_respond_prompt_template = Column(Text, nullable=False)
-    spam_prompt_template = Column(Text, nullable=True)
-    photo_prompt_template = Column(Text, nullable=True)
-    voice_prompt_template = Column(Text, nullable=True)
+    should_respond_prompt_template = Column(Text, nullable=False, default=DEFAULT_SHOULD_RESPOND_PROMPT_TEMPLATE)
+    spam_prompt_template = Column(Text, nullable=True, default=DEFAULT_SPAM_PROMPT_TEMPLATE)
+    photo_prompt_template = Column(Text, nullable=True, default=DEFAULT_PHOTO_PROMPT_TEMPLATE)
+    voice_prompt_template = Column(Text, nullable=True, default=DEFAULT_VOICE_PROMPT_TEMPLATE)
     max_response_messages = Column(Integer, default=3, nullable=False)
 
     owner = relationship("User", back_populates="persona_configs", lazy="selectin")
@@ -186,7 +180,7 @@ class BotInstance(Base):
 class ChatBotInstance(Base):
     __tablename__ = 'chat_bot_instances'
     id = Column(Integer, primary_key=True)
-    chat_id = Column(String, nullable=False, index=True) # chat_id как строка
+    chat_id = Column(String, nullable=False, index=True)
     bot_instance_id = Column(Integer, ForeignKey('bot_instances.id', ondelete='CASCADE'), nullable=False, index=True)
     active = Column(Boolean, default=True, index=True)
     current_mood = Column(String, default="нейтрально")
@@ -328,21 +322,25 @@ def get_or_create_user(db: Session, telegram_id: int, username: str = None) -> U
                 user.is_subscribed = True
                 user.subscription_expires_at = datetime(2099, 12, 31, tzinfo=timezone.utc)
             db.add(user)
-            db.flush() # Flush to get the ID, but don't commit yet
+            db.flush()
             logger.info(f"New user created and flushed (Telegram ID: {telegram_id}). Pending commit.")
         else:
-            # Update username if it has changed
+            modified = False
             if user.username != username and username is not None:
                  logger.info(f"Updating username for user {telegram_id} from '{user.username}' to '{username}'. Pending commit.")
                  user.username = username
-                 flag_modified(user, "username") # Mark as modified
-            # Ensure admin is always subscribed
+                 modified = True
             if user.telegram_id == ADMIN_USER_ID and not user.is_active_subscriber:
                 logger.info(f"Ensuring admin user {telegram_id} is subscribed.")
                 user.is_subscribed = True
                 user.subscription_expires_at = datetime(2099, 12, 31, tzinfo=timezone.utc)
+                modified = True
+
+            if modified:
+                flag_modified(user, "username") # Mark potentially modified fields
                 flag_modified(user, "is_subscribed")
                 flag_modified(user, "subscription_expires_at")
+                db.flush() # Flush changes if made
 
     except SQLAlchemyError as e:
          logger.error(f"DB Error in get_or_create_user for {telegram_id}: {e}", exc_info=True)
@@ -483,6 +481,7 @@ def add_message_to_context(db: Session, chat_bot_instance_id: int, role: str, co
                                    .filter(ChatContext.message_order < threshold_order) \
                                    .delete(synchronize_session=False)
                  logger.debug(f"Pruned {deleted_count} old context messages for instance {chat_bot_instance_id} (threshold order {threshold_order}). Pending commit.")
+                 flag_modified(chat_instance, "context") # Mark relationship as modified due to delete
              else:
                  logger.warning(f"Could not determine threshold order for pruning context for instance {chat_bot_instance_id}")
 
@@ -497,6 +496,7 @@ def add_message_to_context(db: Session, chat_bot_instance_id: int, role: str, co
             timestamp=datetime.now(timezone.utc)
         )
         db.add(new_message)
+        flag_modified(chat_instance, "context") # Mark relationship as modified due to add
         logger.debug(f"Prepared new context message (order {max_order + 1}, role {role}) for instance {chat_bot_instance_id}. Pending commit.")
 
     except SQLAlchemyError as e:
@@ -550,70 +550,29 @@ def get_all_active_chat_bot_instances(db: Session) -> List[ChatBotInstance]:
         return []
 
 def create_persona_config(db: Session, owner_id: int, name: str, description: str = None) -> PersonaConfig:
-    """Creates a new PersonaConfig, pre-formats default prompts, and commits."""
+    """Creates a new PersonaConfig with default TEMPLATES and commits."""
     logger.info(f"Attempting to create persona '{name}' for owner_id {owner_id}")
     if description is None:
         description = f"ai бот по имени {name}."
 
-    # Create a temporary PersonaConfig object to utilize helper methods
-    # This object is NOT added to the session.
-    temp_persona_for_helpers = PersonaConfig(name=name, description=description)
-    # Use a simple trick to get short description without a full Persona object
-    temp_persona_instance = Persona(temp_persona_for_helpers)
-    desc_short = temp_persona_instance.get_persona_description_short()
-
-    # --- Pre-format default prompts ---
-    # Note: These use the *default* templates from config.py
-    # and fill them with the *specific* name/description of this new persona.
-    # This makes the stored prompt unique from the start.
-    # We don't need all placeholders, just the core persona ones.
-    placeholders = {
-        "persona_name": name,
-        "persona_description": description,
-        "persona_description_short": desc_short,
-        # We don't have mood, time, user info etc. at creation,
-        # so format_map handles missing keys gracefully (removes them or keeps placeholder if format fails)
-    }
-    try:
-        formatted_system = DEFAULT_SYSTEM_PROMPT_TEMPLATE.format_map(placeholders)
-        formatted_should_respond = DEFAULT_SHOULD_RESPOND_PROMPT_TEMPLATE.format_map(placeholders)
-        formatted_spam = DEFAULT_SPAM_PROMPT_TEMPLATE.format_map(placeholders) if DEFAULT_SPAM_PROMPT_TEMPLATE else None
-        formatted_photo = DEFAULT_PHOTO_PROMPT_TEMPLATE.format_map(placeholders) if DEFAULT_PHOTO_PROMPT_TEMPLATE else None
-        formatted_voice = DEFAULT_VOICE_PROMPT_TEMPLATE.format_map(placeholders) if DEFAULT_VOICE_PROMPT_TEMPLATE else None
-    except KeyError as e:
-        logger.error(f"Missing key during initial prompt formatting for '{name}': {e}. Using template as is.", exc_info=True)
-        # Fallback to using the raw templates if formatting fails
-        formatted_system = DEFAULT_SYSTEM_PROMPT_TEMPLATE
-        formatted_should_respond = DEFAULT_SHOULD_RESPOND_PROMPT_TEMPLATE
-        formatted_spam = DEFAULT_SPAM_PROMPT_TEMPLATE
-        formatted_photo = DEFAULT_PHOTO_PROMPT_TEMPLATE
-        formatted_voice = DEFAULT_VOICE_PROMPT_TEMPLATE
-    except Exception as e:
-         logger.error(f"Unexpected error during initial prompt formatting for '{name}': {e}. Using template as is.", exc_info=True)
-         formatted_system = DEFAULT_SYSTEM_PROMPT_TEMPLATE
-         formatted_should_respond = DEFAULT_SHOULD_RESPOND_PROMPT_TEMPLATE
-         formatted_spam = DEFAULT_SPAM_PROMPT_TEMPLATE
-         formatted_photo = DEFAULT_PHOTO_PROMPT_TEMPLATE
-         formatted_voice = DEFAULT_VOICE_PROMPT_TEMPLATE
-
-    # Create the actual PersonaConfig object to be saved
+    # Create the PersonaConfig object with default templates
     persona = PersonaConfig(
         owner_id=owner_id,
         name=name,
         description=description,
-        mood_prompts_json=json.dumps(DEFAULT_MOOD_PROMPTS, ensure_ascii=False, sort_keys=True),
-        system_prompt_template=formatted_system,
-        should_respond_prompt_template=formatted_should_respond,
-        spam_prompt_template=formatted_spam,
-        photo_prompt_template=formatted_photo,
-        voice_prompt_template=formatted_voice,
+        mood_prompts_json = json.dumps(DEFAULT_MOOD_PROMPTS, ensure_ascii=False, sort_keys=True),
+        system_prompt_template=DEFAULT_SYSTEM_PROMPT_TEMPLATE,
+        should_respond_prompt_template=DEFAULT_SHOULD_RESPOND_PROMPT_TEMPLATE,
+        spam_prompt_template=DEFAULT_SPAM_PROMPT_TEMPLATE,
+        photo_prompt_template=DEFAULT_PHOTO_PROMPT_TEMPLATE,
+        voice_prompt_template=DEFAULT_VOICE_PROMPT_TEMPLATE,
         max_response_messages=3 # Default value
     )
     try:
         db.add(persona)
         db.commit()
         db.refresh(persona)
-        logger.info(f"Successfully created PersonaConfig '{name}' with ID {persona.id} for owner_id {owner_id} and pre-formatted prompts.")
+        logger.info(f"Successfully created PersonaConfig '{name}' with ID {persona.id} for owner_id {owner_id}. Default templates applied.")
         return persona
     except IntegrityError as e:
         logger.warning(f"IntegrityError creating persona '{name}' for owner {owner_id}: {e}", exc_info=False)
