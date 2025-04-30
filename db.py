@@ -7,7 +7,7 @@ from sqlalchemy.orm import declarative_base
 from sqlalchemy.exc import SQLAlchemyError, IntegrityError, OperationalError
 from datetime import datetime, timezone, timedelta, date
 from typing import List, Dict, Any, Optional, Union, Tuple
-import psycopg # Import for specific exception type
+import psycopg
 
 from config import (
     DATABASE_URL,
@@ -68,12 +68,14 @@ class User(Base):
         try:
             if hasattr(self, '_sa_instance_state'):
                  state = self._sa_instance_state
-                 if state.persistent and 'persona_configs' in self.__dict__ and self.persona_configs is not None:
+                 # Проверяем, что связь загружена и не None
+                 if 'persona_configs' in self.__dict__ and self.persona_configs is not None:
                      count = len(self.persona_configs)
+                 # Если связь не загружена, но объект в сессии, делаем запрос
                  elif state.session:
                      db_session = state.session
                      count = db_session.query(func.count(PersonaConfig.id)).filter(PersonaConfig.owner_id == self.id).scalar() or 0
-                     logger.debug(f"Queried persona count ({count}) for User {self.id} directly as relation was not loaded (unexpected with selectin).")
+                     logger.debug(f"Queried persona count ({count}) for User {self.id} directly as relation was not loaded/present.")
                  else:
                      logger.warning(f"Accessing can_create_persona for potentially detached User {self.id} (TG ID: {self.telegram_id}). Cannot reliably determine count.")
                      return False
@@ -176,8 +178,7 @@ class BotInstance(Base):
 class ChatBotInstance(Base):
     __tablename__ = 'chat_bot_instances'
     id = Column(Integer, primary_key=True)
-    # <<< ИЗМЕНЕНО: Возвращаем тип String, чтобы соответствовать ошибке из логов >>>
-    chat_id = Column(String, nullable=False, index=True)
+    chat_id = Column(String, nullable=False, index=True) # chat_id как строка
     bot_instance_id = Column(Integer, ForeignKey('bot_instances.id', ondelete='CASCADE'), nullable=False, index=True)
     active = Column(Boolean, default=True, index=True)
     current_mood = Column(String, default="нейтрально")
@@ -187,7 +188,6 @@ class ChatBotInstance(Base):
     bot_instance_ref = relationship("BotInstance", back_populates="chat_links", lazy="selectin")
     context = relationship("ChatContext", backref="chat_bot_instance", order_by="ChatContext.message_order", cascade="all, delete-orphan", lazy="dynamic")
 
-    # <<< ИЗМЕНЕНО: Используем String для chat_id в UniqueConstraint >>>
     __table_args__ = (UniqueConstraint('chat_id', 'bot_instance_id', name='_chat_bot_uc'),)
 
     def __repr__(self):
@@ -327,10 +327,12 @@ def get_or_create_user(db: Session, telegram_id: int, username: str = None) -> U
                 logger.info(f"Ensuring admin user {telegram_id} is subscribed.")
                 user.is_subscribed = True
                 user.subscription_expires_at = datetime(2099, 12, 31, tzinfo=timezone.utc)
+                db.flush() # Flush change if made
 
             if user.username != username and username is not None:
                  logger.info(f"Updating username for user {telegram_id} from '{user.username}' to '{username}'. Pending commit.")
                  user.username = username
+                 db.flush() # Flush change if made
 
     except SQLAlchemyError as e:
          logger.error(f"DB Error in get_or_create_user for {telegram_id}: {e}", exc_info=True)
@@ -339,27 +341,36 @@ def get_or_create_user(db: Session, telegram_id: int, username: str = None) -> U
 
 
 def check_and_update_user_limits(db: Session, user: User) -> bool:
-    """Checks user message limits, resets daily count if needed, increments count. DOES NOT COMMIT."""
+    """Checks user message limits, resets daily count if needed, increments count. DOES NOT COMMIT OR FLUSH."""
     if user.telegram_id == ADMIN_USER_ID:
         return True
 
     now = datetime.now(timezone.utc)
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     reset_needed = (user.last_message_reset is None) or (user.last_message_reset < today_start)
+    updated = False
 
     if reset_needed:
-        logger.info(f"Resetting daily message count for user {user.telegram_id} (Previous: {user.daily_message_count}, Last reset: {user.last_message_reset}). Pending commit.")
+        logger.info(f"Resetting daily message count for user {user.telegram_id} (Previous: {user.daily_message_count}, Last reset: {user.last_message_reset}).")
         user.daily_message_count = 0
         user.last_message_reset = now
+        updated = True
 
     can_send = user.daily_message_count < user.message_limit
 
     if can_send:
         user.daily_message_count += 1
-        logger.debug(f"User {user.telegram_id} message count incremented to {user.daily_message_count}/{user.message_limit}. Pending commit.")
+        logger.debug(f"User {user.telegram_id} message count incremented to {user.daily_message_count}/{user.message_limit}.")
+        updated = True
 
     if not can_send:
          logger.info(f"User {user.telegram_id} message limit reached ({user.daily_message_count}/{user.message_limit}).")
+
+    # Если было обновление, помечаем объект как измененный
+    if updated:
+        flag_modified(user, "daily_message_count")
+        flag_modified(user, "last_message_reset")
+        logger.debug(f"User {user.telegram_id} limits state modified. Pending commit.")
 
     return can_send
 
@@ -368,11 +379,13 @@ def activate_subscription(db: Session, user_id: int) -> bool:
     """Activates subscription for a user based on internal DB ID and commits."""
     user = None
     try:
+        # Используем .with_for_update() для блокировки строки на время транзакции
         user = db.query(User).filter(User.id == user_id).with_for_update().first()
         if user:
             logger.info(f"Activating subscription for user {user.telegram_id} (DB ID: {user_id})")
             now = datetime.now(timezone.utc)
             start_date = now
+            # Если подписка уже активна, продлеваем от даты окончания
             if user.is_active_subscriber and user.subscription_expires_at:
                 start_date = max(now, user.subscription_expires_at)
 
@@ -380,9 +393,9 @@ def activate_subscription(db: Session, user_id: int) -> bool:
 
             user.is_subscribed = True
             user.subscription_expires_at = expiry_date
-            user.daily_message_count = 0
-            user.last_message_reset = now
-            db.commit()
+            user.daily_message_count = 0 # Сбрасываем счетчик при активации
+            user.last_message_reset = now # Обновляем время сброса
+            db.commit() # Коммитим изменения
             logger.info(f"Subscription activated/extended for user {user.telegram_id} until {expiry_date}")
             return True
         else:
@@ -390,14 +403,13 @@ def activate_subscription(db: Session, user_id: int) -> bool:
              return False
     except SQLAlchemyError as e:
          logger.error(f"Failed to commit subscription activation for DB user {user_id}: {e}", exc_info=True)
-         db.rollback()
+         db.rollback() # Откатываем в случае ошибки
          return False
 
 
 def get_active_chat_bot_instance_with_relations(db: Session, chat_id: Union[str, int]) -> Optional[ChatBotInstance]:
     """Fetches the active ChatBotInstance for a chat, loading related objects."""
     try:
-        # <<< ИЗМЕНЕНО: Сравниваем chat_id как строку (String) >>>
         chat_id_str = str(chat_id) # Убеждаемся, что это строка
 
         return db.query(ChatBotInstance)\
@@ -411,7 +423,6 @@ def get_active_chat_bot_instance_with_relations(db: Session, chat_id: Union[str,
             .filter(ChatBotInstance.chat_id == chat_id_str, ChatBotInstance.active == True)\
             .first()
     except SQLAlchemyError as e:
-        # Ловим ошибку сравнения типов здесь тоже на всякий случай
         if "operator does not exist" in str(e).lower() and ("character varying = bigint" in str(e).lower() or "bigint = character varying" in str(e).lower()):
              logger.error(f"Type mismatch error querying ChatBotInstance for chat_id '{chat_id}': {e}. Check model and DB schema for chat_id.", exc_info=False)
         else:
@@ -453,19 +464,25 @@ def add_message_to_context(db: Session, chat_bot_instance_id: int, role: str, co
         current_count = chat_instance.context.count()
 
         if current_count >= MAX_CONTEXT_MESSAGES_STORED:
-             oldest_to_keep_record = chat_instance.context\
-                                     .order_by(ChatContext.message_order.desc())\
-                                     .offset(MAX_CONTEXT_MESSAGES_STORED - 1)\
-                                     .first()
+             # Оптимизация: Находим N-е сообщение (N=MAX_CONTEXT_MESSAGES_STORED)
+             # и удаляем все сообщения с message_order < чем у N-го сообщения.
+             message_to_keep_from = chat_instance.context \
+                                      .order_by(ChatContext.message_order.desc()) \
+                                      .limit(1) \
+                                      .offset(MAX_CONTEXT_MESSAGES_STORED - 1) \
+                                      .first()
 
-             if oldest_to_keep_record is not None:
-                 oldest_to_keep_order = oldest_to_keep_record.message_order
-                 deleted_count_result = chat_instance.context\
-                                   .filter(ChatContext.message_order < oldest_to_keep_order)\
-                                   .delete(synchronize_session=False)
-                 deleted_count = deleted_count_result if isinstance(deleted_count_result, int) else 0
-                 logger.debug(f"Pruned {deleted_count} old context messages for instance {chat_bot_instance_id}. Pending commit.")
+             if message_to_keep_from:
+                 threshold_order = message_to_keep_from.message_order
+                 # Используем delete() на объекте Query, что более эффективно
+                 deleted_count = chat_instance.context \
+                                   .filter(ChatContext.message_order < threshold_order) \
+                                   .delete(synchronize_session=False) # False т.к. у нас lazy="dynamic"
+                 logger.debug(f"Pruned {deleted_count} old context messages for instance {chat_bot_instance_id} (threshold order {threshold_order}). Pending commit.")
+             else:
+                 logger.warning(f"Could not determine threshold order for pruning context for instance {chat_bot_instance_id}")
 
+        # Находим максимальный текущий message_order для нового сообщения
         max_order_record = chat_instance.context.order_by(ChatContext.message_order.desc()).first()
         max_order = max_order_record.message_order if max_order_record else 0
 
@@ -477,11 +494,12 @@ def add_message_to_context(db: Session, chat_bot_instance_id: int, role: str, co
             timestamp=datetime.now(timezone.utc)
         )
         db.add(new_message)
+        # НЕ делаем flush здесь, чтобы все изменения были атомарны в рамках вызывающей функции
         logger.debug(f"Prepared new context message (order {max_order + 1}, role {role}) for instance {chat_bot_instance_id}. Pending commit.")
 
     except SQLAlchemyError as e:
         logger.error(f"DB error preparing message for context for instance {chat_bot_instance_id}: {e}", exc_info=True)
-        raise
+        raise # Передаем исключение выше для обработки (rollback)
 
 
 def get_mood_for_chat_bot(db: Session, chat_bot_instance_id: int) -> str:
@@ -497,12 +515,13 @@ def get_mood_for_chat_bot(db: Session, chat_bot_instance_id: int) -> str:
 def set_mood_for_chat_bot(db: Session, chat_bot_instance_id: int, mood: str):
     """Sets the mood for a ChatBotInstance and commits the change."""
     try:
+        # Используем with_for_update для блокировки строки
         chat_bot = db.query(ChatBotInstance).filter(ChatBotInstance.id == chat_bot_instance_id).with_for_update().first()
         if chat_bot:
             if chat_bot.current_mood != mood:
                 logger.info(f"Setting mood from '{chat_bot.current_mood}' to '{mood}' for ChatBotInstance {chat_bot_instance_id}")
                 chat_bot.current_mood = mood
-                db.commit()
+                db.commit() # Коммитим изменение настроения
                 logger.info(f"Successfully set mood to '{mood}' for ChatBotInstance {chat_bot_instance_id}")
             else:
                  logger.debug(f"Mood already set to '{mood}' for ChatBotInstance {chat_bot_instance_id}. No change.")
@@ -510,7 +529,7 @@ def set_mood_for_chat_bot(db: Session, chat_bot_instance_id: int, mood: str):
             logger.warning(f"ChatBotInstance {chat_bot_instance_id} not found to set mood.")
     except SQLAlchemyError as e:
         logger.error(f"Failed to commit mood change for {chat_bot_instance_id}: {e}", exc_info=True)
-        db.rollback()
+        db.rollback() # Откатываем в случае ошибки
 
 
 def get_all_active_chat_bot_instances(db: Session) -> List[ChatBotInstance]:
@@ -560,6 +579,7 @@ def create_persona_config(db: Session, owner_id: int, name: str, description: st
 def get_personas_by_owner(db: Session, owner_id: int) -> List[PersonaConfig]:
     """Gets all personas owned by a user."""
     try:
+        # Убедимся, что владелец тоже загружен, если понадобится где-то дальше
         return db.query(PersonaConfig).options(selectinload(PersonaConfig.owner)).filter(PersonaConfig.owner_id == owner_id).order_by(PersonaConfig.name).all()
     except SQLAlchemyError as e:
         logger.error(f"DB error getting personas for owner {owner_id}: {e}", exc_info=True)
@@ -602,16 +622,23 @@ def delete_persona_config(db: Session, persona_id: int, owner_id: int) -> bool:
     """Deletes a PersonaConfig by its ID and owner's internal ID, and commits."""
     logger.warning(f"Attempting to delete PersonaConfig {persona_id} owned by User ID {owner_id}")
     try:
-        persona = db.query(PersonaConfig).filter(PersonaConfig.id == persona_id, PersonaConfig.owner_id == owner_id).first()
+        # Блокируем строку перед удалением
+        persona = db.query(PersonaConfig).filter(
+            PersonaConfig.id == persona_id,
+            PersonaConfig.owner_id == owner_id
+        ).with_for_update().first()
+
         if persona:
             persona_name = persona.name
-            db.delete(persona)
+            logger.info(f"Deleting PersonaConfig {persona_id} ('{persona_name}')...")
+            db.delete(persona) # SQLAlchemy handles related BotInstances/ChatBotInstances/Context due to cascade
             db.commit()
             logger.info(f"Successfully deleted PersonaConfig {persona_id} (Name: '{persona_name}')")
             return True
         else:
             logger.warning(f"PersonaConfig {persona_id} not found or not owned by User ID {owner_id} for deletion.")
-            return False
+            # Не откатываем, т.к. возможно, она уже удалена
+            return False # Возвращаем False, т.к. удаление не произошло в этой транзакции
     except SQLAlchemyError as e:
         logger.error(f"Failed to commit deletion of PersonaConfig {persona_id}: {e}", exc_info=True)
         db.rollback()
@@ -658,51 +685,59 @@ def link_bot_instance_to_chat(db: Session, bot_instance_id: int, chat_id: Union[
     """Links a BotInstance to a chat. Commits the change."""
     chat_link = None
     try:
-        # <<< ИЗМЕНЕНО: chat_id всегда строка >>>
-        chat_id_str = str(chat_id)
+        chat_id_str = str(chat_id) # Всегда работаем со строкой
 
+        # Блокируем строку на время проверки и обновления/создания
         chat_link = db.query(ChatBotInstance).filter(
             ChatBotInstance.chat_id == chat_id_str,
             ChatBotInstance.bot_instance_id == bot_instance_id
         ).with_for_update().first()
 
         if chat_link:
+            needs_commit = False
             if not chat_link.active:
                  logger.info(f"Reactivating existing ChatBotInstance {chat_link.id} for bot {bot_instance_id} in chat {chat_id_str}")
                  chat_link.active = True
                  chat_link.current_mood = "нейтрально"
                  chat_link.is_muted = False
+                 needs_commit = True
+                 # Очищаем контекст при реактивации
                  deleted_ctx_result = chat_link.context.delete(synchronize_session='fetch')
                  deleted_ctx = deleted_ctx_result if isinstance(deleted_ctx_result, int) else 0
                  logger.debug(f"Cleared {deleted_ctx} context messages for reactivated ChatBotInstance {chat_link.id}.")
             else:
-                logger.info(f"ChatBotInstance link for bot {bot_instance_id} in chat {chat_id_str} is already active. Clearing context.")
+                logger.info(f"ChatBotInstance link for bot {bot_instance_id} in chat {chat_id_str} is already active. Clearing context on re-add request.")
                 deleted_ctx_result = chat_link.context.delete(synchronize_session='fetch')
                 deleted_ctx = deleted_ctx_result if isinstance(deleted_ctx_result, int) else 0
-                logger.debug(f"Cleared {deleted_ctx} context messages for already active ChatBotInstance {chat_link.id} upon re-adding command.")
+                logger.debug(f"Cleared {deleted_ctx} context messages for already active ChatBotInstance {chat_link.id}.")
+                needs_commit = True # Нужен коммит для удаления контекста
+
+            if needs_commit: db.commit()
 
         else:
             logger.info(f"Creating new ChatBotInstance link for bot {bot_instance_id} in chat {chat_id_str}")
             chat_link = ChatBotInstance(
-                chat_id=chat_id_str, # <<< Сохраняем как строку
+                chat_id=chat_id_str,
                 bot_instance_id=bot_instance_id,
                 active=True,
                 current_mood="нейтрально",
                 is_muted=False
             )
             db.add(chat_link)
+            db.commit() # Коммитим создание новой связи
 
-        db.commit()
+        # Обновляем объект после коммита, чтобы получить ID и актуальное состояние
         if chat_link:
             db.refresh(chat_link)
         return chat_link
 
     except IntegrityError as e:
-         logger.warning(f"IntegrityError linking bot instance {bot_instance_id} to chat {chat_id}: {e}")
+         logger.warning(f"IntegrityError linking bot instance {bot_instance_id} to chat {chat_id_str}: {e}")
          db.rollback()
-         raise
+         # Не возвращаем chat_link, т.к. он не был успешно создан/обновлен
+         return None
     except SQLAlchemyError as e:
-         logger.error(f"Failed linking bot instance {bot_instance_id} to chat {chat_id}: {e}", exc_info=True)
+         logger.error(f"Failed linking bot instance {bot_instance_id} to chat {chat_id_str}: {e}", exc_info=True)
          db.rollback()
          return None
 
@@ -710,9 +745,9 @@ def link_bot_instance_to_chat(db: Session, bot_instance_id: int, chat_id: Union[
 def unlink_bot_instance_from_chat(db: Session, chat_id: Union[str, int], bot_instance_id: int) -> bool:
     """Deactivates a ChatBotInstance link and commits."""
     try:
-        # <<< ИЗМЕНЕНО: chat_id всегда строка >>>
-        chat_id_str = str(chat_id)
+        chat_id_str = str(chat_id) # Всегда строка
 
+        # Блокируем строку
         chat_link = db.query(ChatBotInstance).filter(
             ChatBotInstance.chat_id == chat_id_str,
             ChatBotInstance.bot_instance_id == bot_instance_id,
@@ -722,13 +757,13 @@ def unlink_bot_instance_from_chat(db: Session, chat_id: Union[str, int], bot_ins
         if chat_link:
             logger.info(f"Deactivating ChatBotInstance {chat_link.id} for bot {bot_instance_id} in chat {chat_id_str}")
             chat_link.active = False
-            db.commit()
+            db.commit() # Коммитим деактивацию
             return True
         else:
             logger.warning(f"No active ChatBotInstance found for bot {bot_instance_id} in chat {chat_id_str} to deactivate.")
             return False
     except SQLAlchemyError as e:
-            logger.error(f"Failed to commit deactivation for ChatBotInstance bot {bot_instance_id} chat {chat_id}: {e}", exc_info=True)
+            logger.error(f"Failed to commit deactivation for ChatBotInstance bot {bot_instance_id} chat {chat_id_str}: {e}", exc_info=True)
             db.rollback()
             return False
 
