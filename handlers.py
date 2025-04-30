@@ -5,11 +5,11 @@ import asyncio
 import re
 import uuid
 import json
-import urllib.parse # Для URL-кодирования
+import urllib.parse
 from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Any, Optional, Union, Tuple
 
-from telegram import Update, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup, Chat as TgChat # Import Chat for type hint
+from telegram import Update, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup, Chat as TgChat
 from telegram.constants import ChatAction, ParseMode, ChatMemberStatus, ChatType
 from telegram.error import BadRequest, Forbidden, TelegramError, TimedOut
 
@@ -45,27 +45,24 @@ from db import (
     User, PersonaConfig, BotInstance, ChatBotInstance, ChatContext
 )
 from persona import Persona
-# <<< ИЗМЕНЕНО: Импорт escape_markdown_v2 из utils >>>
 from utils import postprocess_response, extract_gif_links, get_time_info, escape_markdown_v2
 
 logger = logging.getLogger(__name__)
 
-# --- Функции проверки подписки и отправки сообщения о необходимости подписки ---
 async def check_channel_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    """Checks if the user is subscribed to the required channel."""
     if not CHANNEL_ID:
         logger.warning("CHANNEL_ID not set in config. Skipping subscription check.")
-        return True # Skip check if no channel ID is configured
+        return True
 
-    if not hasattr(update, 'effective_user') or not update.effective_user:
-        logger.warning("check_channel_subscription called without valid effective_user.")
-        if update.callback_query and update.callback_query.from_user:
-             user_id = update.callback_query.from_user.id
-             logger.debug(f"Using user_id {user_id} from callback_query.")
-        else:
-             return False
-    else:
+    user_id = None
+    if hasattr(update, 'effective_user') and update.effective_user:
         user_id = update.effective_user.id
+    elif update.callback_query and update.callback_query.from_user:
+        user_id = update.callback_query.from_user.id
+        logger.debug(f"Using user_id {user_id} from callback_query.")
+    else:
+        logger.warning("check_channel_subscription called without valid user information.")
+        return False
 
     if is_admin(user_id):
         return True
@@ -83,9 +80,10 @@ async def check_channel_subscription(update: Update, context: ContextTypes.DEFAU
             return False
     except TimedOut:
         logger.warning(f"Timeout checking subscription for user {user_id} in channel {CHANNEL_ID}. Denying access.")
-        if hasattr(update, 'effective_message') and update.effective_message:
+        target_message = update.effective_message or (update.callback_query.message if update.callback_query else None)
+        if target_message:
             try:
-                await update.effective_message.reply_text(
+                await target_message.reply_text(
                     escape_markdown_v2("Не удалось проверить подписку на канал (таймаут)\\. Попробуйте еще раз позже\\."),
                     parse_mode=ParseMode.MARKDOWN_V2
                 )
@@ -94,9 +92,10 @@ async def check_channel_subscription(update: Update, context: ContextTypes.DEFAU
         return False
     except Forbidden as e:
         logger.error(f"Forbidden error checking subscription for user {user_id} in channel {CHANNEL_ID}: {e}. Ensure bot is admin in the channel.")
-        if hasattr(update, 'effective_message') and update.effective_message:
+        target_message = update.effective_message or (update.callback_query.message if update.callback_query else None)
+        if target_message:
             try:
-                await update.effective_message.reply_text(
+                await target_message.reply_text(
                     escape_markdown_v2("Не удалось проверить подписку на канал\\. Убедитесь, что бот добавлен в канал как администратор\\."),
                     parse_mode=ParseMode.MARKDOWN_V2
                 )
@@ -117,14 +116,16 @@ async def check_channel_subscription(update: Update, context: ContextTypes.DEFAU
               logger.error(f"-> Specific BadRequest: Chat {CHANNEL_ID} not found. Check CHANNEL_ID config.")
               reply_text = escape_markdown_v2("Ошибка: не удалось найти указанный канал для проверки подписки\\. Проверьте настройки бота\\.")
 
-         if hasattr(update, 'effective_message') and update.effective_message:
-             try: await update.effective_message.reply_text(reply_text, parse_mode=ParseMode.MARKDOWN_V2)
+         target_message = update.effective_message or (update.callback_query.message if update.callback_query else None)
+         if target_message:
+             try: await target_message.reply_text(reply_text, parse_mode=ParseMode.MARKDOWN_V2)
              except Exception as send_err: logger.error(f"Failed to send 'BadRequest' error message: {send_err}")
          return False
     except TelegramError as e:
         logger.error(f"Telegram error checking subscription for user {user_id} in channel {CHANNEL_ID}: {e}")
-        if hasattr(update, 'effective_message') and update.effective_message:
-            try: await update.effective_message.reply_text(escape_markdown_v2("Произошла ошибка при проверке подписки\\. Попробуйте позже\\."), parse_mode=ParseMode.MARKDOWN_V2)
+        target_message = update.effective_message or (update.callback_query.message if update.callback_query else None)
+        if target_message:
+            try: await target_message.reply_text(escape_markdown_v2("Произошла ошибка при проверке подписки\\. Попробуйте позже\\."), parse_mode=ParseMode.MARKDOWN_V2)
             except Exception as send_err: logger.error(f"Failed to send 'TelegramError' message: {send_err}")
         return False
     except Exception as e:
@@ -132,7 +133,6 @@ async def check_channel_subscription(update: Update, context: ContextTypes.DEFAU
         return False
 
 async def send_subscription_required_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Sends a message asking the user to subscribe."""
     target_message = None
     if hasattr(update, 'effective_message') and update.effective_message:
          target_message = update.effective_message
@@ -143,7 +143,10 @@ async def send_subscription_required_message(update: Update, context: ContextTyp
          logger.warning("Cannot send subscription required message: no target message found.")
          return
 
-    channel_username = CHANNEL_ID.lstrip('@') if isinstance(CHANNEL_ID, str) and CHANNEL_ID.startswith('@') else None
+    channel_username = None
+    if isinstance(CHANNEL_ID, str) and CHANNEL_ID.startswith('@'):
+        channel_username = CHANNEL_ID.lstrip('@')
+
     error_msg_raw = "Произошла ошибка при получении ссылки на канал\\."
     subscribe_text_raw = "Для использования бота необходимо подписаться на наш канал\\."
     button_text = "Перейти к каналу"
@@ -153,54 +156,44 @@ async def send_subscription_required_message(update: Update, context: ContextTyp
         subscribe_text_raw = f"Для использования бота необходимо подписаться на канал @{channel_username}\\."
         keyboard = [[InlineKeyboardButton(button_text, url=f"https://t.me/{channel_username}")]]
     elif isinstance(CHANNEL_ID, int):
-         subscribe_text_raw = "Для использования бота необходимо подписаться на наш основной канал\\."
-         subscribe_text_raw += " Пожалуйста, найдите канал в поиске или через описание бота\\."
+         subscribe_text_raw = "Для использования бота необходимо подписаться на наш основной канал\\. Пожалуйста, найдите канал в поиске или через описание бота\\."
     else:
          logger.error(f"Invalid CHANNEL_ID format: {CHANNEL_ID}. Cannot generate subscription message correctly.")
          subscribe_text_raw = error_msg_raw
 
     reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
+    escaped_text = escape_markdown_v2(subscribe_text_raw)
     try:
-        await target_message.reply_text(escape_markdown_v2(subscribe_text_raw), reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
+        await target_message.reply_text(escaped_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
         if update.callback_query:
              try: await update.callback_query.answer()
              except: pass
     except BadRequest as e:
-        escaped_text_log = escape_markdown_v2(subscribe_text_raw)
-        logger.error(f"Failed sending subscription required message (BadRequest): {e} - Text Raw: '{subscribe_text_raw}' Escaped: '{escaped_text_log[:100]}...'")
+        logger.error(f"Failed sending subscription required message (BadRequest): {e} - Text Raw: '{subscribe_text_raw}' Escaped: '{escaped_text[:100]}...'")
         try:
-            plain_text = re.sub(r'\\(.)', r'\1', escaped_text_log)
+            plain_text = re.sub(r'\\(.)', r'\1', escaped_text)
             await target_message.reply_text(plain_text, reply_markup=reply_markup, parse_mode=None)
         except Exception as fallback_e:
             logger.error(f"Failed sending plain subscription required message: {fallback_e}")
     except Exception as e:
          logger.error(f"Failed to send subscription required message: {e}")
-# --- Конец функций подписки ---
-
 
 def is_admin(user_id: int) -> bool:
-    """Checks if user_id matches the ADMIN_USER_ID from config."""
     return user_id == ADMIN_USER_ID
 
-# Состояния для ConversationHandler
 EDIT_PERSONA_CHOICE, EDIT_FIELD, EDIT_MOOD_CHOICE, EDIT_MOOD_NAME, EDIT_MOOD_PROMPT, DELETE_MOOD_CONFIRM, DELETE_PERSONA_CONFIRM, EDIT_MAX_MESSAGES = range(8)
 
-# Карта полей для отображения пользователю (уже с экранированием)
-# <<< ИСПРАВЛЕНО: Убираем escape_markdown_v2 отсюда, применяем при использовании >>>
-FIELD_MAP_DISPLAY = {
-    "name": "имя",
-    "description": "описание",
-    "system_prompt_template": "системный промпт",
-    "should_respond_prompt_template": "промпт 'отвечать?'",
-    "spam_prompt_template": "промпт спама",
-    "photo_prompt_template": "промпт фото",
-    "voice_prompt_template": "промпт голоса",
-    "max_response_messages": "макс. сообщений в ответе"
+FIELD_MAP = {
+    "name": escape_markdown_v2("имя"),
+    "description": escape_markdown_v2("описание"),
+    "system_prompt_template": escape_markdown_v2("системный промпт"),
+    "should_respond_prompt_template": escape_markdown_v2("промпт 'отвечать?'"),
+    "spam_prompt_template": escape_markdown_v2("промпт спама"),
+    "photo_prompt_template": escape_markdown_v2("промпт фото"),
+    "voice_prompt_template": escape_markdown_v2("промпт голоса"),
+    "max_response_messages": escape_markdown_v2("макс. сообщений в ответе")
 }
 
-# --- Текст Пользовательского Соглашения ---
-# Содержит ** для Telegra.ph (будут удалены перед отправкой туда),
-# но НЕ содержит символов для экранирования Markdown V2.
 TOS_TEXT_RAW = """
 **📜 Пользовательское Соглашение Сервиса @NunuAiBot**
 
@@ -256,21 +249,16 @@ TOS_TEXT_RAW = """
 8.2. По всем вопросам, касающимся настоящего Соглашения или работы Сервиса, Вы можете обращаться к нам через контакты, указанные в биографии бота и в нашем Telegram-канале.
 """
 
-# Форматируем и Экранируем текст для отправки ботом через MarkdownV2
 formatted_tos_text_for_bot = TOS_TEXT_RAW.format(
     subscription_duration=config.SUBSCRIPTION_DURATION_DAYS,
     subscription_price=f"{config.SUBSCRIPTION_PRICE_RUB:.0f}",
     subscription_currency=config.SUBSCRIPTION_CURRENCY
 )
 TOS_TEXT = escape_markdown_v2(formatted_tos_text_for_bot)
-# --- Конец текста ToS ---
-
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Log the error and send a telegram message to notify the developer."""
     logger.error("Exception while handling an update:", exc_info=context.error)
 
-    # --- Обработка специфичных ошибок ---
     if isinstance(context.error, Forbidden):
          if CHANNEL_ID and CHANNEL_ID in str(context.error):
              logger.warning(f"Error handler caught Forbidden regarding channel {CHANNEL_ID}. Bot likely not admin or kicked.")
@@ -308,7 +296,6 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
     elif isinstance(context.error, TelegramError):
          logger.error(f"Generic Telegram API error: {context.error}")
 
-    # --- Отправка общего сообщения об ошибке пользователю ---
     error_message_raw = "упс... что-то пошло не так. попробуй еще раз позже."
     escaped_error_message = escape_markdown_v2(error_message_raw)
     if isinstance(update, Update) and update.effective_message:
@@ -323,21 +310,21 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 def get_persona_and_context_with_owner(chat_id: Union[str, int], db: Session) -> Optional[Tuple[Persona, List[Dict[str, str]], User]]:
-    """Fetches Persona, its context, and its owner User object."""
-    chat_instance = get_active_chat_bot_instance_with_relations(db, chat_id)
+    chat_id_str = str(chat_id)
+    chat_instance = get_active_chat_bot_instance_with_relations(db, chat_id_str)
     if not chat_instance:
         return None
 
     bot_instance = chat_instance.bot_instance_ref
     if not bot_instance:
-         logger.error(f"ChatBotInstance {chat_instance.id} for chat {chat_id} is missing linked BotInstance.")
+         logger.error(f"ChatBotInstance {chat_instance.id} for chat {chat_id_str} is missing linked BotInstance.")
          return None
     if not bot_instance.persona_config:
-         logger.error(f"BotInstance {bot_instance.id} (linked to chat {chat_id}) is missing linked PersonaConfig.")
+         logger.error(f"BotInstance {bot_instance.id} (linked to chat {chat_id_str}) is missing linked PersonaConfig.")
          return None
     owner_user = bot_instance.owner or bot_instance.persona_config.owner
     if not owner_user:
-         logger.error(f"Could not load Owner for BotInstance {bot_instance.id} (linked to chat {chat_id}).")
+         logger.error(f"Could not load Owner for BotInstance {bot_instance.id} (linked to chat {chat_id_str}).")
          return None
 
     persona_config = bot_instance.persona_config
@@ -345,7 +332,7 @@ def get_persona_and_context_with_owner(chat_id: Union[str, int], db: Session) ->
     try:
         persona = Persona(persona_config, chat_instance)
     except ValueError as e:
-         logger.error(f"Failed to initialize Persona for config {persona_config.id} in chat {chat_id}: {e}", exc_info=True)
+         logger.error(f"Failed to initialize Persona for config {persona_config.id} in chat {chat_id_str}: {e}", exc_info=True)
          return None
 
     context_list = get_context_for_chat_bot(db, chat_instance.id)
@@ -353,7 +340,6 @@ def get_persona_and_context_with_owner(chat_id: Union[str, int], db: Session) ->
 
 
 async def send_to_langdock(system_prompt: str, messages: List[Dict[str, str]]) -> str:
-    """Sends request to Langdock API and returns the text response."""
     if not LANGDOCK_API_KEY:
         logger.error("LANGDOCK_API_KEY is not set.")
         return escape_markdown_v2("ошибка: ключ api не настроен\\.")
@@ -429,12 +415,12 @@ async def send_to_langdock(system_prompt: str, messages: List[Dict[str, str]]) -
 
 
 async def process_and_send_response(update: Optional[Update], context: ContextTypes.DEFAULT_TYPE, chat_id: Union[str, int], persona: Persona, full_bot_response_text: str, db: Session) -> bool:
-    """Processes AI response, adds to context (pending commit), and sends to chat. Returns True if context was prepared."""
     if not full_bot_response_text or not full_bot_response_text.strip():
         logger.warning(f"Received empty response from AI for chat {chat_id}, persona {persona.name}. Not sending anything.")
         return False
     logger.debug(f"Processing AI response for chat {chat_id}, persona {persona.name}. Raw length: {len(full_bot_response_text)}")
 
+    chat_id_str = str(chat_id) # Убедимся, что chat_id строка для совместимости
     context_prepared = False
     if persona.chat_instance:
         try:
@@ -466,17 +452,18 @@ async def process_and_send_response(update: Optional[Update], context: ContextTy
         logger.info(f"Limiting response parts from {len(text_parts_to_send)} to {max_messages} for persona {persona.name}")
         text_parts_to_send = text_parts_to_send[:max_messages]
         if text_parts_to_send:
-             # Apply escape_markdown_v2 to the ellipsis added
-             text_parts_to_send[-1] = text_parts_to_send[-1].rstrip('. ') + escape_markdown_v2("...")
+             escaped_ellipsis = escape_markdown_v2("...")
+             last_part = text_parts_to_send[-1].rstrip('. ')
+             text_parts_to_send[-1] = f"{last_part}{escaped_ellipsis}"
 
     send_tasks = []
 
     for gif in gif_links:
         try:
-            send_tasks.append(context.bot.send_animation(chat_id=chat_id, animation=gif))
+            send_tasks.append(context.bot.send_animation(chat_id=chat_id_str, animation=gif))
             logger.info(f"Scheduled sending gif: {gif}")
         except Exception as e:
-            logger.error(f"Error scheduling gif send {gif} to chat {chat_id}: {e}", exc_info=True)
+            logger.error(f"Error scheduling gif send {gif} to chat {chat_id_str}: {e}", exc_info=True)
 
     if text_parts_to_send:
         chat_type = None
@@ -489,28 +476,26 @@ async def process_and_send_response(update: Optional[Update], context: ContextTy
 
             if chat_type in [ChatType.GROUP, ChatType.SUPERGROUP]:
                  try:
-                     asyncio.create_task(context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING))
+                     asyncio.create_task(context.bot.send_chat_action(chat_id=chat_id_str, action=ChatAction.TYPING))
                      await asyncio.sleep(random.uniform(0.6, 1.2))
                  except Exception as e:
-                      logger.warning(f"Failed to send typing action to {chat_id}: {e}")
+                      logger.warning(f"Failed to send typing action to {chat_id_str}: {e}")
 
             try:
-                 # Apply escape_markdown_v2 here, right before sending
                  escaped_part = escape_markdown_v2(part)
-                 logger.debug(f"Sending part {i+1}/{len(text_parts_to_send)} to chat {chat_id}: '{escaped_part[:50]}...'")
-                 send_tasks.append(context.bot.send_message(chat_id=chat_id, text=escaped_part, parse_mode=ParseMode.MARKDOWN_V2))
+                 logger.debug(f"Sending part {i+1}/{len(text_parts_to_send)} to chat {chat_id_str}: '{escaped_part[:50]}...'")
+                 send_tasks.append(context.bot.send_message(chat_id=chat_id_str, text=escaped_part, parse_mode=ParseMode.MARKDOWN_V2))
             except BadRequest as e:
                  logger.error(f"Error scheduling text part {i+1} send (BadRequest): {e} - Original: '{part[:100]}...' Escaped: '{escaped_part[:100]}...'")
                  try:
-                      # Send original part as plain text if escaped version failed
-                      send_tasks.append(context.bot.send_message(chat_id=chat_id, text=part, parse_mode=None))
+                      send_tasks.append(context.bot.send_message(chat_id=chat_id_str, text=part, parse_mode=None))
                       logger.info(f"Scheduled part {i+1} as plain text after MarkdownV2 failed.")
                  except Exception as plain_e:
                       logger.error(f"Failed to schedule part {i+1} even as plain text: {plain_e}")
-                 break # Stop sending further parts on error
+                 break
             except Exception as e:
                  logger.error(f"Error scheduling text part {i+1} send: {e}", exc_info=True)
-                 break # Stop sending further parts on error
+                 break
 
     if send_tasks:
          results = await asyncio.gather(*send_tasks, return_exceptions=True)
@@ -522,59 +507,44 @@ async def process_and_send_response(update: Optional[Update], context: ContextTy
 
 
 async def send_limit_exceeded_message(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User):
-    """Sends a message about exceeding limits with a subscribe button."""
-    count_esc = escape_markdown_v2(str(user.daily_message_count))
-    limit_esc = escape_markdown_v2(str(user.message_limit))
-    price_esc = escape_markdown_v2(f"{SUBSCRIPTION_PRICE_RUB:.0f}")
-    currency_esc = escape_markdown_v2(SUBSCRIPTION_CURRENCY)
-    paid_limit_esc = escape_markdown_v2(str(PAID_DAILY_MESSAGE_LIMIT))
-    paid_persona_esc = escape_markdown_v2(str(PAID_PERSONA_LIMIT))
+    count_str = escape_markdown_v2(f"{user.daily_message_count}/{user.message_limit}")
+    price_str = escape_markdown_v2(f"{SUBSCRIPTION_PRICE_RUB:.0f}")
+    currency_str = escape_markdown_v2(SUBSCRIPTION_CURRENCY)
+    paid_limit_str = escape_markdown_v2(str(PAID_DAILY_MESSAGE_LIMIT))
+    paid_persona_str = escape_markdown_v2(str(PAID_PERSONA_LIMIT))
 
-    # Define the raw structure first
-    text_structure = (
-        escape_markdown_v2("упс\\! 😕 лимит сообщений \\({count}/{limit}\\) на сегодня достигнут\\.\n\n") +
-        "✨ **хочешь безлимита?** ✨\n" +
-        escape_markdown_v2("подписка за {price} {currency}/мес дает:\n✅ ") +
-        "**{paid_limit}**" + escape_markdown_v2(" сообщений в день\n✅ до ") +
-        "**{paid_persona}**" + escape_markdown_v2(" личностей\n✅ полная настройка промптов и настроений\n\n") +
+    text_to_send = (
+        escape_markdown_v2(f"упс\\! 😕 лимит сообщений \\({count_str}\\) на сегодня достигнут\\.\n\n") +
+        f"✨ **{escape_markdown_v2('хочешь безлимита?')}** ✨\n" +
+        escape_markdown_v2(f"подписка за {price_str} {currency_str}/мес дает:\n✅ ") +
+        f"**{paid_limit_str}**" + escape_markdown_v2(" сообщений в день\n✅ до ") +
+        f"**{paid_persona_str}**" + escape_markdown_v2(" личностей\n✅ полная настройка промптов и настроений\n\n") +
         escape_markdown_v2("👇 жми /subscribe или кнопку ниже\\!")
     )
-
-    # Format with escaped values
-    text_to_send = text_structure.format(
-        count=count_esc,
-        limit=limit_esc,
-        price=price_esc,
-        currency=currency_esc,
-        paid_limit=paid_limit_esc, # Use the placeholder name without the _esc suffix
-        paid_persona=paid_persona_esc # Use the placeholder name without the _esc suffix
-    )
+    raw_text_for_log = f"Limit exceeded: {user.daily_message_count}/{user.message_limit}"
 
     keyboard = [[InlineKeyboardButton("🚀 получить подписку!", callback_data="subscribe_info")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    target_chat_id = update.effective_chat.id if update.effective_chat else user.telegram_id
-    if not target_chat_id:
-        logger.warning(f"Could not send limit exceeded message to user {user.telegram_id}: no effective chat.")
-        return
-
+    target_chat_id = None
     try:
-        await context.bot.send_message(target_chat_id, text=text_to_send, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
+        target_chat_id = update.effective_chat.id if update.effective_chat else user.telegram_id
+        if target_chat_id:
+             await context.bot.send_message(target_chat_id, text=text_to_send, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
+        else:
+             logger.warning(f"Could not send limit exceeded message to user {user.telegram_id}: no effective chat.")
     except BadRequest as e:
-         logger.error(f"Failed sending limit message (BadRequest): {e} - Text Escaped: '{text_to_send[:100]}...'")
+         logger.error(f"Failed sending limit message (BadRequest): {e} - Text Raw: '{raw_text_for_log}' Escaped: '{text_to_send[:100]}...'")
          try:
-              plain_text = re.sub(r'\\(.)', r'\1', text_to_send) # Basic unescape
-              plain_text = plain_text.replace("**", "").replace("✨", "") # Remove Markdown artifacts
-              await context.bot.send_message(target_chat_id, plain_text, reply_markup=reply_markup, parse_mode=None)
+              if target_chat_id:
+                  plain_text = re.sub(r'\\(.)', r'\1', text_to_send)
+                  plain_text = plain_text.replace("**", "").replace("✨", "")
+                  await context.bot.send_message(target_chat_id, plain_text, reply_markup=reply_markup, parse_mode=None)
          except Exception as final_e:
               logger.error(f"Failed sending limit message even plain: {final_e}")
     except Exception as e:
         logger.error(f"Failed to send limit exceeded message to user {user.telegram_id}: {e}")
 
-
-# --- Основные обработчики ---
-
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handles incoming text messages."""
     if not update.message or not (update.message.text or update.message.caption):
         return
     chat_id_str = str(update.effective_chat.id)
@@ -601,33 +571,34 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             if not check_and_update_user_limits(db, owner_user):
                 logger.info(f"Owner {owner_user.telegram_id} exceeded daily message limit ({owner_user.daily_message_count}/{owner_user.message_limit}).")
                 await send_limit_exceeded_message(update, context, owner_user)
-                db.commit()
+                db.commit() # Commit the limit check result (reset or count=limit)
                 return
+            else:
+                 # Флаг, что лимит проверен и счетчик обновлен (или сброшен)
+                 limit_updated = True
 
-            context_placeholder_added = False
+            context_user_msg_added = False
             if persona.chat_instance:
                 try:
                     user_prefix = username
                     context_content = f"{user_prefix}: {message_text}"
                     add_message_to_context(db, persona.chat_instance.id, "user", context_content)
-                    context_placeholder_added = True
+                    context_user_msg_added = True
                     logger.debug("User message prepared for context (pending commit).")
-                except SQLAlchemyError as e_ctx:
-                    logger.error(f"DB Error preparing user message for context: {e_ctx}", exc_info=True)
+                except (SQLAlchemyError, Exception) as e_ctx:
+                    logger.error(f"Error preparing user message for context: {e_ctx}", exc_info=True)
                     await update.message.reply_text(escape_markdown_v2("ошибка при сохранении вашего сообщения\\."), parse_mode=ParseMode.MARKDOWN_V2)
-                    return
-                except Exception as e:
-                    logger.error(f"Unexpected Error preparing user message for context: {e}", exc_info=True)
-                    await update.message.reply_text(escape_markdown_v2("ошибка при сохранении вашего сообщения\\."), parse_mode=ParseMode.MARKDOWN_V2)
+                    db.rollback() # Откатываем, если не можем добавить сообщение
                     return
             else:
                 logger.error("Cannot add user message to context, chat_instance is None unexpectedly.")
                 await update.message.reply_text(escape_markdown_v2("системная ошибка: не удалось связать сообщение с личностью\\."), parse_mode=ParseMode.MARKDOWN_V2)
+                db.rollback() # Откатываем
                 return
 
             if persona.chat_instance and persona.chat_instance.is_muted:
                 logger.debug(f"Persona '{persona.name}' is muted in chat {chat_id_str}. Message saved to context, but ignoring response.")
-                db.commit()
+                db.commit() # Сохраняем сообщение пользователя и обновление лимита
                 return
 
             available_moods = persona.get_all_mood_names()
@@ -640,11 +611,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                          break
             if matched_mood:
                  logger.info(f"Message '{message_text}' matched mood name '{matched_mood}'. Changing mood.")
+                 # mood() сам коммитит, поэтому здесь коммитить не надо, но надо сохранить user msg и лимит
+                 db.commit() # Commit user message and limit update before calling mood()
                  await mood(update, context, db=db, persona=persona)
-                 return
+                 return # Выходим после смены настроения
 
             should_ai_respond = True
             ai_decision_response = None
+            context_ai_decision_added = False
             if update.effective_chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
                  should_respond_prompt = persona.format_should_respond_prompt(message_text)
                  if should_respond_prompt:
@@ -669,6 +643,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                          else:
                               logger.warning(f"Unclear should_respond answer '{answer}'. Defaulting to respond.")
                               should_ai_respond = True
+
+                         # Добавляем ответ AI о решении в контекст (pending commit)
+                         if ai_decision_response and persona.chat_instance:
+                             try:
+                                 add_message_to_context(db, persona.chat_instance.id, "assistant", ai_decision_response.strip())
+                                 context_ai_decision_added = True
+                                 logger.debug("Added AI decision response to context (pending commit).")
+                             except Exception as e_ctx_dec:
+                                 logger.error(f"Failed to add AI decision to context: {e_ctx_dec}")
+
                      except Exception as e:
                           logger.error(f"Error in should_respond logic: {e}", exc_info=True)
                           should_ai_respond = True
@@ -677,37 +661,28 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
             if not should_ai_respond:
                  logger.debug(f"Decided not to respond based on should_respond logic.")
-                 if ai_decision_response and persona.chat_instance:
-                     try:
-                         add_message_to_context(db, persona.chat_instance.id, "assistant", ai_decision_response.strip())
-                         logger.debug("Added 'should_respond=no' AI response to context.")
-                     except Exception as e_ctx: pass
-                 db.commit()
+                 db.commit() # Сохраняем user message, limit update, AI decision
                  return
-
-            if ai_decision_response and persona.chat_instance:
-                 try:
-                      add_message_to_context(db, persona.chat_instance.id, "assistant", ai_decision_response.strip())
-                      logger.debug("Added 'should_respond=yes' AI response to context (pending commit).")
-                 except Exception as e_ctx: pass
 
             context_for_ai = []
             if persona.chat_instance:
                 try:
                     context_for_ai = get_context_for_chat_bot(db, persona.chat_instance.id)
-                except SQLAlchemyError as e_ctx:
+                except (SQLAlchemyError, Exception) as e_ctx:
                      logger.error(f"DB Error getting context for AI main response: {e_ctx}", exc_info=True)
                      await update.message.reply_text(escape_markdown_v2("ошибка при получении контекста для ответа\\."), parse_mode=ParseMode.MARKDOWN_V2)
+                     db.rollback()
                      return
             else:
                  logger.error("Cannot get context for AI main response, chat_instance is None.")
+                 db.rollback()
                  return
 
             system_prompt = persona.format_system_prompt(user_id, username, message_text)
             if not system_prompt:
                 logger.error(f"System prompt formatting failed for persona {persona.name}.")
                 await update.message.reply_text(escape_markdown_v2("ошибка при подготовке ответа\\."), parse_mode=ParseMode.MARKDOWN_V2)
-                db.commit()
+                db.rollback()
                 return
 
             response_text = await send_to_langdock(system_prompt, context_for_ai)
@@ -715,23 +690,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
             context_response_prepared = await process_and_send_response(update, context, chat_id_str, persona, response_text, db)
 
+            # Commit all changes together: limit update, user message, AI decision, AI response
             db.commit()
-            logger.debug(f"Committed DB changes for handle_message chat {chat_id_str} (UserMsgAdded: {context_placeholder_added}, BotRespAdded: {context_response_prepared})")
+            logger.debug(f"Committed DB changes for handle_message chat {chat_id_str} (LimitUpdated: {limit_updated}, UserMsgAdded: {context_user_msg_added}, AIDecisionAdded: {context_ai_decision_added}, BotRespAdded: {context_response_prepared})")
 
         except SQLAlchemyError as e:
              logger.error(f"Database error during handle_message for chat {chat_id_str}: {e}", exc_info=True)
              try: await update.message.reply_text(escape_markdown_v2("ошибка базы данных, попробуйте позже\\."), parse_mode=ParseMode.MARKDOWN_V2)
              except Exception: pass
+             db.rollback()
         except TelegramError as e:
              logger.error(f"Telegram API error during handle_message for chat {chat_id_str}: {e}", exc_info=True)
+             # Don't rollback DB changes if Telegram failed during sending
         except Exception as e:
             logger.error(f"General error processing message in chat {chat_id_str}: {e}", exc_info=True)
             try: await update.message.reply_text(escape_markdown_v2("произошла непредвиденная ошибка\\."), parse_mode=ParseMode.MARKDOWN_V2)
             except Exception: pass
+            db.rollback()
 
 
 async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media_type: str) -> None:
-    """Handles incoming photo or voice messages."""
     if not update.message: return
     chat_id_str = str(update.effective_chat.id)
     user_id = update.effective_user.id
@@ -753,8 +731,10 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
             if not check_and_update_user_limits(db, owner_user):
                 logger.info(f"Owner {owner_user.telegram_id} exceeded daily message limit for media.")
                 await send_limit_exceeded_message(update, context, owner_user)
-                db.commit()
+                db.commit() # Commit limit check result
                 return
+            else:
+                limit_updated = True
 
             prompt_template = None
             context_text_placeholder = ""
@@ -769,6 +749,7 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
                 system_formatter = persona.format_voice_prompt
             else:
                  logger.error(f"Unsupported media_type '{media_type}' in handle_media")
+                 db.rollback()
                  return
 
             context_placeholder_added = False
@@ -779,45 +760,45 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
                     add_message_to_context(db, persona.chat_instance.id, "user", context_content)
                     context_placeholder_added = True
                     logger.debug(f"Media placeholder '{context_text_placeholder}' prepared for context (pending commit).")
-                except SQLAlchemyError as e_ctx:
+                except (SQLAlchemyError, Exception) as e_ctx:
                      logger.error(f"DB Error preparing media placeholder context: {e_ctx}", exc_info=True)
                      if update.effective_message: await update.effective_message.reply_text(escape_markdown_v2("ошибка при сохранении информации о медиа\\."), parse_mode=ParseMode.MARKDOWN_V2)
+                     db.rollback()
                      return
-                except Exception as e:
-                    logger.error(f"Unexpected Error preparing media placeholder context: {e}", exc_info=True)
-                    if update.effective_message: await update.effective_message.reply_text(escape_markdown_v2("ошибка при сохранении информации о медиа\\."), parse_mode=ParseMode.MARKDOWN_V2)
-                    return
             else:
                  logger.error("Cannot add media placeholder to context, chat_instance is None.")
                  if update.effective_message: await update.effective_message.reply_text(escape_markdown_v2("системная ошибка: не удалось связать медиа с личностью\\."), parse_mode=ParseMode.MARKDOWN_V2)
+                 db.rollback()
                  return
 
             if persona.chat_instance and persona.chat_instance.is_muted:
                 logger.debug(f"Persona '{persona.name}' is muted in chat {chat_id_str}. Media saved to context, but ignoring response.")
-                db.commit()
+                db.commit() # Commit limit update and placeholder
                 return
 
             if not prompt_template or not system_formatter:
                 logger.info(f"Persona {persona.name} in chat {chat_id_str} has no {media_type} template. Skipping.")
-                db.commit()
+                db.commit() # Commit limit update and placeholder
                 return
 
             context_for_ai = []
             if persona.chat_instance:
                 try:
                     context_for_ai = get_context_for_chat_bot(db, persona.chat_instance.id)
-                except SQLAlchemyError as e_ctx:
+                except (SQLAlchemyError, Exception) as e_ctx:
                     logger.error(f"DB Error getting context for AI media response: {e_ctx}", exc_info=True)
                     if update.effective_message: await update.effective_message.reply_text(escape_markdown_v2("ошибка при получении контекста для ответа на медиа\\."), parse_mode=ParseMode.MARKDOWN_V2)
+                    db.rollback()
                     return
             else:
                  logger.error("Cannot get context for AI media response, chat_instance is None.")
+                 db.rollback()
                  return
 
             system_prompt = system_formatter()
             if not system_prompt:
                  logger.error(f"Failed to format {media_type} prompt for persona {persona.name}")
-                 db.commit()
+                 db.commit() # Commit limit update and placeholder
                  return
 
             response_text = await send_to_langdock(system_prompt, context_for_ai)
@@ -825,34 +806,31 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
 
             context_response_prepared = await process_and_send_response(update, context, chat_id_str, persona, response_text, db)
 
+            # Commit all: limit update, placeholder, bot response
             db.commit()
-            logger.debug(f"Committed DB changes for handle_media chat {chat_id_str} (PlaceholderAdded: {context_placeholder_added}, BotRespAdded: {context_response_prepared})")
+            logger.debug(f"Committed DB changes for handle_media chat {chat_id_str} (LimitUpdated: {limit_updated}, PlaceholderAdded: {context_placeholder_added}, BotRespAdded: {context_response_prepared})")
 
         except SQLAlchemyError as e:
              logger.error(f"Database error during handle_media ({media_type}): {e}", exc_info=True)
              if update.effective_message: await update.effective_message.reply_text(escape_markdown_v2("ошибка базы данных\\."), parse_mode=ParseMode.MARKDOWN_V2)
+             db.rollback()
         except TelegramError as e:
              logger.error(f"Telegram API error during handle_media ({media_type}): {e}", exc_info=True)
         except Exception as e:
             logger.error(f"General error processing {media_type} in chat {chat_id_str}: {e}", exc_info=True)
             if update.effective_message: await update.effective_message.reply_text(escape_markdown_v2("произошла непредвиденная ошибка\\."), parse_mode=ParseMode.MARKDOWN_V2)
+            db.rollback()
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handles photo messages."""
     if not update.message: return
     await handle_media(update, context, "photo")
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handles voice messages."""
     if not update.message: return
     await handle_media(update, context, "voice")
 
-
-# --- Команды ---
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handles the /start command."""
     if not update.message: return
     user_id = update.effective_user.id
     username = update.effective_user.username or f"id_{user_id}"
@@ -870,7 +848,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         with next(get_db()) as db:
             user = get_or_create_user(db, user_id, username)
-            db.commit()
+            db.commit() # Commit user creation/update immediately
             db.refresh(user)
 
             persona_info_tuple = get_persona_and_context_with_owner(chat_id_str, db)
@@ -883,6 +861,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 )
                 reply_markup = ReplyKeyboardRemove()
             else:
+                # Reload user with persona configs after commit if needed
+                user = db.query(User).options(selectinload(User.persona_configs)).filter(User.telegram_id == user_id).one()
+
                 now = datetime.now(timezone.utc)
                 today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
                 if not user.last_message_reset or user.last_message_reset < today_start:
@@ -891,35 +872,21 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                     db.commit()
                     db.refresh(user)
 
-                # Reload user with personas if needed for count
-                user_with_personas = db.query(User).options(selectinload(User.persona_configs)).filter(User.telegram_id == user_id).first()
-                if not user_with_personas: # Should not happen, but safety check
-                    logger.error(f"User {user_id} not found after commit/refresh in /start.")
-                    user_with_personas = user # Fallback to the user object we have
-                    persona_count = 0 # Assume 0 if reload failed
-                else:
-                    persona_count = len(user_with_personas.persona_configs) if user_with_personas.persona_configs is not None else 0
-
-
                 status_raw = "⭐ Premium" if user.is_active_subscriber else "🆓 Free"
                 escaped_status = escape_markdown_v2(status_raw)
 
                 escaped_expires_date = ""
                 if user.is_active_subscriber and user.subscription_expires_at:
                     expires_date_str = user.subscription_expires_at.strftime('%d.%m.%Y')
-                    escaped_expires_date = escape_markdown_v2(expires_date_str)
-                expires_text = f" до {escaped_expires_date}" if escaped_expires_date else ""
+                    escaped_expires_date = escape_markdown_v2(f" до {expires_date_str}")
 
-                persona_limit = user.persona_limit
-                message_limit = user.message_limit
+                persona_count = len(user.persona_configs)
+                persona_limit_esc = escape_markdown_v2(f"{persona_count}/{user.persona_limit}")
+                message_limit_esc = escape_markdown_v2(f"{user.daily_message_count}/{user.message_limit}")
 
-                persona_limit_esc = escape_markdown_v2(f"{persona_count}/{persona_limit}")
-                message_limit_esc = escape_markdown_v2(f"{user.daily_message_count}/{message_limit}")
-
-                # Combine status and limits into the final message structure
                 escaped_reply_text = (
                     escape_markdown_v2("привет\\! 👋 я бот для создания ai\\-собеседников \\(@NunuAiBot\\)\\.\n\n") +
-                    f"твой статус: **{escaped_status}**{expires_text}\n" +
+                    f"твой статус: **{escaped_status}**{escaped_expires_date}\n" +
                     escape_markdown_v2(f"личности: {persona_limit_esc} | сообщения: {message_limit_esc}\n\n") +
                     f"**{escape_markdown_v2('начало работы:')}**\n" +
                     f"`/createpersona <имя>`{escape_markdown_v2(' - создай ai-личность.')}\n" +
@@ -951,7 +918,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handles the /help command and the show_help callback."""
     is_callback = update.callback_query is not None
     message_or_query = update.callback_query if is_callback else update.message
     if not message_or_query: return
@@ -965,7 +931,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             await send_subscription_required_message(update, context)
             return
 
-    # Define raw text structure with markdown, placeholders handled by escape_markdown_v2 applied to static parts
     help_text = (
         f"**{escape_markdown_v2('🤖 основные команды:')}**\n"
         f"`/start`{escape_markdown_v2(' - приветствие и твой статус')}\n"
@@ -988,48 +953,36 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     try:
         if is_callback:
             query = update.callback_query
-            # Edit only if text or markup has changed
-            current_text = query.message.text if query.message else None
-            current_markup = query.message.reply_markup if query.message else None
-            if current_text != help_text or current_markup is not None:
+            if query.message.text != help_text or query.message.reply_markup:
                  await query.edit_message_text(help_text, reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2)
             else:
-                 await query.answer() # Prevent "loading" state
+                 await query.answer()
         else:
             await update.message.reply_text(help_text, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
     except BadRequest as e:
         if is_callback and "Message is not modified" in str(e):
             logger.debug("Help message not modified, skipping edit.")
-            try: await query.answer()
-            except: pass
+            await query.answer()
         else:
             logger.error(f"Failed sending/editing help message (BadRequest): {e}", exc_info=True)
             logger.error(f"Failed help text (escaped): '{help_text[:200]}...'")
             try:
-                plain_help_text = re.sub(r'\\(.)', r'\1', help_text) # Basic unescape
-                plain_help_text = re.sub(r'\*\*(.*?)\*\*', r'\1', plain_help_text) # Remove bold
-                plain_help_text = re.sub(r'`(.*?)`', r'\1', plain_help_text) # Remove code
-                target_message = query.message if is_callback else update.message
+                plain_help_text = re.sub(r'\\(.)', r'\1', help_text)
+                plain_help_text = re.sub(r'\*\*(.*?)\*\*', r'\1', plain_help_text)
+                plain_help_text = re.sub(r'`(.*?)`', r'\1', plain_help_text)
                 if is_callback:
                     await query.edit_message_text(plain_help_text, reply_markup=None, parse_mode=None)
                 else:
-                    await target_message.reply_text(plain_help_text, reply_markup=ReplyKeyboardRemove(), parse_mode=None)
+                    await update.message.reply_text(plain_help_text, reply_markup=ReplyKeyboardRemove(), parse_mode=None)
             except Exception as fallback_e:
                 logger.error(f"Failed sending plain help message: {fallback_e}")
-                if is_callback:
-                    try: await query.answer("Ошибка отображения справки", show_alert=True)
-                    except: pass
+                if is_callback: await query.answer("Ошибка отображения справки", show_alert=True)
     except Exception as e:
          logger.error(f"Error sending/editing help message: {e}", exc_info=True)
-         if is_callback:
-             try: await query.answer("Ошибка отображения справки", show_alert=True)
-             except: pass
+         if is_callback: await query.answer("Ошибка отображения справки", show_alert=True)
 
-
-# --- Команды управления персоной в чате ---
 
 async def mood(update: Update, context: ContextTypes.DEFAULT_TYPE, db: Optional[Session] = None, persona: Optional[Persona] = None) -> None:
-    """Handles /mood command or mood setting callback."""
     is_callback = update.callback_query is not None
     message_or_callback_msg = update.callback_query.message if is_callback else update.message
     if not message_or_callback_msg: return
@@ -1050,17 +1003,12 @@ async def mood(update: Update, context: ContextTypes.DEFAULT_TYPE, db: Optional[
     chat_bot_instance = None
     local_persona = persona
 
-    # Define raw format strings, apply escaping later
-    error_no_persona_raw = "в этом чате нет активной личности\\."
-    error_persona_info_raw = "Ошибка: не найдена информация о личности\\."
-    error_no_moods_fmt_raw = "у личности '{persona_name}' не настроены настроения\\."
-    error_bot_muted_fmt_raw = "личность '{persona_name}' сейчас заглушена \\(/unmutebot\\)\\."
-    error_db_raw = "ошибка базы данных при смене настроения\\."
-    error_general_raw = "ошибка при обработке команды /mood\\."
-    success_mood_set_fmt_raw = "настроение для '{persona_name}' теперь: **{mood_name}**"
-    prompt_mood_select_fmt_raw = "текущее настроение: **{current_mood}**\\. выбери новое для '{persona_name}':"
-    prompt_invalid_mood_fmt_raw = "не знаю настроения '{mood_arg}' для '{persona_name}'\\. выбери из списка:"
-
+    error_no_persona = escape_markdown_v2("в этом чате нет активной личности\\.")
+    error_persona_info = escape_markdown_v2("Ошибка: не найдена информация о личности\\.")
+    error_no_moods_fmt = escape_markdown_v2("у личности '") + "{persona_name}" + escape_markdown_v2("' не настроены настроения\\.")
+    error_bot_muted_fmt = escape_markdown_v2("личность '") + "{persona_name}" + escape_markdown_v2("' сейчас заглушена \\(/unmutebot\\)\\.")
+    error_db = escape_markdown_v2("ошибка базы данных при смене настроения\\.")
+    error_general = escape_markdown_v2("ошибка при обработке команды /mood\\.")
 
     try:
         if db_session is None:
@@ -1074,7 +1022,7 @@ async def mood(update: Update, context: ContextTypes.DEFAULT_TYPE, db: Optional[
                 reply_target = update.callback_query.message if is_callback else message_or_callback_msg
                 try:
                     if is_callback: await update.callback_query.answer("Нет активной личности", show_alert=True)
-                    await reply_target.reply_text(escape_markdown_v2(error_no_persona_raw), reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
+                    await reply_target.reply_text(error_no_persona, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
                 except Exception as send_err: logger.error(f"Error sending 'no active persona' msg: {send_err}")
                 logger.debug(f"No active persona for chat {chat_id_str}. Cannot set mood.")
                 if close_db_later: db_session.close()
@@ -1085,7 +1033,7 @@ async def mood(update: Update, context: ContextTypes.DEFAULT_TYPE, db: Optional[
              logger.error(f"Mood called, but persona or persona.chat_instance is None for chat {chat_id_str}.")
              reply_target = update.callback_query.message if is_callback else message_or_callback_msg
              if is_callback: await update.callback_query.answer("Ошибка: не найдена информация о личности.", show_alert=True)
-             else: await reply_target.reply_text(escape_markdown_v2(error_persona_info_raw), parse_mode=ParseMode.MARKDOWN_V2)
+             else: await reply_target.reply_text(error_persona_info, parse_mode=ParseMode.MARKDOWN_V2)
              if close_db_later: db_session.close()
              return
 
@@ -1094,8 +1042,7 @@ async def mood(update: Update, context: ContextTypes.DEFAULT_TYPE, db: Optional[
 
         if chat_bot_instance.is_muted:
             logger.debug(f"Persona '{local_persona.name}' is muted in chat {chat_id_str}. Ignoring mood command.")
-            # Format with escaped name
-            reply_text = escape_markdown_v2(error_bot_muted_fmt_raw.format(persona_name=local_persona.name)) # Escape the whole thing
+            reply_text = error_bot_muted_fmt.format(persona_name=persona_name_escaped)
             try:
                  reply_target = update.callback_query.message if is_callback else message_or_callback_msg
                  if is_callback: await update.callback_query.answer("Бот заглушен", show_alert=True)
@@ -1106,8 +1053,7 @@ async def mood(update: Update, context: ContextTypes.DEFAULT_TYPE, db: Optional[
 
         available_moods = local_persona.get_all_mood_names()
         if not available_moods:
-             # Format with escaped name
-             reply_text = escape_markdown_v2(error_no_moods_fmt_raw.format(persona_name=local_persona.name)) # Escape the whole thing
+             reply_text = error_no_moods_fmt.format(persona_name=persona_name_escaped)
              try:
                  reply_target = update.callback_query.message if is_callback else message_or_callback_msg
                  if is_callback: await update.callback_query.answer("Нет настроений", show_alert=True)
@@ -1124,9 +1070,15 @@ async def mood(update: Update, context: ContextTypes.DEFAULT_TYPE, db: Optional[
         if is_callback and update.callback_query.data.startswith("set_mood_"):
              parts = update.callback_query.data.split('_')
              if len(parts) >= 3 and parts[-1].isdigit():
-                  mood_arg_lower = "_".join(parts[2:-1]).lower()
-                  if mood_arg_lower in available_moods_lower:
-                      target_mood_original_case = available_moods_lower[mood_arg_lower]
+                  # Try decoding the mood name from callback data
+                  try:
+                      encoded_mood_name = "_".join(parts[2:-1])
+                      decoded_mood_name = urllib.parse.unquote(encoded_mood_name)
+                      mood_arg_lower = decoded_mood_name.lower()
+                      if mood_arg_lower in available_moods_lower:
+                          target_mood_original_case = available_moods_lower[mood_arg_lower]
+                  except Exception as decode_err:
+                      logger.error(f"Error decoding mood name from callback {update.callback_query.data}: {decode_err}")
              else:
                   logger.warning(f"Invalid mood callback data format: {update.callback_query.data}")
         elif not is_callback:
@@ -1146,21 +1098,11 @@ async def mood(update: Update, context: ContextTypes.DEFAULT_TYPE, db: Optional[
         if target_mood_original_case:
              set_mood_for_chat_bot(db_session, chat_bot_instance.id, target_mood_original_case)
              mood_name_escaped = escape_markdown_v2(target_mood_original_case)
-             # Format raw string with escaped values, then combine with static escaped parts
-             reply_text = escape_markdown_v2(success_mood_set_fmt_raw.format(
-                persona_name=local_persona.name, # Unescaped here, will be escaped below
-                mood_name=target_mood_original_case # Unescaped here
-             ))
-             # Manually reconstruct with bold and escaped parts
-             reply_text = escape_markdown_v2(f"настроение для '{local_persona.name}' теперь: ") + f"**{mood_name_escaped}**"
-
-
+             reply_text = f"настроение для '{persona_name_escaped}' теперь: **{mood_name_escaped}**"
              try:
                  if is_callback:
                      query = update.callback_query
-                     current_text = query.message.text if query.message else None
-                     current_markup = query.message.reply_markup if query.message else None
-                     if current_text != reply_text or current_markup is not None:
+                     if query.message.text != reply_text or query.message.reply_markup:
                          await query.edit_message_text(reply_text, reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2)
                      else:
                          await query.answer(f"Настроение: {target_mood_original_case}")
@@ -1178,11 +1120,17 @@ async def mood(update: Update, context: ContextTypes.DEFAULT_TYPE, db: Optional[
         else:
              keyboard = []
              for mood_name in sorted(available_moods, key=str.lower):
-                 button_callback = f"set_mood_{mood_name.lower()}_{local_persona.id}"
-                 if len(button_callback.encode('utf-8')) <= 64:
-                      keyboard.append([InlineKeyboardButton(mood_name.capitalize(), callback_data=button_callback)])
-                 else:
-                      logger.warning(f"Callback data for mood '{mood_name}' too long, skipping button.")
+                 try:
+                     # Encode mood name for callback data
+                     encoded_mood_name = urllib.parse.quote(mood_name)
+                     button_callback = f"set_mood_{encoded_mood_name}_{local_persona.id}"
+                     if len(button_callback.encode('utf-8')) <= 64:
+                          keyboard.append([InlineKeyboardButton(mood_name.capitalize(), callback_data=button_callback)])
+                     else:
+                          logger.warning(f"Callback data for mood '{mood_name}' (encoded: '{encoded_mood_name}') too long, skipping button.")
+                 except Exception as encode_err:
+                     logger.error(f"Error encoding mood name '{mood_name}' for callback: {encode_err}")
+
 
              reply_markup = InlineKeyboardMarkup(keyboard)
              current_mood_text = get_mood_for_chat_bot(db_session, chat_bot_instance.id)
@@ -1191,30 +1139,16 @@ async def mood(update: Update, context: ContextTypes.DEFAULT_TYPE, db: Optional[
              reply_text = ""
              if mood_arg_lower:
                  mood_arg_escaped = escape_markdown_v2(mood_arg_lower)
-                 # Format raw string then escape static parts, combine with escaped dynamic parts
-                 reply_text = escape_markdown_v2(prompt_invalid_mood_fmt_raw.format(
-                    mood_arg=mood_arg_lower, # unescaped here
-                    persona_name=local_persona.name # unescaped here
-                 ))
-                 reply_text = escape_markdown_v2(f"не знаю настроения '{mood_arg_lower}' для '{local_persona.name}'\\. выбери из списка:") # Reconstruct escaped version
-
+                 reply_text = escape_markdown_v2(f"не знаю настроения '{mood_arg_escaped}' для '{persona_name_escaped}'\\. выбери из списка:")
                  logger.debug(f"Invalid mood argument '{mood_arg_lower}' for chat {chat_id_str}. Sent mood selection.")
              else:
-                  # Format raw string then escape static parts, combine with escaped dynamic parts
-                  # reply_text = escape_markdown_v2(prompt_mood_select_fmt_raw.format(
-                  #    current_mood=current_mood_text, # unescaped here
-                  #    persona_name=local_persona.name # unescaped here
-                  # ))
-                  reply_text = escape_markdown_v2(f"текущее настроение: ") + f"**{current_mood_escaped}**" + escape_markdown_v2(f"\\. выбери новое для '{local_persona.name}':")
-
-                  logger.debug(f"Sent mood selection keyboard for chat {chat_id_str}.")
+                 reply_text = f"текущее настроение: **{current_mood_escaped}**\\. выбери новое для '{persona_name_escaped}':"
+                 logger.debug(f"Sent mood selection keyboard for chat {chat_id_str}.")
 
              try:
                  if is_callback:
                       query = update.callback_query
-                      current_text = query.message.text if query.message else None
-                      current_markup = query.message.reply_markup if query.message else None
-                      if current_text != reply_text or current_markup != reply_markup:
+                      if query.message.text != reply_text or query.message.reply_markup != reply_markup:
                            await query.edit_message_text(reply_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
                       else:
                            await query.answer()
@@ -1234,14 +1168,14 @@ async def mood(update: Update, context: ContextTypes.DEFAULT_TYPE, db: Optional[
          reply_target = update.callback_query.message if is_callback else message_or_callback_msg
          try:
              if is_callback: await update.callback_query.answer("Ошибка БД", show_alert=True)
-             await reply_target.reply_text(escape_markdown_v2(error_db_raw), reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
+             await reply_target.reply_text(error_db, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
          except Exception as send_err: logger.error(f"Error sending DB error msg: {send_err}")
     except Exception as e:
          logger.error(f"Error in /mood handler for chat {chat_id_str}: {e}", exc_info=True)
          reply_target = update.callback_query.message if is_callback else message_or_callback_msg
          try:
              if is_callback: await update.callback_query.answer("Ошибка", show_alert=True)
-             await reply_target.reply_text(escape_markdown_v2(error_general_raw), reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
+             await reply_target.reply_text(error_general, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
          except Exception as send_err: logger.error(f"Error sending general error msg: {send_err}")
     finally:
         if close_db_later and db_session:
@@ -1250,7 +1184,6 @@ async def mood(update: Update, context: ContextTypes.DEFAULT_TYPE, db: Optional[
 
 
 async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handles the /reset command to clear context."""
     if not update.message: return
     chat_id_str = str(update.effective_chat.id)
     user_id = update.effective_user.id
@@ -1262,56 +1195,50 @@ async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     await context.bot.send_chat_action(chat_id=chat_id_str, action=ChatAction.TYPING)
-
-    # Define raw format strings
-    error_no_persona_raw = "в этом чате нет активной личности для сброса\\."
-    error_not_owner_raw = "только владелец личности может сбросить её память\\."
-    error_no_instance_raw = "ошибка: не найден экземпляр бота для сброса\\."
-    error_db_raw = "ошибка базы данных при сбросе контекста\\."
-    error_general_raw = "ошибка при сбросе контекста\\."
-    success_reset_fmt_raw = "память личности '{persona_name}' в этом чате очищена\\."
+    error_no_persona = escape_markdown_v2("в этом чате нет активной личности для сброса\\.")
+    error_not_owner = escape_markdown_v2("только владелец личности может сбросить её память\\.")
+    error_no_instance = escape_markdown_v2("ошибка: не найден экземпляр бота для сброса\\.")
+    error_db = escape_markdown_v2("ошибка базы данных при сбросе контекста\\.")
+    error_general = escape_markdown_v2("ошибка при сбросе контекста\\.")
+    success_reset_fmt = escape_markdown_v2("память личности '") + "{persona_name}" + escape_markdown_v2("' в этом чате очищена\\.")
 
     with next(get_db()) as db:
         try:
             persona_info_tuple = get_persona_and_context_with_owner(chat_id_str, db)
             if not persona_info_tuple:
-                await update.message.reply_text(escape_markdown_v2(error_no_persona_raw), reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
+                await update.message.reply_text(error_no_persona, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
                 return
             persona, _, owner_user = persona_info_tuple
             persona_name_escaped = escape_markdown_v2(persona.name)
 
             if owner_user.telegram_id != user_id and not is_admin(user_id):
                 logger.warning(f"User {user_id} attempted to reset persona '{persona.name}' owned by {owner_user.telegram_id} in chat {chat_id_str}.")
-                await update.message.reply_text(escape_markdown_v2(error_not_owner_raw), reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
+                await update.message.reply_text(error_not_owner, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
                 return
 
             chat_bot_instance = persona.chat_instance
             if not chat_bot_instance:
                  logger.error(f"Reset command: ChatBotInstance not found for persona {persona.name} in chat {chat_id_str}")
-                 await update.message.reply_text(escape_markdown_v2(error_no_instance_raw), parse_mode=ParseMode.MARKDOWN_V2)
+                 await update.message.reply_text(error_no_instance, parse_mode=ParseMode.MARKDOWN_V2)
                  return
 
             deleted_count_result = chat_bot_instance.context.delete(synchronize_session='fetch')
             deleted_count = deleted_count_result if isinstance(deleted_count_result, int) else 0
             db.commit()
             logger.info(f"Deleted {deleted_count} context messages for chat_bot_instance {chat_bot_instance.id} (Persona '{persona.name}') in chat {chat_id_str} by user {user_id}.")
-
-            # Format success message using escaped name
-            final_success_msg = escape_markdown_v2(success_reset_fmt_raw.format(persona_name=persona.name)) # Escape the whole thing
-
+            final_success_msg = success_reset_fmt.format(persona_name=persona_name_escaped)
             await update.message.reply_text(final_success_msg, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
         except SQLAlchemyError as e:
             logger.error(f"Database error during /reset for chat {chat_id_str}: {e}", exc_info=True)
-            await update.message.reply_text(escape_markdown_v2(error_db_raw), parse_mode=ParseMode.MARKDOWN_V2)
+            await update.message.reply_text(error_db, parse_mode=ParseMode.MARKDOWN_V2)
+            db.rollback()
         except Exception as e:
             logger.error(f"Error in /reset handler for chat {chat_id_str}: {e}", exc_info=True)
-            await update.message.reply_text(escape_markdown_v2(error_general_raw), parse_mode=ParseMode.MARKDOWN_V2)
+            await update.message.reply_text(error_general, parse_mode=ParseMode.MARKDOWN_V2)
+            db.rollback()
 
-
-# --- Команды управления личностями ---
 
 async def create_persona(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handles the /createpersona command."""
     if not update.message: return
     user_id = update.effective_user.id
     username = update.effective_user.username or f"id_{user_id}"
@@ -1324,34 +1251,37 @@ async def create_persona(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     await context.bot.send_chat_action(chat_id=chat_id_str, action=ChatAction.TYPING)
 
-    # Define raw format strings
-    usage_text_raw = "формат: `/createpersona <имя> \\[описание]`\n_имя обязательно, описание нет\\._"
-    error_name_len_raw = "имя личности: 2\\-50 символов\\."
-    error_desc_len_raw = "описание: до 1500 символов\\."
-    error_limit_reached_fmt_raw = (
-        "упс\\! достигнут лимит личностей \\({count_limit_str}\\) для статуса **{status_text}**\\. 😟\n"
-        "чтобы создавать больше, используй /subscribe"
+    usage_text = escape_markdown_v2("формат: `/createpersona <имя> \\[описание]`\n_имя обязательно, описание нет\\._")
+    error_name_len = escape_markdown_v2("имя личности: 2\\-50 символов\\.")
+    error_desc_len = escape_markdown_v2("описание: до 1500 символов\\.")
+    error_limit_reached_fmt = (
+        escape_markdown_v2("упс\\! достигнут лимит личностей \\(") +
+        "{current_count}/{limit}" +
+        escape_markdown_v2("\\) для статуса ") +
+        "**{status_text}**" +
+        escape_markdown_v2("\\. 😟\nчтобы создавать больше, используй /subscribe")
     )
-    error_name_exists_fmt_raw = "личность с именем '{persona_name}' уже есть\\. выбери другое\\."
-    error_db_raw = "ошибка базы данных при создании личности\\."
-    error_general_raw = "ошибка при создании личности\\."
-    success_create_fmt_raw = (
-        "✅ личность '{name}' создана\\!\nid: `{id}`\n"
-        "описание: {description}\n\n"
-        "добавь в чат или управляй через /mypersonas"
+    error_name_exists_fmt = escape_markdown_v2("личность с именем '") + "{persona_name}" + escape_markdown_v2("' уже есть\\. выбери другое\\.")
+    error_db = escape_markdown_v2("ошибка базы данных при создании личности\\.")
+    error_general = escape_markdown_v2("ошибка при создании личности\\.")
+    success_create_fmt = (
+        escape_markdown_v2("✅ личность '") + "{name}" + escape_markdown_v2("' создана\\!\nid: ") +
+        "`{id}`" +
+        escape_markdown_v2("\nописание: ") + "{description}" +
+        escape_markdown_v2("\n\nдобавь в чат или управляй через /mypersonas")
     )
 
     args = context.args
     if not args:
-        await update.message.reply_text(escape_markdown_v2(usage_text_raw), parse_mode=ParseMode.MARKDOWN_V2)
+        await update.message.reply_text(usage_text, parse_mode=ParseMode.MARKDOWN_V2)
         return
     persona_name = args[0]
     persona_description = " ".join(args[1:]) if len(args) > 1 else None
     if len(persona_name) < 2 or len(persona_name) > 50:
-         await update.message.reply_text(escape_markdown_v2(error_name_len_raw), reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
+         await update.message.reply_text(error_name_len, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
          return
     if persona_description and len(persona_description) > 1500:
-         await update.message.reply_text(escape_markdown_v2(error_desc_len_raw), reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
+         await update.message.reply_text(error_desc_len, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
          return
 
     with next(get_db()) as db:
@@ -1364,55 +1294,35 @@ async def create_persona(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             user = db.query(User).options(selectinload(User.persona_configs)).filter(User.telegram_id == user_id).one()
 
             if not user.can_create_persona:
-                 current_count = len(user.persona_configs) if user.persona_configs is not None else 0
+                 current_count = len(user.persona_configs)
                  limit = user.persona_limit
                  logger.warning(f"User {user_id} cannot create persona, limit reached ({current_count}/{limit}).")
 
                  status_text_raw = "⭐ Premium" if user.is_active_subscriber else "🆓 Free"
                  status_text_escaped = escape_markdown_v2(status_text_raw)
-                 count_esc = escape_markdown_v2(str(current_count))
+                 current_count_esc = escape_markdown_v2(str(current_count))
                  limit_esc = escape_markdown_v2(str(limit))
 
-                 # Format the message using escaped parts
-                 final_limit_msg = escape_markdown_v2(error_limit_reached_fmt_raw.format(
-                    count_limit_str=f"{current_count}/{limit}", # Unescaped here
-                    status_text=status_text_raw # Unescaped here
-                 ))
-                 # Reconstruct with escaped parts and bolding
-                 final_limit_msg = (
-                    escape_markdown_v2(f"упс\\! достигнут лимит личностей \\({count_esc}/{limit_esc}\\) для статуса ") +
-                    f"**{status_text_escaped}**" +
-                    escape_markdown_v2("\\. 😟\nчтобы создавать больше, используй /subscribe")
+                 final_limit_msg = error_limit_reached_fmt.format(
+                     current_count=current_count_esc,
+                     limit=limit_esc,
+                     status_text=f"**{status_text_escaped}**"
                  )
-
                  await update.message.reply_text(final_limit_msg, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
                  return
 
             existing_persona = get_persona_by_name_and_owner(db, user.id, persona_name)
             if existing_persona:
                  persona_name_escaped = escape_markdown_v2(persona_name)
-                 final_exists_msg = escape_markdown_v2(error_name_exists_fmt_raw.format(persona_name=persona_name)) # Escape whole thing
+                 final_exists_msg = error_name_exists_fmt.format(persona_name=persona_name_escaped)
                  await update.message.reply_text(final_exists_msg, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
                  return
 
-            new_persona = create_persona_config(db, user.id, persona_name, persona_description)
+            new_persona = create_persona_config(db, user.id, persona_name, persona_description) # Commits inside
 
             name_escaped = escape_markdown_v2(new_persona.name)
             desc_display = escape_markdown_v2(new_persona.description) if new_persona.description else escape_markdown_v2("\\(пусто\\)")
-            # Format success message using escaped parts
-            final_success_msg = escape_markdown_v2(success_create_fmt_raw.format(
-                name=new_persona.name, # unescaped
-                id=new_persona.id, # ID is inside ``, no need to escape value
-                description=new_persona.description if new_persona.description else "(пусто)" # unescaped
-            ))
-            # Reconstruct
-            final_success_msg = (
-                escape_markdown_v2(f"✅ личность '{new_persona.name}' создана\\!\nid: ") +
-                f"`{new_persona.id}`" + # ID inside code block
-                escape_markdown_v2("\nописание: ") + desc_display +
-                escape_markdown_v2("\n\nдобавь в чат или управляй через /mypersonas")
-            )
-
+            final_success_msg = success_create_fmt.format(name=name_escaped, id=new_persona.id, description=desc_display)
             await update.message.reply_text(final_success_msg, parse_mode=ParseMode.MARKDOWN_V2)
             logger.info(f"User {user_id} created persona: '{new_persona.name}' (ID: {new_persona.id})")
 
@@ -1423,18 +1333,17 @@ async def create_persona(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
              await update.message.reply_text(error_msg_ie, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
         except SQLAlchemyError as e:
              logger.error(f"SQLAlchemyError caught by handler for create_persona user {user_id}: {e}", exc_info=True)
-             await update.message.reply_text(escape_markdown_v2(error_db_raw), parse_mode=ParseMode.MARKDOWN_V2)
+             await update.message.reply_text(error_db, parse_mode=ParseMode.MARKDOWN_V2)
         except BadRequest as e:
              logger.error(f"BadRequest sending message in create_persona for user {user_id}: {e}", exc_info=True)
              try: await update.message.reply_text("Произошла ошибка при отправке ответа.", parse_mode=None)
              except Exception as fe: logger.error(f"Failed sending fallback create_persona error: {fe}")
         except Exception as e:
              logger.error(f"Error creating persona for user {user_id}: {e}", exc_info=True)
-             await update.message.reply_text(escape_markdown_v2(error_general_raw), parse_mode=ParseMode.MARKDOWN_V2)
+             await update.message.reply_text(error_general, parse_mode=ParseMode.MARKDOWN_V2)
 
 
 async def my_personas(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handles the /mypersonas command."""
     if not update.message: return
     user_id = update.effective_user.id
     username = update.effective_user.username or f"id_{user_id}"
@@ -1447,12 +1356,11 @@ async def my_personas(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     await context.bot.send_chat_action(chat_id=chat_id_str, action=ChatAction.TYPING)
 
-    # Define raw format strings
-    error_db_raw = "ошибка при загрузке списка личностей\\."
-    error_general_raw = "произошла ошибка при обработке команды /mypersonas\\."
-    error_user_not_found_raw = "Ошибка: не удалось найти пользователя\\."
-    info_no_personas_fmt_raw = "у тебя пока нет личностей \\({count}/{limit}\\)\\.\nсоздай: `/createpersona <имя>`"
-    info_list_header_fmt_raw = "твои личности \\({count}/{limit}\\):\n" # <<< ИСПРАВЛЕНО: Убрано экранирование форматтера
+    error_db = escape_markdown_v2("ошибка при загрузке списка личностей\\.")
+    error_general = escape_markdown_v2("произошла ошибка при обработке команды /mypersonas\\.")
+    error_user_not_found = escape_markdown_v2("Ошибка: не удалось найти пользователя\\.")
+    info_no_personas_fmt = escape_markdown_v2("у тебя пока нет личностей \\({count}/{limit}\\)\\.\nсоздай: `/createpersona <имя>`")
+    info_list_header_fmt = escape_markdown_v2("твои личности \\({count}/{limit}\\):\n")
 
     try:
         with next(get_db()) as db:
@@ -1465,31 +1373,23 @@ async def my_personas(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                  user_with_personas = db.query(User).options(selectinload(User.persona_configs)).filter(User.telegram_id == user_id).one()
                  if not user_with_personas:
                      logger.error(f"User {user_id} not found even after get_or_create in my_personas.")
-                     await update.message.reply_text(escape_markdown_v2(error_user_not_found_raw), parse_mode=ParseMode.MARKDOWN_V2)
+                     await update.message.reply_text(error_user_not_found, parse_mode=ParseMode.MARKDOWN_V2)
                      return
 
             personas = sorted(user_with_personas.persona_configs, key=lambda p: p.name) if user_with_personas.persona_configs else []
             persona_limit = user_with_personas.persona_limit
             persona_count = len(personas)
 
-            count_esc = escape_markdown_v2(str(persona_count))
-            limit_esc = escape_markdown_v2(str(persona_limit))
-
             if not personas:
-                # Format the "no personas" message using the raw format string and escaped values
-                text_to_send = info_no_personas_fmt_raw.format(count=count_esc, limit=limit_esc)
-                # Escape the static parts after formatting (or manually construct)
-                text_to_send = (
-                    escape_markdown_v2(f"у тебя пока нет личностей \\({count_esc}/{limit_esc}\\)\\.\nсоздай: ") +
-                    "`/createpersona <имя>`" # Keep code block unescaped
-                )
+                count_esc = escape_markdown_v2(str(persona_count))
+                limit_esc = escape_markdown_v2(str(persona_limit))
+                text_to_send = info_no_personas_fmt.format(count=count_esc, limit=limit_esc)
                 await update.message.reply_text(text_to_send, parse_mode=ParseMode.MARKDOWN_V2)
                 return
 
-            # Format the header using the raw format string and escaped values
-            text = info_list_header_fmt_raw.format(count=count_esc, limit=limit_esc) # <<< ИСПРАВЛЕНО: Используем _raw
-            # Escape the static parts after formatting
-            text = escape_markdown_v2(f"твои личности \\({count_esc}/{limit_esc}\\):\n") # <<< ИСПРАВЛЕНО: Переформатируем вручную
+            count_esc = escape_markdown_v2(str(persona_count))
+            limit_esc = escape_markdown_v2(str(persona_limit))
+            text = info_list_header_fmt.format(count=count_esc, limit=limit_esc)
 
             keyboard = []
             for p in personas:
@@ -1511,15 +1411,13 @@ async def my_personas(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             logger.info(f"User {user_id} requested mypersonas. Sent {persona_count} personas with action buttons.")
     except SQLAlchemyError as e:
         logger.error(f"Database error during /mypersonas for user {user_id}: {e}", exc_info=True)
-        await update.message.reply_text(escape_markdown_v2(error_db_raw), parse_mode=ParseMode.MARKDOWN_V2)
+        await update.message.reply_text(error_db, parse_mode=ParseMode.MARKDOWN_V2)
     except Exception as e:
         logger.error(f"Error in /mypersonas handler for user {user_id}: {e}", exc_info=True)
-        # Ensure error_general is escaped before sending
-        await update.message.reply_text(escape_markdown_v2(error_general_raw), parse_mode=ParseMode.MARKDOWN_V2)
+        await update.message.reply_text(error_general, parse_mode=ParseMode.MARKDOWN_V2)
 
 
 async def add_bot_to_chat(update: Update, context: ContextTypes.DEFAULT_TYPE, persona_id: Optional[int] = None) -> None:
-    """Handles /addbot command or callback to add a persona to the current chat."""
     is_callback = update.callback_query is not None
     message_or_callback_msg = update.callback_query.message if is_callback else update.message
     if not message_or_callback_msg: return
@@ -1527,7 +1425,6 @@ async def add_bot_to_chat(update: Update, context: ContextTypes.DEFAULT_TYPE, pe
     user_id = update.effective_user.id
     username = update.effective_user.username or f"id_{user_id}"
     chat_id_str = str(message_or_callback_msg.chat.id)
-    # Escape chat title here, it's user-generated content essentially
     chat_title = escape_markdown_v2(message_or_callback_msg.chat.title or f"Chat {chat_id_str}")
     local_persona_id = persona_id
 
@@ -1536,18 +1433,17 @@ async def add_bot_to_chat(update: Update, context: ContextTypes.DEFAULT_TYPE, pe
             await send_subscription_required_message(update, context)
             return
 
-    # Define raw format strings
-    usage_text_raw = "формат: `/addbot <id персоны>`\nили используй кнопку '➕ В чат' из /mypersonas"
-    error_invalid_id_callback_raw = "Ошибка: неверный ID личности\\."
-    error_invalid_id_cmd_raw = "id личности должен быть числом\\."
-    error_no_id_raw = "Ошибка: ID личности не определен\\."
-    error_persona_not_found_fmt_raw = "личность с id `{id}` не найдена или не твоя\\."
-    error_already_active_fmt_raw = "личность '{name}' уже активна в этом чате\\."
-    error_link_failed_raw = "не удалось активировать личность \\(ошибка связывания\\)\\."
-    error_integrity_raw = "произошла ошибка целостности данных \\(возможно, конфликт активации\\), попробуйте еще раз\\."
-    error_db_raw = "ошибка базы данных при добавлении бота\\."
-    error_general_raw = "ошибка при активации личности\\."
-    success_added_structure_raw = "✅ личность '{name}' \\(id: `{id}`\\) активирована в этом чате\\! Память очищена\\."
+    usage_text = escape_markdown_v2("формат: `/addbot <id персоны>`\nили используй кнопку '➕ В чат' из /mypersonas")
+    error_invalid_id_callback = escape_markdown_v2("Ошибка: неверный ID личности\\.")
+    error_invalid_id_cmd = escape_markdown_v2("id личности должен быть числом\\.")
+    error_no_id = escape_markdown_v2("Ошибка: ID личности не определен\\.")
+    error_persona_not_found_fmt = escape_markdown_v2("личность с id `") + "{id}" + escape_markdown_v2("` не найдена или не твоя\\.")
+    error_already_active_fmt = escape_markdown_v2("личность '") + "{name}" + escape_markdown_v2("' уже активна в этом чате\\.")
+    error_link_failed = escape_markdown_v2("не удалось активировать личность \\(ошибка связывания\\)\\.")
+    error_integrity = escape_markdown_v2("произошла ошибка целостности данных \\(возможно, конфликт активации\\), попробуйте еще раз\\.")
+    error_db = escape_markdown_v2("ошибка базы данных при добавлении бота\\.")
+    error_general = escape_markdown_v2("ошибка при активации личности\\.")
+    success_added_structure = escape_markdown_v2("✅ личность '{name}' \\(id: `{id}`\\) активирована в этом чате\\! Память очищена\\.")
 
     if is_callback and local_persona_id is None:
          try:
@@ -1557,41 +1453,35 @@ async def add_bot_to_chat(update: Update, context: ContextTypes.DEFAULT_TYPE, pe
              await update.callback_query.answer("Ошибка: неверный ID", show_alert=True)
              return
     elif not is_callback:
-         logger.info(f"CMD /addbot < User {user_id} ({username}) in Chat '{message_or_callback_msg.chat.title}' ({chat_id_str}) with args: {context.args}") # Use unescaped title for log
+         logger.info(f"CMD /addbot < User {user_id} ({username}) in Chat '{chat_title}' ({chat_id_str}) with args: {context.args}")
          args = context.args
          if not args or len(args) != 1 or not args[0].isdigit():
-             await message_or_callback_msg.reply_text(escape_markdown_v2(usage_text_raw), parse_mode=ParseMode.MARKDOWN_V2)
+             await message_or_callback_msg.reply_text(usage_text, parse_mode=ParseMode.MARKDOWN_V2)
              return
          try:
              local_persona_id = int(args[0])
          except ValueError:
-             await message_or_callback_msg.reply_text(escape_markdown_v2(error_invalid_id_cmd_raw), reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
+             await message_or_callback_msg.reply_text(error_invalid_id_cmd, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
              return
 
     if local_persona_id is None:
          logger.error("add_bot_to_chat: persona_id is None after processing input.")
          reply_target = update.callback_query.message if is_callback else message_or_callback_msg
          if is_callback: await update.callback_query.answer("Ошибка: ID не определен.", show_alert=True)
-         else: await reply_target.reply_text(escape_markdown_v2(error_no_id_raw), parse_mode=ParseMode.MARKDOWN_V2)
+         else: await reply_target.reply_text(error_no_id, parse_mode=ParseMode.MARKDOWN_V2)
          return
 
     if is_callback:
-        try: await update.callback_query.answer("Добавляем личность...")
-        except: pass # Ignore if answer fails
+        await update.callback_query.answer("Добавляем личность...")
 
-    try: await context.bot.send_chat_action(chat_id=chat_id_str, action=ChatAction.TYPING)
-    except: pass # Ignore if typing fails
+    await context.bot.send_chat_action(chat_id=chat_id_str, action=ChatAction.TYPING)
 
     with next(get_db()) as db:
         try:
             persona = get_persona_by_id_and_owner(db, user_id, local_persona_id)
             if not persona:
-                 # Format "not found" message using raw string and escaped ID
-                 id_str = str(local_persona_id) # ID is inside ``, don't escape it
-                 final_not_found_msg = escape_markdown_v2(error_persona_not_found_fmt_raw.format(id=id_str))
-                 # Reconstruct manually to ensure ID is inside code block
-                 final_not_found_msg = escape_markdown_v2("личность с id ") + f"`{id_str}`" + escape_markdown_v2(" не найдена или не твоя\\.")
-
+                 id_esc = escape_markdown_v2(str(local_persona_id))
+                 final_not_found_msg = error_persona_not_found_fmt.format(id=id_esc)
                  reply_target = update.callback_query.message if is_callback else message_or_callback_msg
                  if is_callback: await update.callback_query.answer("Личность не найдена", show_alert=True)
                  await reply_target.reply_text(final_not_found_msg, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
@@ -1600,16 +1490,14 @@ async def add_bot_to_chat(update: Update, context: ContextTypes.DEFAULT_TYPE, pe
             existing_active_link = db.query(ChatBotInstance).options(
                  selectinload(ChatBotInstance.bot_instance_ref).selectinload(BotInstance.persona_config)
             ).filter(
-                 ChatBotInstance.chat_id == chat_id_str, # <<< ИЗМЕНЕНО: Сравниваем со строкой (как в модели)
+                 ChatBotInstance.chat_id == chat_id_str, # Compare as string
                  ChatBotInstance.active == True
             ).first()
 
             if existing_active_link:
                 if existing_active_link.bot_instance_ref and existing_active_link.bot_instance_ref.persona_config_id == local_persona_id:
                     persona_name_escaped = escape_markdown_v2(persona.name)
-                    # Format "already active" message
-                    final_already_active_msg = escape_markdown_v2(error_already_active_fmt_raw.format(name=persona.name))
-
+                    final_already_active_msg = error_already_active_fmt.format(name=persona_name_escaped)
                     reply_target = update.callback_query.message if is_callback else message_or_callback_msg
                     if is_callback: await update.callback_query.answer(f"'{persona.name}' уже активна", show_alert=True)
                     await reply_target.reply_text(final_already_active_msg, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
@@ -1617,7 +1505,7 @@ async def add_bot_to_chat(update: Update, context: ContextTypes.DEFAULT_TYPE, pe
                     logger.info(f"Clearing context for already active persona {persona.name} in chat {chat_id_str} on re-add.")
                     deleted_ctx_result = existing_active_link.context.delete(synchronize_session='fetch')
                     deleted_ctx = deleted_ctx_result if isinstance(deleted_ctx_result, int) else 0
-                    db.commit()
+                    db.commit() # Commit context clearing
                     logger.debug(f"Cleared {deleted_ctx} context messages for re-added ChatBotInstance {existing_active_link.id}.")
                     return
                 else:
@@ -1634,7 +1522,7 @@ async def add_bot_to_chat(update: Update, context: ContextTypes.DEFAULT_TYPE, pe
             if not bot_instance:
                  logger.info(f"Creating new BotInstance for persona {local_persona_id}")
                  try:
-                      bot_instance = create_bot_instance(db, user.id, local_persona_id, name=f"Inst:{persona.name}")
+                      bot_instance = create_bot_instance(db, user.id, local_persona_id, name=f"Inst:{persona.name}") # Commits inside
                  except (IntegrityError, SQLAlchemyError):
                       logger.error("Failed to create BotInstance, possibly due to concurrent request. Retrying fetch.")
                       db.rollback()
@@ -1643,17 +1531,13 @@ async def add_bot_to_chat(update: Update, context: ContextTypes.DEFAULT_TYPE, pe
                            logger.error("Failed to fetch BotInstance even after retry.")
                            raise SQLAlchemyError("Failed to create or fetch BotInstance")
 
-            # Pass chat_id_str, link_bot_instance_to_chat handles string conversion internally
+            # link_bot_instance_to_chat commits or rolls back inside
             chat_link = link_bot_instance_to_chat(db, bot_instance.id, chat_id_str)
 
             if chat_link:
                  name_esc = escape_markdown_v2(persona.name)
-                 id_str = str(local_persona_id) # ID is inside ``, don't escape value
-                 # Format success message
-                 final_success_msg = escape_markdown_v2(success_added_structure_raw.format(name=persona.name, id=id_str))
-                 # Reconstruct manually
-                 final_success_msg = escape_markdown_v2(f"✅ личность '{persona.name}' \\(id: ") + f"`{id_str}`" + escape_markdown_v2("\\) активирована в этом чате\\! Память очищена\\.")
-
+                 id_esc = escape_markdown_v2(str(local_persona_id)) # Use local_persona_id which is confirmed int
+                 final_success_msg = success_added_structure.format(name=name_esc, id=id_esc)
                  await context.bot.send_message(chat_id=chat_id_str, text=final_success_msg, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
                  if is_callback:
                       try:
@@ -1663,28 +1547,25 @@ async def add_bot_to_chat(update: Update, context: ContextTypes.DEFAULT_TYPE, pe
                  logger.info(f"Linked BotInstance {bot_instance.id} (Persona {local_persona_id}, '{persona.name}') to chat {chat_id_str}. ChatBotInstance ID: {chat_link.id}")
             else:
                  reply_target = update.callback_query.message if is_callback else message_or_callback_msg
-                 await reply_target.reply_text(escape_markdown_v2(error_link_failed_raw), reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
+                 await reply_target.reply_text(error_link_failed, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
                  logger.warning(f"Failed to link BotInstance {bot_instance.id} to chat {chat_id_str} - link_bot_instance_to_chat returned None.")
 
         except IntegrityError as e:
              logger.warning(f"IntegrityError potentially during addbot for persona {local_persona_id} to chat {chat_id_str}: {e}", exc_info=False)
-             await context.bot.send_message(chat_id=chat_id_str, text=escape_markdown_v2(error_integrity_raw), parse_mode=ParseMode.MARKDOWN_V2)
+             await context.bot.send_message(chat_id=chat_id_str, text=error_integrity, parse_mode=ParseMode.MARKDOWN_V2)
         except SQLAlchemyError as e:
              logger.error(f"Database error during /addbot for persona {local_persona_id} to chat {chat_id_str}: {e}", exc_info=True)
-             await context.bot.send_message(chat_id=chat_id_str, text=escape_markdown_v2(error_db_raw), parse_mode=ParseMode.MARKDOWN_V2)
+             await context.bot.send_message(chat_id=chat_id_str, text=error_db, parse_mode=ParseMode.MARKDOWN_V2)
         except BadRequest as e:
              logger.error(f"BadRequest sending message in add_bot_to_chat: {e}", exc_info=True)
              try: await context.bot.send_message(chat_id=chat_id_str, text="Произошла ошибка при отправке ответа.", parse_mode=None)
              except Exception as fe: logger.error(f"Failed sending fallback add_bot_to_chat error: {fe}")
         except Exception as e:
              logger.error(f"Error adding bot instance {local_persona_id} to chat {chat_id_str}: {e}", exc_info=True)
-             await context.bot.send_message(chat_id=chat_id_str, text=escape_markdown_v2(error_general_raw), parse_mode=ParseMode.MARKDOWN_V2)
+             await context.bot.send_message(chat_id=chat_id_str, text=error_general, parse_mode=ParseMode.MARKDOWN_V2)
 
-
-# --- Обработчик Callback Query ---
 
 async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handles button presses from inline keyboards."""
     query = update.callback_query
     if not query or not query.data: return
 
@@ -1700,13 +1581,9 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         "delete_persona_cancel", "view_tos", "subscribe_info",
         "show_help", "dummy_", "confirm_pay", "subscribe_pay"
     )
-    conv_prefixes = ("edit_persona_", "delete_persona_", "edit_field_", "editmood_", "deletemood")
+    conv_prefixes = ("edit_persona_", "delete_persona_", "edit_field_", "editmood_", "deletemood", "set_mood_")
 
-    # Allow conversation handlers to proceed without check first
-    if any(data.startswith(p) for p in conv_prefixes):
-         needs_subscription_check = False
-    # Check other known no-check callbacks
-    elif data.startswith(no_check_callbacks):
+    if data.startswith(no_check_callbacks) or any(data.startswith(p) for p in conv_prefixes):
         needs_subscription_check = False
 
     if needs_subscription_check:
@@ -1738,8 +1615,8 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     elif data.startswith("dummy_"):
         await query.answer()
     else:
-        known_conv_prefixes = ("edit_persona_", "delete_persona_", "edit_field_", "editmood_", "deletemood_", "cancel_edit", "edit_persona_back", "edit_moods_back_cancel", "deletemood_confirm_", "deletemood_delete_")
-        if any(data.startswith(p) for p in known_conv_prefixes):
+        known_conv_prefixes_full = ("edit_persona_", "delete_persona_", "edit_field_", "editmood_", "deletemood_", "cancel_edit", "edit_persona_back", "edit_moods_back_cancel", "deletemood_confirm_", "deletemood_delete_")
+        if any(data.startswith(p) for p in known_conv_prefixes_full):
              logger.debug(f"Callback '{data}' appears to be for a ConversationHandler, skipping direct handling.")
         else:
             logger.warning(f"Unhandled callback query data: {data} from user {user_id}")
@@ -1749,10 +1626,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                  logger.warning(f"Failed to answer unhandled callback {query.id}: {e}")
 
 
-# --- Команды управления профилем и подпиской ---
-
 async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Shows user profile info."""
     if not update.message: return
     user_id = update.effective_user.id
     username = update.effective_user.username or f"id_{user_id}"
@@ -1764,10 +1638,9 @@ async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
 
-    # Define raw texts
-    error_db_raw = "ошибка базы данных при загрузке профиля\\."
-    error_general_raw = "ошибка при обработке команды /profile\\."
-    error_user_not_found_raw = "ошибка: пользователь не найден\\."
+    error_db = escape_markdown_v2("ошибка базы данных при загрузке профиля\\.")
+    error_general = escape_markdown_v2("ошибка при обработке команды /profile\\.")
+    error_user_not_found = escape_markdown_v2("ошибка: пользователь не найден\\.")
 
     with next(get_db()) as db:
         try:
@@ -1779,7 +1652,7 @@ async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 user = db.query(User).options(selectinload(User.persona_configs)).filter(User.telegram_id == user_id).one()
                 if not user:
                     logger.error(f"User {user_id} not found after get_or_create in profile.")
-                    await update.message.reply_text(escape_markdown_v2(error_user_not_found_raw), parse_mode=ParseMode.MARKDOWN_V2)
+                    await update.message.reply_text(error_user_not_found, parse_mode=ParseMode.MARKDOWN_V2)
                     return
 
             now = datetime.now(timezone.utc)
@@ -1792,16 +1665,16 @@ async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 db.refresh(user)
 
             is_active_subscriber = user.is_active_subscriber
-            status_text_raw = "⭐ Premium" if is_active_subscriber else "🆓 Free"
-            status_esc = escape_markdown_v2(status_text_raw)
+            status_text = "⭐ Premium" if is_active_subscriber else "🆓 Free"
+            status = escape_markdown_v2(status_text)
 
-            expires_text_esc = escape_markdown_v2("нет активной подписки")
+            expires_text = escape_markdown_v2("нет активной подписки")
             if is_active_subscriber and user.subscription_expires_at:
                  try:
-                     expires_text_raw = user.subscription_expires_at.strftime('%d.%m.%Y %H:%M') + " UTC"
-                     expires_text_esc = escape_markdown_v2(f"активна до: {expires_text_raw}")
+                     expires_date_str = user.subscription_expires_at.strftime('%d.%m.%Y %H:%M') + " UTC"
+                     expires_text = escape_markdown_v2(f"активна до: {expires_date_str}")
                  except AttributeError:
-                      expires_text_esc = escape_markdown_v2("активна \\(дата истечения некорректна\\)")
+                      expires_text = escape_markdown_v2("активна \\(дата истечения некорректна\\)")
 
             persona_count = len(user.persona_configs) if user.persona_configs is not None else 0
             persona_limit = user.persona_limit
@@ -1813,11 +1686,10 @@ async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             persona_count_esc = escape_markdown_v2(str(persona_count))
             persona_limit_esc = escape_markdown_v2(str(persona_limit))
 
-            # Construct the message using escaped parts
             text = (
                 f"👤 **{escape_markdown_v2('твой профиль')}**\n\n"
-                f"{escape_markdown_v2('статус:')} **{status_esc}**\n"
-                f"{expires_text_esc}\n\n"
+                f"{escape_markdown_v2('статус:')} **{status}**\n"
+                f"{expires_text}\n\n"
                 f"**{escape_markdown_v2('лимиты:')}**\n"
                 f"{escape_markdown_v2('сообщения сегодня:')} {msg_count_esc}/{msg_limit_esc}\n"
                 f"{escape_markdown_v2('создано личностей:')} {persona_count_esc}/{persona_limit_esc}\n\n"
@@ -1828,14 +1700,13 @@ async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN_V2)
         except SQLAlchemyError as e:
              logger.error(f"Database error during /profile for user {user_id}: {e}", exc_info=True)
-             await update.message.reply_text(escape_markdown_v2(error_db_raw), parse_mode=ParseMode.MARKDOWN_V2)
+             await update.message.reply_text(error_db, parse_mode=ParseMode.MARKDOWN_V2)
         except Exception as e:
             logger.error(f"Error in /profile handler for user {user_id}: {e}", exc_info=True)
-            await update.message.reply_text(escape_markdown_v2(error_general_raw), parse_mode=ParseMode.MARKDOWN_V2)
+            await update.message.reply_text(error_general, parse_mode=ParseMode.MARKDOWN_V2)
 
 
 async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE, from_callback: bool = False) -> None:
-    """Handles /subscribe command or 'subscribe_info' callback."""
     user = update.effective_user
     user_id = user.id
     username = user.username or f"id_{user_id}"
@@ -1851,30 +1722,28 @@ async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE, from_cal
 
     yookassa_ready = bool(YOOKASSA_SHOP_ID and YOOKASSA_SECRET_KEY and YOOKASSA_SHOP_ID.isdigit())
 
-    # Define raw texts
-    error_payment_unavailable_raw = "К сожалению, функция оплаты сейчас недоступна\\. 😥 \\(проблема с настройками\\)"
+    error_payment_unavailable = escape_markdown_v2("К сожалению, функция оплаты сейчас недоступна\\. 😥 \\(проблема с настройками\\)")
     text = ""
     reply_markup = None
 
     if not yookassa_ready:
-        text = escape_markdown_v2(error_payment_unavailable_raw)
+        text = error_payment_unavailable
         reply_markup = None
         logger.warning("Yookassa credentials not set or shop ID is not numeric in subscribe handler.")
     else:
-        price_esc = escape_markdown_v2(f"{SUBSCRIPTION_PRICE_RUB:.0f}")
-        currency_esc = escape_markdown_v2(SUBSCRIPTION_CURRENCY)
-        duration_esc = escape_markdown_v2(str(SUBSCRIPTION_DURATION_DAYS))
+        price_str = escape_markdown_v2(f"{SUBSCRIPTION_PRICE_RUB:.0f}")
+        currency_str = escape_markdown_v2(SUBSCRIPTION_CURRENCY)
+        duration_str = escape_markdown_v2(str(SUBSCRIPTION_DURATION_DAYS))
         paid_limit_esc = escape_markdown_v2(str(PAID_DAILY_MESSAGE_LIMIT))
         free_limit_esc = escape_markdown_v2(str(FREE_DAILY_MESSAGE_LIMIT))
         paid_persona_esc = escape_markdown_v2(str(PAID_PERSONA_LIMIT))
         free_persona_esc = escape_markdown_v2(str(FREE_PERSONA_LIMIT))
 
-        # Construct the message using escaped parts
-        header = f"✨ **{escape_markdown_v2(f'премиум подписка ({price_esc} {currency_esc}/мес)')}** ✨\n\n"
+        header = f"✨ **{escape_markdown_v2(f'премиум подписка ({price_str} {currency_str}/мес)')}** ✨\n\n"
         body = (
             escape_markdown_v2("получи максимум возможностей:\n✅ ") +
             f"**{paid_limit_esc}**" + escape_markdown_v2(f" сообщений в день \\(вместо {free_limit_esc}\\)\n✅ ") +
-            f"**{paid_persona_esc}**" + escape_markdown_v2(f" личностей \\(вместо {free_persona_esc}\\)\n✅ полная настройка всех промптов\n✅ создание и редакт\\. своих настроений\n✅ приоритетная поддержка\n\nподписка действует {duration_esc} дней\\.")
+            f"**{paid_persona_esc}**" + escape_markdown_v2(f" личностей \\(вместо {free_persona_esc}\\)\n✅ полная настройка всех промптов\n✅ создание и редакт\\. своих настроений\n✅ приоритетная поддержка\n\nподписка действует {duration_str} дней\\.")
         )
         text = header + body
 
@@ -1887,9 +1756,7 @@ async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE, from_cal
     try:
         if from_callback:
             query = update.callback_query
-            current_text = query.message.text if query.message else None
-            current_markup = query.message.reply_markup if query.message else None
-            if current_text != text or current_markup != reply_markup:
+            if query.message.text != text or query.message.reply_markup != reply_markup:
                  await query.edit_message_text(text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
             else:
                  await query.answer()
@@ -1914,17 +1781,15 @@ async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE, from_cal
 
 
 async def view_tos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handles the 'view_tos' callback to show the Terms of Service."""
     query = update.callback_query
     if not query or not query.message: return
     user_id = query.from_user.id
     logger.info(f"User {user_id} requested to view ToS.")
 
     tos_url = context.bot_data.get('tos_url')
-    # Define raw texts
-    error_tos_link_raw = "Не удалось отобразить ссылку на соглашение."
-    error_tos_load_raw = "❌ Не удалось загрузить ссылку на Пользовательское Соглашение\\. Попробуйте позже\\."
-    info_tos_raw = "Ознакомьтесь с Пользовательским Соглашением, открыв его по ссылке ниже:"
+    error_tos_link = "Не удалось отобразить ссылку на соглашение."
+    error_tos_load = escape_markdown_v2("❌ Не удалось загрузить ссылку на Пользовательское Соглашение\\. Попробуйте позже\\.")
+    info_tos = escape_markdown_v2("Ознакомьтесь с Пользовательским Соглашением, открыв его по ссылке ниже:")
 
     if tos_url:
         keyboard = [
@@ -1932,36 +1797,31 @@ async def view_tos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             [InlineKeyboardButton("⬅️ Назад", callback_data="subscribe_info")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        text = escape_markdown_v2(info_tos_raw)
+        text = info_tos
         try:
-            current_text = query.message.text if query.message else None
-            current_markup = query.message.reply_markup if query.message else None
-            if current_text != text or current_markup != reply_markup:
+            if query.message.text != text or query.message.reply_markup != reply_markup:
                 await query.edit_message_text(text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
             else:
                  await query.answer()
         except Exception as e:
             logger.error(f"Failed to show ToS link to user {user_id}: {e}")
-            await query.answer(error_tos_link_raw, show_alert=True) # Use raw text for answer
+            await query.answer(error_tos_link, show_alert=True)
     else:
         logger.error(f"ToS URL not found in bot_data for user {user_id}.")
-        text = escape_markdown_v2(error_tos_load_raw)
+        text = error_tos_load
         keyboard = [[InlineKeyboardButton("⬅️ Назад", callback_data="subscribe_info")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         try:
-            current_text = query.message.text if query.message else None
-            current_markup = query.message.reply_markup if query.message else None
-            if current_text != text or current_markup != reply_markup:
+            if query.message.text != text or query.message.reply_markup != reply_markup:
                 await query.edit_message_text(text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
             else:
                 await query.answer()
         except Exception as e:
              logger.error(f"Failed to show ToS error message to user {user_id}: {e}")
-             await query.answer("Ошибка загрузки соглашения.", show_alert=True) # Use raw text
+             await query.answer("Ошибка загрузки соглашения.", show_alert=True)
 
 
 async def confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handles the 'confirm_pay' callback after viewing ToS."""
     query = update.callback_query
     if not query or not query.message: return
     user_id = query.from_user.id
@@ -1970,9 +1830,8 @@ async def confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     tos_url = context.bot_data.get('tos_url')
     yookassa_ready = bool(YOOKASSA_SHOP_ID and YOOKASSA_SECRET_KEY and YOOKASSA_SHOP_ID.isdigit())
 
-    # Define raw texts
-    error_payment_unavailable_raw = "К сожалению, функция оплаты сейчас недоступна\\. 😥 \\(проблема с настройками\\)"
-    info_confirm_raw = (
+    error_payment_unavailable = escape_markdown_v2("К сожалению, функция оплаты сейчас недоступна\\. 😥 \\(проблема с настройками\\)")
+    info_confirm = escape_markdown_v2(
          "✅ Отлично\\!\n\n"
          "Нажимая кнопку 'Оплатить' ниже, вы подтверждаете, что ознакомились и полностью согласны с "
          "Пользовательским Соглашением\\."
@@ -1982,13 +1841,13 @@ async def confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     reply_markup = None
 
     if not yookassa_ready:
-        text = escape_markdown_v2(error_payment_unavailable_raw)
+        text = error_payment_unavailable
         reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="subscribe_info")]])
         logger.warning("Yookassa credentials not set or shop ID is not numeric in confirm_pay handler.")
     else:
-        text = escape_markdown_v2(info_confirm_raw)
-        price_str = f"{SUBSCRIPTION_PRICE_RUB:.0f}" # No escape needed for button text
-        currency_str = SUBSCRIPTION_CURRENCY # No escape needed
+        text = info_confirm
+        price_str = escape_markdown_v2(f"{SUBSCRIPTION_PRICE_RUB:.0f}")
+        currency_str = escape_markdown_v2(SUBSCRIPTION_CURRENCY)
         keyboard = [
             [InlineKeyboardButton(f"💳 Оплатить {price_str} {currency_str}", callback_data="subscribe_pay")]
         ]
@@ -2001,9 +1860,7 @@ async def confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         reply_markup = InlineKeyboardMarkup(keyboard)
 
     try:
-        current_text = query.message.text if query.message else None
-        current_markup = query.message.reply_markup if query.message else None
-        if current_text != text or current_markup != reply_markup:
+        if query.message.text != text or query.message.reply_markup != reply_markup:
             await query.edit_message_text(
                 text,
                 reply_markup=reply_markup,
@@ -2017,20 +1874,18 @@ async def confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 async def generate_payment_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Generates Yookassa payment link."""
     query = update.callback_query
     if not query or not query.message: return
 
     user_id = query.from_user.id
     logger.info(f"--- generate_payment_link ENTERED for user {user_id} ---")
 
-    # Define raw texts
-    error_yk_not_ready_raw = "❌ ошибка: сервис оплаты не настроен правильно\\."
-    error_yk_config_raw = "❌ ошибка конфигурации платежной системы\\."
-    error_receipt_raw = "❌ ошибка при формировании данных чека\\."
-    error_link_get_fmt_raw = "❌ не удалось получить ссылку от платежной системы"
-    error_link_create_raw = "❌ не удалось создать ссылку для оплаты\\. "
-    success_link_raw = (
+    error_yk_not_ready = escape_markdown_v2("❌ ошибка: сервис оплаты не настроен правильно\\.")
+    error_yk_config = escape_markdown_v2("❌ ошибка конфигурации платежной системы\\.")
+    error_receipt = escape_markdown_v2("❌ ошибка при формировании данных чека\\.")
+    error_link_get_fmt = escape_markdown_v2("❌ не удалось получить ссылку от платежной системы")
+    error_link_create = escape_markdown_v2("❌ не удалось создать ссылку для оплаты\\. ")
+    success_link = escape_markdown_v2(
         "✅ ссылка для оплаты создана\\!\n\n"
         "нажми кнопку ниже для перехода к оплате\\. "
         "после успеха подписка активируется \\(может занять пару минут\\)\\."
@@ -2042,7 +1897,7 @@ async def generate_payment_link(update: Update, context: ContextTypes.DEFAULT_TY
     yookassa_ready = bool(YOOKASSA_SHOP_ID and YOOKASSA_SECRET_KEY and YOOKASSA_SHOP_ID.isdigit())
     if not yookassa_ready:
         logger.error("Yookassa credentials not set correctly for payment generation.")
-        text = escape_markdown_v2(error_yk_not_ready_raw)
+        text = error_yk_not_ready
         reply_markup = None
         await query.edit_message_text(text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
         return
@@ -2053,13 +1908,13 @@ async def generate_payment_link(update: Update, context: ContextTypes.DEFAULT_TY
         logger.info(f"Yookassa configured within generate_payment_link (Shop ID: {current_shop_id}).")
     except ValueError:
          logger.error(f"YOOKASSA_SHOP_ID ({config.YOOKASSA_SHOP_ID}) invalid integer.")
-         text = escape_markdown_v2(error_yk_config_raw)
+         text = error_yk_config
          reply_markup = None
          await query.edit_message_text(text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
          return
     except Exception as conf_e:
         logger.error(f"Failed to configure Yookassa SDK in generate_payment_link: {conf_e}", exc_info=True)
-        text = escape_markdown_v2(error_yk_config_raw)
+        text = error_yk_config
         reply_markup = None
         await query.edit_message_text(text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
         return
@@ -2088,7 +1943,7 @@ async def generate_payment_link(update: Update, context: ContextTypes.DEFAULT_TY
         })
     except Exception as receipt_e:
         logger.error(f"Error preparing receipt data: {receipt_e}", exc_info=True)
-        text = escape_markdown_v2(error_receipt_raw)
+        text = error_receipt
         reply_markup = None
         await query.edit_message_text(text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
         return
@@ -2108,11 +1963,11 @@ async def generate_payment_link(update: Update, context: ContextTypes.DEFAULT_TY
 
         if not payment_response or not payment_response.confirmation or not payment_response.confirmation.confirmation_url:
              logger.error(f"Yookassa API returned invalid response for user {user_id}. Status: {payment_response.status if payment_response else 'N/A'}. Response: {payment_response}")
-             error_message_raw = error_link_get_fmt_raw
+             error_message = error_link_get_fmt
              if payment_response and payment_response.status:
-                 error_message_raw += f" \\(статус: {payment_response.status}\\)"
-             error_message_raw += "\\.\nПопробуй позже\\."
-             text = escape_markdown_v2(error_message_raw)
+                 error_message += escape_markdown_v2(f" \\(статус: {payment_response.status}\\)")
+             error_message += escape_markdown_v2("\\.\nПопробуй позже\\.")
+             text = error_message
              reply_markup = None
              await query.edit_message_text(text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
              return
@@ -2122,48 +1977,44 @@ async def generate_payment_link(update: Update, context: ContextTypes.DEFAULT_TY
 
         keyboard = [[InlineKeyboardButton("🔗 перейти к оплате", url=confirmation_url)]]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        text = escape_markdown_v2(success_link_raw)
+        text = success_link
         await query.edit_message_text(text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
     except Exception as e:
         logger.error(f"Error during Yookassa payment creation for user {user_id}: {e}", exc_info=True)
-        user_message_raw = error_link_create_raw
+        user_message = error_link_create
         if hasattr(e, 'response') and hasattr(e.response, 'text'):
             try:
                 err_text = e.response.text
                 logger.error(f"Yookassa API Error Response Text: {err_text}")
                 if "Invalid credentials" in err_text:
-                    user_message_raw += " Ошибка аутентификации с ЮKassa\\."
+                    user_message += escape_markdown_v2(" Ошибка аутентификации с ЮKassa\\.")
                 elif "receipt" in err_text.lower():
-                     user_message_raw += " Ошибка данных чека \\(детали в логах\\)\\."
+                     user_message += escape_markdown_v2(" Ошибка данных чека \\(детали в логах\\)\\.")
                 else:
-                    user_message_raw += " Ошибка от ЮKassa \\(детали в логах\\)\\."
+                    user_message += escape_markdown_v2(" Ошибка от ЮKassa \\(детали в логах\\)\\.")
             except Exception as parse_e:
                 logger.error(f"Could not parse YK error response: {parse_e}")
-                user_message_raw += " Ошибка от ЮKassa \\(не удалось разобрать ответ\\)\\."
+                user_message += escape_markdown_v2(" Ошибка от ЮKassa \\(не удалось разобрать ответ\\)\\.")
         elif isinstance(e, httpx.RequestError):
-             user_message_raw += " Проблема с сетевым подключением к ЮKassa\\."
+             user_message += escape_markdown_v2(" Проблема с сетевым подключением к ЮKassa\\.")
         else:
-             user_message_raw += " Произошла непредвиденная ошибка\\."
-        user_message_raw += "\nПопробуй еще раз позже или свяжись с поддержкой\\."
+             user_message += escape_markdown_v2(" Произошла непредвиденная ошибка\\.")
+        user_message += escape_markdown_v2("\nПопробуй еще раз позже или свяжись с поддержкой\\.")
         try:
-            await query.edit_message_text(escape_markdown_v2(user_message_raw), reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2)
+            await query.edit_message_text(user_message, reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2)
         except Exception as send_e:
             logger.error(f"Failed to send error message after payment creation failure: {send_e}")
 
 
-# --- Placeholder для вебхука Yookassa (не должен вызываться) ---
 async def yookassa_webhook_placeholder(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.warning("Placeholder Yookassa webhook endpoint called via Telegram bot handler. This should be handled by the Flask app.")
     pass
 
-
-# --- Conversation Handlers ---
-
-# --- Edit Persona Conversation ---
 async def _start_edit_convo(update: Update, context: ContextTypes.DEFAULT_TYPE, persona_id: int) -> int:
-    """Internal helper to start the edit conversation."""
     user_id = update.effective_user.id
-    chat_id = update.effective_chat.id if update.effective_chat else update.effective_message.chat_id
+    effective_target = update.effective_message or (update.callback_query.message if update.callback_query else None)
+    if not effective_target: return ConversationHandler.END
+    chat_id = effective_target.chat.id
     is_callback = update.callback_query is not None
 
     if not is_callback:
@@ -2174,11 +2025,10 @@ async def _start_edit_convo(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
     context.user_data.clear()
 
-    # Define raw format strings
-    error_not_found_fmt_raw = "личность с id `{id}` не найдена или не твоя\\."
-    error_db_raw = "ошибка базы данных при начале редактирования\\."
-    error_general_raw = "непредвиденная ошибка\\."
-    prompt_edit_fmt_raw = "редактируем **{name}** \\(id: `{id}`\\)\nвыбери, что изменить:"
+    error_not_found_fmt = escape_markdown_v2("личность с id `") + "{id}" + escape_markdown_v2("` не найдена или не твоя\\.")
+    error_db = escape_markdown_v2("ошибка базы данных при начале редактирования\\.")
+    error_general = escape_markdown_v2("непредвиденная ошибка\\.")
+    prompt_edit_fmt = escape_markdown_v2("редактируем ") + "**{name}**" + escape_markdown_v2(" \\(id: `{id}`\\)\nвыбери, что изменить:")
 
     try:
         with next(get_db()) as db:
@@ -2188,11 +2038,8 @@ async def _start_edit_convo(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             ).first()
 
             if not persona_config:
-                 id_str = str(persona_id) # ID is inside ``, no need to escape
-                 final_error_msg = escape_markdown_v2(error_not_found_fmt_raw.format(id=id_str))
-                 # Reconstruct manually
-                 final_error_msg = escape_markdown_v2("личность с id ") + f"`{id_str}`" + escape_markdown_v2(" не найдена или не твоя\\.")
-
+                 id_esc = escape_markdown_v2(str(persona_id))
+                 final_error_msg = error_not_found_fmt.format(id=id_esc)
                  reply_target = update.callback_query.message if is_callback else update.effective_message
                  if is_callback: await update.callback_query.answer("Личность не найдена", show_alert=True)
                  await reply_target.reply_text(final_error_msg, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
@@ -2201,22 +2048,15 @@ async def _start_edit_convo(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             context.user_data['edit_persona_id'] = persona_id
             keyboard = await _get_edit_persona_keyboard(persona_config)
             reply_markup = InlineKeyboardMarkup(keyboard)
-
             persona_name_escaped = escape_markdown_v2(persona_config.name)
-            id_str = str(persona_id) # ID is inside ``, no need to escape
-            # Format message
-            msg_text = escape_markdown_v2(prompt_edit_fmt_raw.format(name=persona_config.name, id=id_str))
-            # Reconstruct manually
-            msg_text = escape_markdown_v2("редактируем ") + f"**{persona_name_escaped}**" + escape_markdown_v2(" \\(id: ") + f"`{id_str}`" + escape_markdown_v2("\\)\nвыбери, что изменить:")
-
+            id_esc = escape_markdown_v2(str(persona_id))
+            msg_text = prompt_edit_fmt.format(name=f"**{persona_name_escaped}**", id=id_esc)
 
             reply_target = update.callback_query.message if is_callback else update.effective_message
             if is_callback:
                  query = update.callback_query
                  try:
-                      current_text = query.message.text if query.message else None
-                      current_markup = query.message.reply_markup if query.message else None
-                      if current_text != msg_text or current_markup != reply_markup:
+                      if query.message.text != msg_text or query.message.reply_markup != reply_markup:
                            await query.edit_message_text(msg_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
                       else:
                            await query.answer()
@@ -2230,40 +2070,38 @@ async def _start_edit_convo(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         return EDIT_PERSONA_CHOICE
     except SQLAlchemyError as e:
          logger.error(f"Database error starting edit persona {persona_id}: {e}", exc_info=True)
-         await context.bot.send_message(chat_id, escape_markdown_v2(error_db_raw), parse_mode=ParseMode.MARKDOWN_V2)
+         await context.bot.send_message(chat_id, error_db, parse_mode=ParseMode.MARKDOWN_V2)
          return ConversationHandler.END
     except Exception as e:
          logger.error(f"Unexpected error starting edit persona {persona_id}: {e}", exc_info=True)
-         await context.bot.send_message(chat_id, escape_markdown_v2(error_general_raw), parse_mode=ParseMode.MARKDOWN_V2)
+         await context.bot.send_message(chat_id, error_general, parse_mode=ParseMode.MARKDOWN_V2)
          return ConversationHandler.END
 
 async def edit_persona_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Entry point for /editpersona command."""
     if not update.message: return ConversationHandler.END
     user_id = update.effective_user.id
     args = context.args
     logger.info(f"CMD /editpersona < User {user_id} with args: {args}")
 
-    usage_text_raw = "укажи id личности: `/editpersona <id>`\nили используй кнопку из /mypersonas"
-    error_invalid_id_raw = "ID должен быть числом\\."
+    usage_text = escape_markdown_v2("укажи id личности: `/editpersona <id>`\nили используй кнопку из /mypersonas")
+    error_invalid_id = escape_markdown_v2("ID должен быть числом\\.")
 
     if not args or not args[0].isdigit():
-        await update.message.reply_text(escape_markdown_v2(usage_text_raw), parse_mode=ParseMode.MARKDOWN_V2)
+        await update.message.reply_text(usage_text, parse_mode=ParseMode.MARKDOWN_V2)
         return ConversationHandler.END
     try:
         persona_id = int(args[0])
     except ValueError:
-        await update.message.reply_text(escape_markdown_v2(error_invalid_id_raw), parse_mode=ParseMode.MARKDOWN_V2)
+        await update.message.reply_text(error_invalid_id, parse_mode=ParseMode.MARKDOWN_V2)
         return ConversationHandler.END
     return await _start_edit_convo(update, context, persona_id)
 
 async def edit_persona_button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Entry point for edit button from /mypersonas."""
     query = update.callback_query
     if not query or not query.data: return ConversationHandler.END
     await query.answer("Начинаем редактирование...")
 
-    error_invalid_id_callback_raw = "Ошибка: неверный ID личности в кнопке\\."
+    error_invalid_id_callback = escape_markdown_v2("Ошибка: неверный ID личности в кнопке\\.")
 
     try:
         persona_id = int(query.data.split('_')[-1])
@@ -2272,13 +2110,12 @@ async def edit_persona_button_callback(update: Update, context: ContextTypes.DEF
     except (IndexError, ValueError):
         logger.error(f"Could not parse persona_id from edit_persona callback data: {query.data}")
         try:
-            await query.edit_message_text(escape_markdown_v2(error_invalid_id_callback_raw), parse_mode=ParseMode.MARKDOWN_V2)
+            await query.edit_message_text(error_invalid_id_callback, parse_mode=ParseMode.MARKDOWN_V2)
         except Exception as e:
             logger.error(f"Failed to edit message with invalid ID error: {e}")
         return ConversationHandler.END
 
 async def edit_persona_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handles user's choice of field to edit or action."""
     query = update.callback_query
     if not query or not query.data: return EDIT_PERSONA_CHOICE
 
@@ -2288,21 +2125,18 @@ async def edit_persona_choice(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     logger.info(f"--- edit_persona_choice: User {user_id}, PersonaID={persona_id}, Callback data={data} ---")
 
-    # Define raw format strings
-    error_no_session_raw = "ошибка: сессия редактирования потеряна \\(нет id\\)\\. начни снова \\(/mypersonas\\)\\."
-    error_not_found_raw = "ошибка: личность не найдена или нет доступа\\."
-    error_db_raw = "ошибка базы данных при проверке данных\\."
-    error_general_raw = "Непредвиденная ошибка\\."
-    info_premium_mood_raw = "⭐ Редактирование настроений доступно по подписке"
-    info_premium_field_fmt_raw = "⭐ Поле '{field_name}' доступно по подписке" # Keep placeholder unescaped
-    prompt_edit_value_fmt_raw = "отправь новое значение для **{field_name}**\\.\n_текущее:_\n`{current_value}`"
-    prompt_edit_max_msg_fmt_raw = "отправь новое значение для **{field_name}** \\(число от 1 до 10\\):\n_текущее: {current_value}_"
-    prompt_edit_back_fmt_raw = "редактируем **{name}** \\(id: `{id}`\\)\nвыбери, что изменить:"
-
+    error_no_session = escape_markdown_v2("ошибка: сессия редактирования потеряна \\(нет id\\)\\. начни снова \\(/mypersonas\\)\\.")
+    error_not_found = escape_markdown_v2("ошибка: личность не найдена или нет доступа\\.")
+    error_db = escape_markdown_v2("ошибка базы данных при проверке данных\\.")
+    error_general = escape_markdown_v2("Непредвиденная ошибка\\.")
+    info_premium_mood = "⭐ Редактирование настроений доступно по подписке"
+    info_premium_field_fmt = "⭐ Поле '{field_name}' доступно по подписке"
+    prompt_edit_value_fmt = escape_markdown_v2("отправь новое значение для ") + "**{field_name}**" + escape_markdown_v2("\\.\n_текущее:_") + "\n`{current_value}`"
+    prompt_edit_max_msg_fmt = escape_markdown_v2("отправь новое значение для ") + "**{field_name}**" + escape_markdown_v2(" \\(число от 1 до 10\\):\n_текущее: {current_value}_")
 
     if not persona_id:
          logger.warning(f"User {user_id} in edit_persona_choice, but edit_persona_id not found in user_data.")
-         await query.edit_message_text(escape_markdown_v2(error_no_session_raw), reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2)
+         await query.edit_message_text(error_no_session, reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2)
          return ConversationHandler.END
 
     persona_config = None
@@ -2317,7 +2151,7 @@ async def edit_persona_choice(update: Update, context: ContextTypes.DEFAULT_TYPE
             if not persona_config:
                 logger.warning(f"User {user_id} in edit_persona_choice: PersonaConfig {persona_id} not found or not owned.")
                 await query.answer("Личность не найдена", show_alert=True)
-                await query.edit_message_text(escape_markdown_v2(error_not_found_raw), reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2)
+                await query.edit_message_text(error_not_found, reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2)
                 context.user_data.clear()
                 return ConversationHandler.END
             is_premium_user = persona_config.owner.is_active_subscriber
@@ -2325,13 +2159,13 @@ async def edit_persona_choice(update: Update, context: ContextTypes.DEFAULT_TYPE
     except SQLAlchemyError as e:
          logger.error(f"DB error fetching user/persona in edit_persona_choice for persona {persona_id}: {e}", exc_info=True)
          await query.answer("Ошибка базы данных", show_alert=True)
-         await query.edit_message_text(escape_markdown_v2(error_db_raw), reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2)
+         await query.edit_message_text(error_db, reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2)
          return EDIT_PERSONA_CHOICE
     except Exception as e:
          logger.error(f"Unexpected error fetching user/persona in edit_persona_choice: {e}", exc_info=True)
          await query.answer("Непредвиденная ошибка", show_alert=True)
-         await query.edit_message_text(escape_markdown_v2(error_general_raw), reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2)
-         return ConversationHandler.END
+         await query.edit_message_text(error_general, reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2)
+         return EDIT_PERSONA_CHOICE
 
     if data == "cancel_edit":
         return await edit_persona_cancel(update, context)
@@ -2339,7 +2173,7 @@ async def edit_persona_choice(update: Update, context: ContextTypes.DEFAULT_TYPE
     if data == "edit_moods":
         if not is_premium_user and not is_admin(user_id):
              logger.info(f"User {user_id} (non-premium) attempted to edit moods for persona {persona_id}.")
-             await query.answer(info_premium_mood_raw, show_alert=True) # Use raw for answer
+             await query.answer(info_premium_mood, show_alert=True)
              return EDIT_PERSONA_CHOICE
         else:
              logger.info(f"User {user_id} proceeding to edit moods for persona {persona_id}.")
@@ -2348,18 +2182,15 @@ async def edit_persona_choice(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     if data.startswith("edit_field_"):
         field = data.replace("edit_field_", "")
-        field_display_name_raw = FIELD_MAP_DISPLAY.get(field, field) # Get raw display name
-        field_display_name_escaped = escape_markdown_v2(field_display_name_raw)
-
+        field_display_name = FIELD_MAP.get(field, escape_markdown_v2(field))
         logger.info(f"User {user_id} selected field '{field}' for persona {persona_id}.")
 
         advanced_fields = ["system_prompt_template", "should_respond_prompt_template", "spam_prompt_template",
                            "photo_prompt_template", "voice_prompt_template", "max_response_messages"]
         if field in advanced_fields and not is_premium_user and not is_admin(user_id):
              logger.info(f"User {user_id} (non-premium) attempted to edit premium field '{field}' for persona {persona_id}.")
-             # Format with raw field name for alert
-             alert_text = info_premium_field_fmt_raw.format(field_name=field_display_name_raw)
-             await query.answer(alert_text, show_alert=True)
+             field_plain_name = re.sub(r'\\(.)', r'\1', field_display_name)
+             await query.answer(info_premium_field_fmt.format(field_name=field_plain_name), show_alert=True)
              return EDIT_PERSONA_CHOICE
 
         context.user_data['edit_field'] = field
@@ -2371,21 +2202,13 @@ async def edit_persona_choice(update: Update, context: ContextTypes.DEFAULT_TYPE
         if field == "max_response_messages":
             current_value = getattr(persona_config, field, 3)
             current_value_esc = escape_markdown_v2(str(current_value))
-            # Format message
-            final_prompt = escape_markdown_v2(prompt_edit_max_msg_fmt_raw.format(field_name=field_display_name_raw, current_value=str(current_value)))
-            # Reconstruct
-            final_prompt = escape_markdown_v2(f"отправь новое значение для ") + f"**{field_display_name_escaped}**" + escape_markdown_v2(f" \\(число от 1 до 10\\):\n_текущее: {current_value}_")
-
+            final_prompt = prompt_edit_max_msg_fmt.format(field_name=field_display_name, current_value=current_value_esc)
             await query.edit_message_text(final_prompt, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
             return EDIT_MAX_MESSAGES
         else:
             current_value_raw = getattr(persona_config, field, "")
-            current_value_display = str(current_value_raw) if len(str(current_value_raw)) < 300 else str(current_value_raw)[:300] + "..."
-            # Format message - current value is inside ``, no need to escape
-            final_prompt = escape_markdown_v2(prompt_edit_value_fmt_raw.format(field_name=field_display_name_raw, current_value=current_value_display))
-            # Reconstruct
-            final_prompt = escape_markdown_v2(f"отправь новое значение для ") + f"**{field_display_name_escaped}**" + escape_markdown_v2("\\.\n_текущее:_") + f"\n`{current_value_display}`"
-
+            current_value_display = escape_markdown_v2(str(current_value_raw) if len(str(current_value_raw)) < 300 else str(current_value_raw)[:300] + "...")
+            final_prompt = prompt_edit_value_fmt.format(field_name=field_display_name, current_value=current_value_display)
             await query.edit_message_text(final_prompt, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
             return EDIT_FIELD
 
@@ -2393,14 +2216,10 @@ async def edit_persona_choice(update: Update, context: ContextTypes.DEFAULT_TYPE
          logger.info(f"User {user_id} pressed back button in edit_persona_choice for persona {persona_id}.")
          await query.answer()
          keyboard = await _get_edit_persona_keyboard(persona_config)
-         prompt_edit_back = prompt_edit_back_fmt_raw # Use raw format string
+         prompt_edit_back = escape_markdown_v2("редактируем ") + "**{name}**" + escape_markdown_v2(" \\(id: `{id}`\\)\nвыбери, что изменить:")
          name_esc = escape_markdown_v2(persona_config.name)
-         id_str = str(persona_id) # ID inside ``, no need to escape
-         # Format message
-         final_back_msg = escape_markdown_v2(prompt_edit_back.format(name=persona_config.name, id=id_str))
-         # Reconstruct
-         final_back_msg = escape_markdown_v2("редактируем ") + f"**{name_esc}**" + escape_markdown_v2(" \\(id: ") + f"`{id_str}`" + escape_markdown_v2("\\)\nвыбери, что изменить:")
-
+         id_esc = escape_markdown_v2(str(persona_id))
+         final_back_msg = prompt_edit_back.format(name=f"**{name_esc}**", id=id_esc)
          await query.edit_message_text(final_back_msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN_V2)
          context.user_data.pop('edit_field', None)
          return EDIT_PERSONA_CHOICE
@@ -2410,7 +2229,6 @@ async def edit_persona_choice(update: Update, context: ContextTypes.DEFAULT_TYPE
     return EDIT_PERSONA_CHOICE
 
 async def edit_field_update(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handles receiving the new value for a field."""
     if not update.message or not update.message.text: return EDIT_FIELD
     new_value = update.message.text.strip()
     field = context.user_data.get('edit_field')
@@ -2419,27 +2237,24 @@ async def edit_field_update(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     logger.info(f"--- edit_field_update: User={user_id}, PersonaID={persona_id}, Field='{field}' ---")
 
-    # Define raw format strings
-    error_no_session_raw = "ошибка: сессия редактирования потеряна\\. начни снова \\(/mypersonas\\)\\."
-    error_not_found_raw = "ошибка: личность не найдена или нет доступа\\."
-    error_validation_fmt_raw = "{field_name}: макс\\. {max_len} символов\\."
-    error_validation_min_fmt_raw = "{field_name}: мин\\. {min_len} символа\\."
-    error_name_taken_fmt_raw = "имя '{name}' уже занято другой твоей личностью\\. попробуй другое:"
-    error_db_raw = "❌ ошибка базы данных при обновлении\\. попробуй еще раз\\."
-    error_general_raw = "❌ непредвиденная ошибка при обновлении\\."
-    success_update_fmt_raw = "✅ поле **{field_name}** для личности **{persona_name}** обновлено\\!"
-    prompt_next_edit_fmt_raw = "что еще изменить для **{name}** \\(id: `{id}`\\)?"
+    error_no_session = escape_markdown_v2("ошибка: сессия редактирования потеряна\\. начни снова \\(/mypersonas\\)\\.")
+    error_not_found = escape_markdown_v2("ошибка: личность не найдена или нет доступа\\.")
+    error_validation_fmt = "{field_name}" + escape_markdown_v2(": макс\\. ") + "{max_len}" + escape_markdown_v2(" символов\\.")
+    error_validation_min_fmt = "{field_name}" + escape_markdown_v2(": мин\\. ") + "{min_len}" + escape_markdown_v2(" символа\\.")
+    error_name_taken_fmt = escape_markdown_v2("имя '") + "{name}" + escape_markdown_v2("' уже занято другой твоей личностью\\. попробуй другое:")
+    error_db = escape_markdown_v2("❌ ошибка базы данных при обновлении\\. попробуй еще раз\\.")
+    error_general = escape_markdown_v2("❌ непредвиденная ошибка при обновлении\\.")
+    success_update_fmt = escape_markdown_v2("✅ поле ") + "**{field_name}**" + escape_markdown_v2(" для личности ") + "**{persona_name}**" + escape_markdown_v2(" обновлено\\!")
+    prompt_next_edit_fmt = escape_markdown_v2("что еще изменить для ") + "**{name}**" + escape_markdown_v2(" \\(id: `{id}`\\)?")
 
     if not field or not persona_id:
         logger.warning(f"User {user_id} in edit_field_update, but edit_field ('{field}') or edit_persona_id ('{persona_id}') missing.")
-        await update.message.reply_text(escape_markdown_v2(error_no_session_raw), reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
+        await update.message.reply_text(error_no_session, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
         return ConversationHandler.END
 
-    field_display_name_raw = FIELD_MAP_DISPLAY.get(field, field)
-    field_display_name_escaped = escape_markdown_v2(field_display_name_raw)
+    field_display_name = FIELD_MAP.get(field, escape_markdown_v2(field))
 
-
-    validation_error_msg_raw = None
+    validation_error_msg = None
     max_len_map = {
         "name": 50, "description": 1500, "system_prompt_template": 3000,
         "should_respond_prompt_template": 1000, "spam_prompt_template": 1000,
@@ -2448,14 +2263,16 @@ async def edit_field_update(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     min_len_map = {"name": 2}
 
     if field in max_len_map and len(new_value) > max_len_map[field]:
-        validation_error_msg_raw = error_validation_fmt_raw.format(field_name=field_display_name_raw, max_len=max_len_map[field])
+        max_len_esc = escape_markdown_v2(str(max_len_map[field]))
+        validation_error_msg = error_validation_fmt.format(field_name=field_display_name, max_len=max_len_esc)
     if field in min_len_map and len(new_value) < min_len_map[field]:
-        validation_error_msg_raw = error_validation_min_fmt_raw.format(field_name=field_display_name_raw, min_len=min_len_map[field])
+        min_len_esc = escape_markdown_v2(str(min_len_map[field]))
+        validation_error_msg = error_validation_min_fmt.format(field_name=field_display_name, min_len=min_len_esc)
 
-    if validation_error_msg_raw:
-        logger.debug(f"Validation failed for field '{field}': {validation_error_msg_raw}")
+    if validation_error_msg:
+        logger.debug(f"Validation failed for field '{field}': {validation_error_msg}")
         back_button = InlineKeyboardButton("⬅️ Назад", callback_data="edit_persona_back")
-        await update.message.reply_text(f"{escape_markdown_v2(validation_error_msg_raw)} {escape_markdown_v2('попробуй еще раз:')}", reply_markup=InlineKeyboardMarkup([[back_button]]), parse_mode=ParseMode.MARKDOWN_V2)
+        await update.message.reply_text(f"{validation_error_msg} {escape_markdown_v2('попробуй еще раз:')}", reply_markup=InlineKeyboardMarkup([[back_button]]), parse_mode=ParseMode.MARKDOWN_V2)
         return EDIT_FIELD
 
     try:
@@ -2467,7 +2284,7 @@ async def edit_field_update(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
             if not persona_config:
                  logger.warning(f"User {user_id}: PersonaConfig {persona_id} not found/owned during field update.")
-                 await update.message.reply_text(escape_markdown_v2(error_not_found_raw), reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
+                 await update.message.reply_text(error_not_found, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
                  context.user_data.clear()
                  return ConversationHandler.END
 
@@ -2480,7 +2297,7 @@ async def edit_field_update(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                     logger.info(f"User {user_id} tried to set name to '{new_value}', but it's already taken by their persona {existing.id}.")
                     back_button = InlineKeyboardButton("⬅️ Назад", callback_data="edit_persona_back")
                     name_esc = escape_markdown_v2(new_value)
-                    final_name_taken_msg = escape_markdown_v2(error_name_taken_fmt_raw.format(name=new_value)) # Escape whole thing
+                    final_name_taken_msg = error_name_taken_fmt.format(name=name_esc)
                     await update.message.reply_text(final_name_taken_msg, reply_markup=InlineKeyboardMarkup([[back_button]]), parse_mode=ParseMode.MARKDOWN_V2)
                     return EDIT_FIELD
 
@@ -2489,37 +2306,28 @@ async def edit_field_update(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             logger.info(f"User {user_id} successfully updated field '{field}' for persona {persona_id}.")
 
             name_esc = escape_markdown_v2(persona_config.name)
-            # Format success message
-            final_success_msg = escape_markdown_v2(success_update_fmt_raw.format(field_name=field_display_name_raw, persona_name=persona_config.name))
-            # Reconstruct
-            final_success_msg = escape_markdown_v2(f"✅ поле ") + f"**{field_display_name_escaped}**" + escape_markdown_v2(" для личности ") + f"**{name_esc}**" + escape_markdown_v2(" обновлено\\!")
-
+            final_success_msg = success_update_fmt.format(field_name=field_display_name, persona_name=f"**{name_esc}**")
             await update.message.reply_text(final_success_msg, parse_mode=ParseMode.MARKDOWN_V2)
 
             context.user_data.pop('edit_field', None)
             db.refresh(persona_config)
             keyboard = await _get_edit_persona_keyboard(persona_config)
-            id_str = str(persona_id) # ID inside ``, no need to escape
-            # Format next prompt
-            final_next_prompt = escape_markdown_v2(prompt_next_edit_fmt_raw.format(name=persona_config.name, id=id_str))
-            # Reconstruct
-            final_next_prompt = escape_markdown_v2(f"что еще изменить для ") + f"**{name_esc}**" + escape_markdown_v2(" \\(id: ") + f"`{id_str}`" + escape_markdown_v2("\\)?")
-
+            id_esc = escape_markdown_v2(str(persona_id))
+            final_next_prompt = prompt_next_edit_fmt.format(name=f"**{name_esc}**", id=id_esc)
             await update.message.reply_text(final_next_prompt, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN_V2)
             return EDIT_PERSONA_CHOICE
 
     except SQLAlchemyError as e:
          logger.error(f"Database error updating field {field} for persona {persona_id}: {e}", exc_info=True)
-         await update.message.reply_text(escape_markdown_v2(error_db_raw), parse_mode=ParseMode.MARKDOWN_V2)
+         await update.message.reply_text(error_db, parse_mode=ParseMode.MARKDOWN_V2)
          return await _try_return_to_edit_menu(update, context, user_id, persona_id)
     except Exception as e:
          logger.error(f"Unexpected error updating field {field} for persona {persona_id}: {e}", exc_info=True)
-         await update.message.reply_text(escape_markdown_v2(error_general_raw), parse_mode=ParseMode.MARKDOWN_V2)
+         await update.message.reply_text(error_general, parse_mode=ParseMode.MARKDOWN_V2)
          context.user_data.clear()
          return ConversationHandler.END
 
 async def edit_max_messages_update(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handles receiving the new value for max_response_messages."""
     if not update.message or not update.message.text: return EDIT_MAX_MESSAGES
     new_value_str = update.message.text.strip()
     field = "max_response_messages"
@@ -2528,18 +2336,17 @@ async def edit_max_messages_update(update: Update, context: ContextTypes.DEFAULT
 
     logger.info(f"--- edit_max_messages_update: User={user_id}, PersonaID={persona_id}, Value='{new_value_str}' ---")
 
-    # Define raw format strings
-    error_no_session_raw = "ошибка: сессия редактирования потеряна \\(нет persona_id\\)\\. начни снова \\(/mypersonas\\)\\."
-    error_not_found_raw = "ошибка: личность не найдена или нет доступа\\."
-    error_invalid_value_raw = "неверное значение\\. введи число от 1 до 10:"
-    error_db_raw = "❌ ошибка базы данных при обновлении\\. попробуй еще раз\\."
-    error_general_raw = "❌ непредвиденная ошибка при обновлении\\."
-    success_update_fmt_raw = "✅ макс\\. сообщений в ответе для **{name}** установлено: **{value}**"
-    prompt_next_edit_fmt_raw = "что еще изменить для **{name}** \\(id: `{id}`\\)?"
+    error_no_session = escape_markdown_v2("ошибка: сессия редактирования потеряна \\(нет persona_id\\)\\. начни снова \\(/mypersonas\\)\\.")
+    error_not_found = escape_markdown_v2("ошибка: личность не найдена или нет доступа\\.")
+    error_invalid_value = escape_markdown_v2("неверное значение\\. введи число от 1 до 10:")
+    error_db = escape_markdown_v2("❌ ошибка базы данных при обновлении\\. попробуй еще раз\\.")
+    error_general = escape_markdown_v2("❌ непредвиденная ошибка при обновлении\\.")
+    success_update_fmt = escape_markdown_v2("✅ макс\\. сообщений в ответе для ") + "**{name}**" + escape_markdown_v2(" установлено: ") + "**{value}**"
+    prompt_next_edit_fmt = escape_markdown_v2("что еще изменить для ") + "**{name}**" + escape_markdown_v2(" \\(id: `{id}`\\)?")
 
     if not persona_id:
         logger.warning(f"User {user_id} in edit_max_messages_update, but edit_persona_id missing.")
-        await update.message.reply_text(escape_markdown_v2(error_no_session_raw), reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
+        await update.message.reply_text(error_no_session, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
         return ConversationHandler.END
 
     try:
@@ -2548,7 +2355,7 @@ async def edit_max_messages_update(update: Update, context: ContextTypes.DEFAULT
     except ValueError:
         logger.debug(f"Validation failed for max_response_messages: '{new_value_str}' is not int 1-10.")
         back_button = InlineKeyboardButton("⬅️ Назад", callback_data="edit_persona_back")
-        await update.message.reply_text(escape_markdown_v2(error_invalid_value_raw), reply_markup=InlineKeyboardMarkup([[back_button]]), parse_mode=ParseMode.MARKDOWN_V2)
+        await update.message.reply_text(error_invalid_value, reply_markup=InlineKeyboardMarkup([[back_button]]), parse_mode=ParseMode.MARKDOWN_V2)
         return EDIT_MAX_MESSAGES
 
     try:
@@ -2560,7 +2367,7 @@ async def edit_max_messages_update(update: Update, context: ContextTypes.DEFAULT
 
             if not persona_config:
                  logger.warning(f"User {user_id}: PersonaConfig {persona_id} not found or not owned in edit_max_messages_update.")
-                 await update.message.reply_text(escape_markdown_v2(error_not_found_raw), reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
+                 await update.message.reply_text(error_not_found, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
                  context.user_data.clear()
                  return ConversationHandler.END
 
@@ -2570,36 +2377,27 @@ async def edit_max_messages_update(update: Update, context: ContextTypes.DEFAULT
 
             name_esc = escape_markdown_v2(persona_config.name)
             value_esc = escape_markdown_v2(str(new_value))
-            # Format success message
-            final_success_msg = escape_markdown_v2(success_update_fmt_raw.format(name=persona_config.name, value=str(new_value)))
-            # Reconstruct
-            final_success_msg = escape_markdown_v2(f"✅ макс\\. сообщений в ответе для ") + f"**{name_esc}**" + escape_markdown_v2(" установлено: ") + f"**{value_esc}**"
-
+            final_success_msg = success_update_fmt.format(name=f"**{name_esc}**", value=f"**{value_esc}**")
             await update.message.reply_text(final_success_msg, parse_mode=ParseMode.MARKDOWN_V2)
 
             db.refresh(persona_config)
             keyboard = await _get_edit_persona_keyboard(persona_config)
-            id_str = str(persona_id) # ID inside ``, no need to escape
-            # Format next prompt
-            final_next_prompt = escape_markdown_v2(prompt_next_edit_fmt_raw.format(name=persona_config.name, id=id_str))
-            # Reconstruct
-            final_next_prompt = escape_markdown_v2(f"что еще изменить для ") + f"**{name_esc}**" + escape_markdown_v2(" \\(id: ") + f"`{id_str}`" + escape_markdown_v2("\\)?")
-
+            id_esc = escape_markdown_v2(str(persona_id))
+            final_next_prompt = prompt_next_edit_fmt.format(name=f"**{name_esc}**", id=id_esc)
             await update.message.reply_text(final_next_prompt, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN_V2)
             return EDIT_PERSONA_CHOICE
 
     except SQLAlchemyError as e:
          logger.error(f"Database error updating max_response_messages for persona {persona_id}: {e}", exc_info=True)
-         await update.message.reply_text(escape_markdown_v2(error_db_raw), parse_mode=ParseMode.MARKDOWN_V2)
+         await update.message.reply_text(error_db, parse_mode=ParseMode.MARKDOWN_V2)
          return await _try_return_to_edit_menu(update, context, user_id, persona_id)
     except Exception as e:
          logger.error(f"Unexpected error updating max_response_messages for persona {persona_id}: {e}", exc_info=True)
-         await update.message.reply_text(escape_markdown_v2(error_general_raw), parse_mode=ParseMode.MARKDOWN_V2)
+         await update.message.reply_text(error_general, parse_mode=ParseMode.MARKDOWN_V2)
          context.user_data.clear()
          return ConversationHandler.END
 
 async def _get_edit_persona_keyboard(persona_config: PersonaConfig) -> List[List[InlineKeyboardButton]]:
-    """Generates the keyboard for the main persona edit menu."""
     if not persona_config:
         logger.error("_get_edit_persona_keyboard called with None persona_config")
         return [[InlineKeyboardButton("❌ Ошибка: Личность не найдена", callback_data="cancel_edit")]]
@@ -2614,21 +2412,19 @@ async def _get_edit_persona_keyboard(persona_config: PersonaConfig) -> List[List
     star = " ⭐" if is_premium else ""
     max_resp_msg = getattr(persona_config, 'max_response_messages', 3)
 
-    # Button text does not need escaping
     keyboard = [
-        [InlineKeyboardButton(f"📝 {FIELD_MAP_DISPLAY['name']}", callback_data="edit_field_name"), InlineKeyboardButton(f"📜 {FIELD_MAP_DISPLAY['description']}", callback_data="edit_field_description")],
-        [InlineKeyboardButton(f"⚙️ {FIELD_MAP_DISPLAY['system_prompt_template']}{star}", callback_data="edit_field_system_prompt_template")],
-        [InlineKeyboardButton(f"📊 {FIELD_MAP_DISPLAY['max_response_messages']} ({max_resp_msg}){star}", callback_data="edit_field_max_response_messages")],
-        [InlineKeyboardButton(f"🤔 {FIELD_MAP_DISPLAY['should_respond_prompt_template']}{star}", callback_data="edit_field_should_respond_prompt_template")],
-        [InlineKeyboardButton(f"💬 {FIELD_MAP_DISPLAY['spam_prompt_template']}{star}", callback_data="edit_field_spam_prompt_template")],
-        [InlineKeyboardButton(f"🖼️ {FIELD_MAP_DISPLAY['photo_prompt_template']}{star}", callback_data="edit_field_photo_prompt_template"), InlineKeyboardButton(f"🎤 {FIELD_MAP_DISPLAY['voice_prompt_template']}{star}", callback_data="edit_field_voice_prompt_template")],
+        [InlineKeyboardButton("📝 Имя", callback_data="edit_field_name"), InlineKeyboardButton("📜 Описание", callback_data="edit_field_description")],
+        [InlineKeyboardButton(f"⚙️ Системный промпт{star}", callback_data="edit_field_system_prompt_template")],
+        [InlineKeyboardButton(f"📊 Макс. ответов ({max_resp_msg}){star}", callback_data="edit_field_max_response_messages")],
+        [InlineKeyboardButton(f"🤔 Промпт 'Отвечать?'{star}", callback_data="edit_field_should_respond_prompt_template")],
+        [InlineKeyboardButton(f"💬 Промпт спама{star}", callback_data="edit_field_spam_prompt_template")],
+        [InlineKeyboardButton(f"🖼️ Промпт фото{star}", callback_data="edit_field_photo_prompt_template"), InlineKeyboardButton(f"🎤 Промпт голоса{star}", callback_data="edit_field_voice_prompt_template")],
         [InlineKeyboardButton(f"🎭 Настроения{star}", callback_data="edit_moods")],
         [InlineKeyboardButton("❌ Завершить", callback_data="cancel_edit")]
     ]
     return keyboard
 
 async def _get_edit_moods_keyboard_internal(persona_config: PersonaConfig) -> List[List[InlineKeyboardButton]]:
-     """Generates the keyboard for the mood editing menu."""
      if not persona_config: return []
      try:
          moods = json.loads(persona_config.mood_prompts_json or '{}')
@@ -2640,32 +2436,34 @@ async def _get_edit_moods_keyboard_internal(persona_config: PersonaConfig) -> Li
      if moods:
          sorted_moods = sorted(moods.keys(), key=str.lower)
          for mood_name in sorted_moods:
-              display_name = mood_name.capitalize()
-              encoded_mood_name = urllib.parse.quote(mood_name)
-              edit_cb = f"editmood_select_{encoded_mood_name}"
-              delete_cb = f"deletemood_confirm_{encoded_mood_name}"
+              try:
+                  display_name = mood_name.capitalize()
+                  encoded_mood_name = urllib.parse.quote(mood_name)
+                  edit_cb = f"editmood_select_{encoded_mood_name}"
+                  delete_cb = f"deletemood_confirm_{encoded_mood_name}"
 
-              if len(edit_cb.encode('utf-8')) > 64 or len(delete_cb.encode('utf-8')) > 64:
-                   logger.warning(f"Encoded mood name '{encoded_mood_name}' too long for callback data, skipping buttons.")
-                   continue
+                  if len(edit_cb.encode('utf-8')) > 64 or len(delete_cb.encode('utf-8')) > 64:
+                       logger.warning(f"Encoded mood name '{encoded_mood_name}' too long for callback data, skipping buttons.")
+                       continue
 
-              keyboard.append([
-                  InlineKeyboardButton(f"✏️ {display_name}", callback_data=edit_cb),
-                  InlineKeyboardButton(f"🗑️", callback_data=delete_cb)
-              ])
+                  keyboard.append([
+                      InlineKeyboardButton(f"✏️ {display_name}", callback_data=edit_cb),
+                      InlineKeyboardButton(f"🗑️", callback_data=delete_cb)
+                  ])
+              except Exception as encode_err:
+                  logger.error(f"Error processing mood '{mood_name}' for keyboard: {encode_err}")
+
      keyboard.append([InlineKeyboardButton("➕ Добавить настроение", callback_data="editmood_add")])
      keyboard.append([InlineKeyboardButton("⬅️ Назад", callback_data="edit_persona_back")])
      return keyboard
 
 async def _try_return_to_edit_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int, persona_id: int) -> int:
-    """Attempts to return to the main edit menu after an error."""
     logger.debug(f"Attempting to return to main edit menu for user {user_id}, persona {persona_id} after error.")
     message_target = update.effective_message
 
-    # Define raw format strings
-    error_cannot_return_raw = "Не удалось вернуться к меню редактирования \\(личность не найдена\\)\\."
-    error_cannot_return_general_raw = "Не удалось вернуться к меню редактирования\\."
-    prompt_edit_raw = "редактируем **{name}** \\(id: `{id}`\\)\nвыбери, что изменить:"
+    error_cannot_return = escape_markdown_v2("Не удалось вернуться к меню редактирования \\(личность не найдена\\)\\.")
+    error_cannot_return_general = escape_markdown_v2("Не удалось вернуться к меню редактирования\\.")
+    prompt_edit = escape_markdown_v2("редактируем ") + "**{name}**" + escape_markdown_v2(" \\(id: `{id}`\\)\nвыбери, что изменить:")
 
     if not message_target:
         logger.warning("Cannot return to edit menu: effective_message is None.")
@@ -2681,35 +2479,29 @@ async def _try_return_to_edit_menu(update: Update, context: ContextTypes.DEFAULT
             if persona_config:
                 keyboard = await _get_edit_persona_keyboard(persona_config)
                 name_esc = escape_markdown_v2(persona_config.name)
-                id_str = str(persona_id) # ID inside ``, no need to escape
-                # Format message
-                final_prompt = escape_markdown_v2(prompt_edit_raw.format(name=persona_config.name, id=id_str))
-                # Reconstruct
-                final_prompt = escape_markdown_v2("редактируем ") + f"**{name_esc}**" + escape_markdown_v2(" \\(id: ") + f"`{id_str}`" + escape_markdown_v2("\\)\nвыбери, что изменить:")
-
+                id_esc = escape_markdown_v2(str(persona_id))
+                final_prompt = prompt_edit.format(name=f"**{name_esc}**", id=id_esc)
                 await message_target.reply_text(final_prompt, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN_V2)
                 return EDIT_PERSONA_CHOICE
             else:
                 logger.warning(f"Persona {persona_id} not found when trying to return to main edit menu.")
-                await message_target.reply_text(escape_markdown_v2(error_cannot_return_raw), parse_mode=ParseMode.MARKDOWN_V2)
+                await message_target.reply_text(error_cannot_return, parse_mode=ParseMode.MARKDOWN_V2)
                 context.user_data.clear()
                 return ConversationHandler.END
     except Exception as e:
         logger.error(f"Failed to return to main edit menu after error: {e}", exc_info=True)
-        await message_target.reply_text(escape_markdown_v2(error_cannot_return_general_raw), parse_mode=ParseMode.MARKDOWN_V2)
+        await message_target.reply_text(error_cannot_return_general, parse_mode=ParseMode.MARKDOWN_V2)
         context.user_data.clear()
         return ConversationHandler.END
 
 async def _try_return_to_mood_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int, persona_id: int) -> int:
-     """Attempts to return to the mood edit menu after an error."""
      logger.debug(f"Attempting to return to mood menu for user {user_id}, persona {persona_id} after error.")
      callback_message = update.callback_query.message if update.callback_query else None
      user_message = update.message
 
-     # Define raw format strings
-     error_cannot_return_raw = "Не удалось вернуться к меню настроений \\(личность не найдена\\)\\."
-     error_cannot_return_general_raw = "Не удалось вернуться к меню настроений\\."
-     prompt_mood_menu_raw = "управление настроениями для **{name}**:"
+     error_cannot_return = escape_markdown_v2("Не удалось вернуться к меню настроений \\(личность не найдена\\)\\.")
+     error_cannot_return_general = escape_markdown_v2("Не удалось вернуться к меню настроений\\.")
+     prompt_mood_menu = escape_markdown_v2("управление настроениями для ") + "**{name}**" + escape_markdown_v2(":")
 
      target_chat_id = None
      if callback_message:
@@ -2732,10 +2524,7 @@ async def _try_return_to_mood_menu(update: Update, context: ContextTypes.DEFAULT
              if persona_config:
                  keyboard = await _get_edit_moods_keyboard_internal(persona_config)
                  name_esc = escape_markdown_v2(persona_config.name)
-                 # Format message
-                 final_prompt = escape_markdown_v2(prompt_mood_menu_raw.format(name=persona_config.name))
-                 # Reconstruct
-                 final_prompt = escape_markdown_v2("управление настроениями для ") + f"**{name_esc}**" + escape_markdown_v2(":")
+                 final_prompt = prompt_mood_menu.format(name=f"**{name_esc}**")
 
                  await context.bot.send_message(
                      chat_id=target_chat_id,
@@ -2750,17 +2539,16 @@ async def _try_return_to_mood_menu(update: Update, context: ContextTypes.DEFAULT
                  return EDIT_MOOD_CHOICE
              else:
                  logger.warning(f"Persona {persona_id} not found when trying to return to mood menu.")
-                 await context.bot.send_message(target_chat_id, escape_markdown_v2(error_cannot_return_raw), parse_mode=ParseMode.MARKDOWN_V2)
+                 await context.bot.send_message(target_chat_id, error_cannot_return, parse_mode=ParseMode.MARKDOWN_V2)
                  context.user_data.clear()
                  return ConversationHandler.END
      except Exception as e:
          logger.error(f"Failed to return to mood menu after error: {e}", exc_info=True)
-         await context.bot.send_message(target_chat_id, escape_markdown_v2(error_cannot_return_general_raw), parse_mode=ParseMode.MARKDOWN_V2)
+         await context.bot.send_message(target_chat_id, error_cannot_return_general, parse_mode=ParseMode.MARKDOWN_V2)
          context.user_data.clear()
          return ConversationHandler.END
 
 async def edit_moods_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, persona_config: Optional[PersonaConfig] = None) -> int:
-    """Displays the mood editing menu."""
     query = update.callback_query
     if not query: return ConversationHandler.END
 
@@ -2769,16 +2557,15 @@ async def edit_moods_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, pe
 
     logger.info(f"--- edit_moods_menu: User={user_id}, PersonaID={persona_id} ---")
 
-    # Define raw format strings
-    error_no_session_raw = "ошибка: сессия редактирования потеряна\\. начни снова \\(/mypersonas\\)\\."
-    error_not_found_raw = "ошибка: личность не найдена или нет доступа\\."
-    error_db_raw = "Ошибка базы данных при загрузке настроений\\."
-    info_premium_raw = "⭐ Доступно по подписке"
-    prompt_mood_menu_fmt_raw = "управление настроениями для **{name}**:"
+    error_no_session = escape_markdown_v2("ошибка: сессия редактирования потеряна\\. начни снова \\(/mypersonas\\)\\.")
+    error_not_found = escape_markdown_v2("ошибка: личность не найдена или нет доступа\\.")
+    error_db = escape_markdown_v2("Ошибка базы данных при загрузке настроений\\.")
+    info_premium = "⭐ Доступно по подписке"
+    prompt_mood_menu_fmt = escape_markdown_v2("управление настроениями для ") + "**{name}**" + escape_markdown_v2(":")
 
     if not persona_id:
         logger.warning(f"User {user_id} in edit_moods_menu, but edit_persona_id missing.")
-        await query.edit_message_text(escape_markdown_v2(error_no_session_raw), reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2)
+        await query.edit_message_text(error_no_session, reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2)
         return ConversationHandler.END
 
     local_persona_config = persona_config
@@ -2795,7 +2582,7 @@ async def edit_moods_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, pe
                 if not local_persona_config:
                     logger.warning(f"User {user_id}: PersonaConfig {persona_id} not found/owned in edit_moods_menu fetch.")
                     await query.answer("Личность не найдена", show_alert=True)
-                    await query.edit_message_text(escape_markdown_v2(error_not_found_raw), reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2)
+                    await query.edit_message_text(error_not_found, reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2)
                     context.user_data.clear()
                     return ConversationHandler.END
                 is_premium = local_persona_config.owner.is_active_subscriber or is_admin(user_id)
@@ -2803,29 +2590,31 @@ async def edit_moods_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, pe
         except Exception as e:
              logger.error(f"DB Error fetching persona in edit_moods_menu: {e}", exc_info=True)
              await query.answer("Ошибка базы данных", show_alert=True)
-             await query.edit_message_text(escape_markdown_v2(error_db_raw), reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2)
+             await query.edit_message_text(error_db, reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2)
              return await _try_return_to_edit_menu(update, context, user_id, persona_id)
     else:
-         is_premium = local_persona_config.owner.is_active_subscriber or is_admin(user_id)
+         owner = local_persona_config.owner
+         if owner:
+             is_premium = owner.is_active_subscriber or is_admin(user_id)
+         else: # Загружаем владельца, если его нет (не должно происходить с selectinload)
+              logger.warning(f"Owner not loaded for persona {persona_id} in edit_moods_menu. Fetching...")
+              with next(get_db()) as db:
+                  owner_db = db.query(User).filter(User.id == local_persona_config.owner_id).first()
+                  if owner_db: is_premium = owner_db.is_active_subscriber or is_admin(user_id)
 
     if not is_premium:
         logger.warning(f"User {user_id} (non-premium) reached mood editor for {persona_id} unexpectedly.")
-        await query.answer(info_premium_raw, show_alert=True) # Use raw for alert
-        return EDIT_PERSONA_CHOICE
+        await query.answer(info_premium, show_alert=True)
+        return await _try_return_to_edit_menu(update, context, user_id, persona_id)
 
     logger.debug(f"Showing moods menu for persona {persona_id}")
     keyboard = await _get_edit_moods_keyboard_internal(local_persona_config)
     reply_markup = InlineKeyboardMarkup(keyboard)
     name_esc = escape_markdown_v2(local_persona_config.name)
-    # Format message
-    msg_text = escape_markdown_v2(prompt_mood_menu_fmt_raw.format(name=local_persona_config.name))
-    # Reconstruct
-    msg_text = escape_markdown_v2("управление настроениями для ") + f"**{name_esc}**" + escape_markdown_v2(":")
+    msg_text = prompt_mood_menu_fmt.format(name=f"**{name_esc}**")
 
     try:
-        current_text = query.message.text if query.message else None
-        current_markup = query.message.reply_markup if query.message else None
-        if current_text != msg_text or current_markup != reply_markup:
+        if query.message.text != msg_text or query.message.reply_markup != reply_markup:
             await query.edit_message_text(msg_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
         else:
             await query.answer()
@@ -2841,7 +2630,6 @@ async def edit_moods_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, pe
     return EDIT_MOOD_CHOICE
 
 async def edit_mood_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handles selecting a mood to edit/delete or adding a new one."""
     query = update.callback_query
     if not query or not query.data: return EDIT_MOOD_CHOICE
 
@@ -2851,20 +2639,18 @@ async def edit_mood_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     logger.info(f"--- edit_mood_choice: User={user_id}, PersonaID={persona_id}, Data={data} ---")
 
-    # Define raw format strings
-    error_no_session_raw = "ошибка: сессия редактирования потеряна\\. начни снова \\(/mypersonas\\)\\."
-    error_not_found_raw = "ошибка: личность не найдена или нет доступа\\."
-    error_db_raw = "Ошибка базы данных\\."
-    error_unhandled_choice_raw = "неизвестный выбор настроения\\."
-    error_decode_mood_raw = "ошибка декодирования имени настроения\\."
-    prompt_new_name_raw = "введи **название** нового настроения \\(одно слово, латиница/кириллица, цифры, дефис, подчеркивание, без пробелов\\):"
-    prompt_new_prompt_fmt_raw = "редактирование настроения: **{name}**\n\n_текущий промпт:_\n`{prompt}`\n\nотправь **новый текст промпта**:"
-    prompt_confirm_delete_fmt_raw = "точно удалить настроение **'{name}'**\\?"
-
+    error_no_session = escape_markdown_v2("ошибка: сессия редактирования потеряна\\. начни снова \\(/mypersonas\\)\\.")
+    error_not_found = escape_markdown_v2("ошибка: личность не найдена или нет доступа\\.")
+    error_db = escape_markdown_v2("Ошибка базы данных\\.")
+    error_unhandled_choice = escape_markdown_v2("неизвестный выбор настроения\\.")
+    error_decode_mood = escape_markdown_v2("ошибка декодирования имени настроения\\.")
+    prompt_new_name = escape_markdown_v2("введи **название** нового настроения \\(1\\-30 символов, буквы/цифры/дефис/подчерк\\., без пробелов\\):")
+    prompt_new_prompt_fmt = escape_markdown_v2("редактирование настроения: ") + "**{name}**" + escape_markdown_v2("\n\n_текущий промпт:_") + "\n`{prompt}`" + escape_markdown_v2("\n\nотправь **новый текст промпта**:")
+    prompt_confirm_delete_fmt = escape_markdown_v2("точно удалить настроение ") + "**'{name}'**" + escape_markdown_v2("\\?")
 
     if not persona_id:
         logger.warning(f"User {user_id} in edit_mood_choice, but edit_persona_id missing.")
-        await query.edit_message_text(escape_markdown_v2(error_no_session_raw), parse_mode=ParseMode.MARKDOWN_V2)
+        await query.edit_message_text(error_no_session, parse_mode=ParseMode.MARKDOWN_V2)
         return ConversationHandler.END
 
     persona_config = None
@@ -2877,28 +2663,24 @@ async def edit_mood_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -
              if not persona_config:
                  logger.warning(f"User {user_id}: PersonaConfig {persona_id} not found/owned in edit_mood_choice.")
                  await query.answer("Личность не найдена", show_alert=True)
-                 await query.edit_message_text(escape_markdown_v2(error_not_found_raw), reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2)
+                 await query.edit_message_text(error_not_found, reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2)
                  context.user_data.clear()
                  return ConversationHandler.END
     except Exception as e:
          logger.error(f"DB Error fetching persona in edit_mood_choice: {e}", exc_info=True)
          await query.answer("Ошибка базы данных", show_alert=True)
-         await query.edit_message_text(escape_markdown_v2(error_db_raw), reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2)
-         return EDIT_MOOD_CHOICE
+         await query.edit_message_text(error_db, reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2)
+         return await _try_return_to_edit_menu(update, context, user_id, persona_id)
 
     await query.answer()
 
     if data == "edit_persona_back":
         logger.debug(f"User {user_id} going back from mood menu to main edit menu for {persona_id}.")
         keyboard = await _get_edit_persona_keyboard(persona_config)
-        prompt_edit_back_fmt_raw = "редактируем **{name}** \\(id: `{id}`\\)\nвыбери, что изменить:"
+        prompt_edit = escape_markdown_v2("редактируем ") + "**{name}**" + escape_markdown_v2(" \\(id: `{id}`\\)\nвыбери, что изменить:")
         name_esc = escape_markdown_v2(persona_config.name)
-        id_str = str(persona_id) # ID inside ``, no need to escape
-        # Format message
-        final_prompt = escape_markdown_v2(prompt_edit_back_fmt_raw.format(name=persona_config.name, id=id_str))
-        # Reconstruct
-        final_prompt = escape_markdown_v2("редактируем ") + f"**{name_esc}**" + escape_markdown_v2(" \\(id: ") + f"`{id_str}`" + escape_markdown_v2("\\)\nвыбери, что изменить:")
-
+        id_esc = escape_markdown_v2(str(persona_id))
+        final_prompt = prompt_edit.format(name=f"**{name_esc}**", id=id_esc)
         await query.edit_message_text(final_prompt, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN_V2)
         context.user_data.pop('edit_mood_name', None)
         context.user_data.pop('delete_mood_name', None)
@@ -2908,7 +2690,7 @@ async def edit_mood_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         logger.debug(f"User {user_id} starting to add mood for {persona_id}.")
         context.user_data['edit_mood_name'] = None
         back_button = InlineKeyboardButton("⬅️ Назад", callback_data="edit_moods_back_cancel")
-        await query.edit_message_text(escape_markdown_v2(prompt_new_name_raw), reply_markup=InlineKeyboardMarkup([[back_button]]), parse_mode=ParseMode.MARKDOWN_V2)
+        await query.edit_message_text(prompt_new_name, reply_markup=InlineKeyboardMarkup([[back_button]]), parse_mode=ParseMode.MARKDOWN_V2)
         return EDIT_MOOD_NAME
 
     if data.startswith("editmood_select_"):
@@ -2918,30 +2700,24 @@ async def edit_mood_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -
              original_mood_name = urllib.parse.unquote(encoded_mood_name)
         except Exception as decode_err:
              logger.error(f"Error decoding mood name from callback {data}: {decode_err}")
-             await query.edit_message_text(escape_markdown_v2(error_decode_mood_raw), parse_mode=ParseMode.MARKDOWN_V2)
+             await query.edit_message_text(error_decode_mood, parse_mode=ParseMode.MARKDOWN_V2)
              return await edit_moods_menu(update, context, persona_config=persona_config)
 
         context.user_data['edit_mood_name'] = original_mood_name
         logger.debug(f"User {user_id} selected mood '{original_mood_name}' to edit for {persona_id}.")
 
-        current_prompt_raw = "_не найдено_"
+        current_prompt_raw = escape_markdown_v2("_не найдено_")
         try:
             current_moods = json.loads(persona_config.mood_prompts_json or '{}')
-            current_prompt_raw = current_moods.get(original_mood_name, "_нет промпта_")
+            prompt_raw = current_moods.get(original_mood_name, "_нет промпта_")
+            current_prompt_raw = escape_markdown_v2(prompt_raw[:300] + "..." if len(prompt_raw) > 300 else prompt_raw)
         except Exception as e:
             logger.error(f"Error reading moods JSON for persona {persona_id} in editmood_select: {e}")
-            current_prompt_raw = "_ошибка чтения промпта_"
-
-        # Escape parts for display
-        display_name_escaped = escape_markdown_v2(original_mood_name)
-        current_prompt_display = escape_markdown_v2(current_prompt_raw[:300] + "..." if len(current_prompt_raw) > 300 else current_prompt_raw)
-
-        # Format message
-        final_prompt = escape_markdown_v2(prompt_new_prompt_fmt_raw.format(name=original_mood_name, prompt=current_prompt_raw))
-        # Reconstruct
-        final_prompt = escape_markdown_v2(f"редактирование настроения: ") + f"**{display_name_escaped}**" + escape_markdown_v2("\n\n_текущий промпт:_") + f"\n`{current_prompt_display}`" + escape_markdown_v2("\n\nотправь **новый текст промпта**:")
+            current_prompt_raw = escape_markdown_v2("_ошибка чтения промпта_")
 
         back_button = InlineKeyboardButton("⬅️ Назад", callback_data="edit_moods_back_cancel")
+        display_name = escape_markdown_v2(original_mood_name)
+        final_prompt = prompt_new_prompt_fmt.format(name=f"**{display_name}**", prompt=current_prompt_raw)
         await query.edit_message_text(final_prompt, reply_markup=InlineKeyboardMarkup([[back_button]]), parse_mode=ParseMode.MARKDOWN_V2)
         return EDIT_MOOD_PROMPT
 
@@ -2953,7 +2729,7 @@ async def edit_mood_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -
              original_mood_name = urllib.parse.unquote(encoded_mood_name)
          except Exception as decode_err:
              logger.error(f"Error decoding mood name from delete confirm callback {data}: {decode_err}")
-             await query.edit_message_text(escape_markdown_v2(error_decode_mood_raw), parse_mode=ParseMode.MARKDOWN_V2)
+             await query.edit_message_text(error_decode_mood, parse_mode=ParseMode.MARKDOWN_V2)
              return await edit_moods_menu(update, context, persona_config=persona_config)
 
          context.user_data['delete_mood_name'] = original_mood_name
@@ -2964,11 +2740,7 @@ async def edit_mood_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -
              [InlineKeyboardButton(f"✅ да, удалить '{original_mood_name}'", callback_data=f"deletemood_delete_{encoded_mood_name}")],
              [InlineKeyboardButton("❌ нет, отмена", callback_data="edit_moods_back_cancel")]
             ]
-         # Format message
-         final_confirm_prompt = escape_markdown_v2(prompt_confirm_delete_fmt_raw.format(name=original_mood_name))
-         # Reconstruct
-         final_confirm_prompt = escape_markdown_v2(f"точно удалить настроение ") + f"**'{escaped_original_name}'**" + escape_markdown_v2("\\?")
-
+         final_confirm_prompt = prompt_confirm_delete_fmt.format(name=f"**{escaped_original_name}**")
          await query.edit_message_text(final_confirm_prompt, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN_V2)
          return DELETE_MOOD_CONFIRM
 
@@ -2979,11 +2751,10 @@ async def edit_mood_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -
          return await edit_moods_menu(update, context, persona_config=persona_config)
 
     logger.warning(f"User {user_id} sent unhandled callback '{data}' in EDIT_MOOD_CHOICE for {persona_id}.")
-    await query.message.reply_text(escape_markdown_v2(error_unhandled_choice_raw), parse_mode=ParseMode.MARKDOWN_V2)
+    await query.message.reply_text(error_unhandled_choice, parse_mode=ParseMode.MARKDOWN_V2)
     return await edit_moods_menu(update, context, persona_config=persona_config)
 
 async def edit_mood_name_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handles receiving the new mood name."""
     if not update.message or not update.message.text: return EDIT_MOOD_NAME
     mood_name_raw = update.message.text.strip()
     mood_name_match = re.match(r'^[\wа-яА-ЯёЁ-]+$', mood_name_raw, re.UNICODE)
@@ -2992,24 +2763,23 @@ async def edit_mood_name_received(update: Update, context: ContextTypes.DEFAULT_
 
     logger.info(f"--- edit_mood_name_received: User={user_id}, PersonaID={persona_id}, Name='{mood_name_raw}' ---")
 
-    # Define raw format strings
-    error_no_session_raw = "ошибка: сессия редактирования потеряна\\. начни снова \\(/mypersonas\\)\\."
-    error_not_found_raw = "ошибка: личность не найдена\\."
-    error_validation_raw = "название: 1\\-30 символов, только буквы/цифры/дефис/подчеркивание \\(кириллица/латиница\\), без пробелов\\. попробуй еще:"
-    error_name_exists_fmt_raw = "настроение '{name}' уже существует\\. выбери другое:"
-    error_db_raw = "ошибка базы данных при проверке имени\\."
-    error_general_raw = "непредвиденная ошибка\\."
-    prompt_for_prompt_fmt_raw = "отлично\\! теперь отправь **текст промпта** для настроения **'{name}'**:"
+    error_no_session = escape_markdown_v2("ошибка: сессия редактирования потеряна\\. начни снова \\(/mypersonas\\)\\.")
+    error_not_found = escape_markdown_v2("ошибка: личность не найдена\\.")
+    error_validation = escape_markdown_v2("название: 1\\-30 символов, буквы/цифры/дефис/подчерк\\., без пробелов\\. попробуй еще:")
+    error_name_exists_fmt = escape_markdown_v2("настроение '") + "{name}" + escape_markdown_v2("' уже существует\\. выбери другое:")
+    error_db = escape_markdown_v2("ошибка базы данных при проверке имени\\.")
+    error_general = escape_markdown_v2("непредвиденная ошибка\\.")
+    prompt_for_prompt_fmt = escape_markdown_v2("отлично\\! теперь отправь **текст промпта** для настроения ") + "**'{name}'**" + escape_markdown_v2(":")
 
     if not persona_id:
         logger.warning(f"User {user_id} in edit_mood_name_received, but edit_persona_id missing.")
-        await update.message.reply_text(escape_markdown_v2(error_no_session_raw), reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
+        await update.message.reply_text(error_no_session, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
         return ConversationHandler.END
 
     if not mood_name_match or not (1 <= len(mood_name_raw) <= 30):
         logger.debug(f"Validation failed for mood name '{mood_name_raw}'.")
         back_button = InlineKeyboardButton("⬅️ Назад", callback_data="edit_moods_back_cancel")
-        await update.message.reply_text(escape_markdown_v2(error_validation_raw), reply_markup=InlineKeyboardMarkup([[back_button]]), parse_mode=ParseMode.MARKDOWN_V2)
+        await update.message.reply_text(error_validation, reply_markup=InlineKeyboardMarkup([[back_button]]), parse_mode=ParseMode.MARKDOWN_V2)
         return EDIT_MOOD_NAME
 
     mood_name = mood_name_raw
@@ -3022,7 +2792,7 @@ async def edit_mood_name_received(update: Update, context: ContextTypes.DEFAULT_
              ).first()
             if not persona_config:
                  logger.warning(f"User {user_id}: Persona {persona_id} not found/owned in mood name check.")
-                 await update.message.reply_text(escape_markdown_v2(error_not_found_raw), reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
+                 await update.message.reply_text(error_not_found, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
                  context.user_data.clear()
                  return ConversationHandler.END
 
@@ -3034,7 +2804,7 @@ async def edit_mood_name_received(update: Update, context: ContextTypes.DEFAULT_
                 logger.info(f"User {user_id} tried mood name '{mood_name}' which already exists.")
                 back_button = InlineKeyboardButton("⬅️ Назад", callback_data="edit_moods_back_cancel")
                 name_esc = escape_markdown_v2(mood_name)
-                final_exists_msg = escape_markdown_v2(error_name_exists_fmt_raw.format(name=mood_name)) # Escape whole thing
+                final_exists_msg = error_name_exists_fmt.format(name=name_esc)
                 await update.message.reply_text(final_exists_msg, reply_markup=InlineKeyboardMarkup([[back_button]]), parse_mode=ParseMode.MARKDOWN_V2)
                 return EDIT_MOOD_NAME
 
@@ -3042,25 +2812,20 @@ async def edit_mood_name_received(update: Update, context: ContextTypes.DEFAULT_
             logger.debug(f"Stored mood name '{mood_name}' for user {user_id}. Asking for prompt.")
             back_button = InlineKeyboardButton("⬅️ Назад", callback_data="edit_moods_back_cancel")
             name_esc = escape_markdown_v2(mood_name)
-            # Format message
-            final_prompt = escape_markdown_v2(prompt_for_prompt_fmt_raw.format(name=mood_name))
-            # Reconstruct
-            final_prompt = escape_markdown_v2("отлично\\! теперь отправь **текст промпта** для настроения ") + f"**'{name_esc}'**" + escape_markdown_v2(":")
-
+            final_prompt = prompt_for_prompt_fmt.format(name=f"**{name_esc}**")
             await update.message.reply_text(final_prompt, reply_markup=InlineKeyboardMarkup([[back_button]]), parse_mode=ParseMode.MARKDOWN_V2)
             return EDIT_MOOD_PROMPT
 
     except SQLAlchemyError as e:
         logger.error(f"DB error checking mood name uniqueness for persona {persona_id}: {e}", exc_info=True)
-        await update.message.reply_text(escape_markdown_v2(error_db_raw), reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
+        await update.message.reply_text(error_db, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
         return EDIT_MOOD_NAME
     except Exception as e:
         logger.error(f"Unexpected error checking mood name for persona {persona_id}: {e}", exc_info=True)
-        await update.message.reply_text(escape_markdown_v2(error_general_raw), reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
+        await update.message.reply_text(error_general, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
         return ConversationHandler.END
 
 async def edit_mood_prompt_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handles receiving the new mood prompt."""
     if not update.message or not update.message.text: return EDIT_MOOD_PROMPT
     mood_prompt = update.message.text.strip()
     mood_name = context.user_data.get('edit_mood_name')
@@ -3069,23 +2834,22 @@ async def edit_mood_prompt_received(update: Update, context: ContextTypes.DEFAUL
 
     logger.info(f"--- edit_mood_prompt_received: User={user_id}, PersonaID={persona_id}, Mood='{mood_name}' ---")
 
-    # Define raw format strings
-    error_no_session_raw = "ошибка: сессия редактирования потеряна \\(нет имени настроения\\)\\. начни снова \\(/mypersonas\\)\\."
-    error_not_found_raw = "ошибка: личность не найдена или нет доступа\\."
-    error_validation_raw = "промпт настроения: 1\\-1500 символов\\. попробуй еще:"
-    error_db_raw = "❌ ошибка базы данных при сохранении настроения\\."
-    error_general_raw = "❌ ошибка при сохранении настроения\\."
-    success_saved_fmt_raw = "✅ настроение **{name}** сохранено\\!"
+    error_no_session = escape_markdown_v2("ошибка: сессия редактирования потеряна \\(нет имени настроения\\)\\. начни снова \\(/mypersonas\\)\\.")
+    error_not_found = escape_markdown_v2("ошибка: личность не найдена или нет доступа\\.")
+    error_validation = escape_markdown_v2("промпт настроения: 1\\-1500 символов\\. попробуй еще:")
+    error_db = escape_markdown_v2("❌ ошибка базы данных при сохранении настроения\\.")
+    error_general = escape_markdown_v2("❌ ошибка при сохранении настроения\\.")
+    success_saved_fmt = escape_markdown_v2("✅ настроение ") + "**{name}**" + escape_markdown_v2(" сохранено\\!")
 
     if not mood_name or not persona_id:
         logger.warning(f"User {user_id} in edit_mood_prompt_received, but mood_name ('{mood_name}') or persona_id ('{persona_id}') missing.")
-        await update.message.reply_text(escape_markdown_v2(error_no_session_raw), reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
+        await update.message.reply_text(error_no_session, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
         return ConversationHandler.END
 
     if not mood_prompt or len(mood_prompt) > 1500:
         logger.debug(f"Validation failed for mood prompt (length={len(mood_prompt)}).")
         back_button = InlineKeyboardButton("⬅️ Назад", callback_data="edit_moods_back_cancel")
-        await update.message.reply_text(escape_markdown_v2(error_validation_raw), reply_markup=InlineKeyboardMarkup([[back_button]]), parse_mode=ParseMode.MARKDOWN_V2)
+        await update.message.reply_text(error_validation, reply_markup=InlineKeyboardMarkup([[back_button]]), parse_mode=ParseMode.MARKDOWN_V2)
         return EDIT_MOOD_PROMPT
 
     try:
@@ -3096,7 +2860,7 @@ async def edit_mood_prompt_received(update: Update, context: ContextTypes.DEFAUL
              ).first()
             if not persona_config:
                 logger.warning(f"User {user_id}: Persona {persona_id} not found/owned when saving mood prompt.")
-                await update.message.reply_text(escape_markdown_v2(error_not_found_raw), reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
+                await update.message.reply_text(error_not_found, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
                 context.user_data.clear()
                 return ConversationHandler.END
 
@@ -3110,27 +2874,22 @@ async def edit_mood_prompt_received(update: Update, context: ContextTypes.DEFAUL
             context.user_data.pop('edit_mood_name', None)
             logger.info(f"User {user_id} updated/added mood '{mood_name}' for persona {persona_id}.")
             name_esc = escape_markdown_v2(mood_name)
-            # Format success message
-            final_success_msg = escape_markdown_v2(success_saved_fmt_raw.format(name=mood_name))
-            # Reconstruct
-            final_success_msg = escape_markdown_v2(f"✅ настроение ") + f"**{name_esc}**" + escape_markdown_v2(" сохранено\\!")
-
+            final_success_msg = success_saved_fmt.format(name=f"**{name_esc}**")
             await update.message.reply_text(final_success_msg, parse_mode=ParseMode.MARKDOWN_V2)
 
-            db.refresh(persona_config)
+            db.refresh(persona_config) # Reload config to pass updated version to menu
             return await edit_moods_menu(update, context, persona_config=persona_config)
 
     except SQLAlchemyError as e:
         logger.error(f"Database error saving mood '{mood_name}' for persona {persona_id}: {e}", exc_info=True)
-        await update.message.reply_text(escape_markdown_v2(error_db_raw), parse_mode=ParseMode.MARKDOWN_V2)
+        await update.message.reply_text(error_db, parse_mode=ParseMode.MARKDOWN_V2)
         return await _try_return_to_mood_menu(update, context, user_id, persona_id)
     except Exception as e:
         logger.error(f"Error saving mood '{mood_name}' for persona {persona_id}: {e}", exc_info=True)
-        await update.message.reply_text(escape_markdown_v2(error_general_raw), parse_mode=ParseMode.MARKDOWN_V2)
+        await update.message.reply_text(error_general, parse_mode=ParseMode.MARKDOWN_V2)
         return await _try_return_to_mood_menu(update, context, user_id, persona_id)
 
 async def delete_mood_confirmed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handles confirmation of mood deletion."""
     query = update.callback_query
     if not query or not query.data: return DELETE_MOOD_CONFIRM
 
@@ -3141,15 +2900,13 @@ async def delete_mood_confirmed(update: Update, context: ContextTypes.DEFAULT_TY
 
     logger.info(f"--- delete_mood_confirmed: User={user_id}, PersonaID={persona_id}, MoodToDelete='{mood_name_to_delete}' ---")
 
-    # Define raw format strings
-    error_no_session_raw = "ошибка: неверные данные для удаления или сессия потеряна\\. начни снова \\(/mypersonas\\)\\."
-    error_not_found_persona_raw = "ошибка: личность не найдена или нет доступа\\."
-    error_db_raw = "❌ ошибка базы данных при удалении настроения\\."
-    error_general_raw = "❌ ошибка при удалении настроения\\."
-    info_not_found_mood_fmt_raw = "настроение '{name}' не найдено \\(уже удалено?\\)\\."
-    error_decode_mood_raw = "ошибка декодирования имени настроения для удаления\\."
-    success_delete_fmt_raw = "🗑️ настроение **{name}** удалено\\."
-
+    error_no_session = escape_markdown_v2("ошибка: неверные данные для удаления или сессия потеряна\\. начни снова \\(/mypersonas\\)\\.")
+    error_not_found_persona = escape_markdown_v2("ошибка: личность не найдена или нет доступа\\.")
+    error_db = escape_markdown_v2("❌ ошибка базы данных при удалении настроения\\.")
+    error_general = escape_markdown_v2("❌ ошибка при удалении настроения\\.")
+    info_not_found_mood_fmt = escape_markdown_v2("настроение '") + "{name}" + escape_markdown_v2("' не найдено \\(уже удалено?\\)\\.")
+    error_decode_mood = escape_markdown_v2("ошибка декодирования имени настроения для удаления\\.")
+    success_delete_fmt = escape_markdown_v2("🗑️ настроение ") + "**{name}**" + escape_markdown_v2(" удалено\\.")
 
     original_name_from_callback = None
     if data.startswith("deletemood_delete_"):
@@ -3159,13 +2916,13 @@ async def delete_mood_confirmed(update: Update, context: ContextTypes.DEFAULT_TY
         except Exception as decode_err:
             logger.error(f"Error decoding mood name from delete confirm callback {data}: {decode_err}")
             await query.answer("Ошибка данных", show_alert=True)
-            await query.edit_message_text(escape_markdown_v2(error_decode_mood_raw), reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2)
+            await query.edit_message_text(error_decode_mood, reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2)
             return await _try_return_to_mood_menu(update, context, user_id, persona_id)
 
     if not mood_name_to_delete or not persona_id or not original_name_from_callback or mood_name_to_delete != original_name_from_callback:
         logger.warning(f"User {user_id}: Mismatch or missing state in delete_mood_confirmed. Stored='{mood_name_to_delete}', Callback='{original_name_from_callback}', PersonaID='{persona_id}'")
         await query.answer("Ошибка сессии", show_alert=True)
-        await query.edit_message_text(escape_markdown_v2(error_no_session_raw), reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2)
+        await query.edit_message_text(error_no_session, reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2)
         context.user_data.pop('delete_mood_name', None)
         return await _try_return_to_mood_menu(update, context, user_id, persona_id)
 
@@ -3180,7 +2937,7 @@ async def delete_mood_confirmed(update: Update, context: ContextTypes.DEFAULT_TY
              ).first()
             if not persona_config:
                 logger.warning(f"User {user_id}: Persona {persona_id} not found/owned during mood deletion.")
-                await query.edit_message_text(escape_markdown_v2(error_not_found_persona_raw), reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2)
+                await query.edit_message_text(error_not_found_persona, reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2)
                 context.user_data.clear()
                 return ConversationHandler.END
 
@@ -3195,16 +2952,12 @@ async def delete_mood_confirmed(update: Update, context: ContextTypes.DEFAULT_TY
                 context.user_data.pop('delete_mood_name', None)
                 logger.info(f"Successfully deleted mood '{mood_name_to_delete}' for persona {persona_id}.")
                 name_esc = escape_markdown_v2(mood_name_to_delete)
-                # Format success message
-                final_success_msg = escape_markdown_v2(success_delete_fmt_raw.format(name=mood_name_to_delete))
-                # Reconstruct
-                final_success_msg = escape_markdown_v2(f"🗑️ настроение ") + f"**{name_esc}**" + escape_markdown_v2(" удалено\\.")
-
+                final_success_msg = success_delete_fmt.format(name=f"**{name_esc}**")
                 await query.edit_message_text(final_success_msg, parse_mode=ParseMode.MARKDOWN_V2)
             else:
                 logger.warning(f"Mood '{mood_name_to_delete}' not found for deletion in persona {persona_id}.")
                 name_esc = escape_markdown_v2(mood_name_to_delete)
-                final_not_found_msg = escape_markdown_v2(info_not_found_mood_fmt_raw.format(name=mood_name_to_delete))
+                final_not_found_msg = info_not_found_mood_fmt.format(name=name_esc)
                 await query.edit_message_text(final_not_found_msg, reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2)
                 context.user_data.pop('delete_mood_name', None)
 
@@ -3213,46 +2966,44 @@ async def delete_mood_confirmed(update: Update, context: ContextTypes.DEFAULT_TY
 
     except SQLAlchemyError as e:
         logger.error(f"Database error deleting mood '{mood_name_to_delete}' for persona {persona_id}: {e}", exc_info=True)
-        await query.edit_message_text(escape_markdown_v2(error_db_raw), reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2)
+        await query.edit_message_text(error_db, reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2)
         return await _try_return_to_mood_menu(update, context, user_id, persona_id)
     except Exception as e:
         logger.error(f"Error deleting mood '{mood_name_to_delete}' for persona {persona_id}: {e}", exc_info=True)
-        await query.edit_message_text(escape_markdown_v2(error_general_raw), reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2)
+        await query.edit_message_text(error_general, reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2)
         return await _try_return_to_mood_menu(update, context, user_id, persona_id)
 
 async def edit_persona_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Cancels the persona edit conversation."""
     message = update.effective_message
     user_id = update.effective_user.id
     persona_id = context.user_data.get('edit_persona_id', 'N/A')
     logger.info(f"User {user_id} cancelled persona edit/mood edit for persona {persona_id}.")
 
-    cancel_message_raw = "редактирование отменено\\."
+    cancel_message = escape_markdown_v2("редактирование отменено\\.")
 
     try:
         if update.callback_query:
             query = update.callback_query
             await query.answer()
-            current_text = query.message.text if query.message else None
-            if query.message and current_text != escape_markdown_v2(cancel_message_raw):
-                await query.edit_message_text(escape_markdown_v2(cancel_message_raw), reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2)
+            if query.message and query.message.text != cancel_message:
+                await query.edit_message_text(cancel_message, reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2)
         elif message:
-            await message.reply_text(escape_markdown_v2(cancel_message_raw), reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
+            await message.reply_text(cancel_message, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
     except Exception as e:
         logger.warning(f"Error sending cancellation confirmation for user {user_id}: {e}")
         if message:
             try:
-                await context.bot.send_message(chat_id=message.chat.id, text=escape_markdown_v2(cancel_message_raw), reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
+                await context.bot.send_message(chat_id=message.chat.id, text=cancel_message, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
             except Exception as send_e: logger.error(f"Failed to send fallback cancel message: {send_e}")
 
     context.user_data.clear()
     return ConversationHandler.END
 
-# --- Delete Persona Conversation ---
 async def _start_delete_convo(update: Update, context: ContextTypes.DEFAULT_TYPE, persona_id: int) -> int:
-    """Internal helper to start the delete conversation."""
     user_id = update.effective_user.id
-    chat_id = update.effective_chat.id if update.effective_chat else update.effective_message.chat_id
+    effective_target = update.effective_message or (update.callback_query.message if update.callback_query else None)
+    if not effective_target: return ConversationHandler.END
+    chat_id = effective_target.chat.id
     is_callback = update.callback_query is not None
     reply_target = update.callback_query.message if is_callback else update.effective_message
 
@@ -3264,15 +3015,14 @@ async def _start_delete_convo(update: Update, context: ContextTypes.DEFAULT_TYPE
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
     context.user_data.clear()
 
-    # Define raw format strings
-    error_not_found_fmt_raw = "личность с id `{id}` не найдена или не твоя\\."
-    error_db_raw = "ошибка базы данных\\."
-    error_general_raw = "непредвиденная ошибка\\."
-    prompt_delete_fmt_raw = (
-        "🚨 **ВНИМАНИЕ\\!** 🚨\nудалить личность **'{name}'** \\(id: `{id}`\\)\\?\n\n"
-        "это действие **НЕОБРАТИМО**\\!"
+    error_not_found_fmt = escape_markdown_v2("личность с id `") + "{id}" + escape_markdown_v2("` не найдена или не твоя\\.")
+    error_db = escape_markdown_v2("ошибка базы данных\\.")
+    error_general = escape_markdown_v2("непредвиденная ошибка\\.")
+    prompt_delete_fmt = (
+        escape_markdown_v2("🚨 **ВНИМАНИЕ\\!** 🚨\nудалить личность ") +
+        "**'{name}'**" + escape_markdown_v2(" \\(id: `{id}`\\)\\?\n\n") +
+        escape_markdown_v2("это действие **НЕОБРАТИМО**\\!")
     )
-
 
     try:
         with next(get_db()) as db:
@@ -3282,41 +3032,27 @@ async def _start_delete_convo(update: Update, context: ContextTypes.DEFAULT_TYPE
             ).first()
 
             if not persona_config:
-                 id_str = str(persona_id) # ID inside ``, no need to escape
-                 final_error_msg = escape_markdown_v2(error_not_found_fmt_raw.format(id=id_str))
-                 # Reconstruct manually
-                 final_error_msg = escape_markdown_v2("личность с id ") + f"`{id_str}`" + escape_markdown_v2(" не найдена или не твоя\\.")
-
+                 id_esc = escape_markdown_v2(str(persona_id))
+                 final_error_msg = error_not_found_fmt.format(id=id_esc)
                  if is_callback: await update.callback_query.answer("Личность не найдена", show_alert=True)
                  await reply_target.reply_text(final_error_msg, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
                  return ConversationHandler.END
 
             context.user_data['delete_persona_id'] = persona_id
             persona_name_display = persona_config.name[:20] + "..." if len(persona_config.name) > 20 else persona_config.name
-            # Button text does not need escaping
             keyboard = [
                  [InlineKeyboardButton(f"‼️ ДА, УДАЛИТЬ '{persona_name_display}' ‼️", callback_data=f"delete_persona_confirm_{persona_id}")],
                  [InlineKeyboardButton("❌ НЕТ, ОСТАВИТЬ", callback_data="delete_persona_cancel")]
              ]
             reply_markup = InlineKeyboardMarkup(keyboard)
             name_esc = escape_markdown_v2(persona_config.name)
-            id_str = str(persona_id) # ID inside ``, no need to escape
-            # Format message
-            msg_text = escape_markdown_v2(prompt_delete_fmt_raw.format(name=persona_config.name, id=id_str))
-            # Reconstruct
-            msg_text = (
-                escape_markdown_v2("🚨 **ВНИМАНИЕ\\!** 🚨\nудалить личность ") +
-                f"**'{name_esc}'**" + escape_markdown_v2(" \\(id: ") + f"`{id_str}`" + escape_markdown_v2("\\)\\?\n\n") +
-                escape_markdown_v2("это действие **НЕОБРАТИМО**\\!")
-            )
-
+            id_esc = escape_markdown_v2(str(persona_id))
+            msg_text = prompt_delete_fmt.format(name=f"**{name_esc}**", id=id_esc)
 
             if is_callback:
                  query = update.callback_query
                  try:
-                      current_text = query.message.text if query.message else None
-                      current_markup = query.message.reply_markup if query.message else None
-                      if current_text != msg_text or current_markup != reply_markup:
+                      if query.message.text != msg_text or query.message.reply_markup != reply_markup:
                            await query.edit_message_text(msg_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
                       else:
                            await query.answer()
@@ -3330,40 +3066,38 @@ async def _start_delete_convo(update: Update, context: ContextTypes.DEFAULT_TYPE
             return DELETE_PERSONA_CONFIRM
     except SQLAlchemyError as e:
          logger.error(f"Database error starting delete persona {persona_id}: {e}", exc_info=True)
-         await context.bot.send_message(chat_id, escape_markdown_v2(error_db_raw), parse_mode=ParseMode.MARKDOWN_V2)
+         await context.bot.send_message(chat_id, error_db, parse_mode=ParseMode.MARKDOWN_V2)
          return ConversationHandler.END
     except Exception as e:
          logger.error(f"Unexpected error starting delete persona {persona_id}: {e}", exc_info=True)
-         await context.bot.send_message(chat_id, escape_markdown_v2(error_general_raw), parse_mode=ParseMode.MARKDOWN_V2)
+         await context.bot.send_message(chat_id, error_general, parse_mode=ParseMode.MARKDOWN_V2)
          return ConversationHandler.END
 
 async def delete_persona_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Entry point for /deletepersona command."""
     if not update.message: return ConversationHandler.END
     user_id = update.effective_user.id
     args = context.args
     logger.info(f"CMD /deletepersona < User {user_id} with args: {args}")
 
-    usage_text_raw = "укажи id личности: `/deletepersona <id>`\nили используй кнопку из /mypersonas"
-    error_invalid_id_raw = "ID должен быть числом\\."
+    usage_text = escape_markdown_v2("укажи id личности: `/deletepersona <id>`\nили используй кнопку из /mypersonas")
+    error_invalid_id = escape_markdown_v2("ID должен быть числом\\.")
 
     if not args or not args[0].isdigit():
-        await update.message.reply_text(escape_markdown_v2(usage_text_raw), parse_mode=ParseMode.MARKDOWN_V2)
+        await update.message.reply_text(usage_text, parse_mode=ParseMode.MARKDOWN_V2)
         return ConversationHandler.END
     try:
         persona_id = int(args[0])
     except ValueError:
-        await update.message.reply_text(escape_markdown_v2(error_invalid_id_raw), parse_mode=ParseMode.MARKDOWN_V2)
+        await update.message.reply_text(error_invalid_id, parse_mode=ParseMode.MARKDOWN_V2)
         return ConversationHandler.END
     return await _start_delete_convo(update, context, persona_id)
 
 async def delete_persona_button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Entry point for delete button from /mypersonas."""
     query = update.callback_query
     if not query or not query.data: return ConversationHandler.END
     await query.answer("Начинаем удаление...")
 
-    error_invalid_id_callback_raw = "Ошибка: неверный ID личности в кнопке\\."
+    error_invalid_id_callback = escape_markdown_v2("Ошибка: неверный ID личности в кнопке\\.")
 
     try:
         persona_id = int(query.data.split('_')[-1])
@@ -3371,12 +3105,11 @@ async def delete_persona_button_callback(update: Update, context: ContextTypes.D
         return await _start_delete_convo(update, context, persona_id)
     except (IndexError, ValueError):
         logger.error(f"Could not parse persona_id from delete_persona callback data: {query.data}")
-        try: await query.edit_message_text(escape_markdown_v2(error_invalid_id_callback_raw), parse_mode=ParseMode.MARKDOWN_V2)
+        try: await query.edit_message_text(error_invalid_id_callback, parse_mode=ParseMode.MARKDOWN_V2)
         except Exception as e: logger.error(f"Failed to edit message with invalid ID error: {e}")
         return ConversationHandler.END
 
 async def delete_persona_confirmed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handles confirmation of persona deletion."""
     query = update.callback_query
     if not query or not query.data: return DELETE_PERSONA_CONFIRM
 
@@ -3386,16 +3119,15 @@ async def delete_persona_confirmed(update: Update, context: ContextTypes.DEFAULT
 
     logger.info(f"--- delete_persona_confirmed: User={user_id}, PersonaID={persona_id}, Data={data} ---")
 
-    # Define raw format strings
-    error_no_session_raw = "ошибка: неверные данные для удаления или сессия потеряна\\. начни снова \\(/mypersonas\\)\\."
-    error_delete_failed_raw = "❌ не удалось удалить личность \\(ошибка базы данных\\)\\."
-    success_deleted_fmt_raw = "✅ личность '{name}' удалена\\."
+    error_no_session = escape_markdown_v2("ошибка: неверные данные для удаления или сессия потеряна\\. начни снова \\(/mypersonas\\)\\.")
+    error_delete_failed = escape_markdown_v2("❌ не удалось удалить личность \\(ошибка базы данных\\)\\.")
+    success_deleted_fmt = escape_markdown_v2("✅ личность '") + "{name}" + escape_markdown_v2("' удалена\\.")
 
     expected_pattern = f"delete_persona_confirm_{persona_id}"
     if not persona_id or data != expected_pattern:
          logger.warning(f"User {user_id}: Mismatch or missing ID in delete_persona_confirmed. ID='{persona_id}', Data='{data}'")
          await query.answer("Ошибка сессии", show_alert=True)
-         await query.edit_message_text(escape_markdown_v2(error_no_session_raw), reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2)
+         await query.edit_message_text(error_no_session, reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2)
          context.user_data.clear()
          return ConversationHandler.END
 
@@ -3417,6 +3149,7 @@ async def delete_persona_confirmed(update: Update, context: ContextTypes.DEFAULT
              if persona_to_delete:
                  persona_name_deleted = persona_to_delete.name
                  logger.info(f"Attempting database deletion for persona {persona_id} ('{persona_name_deleted}')...")
+                 # delete_persona_config commits or rolls back inside
                  if delete_persona_config(db, persona_id, user.id):
                      logger.info(f"User {user_id} successfully deleted persona {persona_id} ('{persona_name_deleted}').")
                      deleted_ok = True
@@ -3433,20 +3166,15 @@ async def delete_persona_confirmed(update: Update, context: ContextTypes.DEFAULT
 
     if deleted_ok:
         name_esc = escape_markdown_v2(persona_name_deleted)
-        # Format success message
-        final_success_msg = escape_markdown_v2(success_deleted_fmt_raw.format(name=persona_name_deleted))
-        # Reconstruct
-        final_success_msg = escape_markdown_v2(f"✅ личность '{persona_name_deleted}' удалена\\.")
-
+        final_success_msg = success_deleted_fmt.format(name=name_esc)
         await query.edit_message_text(final_success_msg, reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2)
     else:
-        await query.edit_message_text(escape_markdown_v2(error_delete_failed_raw), reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2)
+        await query.edit_message_text(error_delete_failed, reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2)
 
     context.user_data.clear()
     return ConversationHandler.END
 
 async def delete_persona_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Cancels the persona deletion conversation."""
     query = update.callback_query
     if not query: return ConversationHandler.END
     await query.answer()
@@ -3454,16 +3182,13 @@ async def delete_persona_cancel(update: Update, context: ContextTypes.DEFAULT_TY
     persona_id = context.user_data.get('delete_persona_id', 'N/A')
     logger.info(f"User {user_id} cancelled deletion for persona {persona_id}.")
 
-    cancel_message_raw = "удаление отменено\\."
+    cancel_message = escape_markdown_v2("удаление отменено\\.")
 
-    await query.edit_message_text(escape_markdown_v2(cancel_message_raw), reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2)
+    await query.edit_message_text(cancel_message, reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2)
     context.user_data.clear()
     return ConversationHandler.END
 
-# --- Mute/Unmute Commands ---
-
 async def mute_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handles /mutebot command."""
     if not update.message: return
     chat_id_str = str(update.effective_chat.id)
     user_id = update.effective_user.id
@@ -3473,21 +3198,19 @@ async def mute_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await send_subscription_required_message(update, context)
         return
 
-    # Define raw format strings
-    error_no_persona_raw = "В этом чате нет активной личности\\."
-    error_not_owner_raw = "Только владелец личности может ее заглушить\\."
-    error_no_instance_raw = "Ошибка: не найден объект связи с чатом\\."
-    error_db_raw = "Ошибка базы данных при попытке заглушить бота\\."
-    error_general_raw = "Непредвиденная ошибка при выполнении команды\\."
-    info_already_muted_fmt_raw = "Личность '{name}' уже заглушена в этом чате\\."
-    success_muted_fmt_raw = "✅ Личность '{name}' больше не будет отвечать в этом чате \\(но будет запоминать сообщения\\)\\. Используйте /unmutebot, чтобы вернуть\\."
-
+    error_no_persona = escape_markdown_v2("В этом чате нет активной личности\\.")
+    error_not_owner = escape_markdown_v2("Только владелец личности может ее заглушить\\.")
+    error_no_instance = escape_markdown_v2("Ошибка: не найден объект связи с чатом\\.")
+    error_db = escape_markdown_v2("Ошибка базы данных при попытке заглушить бота\\.")
+    error_general = escape_markdown_v2("Непредвиденная ошибка при выполнении команды\\.")
+    info_already_muted_fmt = escape_markdown_v2("Личность '") + "{name}" + escape_markdown_v2("' уже заглушена в этом чате\\.")
+    success_muted_fmt = escape_markdown_v2("✅ Личность '") + "{name}" + escape_markdown_v2("' больше не будет отвечать в этом чате \\(но будет запоминать сообщения\\)\\. Используйте /unmutebot, чтобы вернуть\\.")
 
     with next(get_db()) as db:
         try:
             instance_info = get_persona_and_context_with_owner(chat_id_str, db)
             if not instance_info:
-                await update.message.reply_text(escape_markdown_v2(error_no_persona_raw), reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
+                await update.message.reply_text(error_no_persona, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
                 return
 
             persona, _, owner_user = instance_info
@@ -3496,41 +3219,34 @@ async def mute_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
             if owner_user.telegram_id != user_id and not is_admin(user_id):
                 logger.warning(f"User {user_id} tried to mute persona '{persona.name}' owned by {owner_user.telegram_id}.")
-                await update.message.reply_text(escape_markdown_v2(error_not_owner_raw), reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
+                await update.message.reply_text(error_not_owner, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
                 return
 
             if not chat_instance:
                 logger.error(f"Could not find ChatBotInstance object for persona {persona.name} in chat {chat_id_str} during mute.")
-                await update.message.reply_text(escape_markdown_v2(error_no_instance_raw), reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
+                await update.message.reply_text(error_no_instance, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
                 return
 
             if not chat_instance.is_muted:
                 chat_instance.is_muted = True
                 db.commit()
                 logger.info(f"Persona '{persona.name}' muted in chat {chat_id_str} by user {user_id}.")
-                # Format success message
-                final_success_msg = escape_markdown_v2(success_muted_fmt_raw.format(name=persona.name))
-                # Reconstruct
-                final_success_msg = escape_markdown_v2(f"✅ Личность '{persona.name}' больше не будет отвечать в этом чате \\(но будет запоминать сообщения\\)\\. Используйте /unmutebot, чтобы вернуть\\.")
-
+                final_success_msg = success_muted_fmt.format(name=persona_name_escaped)
                 await update.message.reply_text(final_success_msg, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
             else:
-                # Format already muted message
-                final_already_muted_msg = escape_markdown_v2(info_already_muted_fmt_raw.format(name=persona.name))
-                # Reconstruct
-                final_already_muted_msg = escape_markdown_v2(f"Личность '{persona.name}' уже заглушена в этом чате\\.")
-
+                final_already_muted_msg = info_already_muted_fmt.format(name=persona_name_escaped)
                 await update.message.reply_text(final_already_muted_msg, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
 
         except SQLAlchemyError as e:
             logger.error(f"Database error during /mutebot for chat {chat_id_str}: {e}", exc_info=True)
-            await update.message.reply_text(escape_markdown_v2(error_db_raw), parse_mode=ParseMode.MARKDOWN_V2)
+            await update.message.reply_text(error_db, parse_mode=ParseMode.MARKDOWN_V2)
+            db.rollback()
         except Exception as e:
             logger.error(f"Unexpected error during /mutebot for chat {chat_id_str}: {e}", exc_info=True)
-            await update.message.reply_text(escape_markdown_v2(error_general_raw), parse_mode=ParseMode.MARKDOWN_V2)
+            await update.message.reply_text(error_general, parse_mode=ParseMode.MARKDOWN_V2)
+            db.rollback()
 
 async def unmute_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handles /unmutebot command."""
     if not update.message: return
     chat_id_str = str(update.effective_chat.id)
     user_id = update.effective_user.id
@@ -3540,14 +3256,12 @@ async def unmute_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await send_subscription_required_message(update, context)
         return
 
-    # Define raw format strings
-    error_no_persona_raw = "В этом чате нет активной личности, которую можно размьютить\\."
-    error_not_owner_raw = "Только владелец личности может снять заглушку\\."
-    error_db_raw = "Ошибка базы данных при попытке вернуть бота к общению\\."
-    error_general_raw = "Непредвиденная ошибка при выполнении команды\\."
-    info_not_muted_fmt_raw = "Личность '{name}' не была заглушена\\."
-    success_unmuted_fmt_raw = "✅ Личность '{name}' снова может отвечать в этом чате\\."
-
+    error_no_persona = escape_markdown_v2("В этом чате нет активной личности, которую можно размьютить\\.")
+    error_not_owner = escape_markdown_v2("Только владелец личности может снять заглушку\\.")
+    error_db = escape_markdown_v2("Ошибка базы данных при попытке вернуть бота к общению\\.")
+    error_general = escape_markdown_v2("Непредвиденная ошибка при выполнении команды\\.")
+    info_not_muted_fmt = escape_markdown_v2("Личность '") + "{name}" + escape_markdown_v2("' не была заглушена\\.")
+    success_unmuted_fmt = escape_markdown_v2("✅ Личность '") + "{name}" + escape_markdown_v2("' снова может отвечать в этом чате\\.")
 
     with next(get_db()) as db:
         try:
@@ -3562,7 +3276,7 @@ async def unmute_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
                 .first()
 
             if not active_instance or not active_instance.bot_instance_ref or not active_instance.bot_instance_ref.owner or not active_instance.bot_instance_ref.persona_config:
-                await update.message.reply_text(escape_markdown_v2(error_no_persona_raw), reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
+                await update.message.reply_text(error_no_persona, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
                 return
 
             owner_user = active_instance.bot_instance_ref.owner
@@ -3571,30 +3285,24 @@ async def unmute_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
             if owner_user.telegram_id != user_id and not is_admin(user_id):
                 logger.warning(f"User {user_id} tried to unmute persona '{persona_name}' owned by {owner_user.telegram_id}.")
-                await update.message.reply_text(escape_markdown_v2(error_not_owner_raw), reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
+                await update.message.reply_text(error_not_owner, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
                 return
 
             if active_instance.is_muted:
                 active_instance.is_muted = False
                 db.commit()
                 logger.info(f"Persona '{persona_name}' unmuted in chat {chat_id_str} by user {user_id}.")
-                # Format success message
-                final_success_msg = escape_markdown_v2(success_unmuted_fmt_raw.format(name=persona_name))
-                # Reconstruct
-                final_success_msg = escape_markdown_v2(f"✅ Личность '{persona_name}' снова может отвечать в этом чате\\.")
-
+                final_success_msg = success_unmuted_fmt.format(name=escaped_persona_name)
                 await update.message.reply_text(final_success_msg, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
             else:
-                # Format not muted message
-                final_not_muted_msg = escape_markdown_v2(info_not_muted_fmt_raw.format(name=persona_name))
-                # Reconstruct
-                final_not_muted_msg = escape_markdown_v2(f"Личность '{persona_name}' не была заглушена\\.")
-
+                final_not_muted_msg = info_not_muted_fmt.format(name=escaped_persona_name)
                 await update.message.reply_text(final_not_muted_msg, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
 
         except SQLAlchemyError as e:
             logger.error(f"Database error during /unmutebot for chat {chat_id_str}: {e}", exc_info=True)
-            await update.message.reply_text(escape_markdown_v2(error_db_raw), parse_mode=ParseMode.MARKDOWN_V2)
+            await update.message.reply_text(error_db, parse_mode=ParseMode.MARKDOWN_V2)
+            db.rollback()
         except Exception as e:
             logger.error(f"Unexpected error during /unmutebot for chat {chat_id_str}: {e}", exc_info=True)
-            await update.message.reply_text(escape_markdown_v2(error_general_raw), parse_mode=ParseMode.MARKDOWN_V2)
+            await update.message.reply_text(error_general, parse_mode=ParseMode.MARKDOWN_V2)
+            db.rollback()
