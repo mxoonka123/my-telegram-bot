@@ -1144,33 +1144,34 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             await send_subscription_required_message(update, context)
             return
 
+    # <<< ИСПРАВЛЕНО: Убраны '\' перед '-' >>>
     # Raw text with MarkdownV2 syntax already included
     help_text_raw = """
 *Помощь по командам:*
 
 *Основные:*
-`/start` \- Приветствие и ваш статус
-`/help` \- Эта справка
-`/menu` \- Панель управления командами
+`/start` - Приветствие и ваш статус
+`/help` - Эта справка
+`/menu` - Панель управления командами
 
 *Личности:*
-`/createpersona <имя> [описание]` \- Создать
-`/mypersonas` \- Список и управление
-`/editpersona <id>` \- Редактировать
-`/deletepersona <id>` \- Удалить
+`/createpersona <имя> [описание]` - Создать
+`/mypersonas` - Список и управление
+`/editpersona <id>` - Редактировать
+`/deletepersona <id>` - Удалить
 
 *Аккаунт:*
-`/profile` \- Статус и лимиты
-`/subscribe` \- Информация о подписке
+`/profile` - Статус и лимиты
+`/subscribe` - Информация о подписке
 
 *В чате \(с активной личностью\):*
-`/addbot <id>` \- Добавить личность в чат
-`/mood [настроение]` \- Сменить настроение
-`/reset` \- Очистить память личности
-`/mutebot` \- Запретить отвечать
-`/unmutebot` \- Разрешить отвечать
+`/addbot <id>` - Добавить личность в чат
+`/mood [настроение]` - Сменить настроение
+`/reset` - Очистить память личности
+`/mutebot` - Запретить отвечать
+`/unmutebot` - Разрешить отвечать
 """
-    # <<< Use the raw text directly, as it contains Markdown >>>
+    # Use the raw text directly, as it contains Markdown
     help_text_to_send = help_text_raw
 
     # Add back button only if it's a callback
@@ -2499,8 +2500,9 @@ async def generate_payment_link(update: Update, context: ContextTypes.DEFAULT_TY
     # --- Create Payment Request ---
     try:
         builder = PaymentRequestBuilder()
+        # <<< ИСПРАВЛЕНО: Убран лишний отступ перед .set_confirmation >>>
         builder.set_amount({"value": f"{SUBSCRIPTION_PRICE_RUB:.2f}", "currency": SUBSCRIPTION_CURRENCY}) \
-            .set_capture(True) # Capture payment immediately
+            .set_capture(True) \
             .set_confirmation({"type": "redirect", "return_url": return_url}) \
             .set_description(payment_description) \
             .set_metadata(payment_metadata) \
