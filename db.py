@@ -265,7 +265,7 @@ def initialize_database():
              "pool_timeout": 30,     # Seconds to wait for a connection before timing out
              "pool_recycle": 1800,   # Seconds after which a connection is recycled (prevents stale connections)
              "pool_pre_ping": True,  # Check connection validity before handing it out
-             # <<< УДАЛЕНО: prepared_statement_cache_size=0 - неверный аргумент для psycopg v3 >>>
+             # "prepared_statement_cache_size": 0 # REMOVED: Invalid argument for psycopg v3
          })
 
     try:
@@ -290,7 +290,7 @@ def initialize_database():
              logger.critical(f"FATAL: Database operational error during initialization for {db_log_url_on_error}: {e}", exc_info=True)
          logger.critical("Please check your DATABASE_URL and network connectivity to Supabase/PostgreSQL.")
          raise # Re-raise the critical error to stop the application
-    except TypeError as e: # <<< ДОБАВЛЕНО: Перехват TypeError от create_engine >>>
+    except TypeError as e: # Catch TypeError from create_engine
         if "Invalid argument(s) 'prepared_statement_cache_size'" in str(e):
             logger.critical(f"FATAL: Invalid argument 'prepared_statement_cache_size' used with create_engine for psycopg v3. Remove this argument from engine_args.", exc_info=False)
         else:
@@ -525,7 +525,7 @@ def add_message_to_context(db: Session, chat_bot_instance_id: int, role: str, co
                                    .filter(ChatContext.message_order < threshold_order) \
                                    .delete(synchronize_session=False) # Or 'fetch' if needed
                  logger.debug(f"Pruned {deleted_count} old context messages for instance {chat_bot_instance_id} (threshold order {threshold_order}). Pending commit.")
-                 flag_modified(chat_instance, "context") # Mark relationship as modified due to delete
+                 # <<< REMOVED: flag_modified(chat_instance, "context") >>> # Not needed for relationship delete
              else:
                  # This case should ideally not happen if current_count >= MAX_CONTEXT_MESSAGES_STORED
                  logger.warning(f"Could not determine threshold order for pruning context for instance {chat_bot_instance_id}")
@@ -544,7 +544,7 @@ def add_message_to_context(db: Session, chat_bot_instance_id: int, role: str, co
             timestamp=datetime.now(timezone.utc)
         )
         db.add(new_message)
-        flag_modified(chat_instance, "context") # Mark relationship as modified due to add
+        # <<< REMOVED: flag_modified(chat_instance, "context") >>> # Not needed for relationship add
         logger.debug(f"Prepared new context message (order {max_order + 1}, role {role}) for instance {chat_bot_instance_id}. Pending commit.")
 
     except SQLAlchemyError as e:
