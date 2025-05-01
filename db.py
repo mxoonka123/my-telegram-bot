@@ -1,5 +1,3 @@
-# --- START OF FILE db.py ---
-
 import json
 import logging
 from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, Boolean, ForeignKey, UniqueConstraint, func, BIGINT
@@ -22,8 +20,6 @@ from config import (
     MAX_CONTEXT_MESSAGES_SENT_TO_LLM,
     ADMIN_USER_ID
 )
-# Removed imports causing circular dependency
-# from persona import Persona # <<< REMOVED THIS LINE TO FIX CIRCULAR IMPORT
 
 
 logger = logging.getLogger(__name__)
@@ -269,8 +265,7 @@ def initialize_database():
              "pool_timeout": 30,     # Seconds to wait for a connection before timing out
              "pool_recycle": 1800,   # Seconds after which a connection is recycled (prevents stale connections)
              "pool_pre_ping": True,  # Check connection validity before handing it out
-             # <<< FIX: Disable prepared statement cache for PgBouncer compatibility >>>
-             "prepared_statement_cache_size": 0
+             # <<< УДАЛЕНО: prepared_statement_cache_size=0 - неверный аргумент для psycopg v3 >>>
          })
 
     try:
@@ -295,6 +290,13 @@ def initialize_database():
              logger.critical(f"FATAL: Database operational error during initialization for {db_log_url_on_error}: {e}", exc_info=True)
          logger.critical("Please check your DATABASE_URL and network connectivity to Supabase/PostgreSQL.")
          raise # Re-raise the critical error to stop the application
+    except TypeError as e: # <<< ДОБАВЛЕНО: Перехват TypeError от create_engine >>>
+        if "Invalid argument(s) 'prepared_statement_cache_size'" in str(e):
+            logger.critical(f"FATAL: Invalid argument 'prepared_statement_cache_size' used with create_engine for psycopg v3. Remove this argument from engine_args.", exc_info=False)
+        else:
+            db_log_url_on_error = db_url_str.split('@')[-1] if '@' in db_url_str else db_url_str
+            logger.critical(f"FATAL: A TypeError occurred during database initialization for {db_log_url_on_error}: {e}", exc_info=True)
+        raise
     except Exception as e:
          db_log_url_on_error = db_url_str.split('@')[-1] if '@' in db_url_str else db_url_str
          logger.critical(f"FATAL: An unexpected error occurred during database initialization for {db_log_url_on_error}: {e}", exc_info=True)
@@ -856,5 +858,3 @@ def create_tables():
         db_log_url_on_error = str(engine.url).split('@')[-1] if '@' in str(engine.url) else str(engine.url)
         logger.critical(f"FATAL: Failed to create/verify database tables for {db_log_url_on_error}: {e}", exc_info=True)
         raise
-
-# --- END OF FILE db.py ---
