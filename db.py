@@ -1,3 +1,5 @@
+# --- START OF FILE db.py ---
+
 import json
 import logging
 from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, Boolean, ForeignKey, UniqueConstraint, func, BIGINT
@@ -21,7 +23,6 @@ from config import (
     ADMIN_USER_ID
 )
 # Removed imports causing circular dependency
-# from utils import get_time_info # This was commented out already, good.
 # from persona import Persona # <<< REMOVED THIS LINE TO FIX CIRCULAR IMPORT
 
 
@@ -268,9 +269,12 @@ def initialize_database():
              "pool_timeout": 30,     # Seconds to wait for a connection before timing out
              "pool_recycle": 1800,   # Seconds after which a connection is recycled (prevents stale connections)
              "pool_pre_ping": True,  # Check connection validity before handing it out
+             # <<< FIX: Disable prepared statement cache for PgBouncer compatibility >>>
+             "prepared_statement_cache_size": 0
          })
 
     try:
+        # Pass engine_args using **kwargs
         engine = create_engine(db_url_str, **engine_args, echo=False) # echo=False for production
         SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
         logger.info("Database engine and session maker initialized.")
@@ -852,3 +856,5 @@ def create_tables():
         db_log_url_on_error = str(engine.url).split('@')[-1] if '@' in str(engine.url) else str(engine.url)
         logger.critical(f"FATAL: Failed to create/verify database tables for {db_log_url_on_error}: {e}", exc_info=True)
         raise
+
+# --- END OF FILE db.py ---
