@@ -1077,16 +1077,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 persona_limit_raw = f"{persona_count}/{user.persona_limit}"
                 message_limit_raw = f"{user.daily_message_count}/{user.message_limit}"
 
-                # Construct welcome message (raw)
+                # Construct welcome message (raw) - Removed backticks
                 start_text_raw = (
                     f"привет! 👋 я бот для создания ai-собеседников (@NunuAiBot).\n\n"
                     f"твой статус: {status_raw}{expires_raw}\n"
                     f"личности: {persona_limit_raw} | сообщения: {message_limit_raw}\n\n"
                     f"начало работы:\n"
-                    f"/createpersona <имя> - создай ai-личность.\n" # Removed backticks
-                    f"/mypersonas - посмотри своих личностей и управляй ими.\n" # Removed backticks
-                    f"/menu - панель управления командами.\n" # Removed backticks
-                    f"/profile - детали статуса | /subscribe - узнать о подписке" # Removed backticks
+                    f"/createpersona <имя> - создай ai-личность.\n"
+                    f"/mypersonas - посмотри своих личностей и управляй ими.\n"
+                    f"/menu - панель управления командами.\n"
+                    f"/profile - детали статуса | /subscribe - узнать о подписке"
                  )
                 # Escape for MarkdownV2
                 reply_text_final = escape_markdown_v2(start_text_raw)
@@ -1145,7 +1145,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             return
 
     # Raw text with MarkdownV2 syntax already included
-    # Removed backticks ` and unnecessary \ before -
+    # Removed backticks ` and unnecessary \ before - and (
     help_text_raw = """
 *Помощь по командам:*
 
@@ -1164,7 +1164,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 /profile - Статус и лимиты
 /subscribe - Информация о подписке
 
-*В чате \(с активной личностью\):*
+*В чате (с активной личностью):*
 /addbot <id> - Добавить личность в чат
 /mood [настроение] - Сменить настроение
 /reset - Очистить память личности
@@ -1591,12 +1591,12 @@ async def create_persona(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await context.bot.send_chat_action(chat_id=chat_id_str, action=ChatAction.TYPING)
 
     # Define user messages (escaped and raw for formatting)
-    usage_text = escape_markdown_v2("формат: /createpersona <имя> [описание]\n_имя обязательно, описание нет._") # Removed backticks
+    usage_text = escape_markdown_v2("формат: /createpersona <имя> [описание]\n_имя обязательно, описание нет._")
     error_name_len = escape_markdown_v2("имя личности: 2-50 символов.")
     error_desc_len = escape_markdown_v2("описание: до 1500 символов.")
     error_limit_reached_fmt_raw = "упс! достигнут лимит личностей ({current_count}/{limit}) для статуса {status_text}. 😟\nчтобы создавать больше, используй /subscribe"
     error_name_exists_fmt_raw = "личность с именем '{persona_name}' уже есть. выбери другое."
-    success_create_fmt_raw = "✅ личность '{name}' создана!\nID: {id}\nописание: {description}\n\nдобавь в чат или управляй через /mypersonas" # Removed backticks around ID
+    success_create_fmt_raw = "✅ личность '{name}' создана!\nID: {id}\nописание: {description}\n\nдобавь в чат или управляй через /mypersonas"
     error_db = escape_markdown_v2("ошибка базы данных при создании личности.")
     error_general = escape_markdown_v2("ошибка при создании личности.")
 
@@ -1724,7 +1724,7 @@ async def my_personas(update: Union[Update, CallbackQuery], context: ContextType
     error_db = escape_markdown_v2("ошибка при загрузке списка личностей.")
     error_general = escape_markdown_v2("произошла ошибка при получении списка личностей.")
     error_user_not_found = escape_markdown_v2("Ошибка: не удалось найти пользователя.")
-    info_no_personas_fmt_raw = "у тебя пока нет личностей ({count}/{limit}).\nсоздай: /createpersona <имя>" # Removed backticks
+    info_no_personas_fmt_raw = "у тебя пока нет личностей ({count}/{limit}).\nсоздай: /createpersona <имя>"
     info_list_header_fmt_raw = "твои личности ({count}/{limit}):\n"
 
     try:
@@ -1834,13 +1834,13 @@ async def add_bot_to_chat(update: Update, context: ContextTypes.DEFAULT_TYPE, pe
             return
 
     # Define user messages
-    usage_text = escape_markdown_v2("формат: /addbot <id персоны>\nили используй кнопку '➕ В чат' из /mypersonas") # Removed backticks
+    usage_text = escape_markdown_v2("формат: /addbot <id персоны>\nили используй кнопку '➕ В чат' из /mypersonas")
     error_invalid_id_callback = escape_markdown_v2("Ошибка: неверный ID личности.")
     error_invalid_id_cmd = escape_markdown_v2("id личности должен быть числом.")
     error_no_id = escape_markdown_v2("Ошибка: ID личности не определен.")
-    error_persona_not_found_fmt_raw = "личность с id {id} не найдена или не твоя." # Removed backticks
+    error_persona_not_found_fmt_raw = "личность с id {id} не найдена или не твоя."
     error_already_active_fmt_raw = "личность '{name}' уже активна в этом чате."
-    success_added_structure_raw = "✅ личность '{name}' (id: {id}) активирована в этом чате! Память очищена." # Removed backticks
+    success_added_structure_raw = "✅ личность '{name}' (id: {id}) активирована в этом чате! Память очищена."
     error_link_failed = escape_markdown_v2("не удалось активировать личность (ошибка связывания).")
     error_integrity = escape_markdown_v2("произошла ошибка целостности данных (возможно, конфликт активации), попробуйте еще раз.")
     error_db = escape_markdown_v2("ошибка базы данных при добавлении бота.")
@@ -2590,8 +2590,8 @@ async def _start_edit_convo(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     context.user_data.clear() # Clear previous conversation data
 
     # Define user messages
-    error_not_found_fmt_raw = "личность с id {id} не найдена или не твоя." # Removed backticks
-    prompt_edit_fmt_raw = "Редактируем {name} (id: {id})\nВыберите, что изменить:" # Removed backticks
+    error_not_found_fmt_raw = "личность с id {id} не найдена или не твоя."
+    prompt_edit_fmt_raw = "Редактируем {name} (id: {id})\nВыберите, что изменить:"
     error_db = escape_markdown_v2("ошибка базы данных при начале редактирования.")
     error_general = escape_markdown_v2("непредвиденная ошибка.")
 
@@ -2656,7 +2656,7 @@ async def edit_persona_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
     logger.info(f"CMD /editpersona < User {user_id} with args: {args}")
 
     # Define user messages
-    usage_text = escape_markdown_v2("укажи id личности: /editpersona <id>\nили используй кнопку из /mypersonas") # Removed backticks
+    usage_text = escape_markdown_v2("укажи id личности: /editpersona <id>\nили используй кнопку из /mypersonas")
     error_invalid_id = escape_markdown_v2("ID должен быть числом.")
 
     # Validate arguments
@@ -2855,7 +2855,7 @@ async def edit_persona_choice(update: Update, context: ContextTypes.DEFAULT_TYPE
          await query.answer()
          # Regenerate the main edit menu
          keyboard = await _get_edit_persona_keyboard(persona_config)
-         prompt_edit_back_raw = "Редактируем {name} (id: {id})\nВыберите, что изменить:" # Removed backticks
+         prompt_edit_back_raw = "Редактируем {name} (id: {id})\nВыберите, что изменить:"
          final_back_msg = escape_markdown_v2(prompt_edit_back_raw.format(name=persona_config.name, id=persona_id))
          await query.edit_message_text(final_back_msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN_V2)
          # Clear temporary state
@@ -2884,7 +2884,7 @@ async def edit_field_update(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     error_validation_min_fmt_raw = "{field_name}: мин. {min_len} символа."
     error_name_taken_fmt_raw = "имя '{name}' уже занято другой твоей личностью. попробуй другое:"
     success_update_fmt_raw = "✅ поле {field_name} для личности {persona_name} обновлено!"
-    prompt_next_edit_fmt_raw = "что еще изменить для {name} (id: {id})?" # Removed backticks
+    prompt_next_edit_fmt_raw = "что еще изменить для {name} (id: {id})?"
     error_db = escape_markdown_v2("❌ ошибка базы данных при обновлении. попробуй еще раз.")
     error_general = escape_markdown_v2("❌ непредвиденная ошибка при обновлении.")
 
@@ -3000,7 +3000,7 @@ async def edit_max_messages_update(update: Update, context: ContextTypes.DEFAULT
     error_db = escape_markdown_v2("❌ ошибка базы данных при обновлении. попробуй еще раз.")
     error_general = escape_markdown_v2("❌ непредвиденная ошибка при обновлении.")
     success_update_fmt_raw = "✅ макс. сообщений в ответе для {name} установлено: {value}"
-    prompt_next_edit_fmt_raw = "что еще изменить для {name} (id: {id})?" # Removed backticks
+    prompt_next_edit_fmt_raw = "что еще изменить для {name} (id: {id})?"
 
     # Check session
     if not persona_id:
@@ -3153,7 +3153,7 @@ async def _try_return_to_edit_menu(update: Update, context: ContextTypes.DEFAULT
     # Define user messages
     error_cannot_return = escape_markdown_v2("Не удалось вернуться к меню редактирования (личность не найдена).")
     error_cannot_return_general = escape_markdown_v2("Не удалось вернуться к меню редактирования.")
-    prompt_edit_raw = "Редактируем {name} (id: {id})\nВыберите, что изменить:" # Removed backticks
+    prompt_edit_raw = "Редактируем {name} (id: {id})\nВыберите, что изменить:"
 
     if not message_target:
         logger.warning("Cannot return to edit menu: effective_message is None.")
@@ -3406,7 +3406,7 @@ async def edit_mood_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         # Go back to the main persona edit menu
         logger.debug(f"User {user_id} going back from mood menu to main edit menu for {persona_id}.")
         keyboard = await _get_edit_persona_keyboard(persona_config)
-        prompt_edit_raw = "Редактируем {name} (id: {id})\nВыберите, что изменить:" # Removed backticks
+        prompt_edit_raw = "Редактируем {name} (id: {id})\nВыберите, что изменить:"
         final_prompt = escape_markdown_v2(prompt_edit_raw.format(name=persona_config.name, id=persona_id))
         await query.edit_message_text(final_prompt, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN_V2)
         # Clear mood-specific state
@@ -3805,8 +3805,8 @@ async def _start_delete_convo(update: Update, context: ContextTypes.DEFAULT_TYPE
     context.user_data.clear() # Clear previous state
 
     # Define user messages
-    error_not_found_fmt_raw = "личность с id {id} не найдена или не твоя." # Removed backticks
-    prompt_delete_fmt_raw = "🚨 ВНИМАНИЕ! 🚨\nудалить личность '{name}' (id: {id})?\n\nэто действие НЕОБРАТИМО!" # Removed backticks
+    error_not_found_fmt_raw = "личность с id {id} не найдена или не твоя."
+    prompt_delete_fmt_raw = "🚨 ВНИМАНИЕ! 🚨\nудалить личность '{name}' (id: {id})?\n\nэто действие НЕОБРАТИМО!"
     error_db = escape_markdown_v2("ошибка базы данных.")
     error_general = escape_markdown_v2("непредвиденная ошибка.")
 
@@ -3872,7 +3872,7 @@ async def delete_persona_start(update: Update, context: ContextTypes.DEFAULT_TYP
     logger.info(f"CMD /deletepersona < User {user_id} with args: {args}")
 
     # Define user messages
-    usage_text = escape_markdown_v2("укажи id личности: /deletepersona <id>\nили используй кнопку из /mypersonas") # Removed backticks
+    usage_text = escape_markdown_v2("укажи id личности: /deletepersona <id>\nили используй кнопку из /mypersonas")
     error_invalid_id = escape_markdown_v2("ID должен быть числом.")
 
     # Validate arguments
