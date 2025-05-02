@@ -1,5 +1,3 @@
-# --- START OF FILE main.py ---
-
 import logging
 import asyncio
 import os
@@ -267,7 +265,8 @@ async def setup_telegraph_page(application: Application):
 
     try:
         # Use the raw ToS text from handlers.py, remove bold markers for Telegraph
-        tos_content_raw_for_telegraph = handlers.TOS_TEXT_RAW.replace("**", "")
+        # <<< ИЗМЕНЕНО: Убираем ** и * для Telegra.ph >>>
+        tos_content_raw_for_telegraph = handlers.TOS_TEXT_RAW.replace("**", "").replace("*", "")
         if not tos_content_raw_for_telegraph or not isinstance(tos_content_raw_for_telegraph, str):
              logger.error("handlers.TOS_TEXT_RAW is empty or not a string. Cannot create ToS page.")
              return
@@ -280,32 +279,63 @@ async def setup_telegraph_page(application: Application):
         )
 
         # Convert plain text paragraphs to Telegraph node format
-        paragraphs_raw = tos_content_formatted_for_telegraph.strip().splitlines()
-        # Create a list of paragraph nodes
-        content_node_array = [{"tag": "p", "children": [p.strip()]} for p in paragraphs_raw if p.strip()]
+        # <<< ИЗМЕНЕНО: Обрабатываем строки, начинающиеся с цифры и точки как заголовки h4 >>>
+        # <<< ИЗМЕНЕНО: Обрабатываем строки, начинающиеся с • или * как элементы списка ul/li >>>
+        content_node_array = []
+        current_list_items = []
+        for p_raw in tos_content_formatted_for_telegraph.strip().splitlines():
+            p = p_raw.strip()
+            if not p: continue
+
+            # Check for list items
+            if p.startswith("• ") or p.startswith("* "):
+                current_list_items.append({"tag": "li", "children": [p[2:].strip()]})
+                continue # Continue collecting list items
+
+            # If we were collecting list items, add the list now
+            if current_list_items:
+                content_node_array.append({"tag": "ul", "children": current_list_items})
+                current_list_items = [] # Reset list
+
+            # Check for headers (e.g., "1. О чем...")
+            if re.match(r"^\d+\.\s+", p):
+                content_node_array.append({"tag": "h4", "children": [p]})
+            # Check for sub-headers (e.g., "3.1. Что...")
+            elif re.match(r"^\d+\.\d+\.\s+", p):
+                content_node_array.append({"tag": "h4", "children": [p]}) # Use h4 for sub-headers too
+            else:
+                # Default paragraph
+                content_node_array.append({"tag": "p", "children": [p]})
+
+        # Add any remaining list items at the end
+        if current_list_items:
+            content_node_array.append({"tag": "ul", "children": current_list_items})
 
         if not content_node_array:
             logger.error("content_node_array empty after processing. Cannot create page.")
             return
 
         # Convert node array to JSON string
+        # <<< ИЗМЕНЕНО: Убеждаемся, что это JSON-строка МАССИВА >>>
         content_json_string = json.dumps(content_node_array, ensure_ascii=False)
+        logger.debug(f"Telegraph content node array JSON: {content_json_string[:500]}...") # Log start of JSON
 
         # --- Direct HTTP Request to Telegra.ph API ---
-        # Using httpx as telegraph-api library might have issues or lack features
         telegraph_api_url = "https://api.telegra.ph/createPage" # Or editPage if you store the path
         payload = {
             "access_token": access_token,
             "title": tos_title,
             "author_name": author_name,
-            "content": content_json_string, # Pass content as JSON string
+            "content": content_json_string, # Pass content as JSON string array
             "return_content": False # We only need the URL
         }
 
         logger.info(f"Sending direct request to {telegraph_api_url} to create/update ToS page...")
+        logger.debug(f"Telegraph payload: {payload}") # Log payload before sending
 
         async with httpx.AsyncClient() as client:
-            response = await client.post(telegraph_api_url, data=payload) # Use data for form-encoded
+            # <<< ИЗМЕНЕНО: Используем json=payload для отправки JSON >>>
+            response = await client.post(telegraph_api_url, json=payload)
 
         logger.info(f"Telegraph API direct response status: {response.status_code}")
         response.raise_for_status() # Raise HTTP errors
@@ -328,6 +358,8 @@ async def setup_telegraph_page(application: Application):
             if "CONTENT_INVALID" in error_message or "PAGE_SAVE_FAILED" in error_message:
                  logger.error(f">>> Received error possibly related to content format! Check payload JSON structure or content.")
                  logger.debug(f"Content JSON sent: {content_json_string}")
+            elif "ACCESS_TOKEN_INVALID" in error_message:
+                 logger.error(">>> TELEGRAPH_ACCESS_TOKEN is invalid!")
 
     except httpx.HTTPStatusError as http_err:
          # Handle HTTP errors from Telegraph API
@@ -564,4 +596,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-# --- END OF FILE main.py ---
