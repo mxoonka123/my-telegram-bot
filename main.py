@@ -1,5 +1,3 @@
-# --- START OF FILE main.py ---
-
 import logging
 import asyncio
 import os
@@ -130,12 +128,13 @@ def handle_yookassa_webhook():
             if activation_success:
                 app = application_instance # Get the PTB application instance
                 if app and app.bot:
+                    # <<< СТИЛЬ: Обновлен текст подтверждения >>>
                     # Construct raw text for the message
                     success_text_raw = (
-                        f"✅ Ваша премиум подписка успешно активирована!\n"
-                        f"Срок действия: {config.SUBSCRIPTION_DURATION_DAYS} дней.\n\n"
-                        f"Спасибо за поддержку! 🎉\n\n"
-                        f"Используйте /profile для просмотра статуса."
+                        f"✅ ваша премиум подписка успешно активирована!\n"
+                        f"срок действия: {config.SUBSCRIPTION_DURATION_DAYS} дней.\n\n"
+                        f"спасибо за поддержку! 🎉\n\n"
+                        f"используйте /profile для просмотра статуса."
                     )
                     # Escape the whole string for MarkdownV2
                     success_text_escaped = escape_markdown_v2(success_text_raw)
@@ -262,14 +261,15 @@ async def setup_telegraph_page(application: Application):
         return
 
     # Use bot username if available, otherwise default
-    author_name = application.bot_data.get('bot_username', "NunuAiBot")
-    tos_title = f"Пользовательское Соглашение @{author_name}"
+    bot_username = application.bot_data.get('bot_username', "NunuAiBot")
+    author_name = bot_username # Use bot username as author
+    tos_title = f"Пользовательское Соглашение @{bot_username}"
     page_url = None
 
     try:
         # Use the raw ToS text from handlers.py, remove bold markers for Telegraph
-        # <<< ИЗМЕНЕНО: Убираем ** и * для Telegra.ph >>>
-        tos_content_raw_for_telegraph = handlers.TOS_TEXT_RAW.replace("**", "").replace("*", "")
+        # <<< СТИЛЬ: Используем актуальный текст из handlers.py >>>
+        tos_content_raw_for_telegraph = handlers.TOS_TEXT_RAW.replace("**", "").replace("*", "") # Remove Markdown bold/italic
         if not tos_content_raw_for_telegraph or not isinstance(tos_content_raw_for_telegraph, str):
              logger.error("handlers.TOS_TEXT_RAW is empty or not a string. Cannot create ToS page.")
              return
@@ -282,8 +282,7 @@ async def setup_telegraph_page(application: Application):
         )
 
         # Convert plain text paragraphs to Telegraph node format
-        # <<< ИЗМЕНЕНО: Обрабатываем строки, начинающиеся с цифры и точки как заголовки h4 >>>
-        # <<< ИЗМЕНЕНО: Обрабатываем строки, начинающиеся с • или * как элементы списка ul/li >>>
+        # Handles numbered lists as h4, bullet points as li
         content_node_array = []
         current_list_items = []
         for p_raw in tos_content_formatted_for_telegraph.strip().splitlines():
@@ -318,8 +317,7 @@ async def setup_telegraph_page(application: Application):
             logger.error("content_node_array empty after processing. Cannot create page.")
             return
 
-        # Convert node array to JSON string
-        # <<< ИЗМЕНЕНО: Убеждаемся, что это JSON-строка МАССИВА >>>
+        # Convert node array to JSON string array
         content_json_string = json.dumps(content_node_array, ensure_ascii=False)
         logger.debug(f"Telegraph content node array JSON: {content_json_string[:500]}...") # Log start of JSON
 
@@ -337,7 +335,6 @@ async def setup_telegraph_page(application: Application):
         logger.debug(f"Telegraph payload: {payload}") # Log payload before sending
 
         async with httpx.AsyncClient() as client:
-            # <<< ИЗМЕНЕНО: Используем json=payload для отправки JSON >>>
             response = await client.post(telegraph_api_url, json=payload)
 
         logger.info(f"Telegraph API direct response status: {response.status_code}")
@@ -478,19 +475,23 @@ def main() -> None:
             CallbackQueryHandler(handlers.edit_persona_button_callback, pattern='^edit_persona_') # Start via button
             ],
         states={
-            # State: Choosing what to edit
+            # State: Choosing what to edit (Main Menu)
             handlers.EDIT_PERSONA_CHOICE: [
-                CallbackQueryHandler(handlers.edit_persona_choice, pattern='^edit_field_|^edit_moods$|^cancel_edit$|^edit_persona_back$')
+                CallbackQueryHandler(handlers.edit_persona_choice, pattern='^edit_field_|^edit_moods$|^show_advanced_settings$|^cancel_edit$') # <<< ИЗМЕНЕНО: Добавлен show_advanced_settings
                 ],
-            # State: Waiting for new text field value
+            # State: Choosing from Advanced Settings Menu
+            handlers.EDIT_ADVANCED_CHOICE: [ # <<< ДОБАВЛЕНО: Новое состояние для расширенных настроек
+                CallbackQueryHandler(handlers.edit_advanced_choice, pattern='^edit_field_|^edit_persona_back$|^cancel_edit$') # <<< ИЗМЕНЕНО: Обработчик edit_advanced_choice
+                ],
+            # State: Waiting for new text field value (Name, Desc, Templates)
             handlers.EDIT_FIELD: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.edit_field_update),
-                CallbackQueryHandler(handlers.edit_persona_cancel, pattern='^cancel_edit$') # <<< ИЗМЕНЕНО: Отмена вместо Назад
+                CallbackQueryHandler(handlers.edit_persona_cancel, pattern='^cancel_edit$') # Отмена возвращает в главное меню или завершает
                 ],
             # State: Waiting for new max messages value
             handlers.EDIT_MAX_MESSAGES: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.edit_max_messages_update),
-                CallbackQueryHandler(handlers.edit_persona_cancel, pattern='^cancel_edit$') # <<< ИЗМЕНЕНО: Отмена вместо Назад
+                CallbackQueryHandler(handlers.edit_persona_cancel, pattern='^cancel_edit$') # Отмена
                 ],
             # State: Mood editing menu
             handlers.EDIT_MOOD_CHOICE: [
@@ -601,4 +602,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-# --- END OF FILE main.py ---
