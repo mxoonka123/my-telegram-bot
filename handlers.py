@@ -1138,6 +1138,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     expires_raw = ""
     persona_limit_raw = ""
     message_limit_raw = ""
+    fallback_text_raw = "Привет! Произошла ошибка отображения стартового сообщения. Используй /help или /menu." # Default fallback
 
     try:
         with next(get_db()) as db:
@@ -1162,6 +1163,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 part2_raw = "используй /menu для списка команд."
                 # <<< ИСПРАВЛЕНО: Экранируем всю строку целиком >>>
                 reply_text_final = escape_markdown_v2(part1_raw + part2_raw)
+                fallback_text_raw = part1_raw + part2_raw # Plain text fallback
                 reply_markup = ReplyKeyboardRemove() # No keyboard needed if bot active
             else:
                 # No persona active, show general welcome and user status
@@ -1211,6 +1213,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 # Use the constructed Markdown string
                 reply_text_final = start_text_md
 
+                # Construct plain text fallback
+                fallback_text_raw = (
+                     f"привет! 👋 я бот для создания ai-собеседников (@{context.bot.username}).\n\n"
+                     f"твой статус: {status_raw} {expires_raw}\n"
+                     f"личности: {persona_limit_raw} | сообщения: {message_limit_raw}\n\n"
+                     f"начало работы:\n"
+                     f"/createpersona <имя> - создай ai-личность\n"
+                     f"/mypersonas - список твоих личностей\n"
+                     f"/menu - панель управления\n"
+                     f"/profile - детали статуса\n"
+                     f"/subscribe - узнать о подписке"
+                )
+
                 # Add menu button
                 keyboard = [[InlineKeyboardButton("🚀 Меню Команд", callback_data="show_menu")]]
                 reply_markup = InlineKeyboardMarkup(keyboard)
@@ -1229,22 +1244,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.error(f"Telegram error during /start for user {user_id}: {e}", exc_info=True)
         # Handle potential Markdown parsing errors specifically
         if isinstance(e, BadRequest) and "Can't parse entities" in str(e):
-            logger.error(f"--> Failed text (MD): '{reply_text_final[:500]}...'") # Log the MD text
+            logger.error(f"--> Failed text (MD): '{reply_text_final[:500]}...'")
             # Fallback to plain text using the raw variables
             try:
-                # <<< СТИЛЬ: Обновлен текст fallback >>>
-                fallback_text_raw = (
-                     f"привет! 👋 я бот для создания ai-собеседников (@{context.bot.username}).\n\n"
-                     f"твой статус: {status_raw} {expires_raw}\n"
-                     f"личности: {persona_limit_raw} | сообщения: {message_limit_raw}\n\n"
-                     f"начало работы:\n"
-                     f"/createpersona <имя> - создай ai-личность\n"
-                     f"/mypersonas - список твоих личностей\n"
-                     f"/menu - панель управления\n"
-                     f"/profile - детали статуса\n"
-                     f"/subscribe - узнать о подписке"
-                ) if status_raw else "Привет! Произошла ошибка отображения стартового сообщения. Используй /help или /menu."
-
                 await update.message.reply_text(fallback_text_raw, reply_markup=reply_markup, parse_mode=None)
             except Exception as fallback_e:
                  logger.error(f"Failed sending fallback start message: {fallback_e}")
@@ -1979,6 +1981,7 @@ async def my_personas(update: Union[Update, CallbackQuery], context: ContextType
     error_user_not_found = escape_markdown_v2("❌ ошибка: не удалось найти пользователя.")
     info_no_personas_fmt_raw = "у тебя пока нет личностей ({count}/{limit})\\. создай первую: `/createpersona <имя>`"
     info_list_header_fmt_raw = "🎭 *твои личности* ({count}/{limit}):"
+    fallback_text_plain = "Ошибка загрузки списка личностей." # Fallback plain text
 
     try:
         with next(get_db()) as db:
@@ -2011,6 +2014,7 @@ async def my_personas(update: Union[Update, CallbackQuery], context: ContextType
                     count=escape_markdown_v2(str(persona_count)),
                     limit=escape_markdown_v2(str(persona_limit))
                     )
+                fallback_text_plain = f"у тебя пока нет личностей ({persona_count}/{persona_limit}). создай первую: /createpersona <имя>"
                 # Add back button only for callback
                 keyboard = [[InlineKeyboardButton("⬅️ Назад в Меню", callback_data="show_menu")]] if is_callback else None
                 reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else ReplyKeyboardRemove()
@@ -2023,30 +2027,41 @@ async def my_personas(update: Union[Update, CallbackQuery], context: ContextType
                 else: await message_target.reply_text(text_to_send, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
                 return
 
-            # Personas exist, build list with buttons
-            text = info_list_header_fmt_raw.format(
-                count=escape_markdown_v2(str(persona_count)),
-                limit=escape_markdown_v2(str(persona_limit))
+            # Personas exist, build list WITH text in the message body
+            message_lines = [
+                info_list_header_fmt_raw.format(
+                    count=escape_markdown_v2(str(persona_count)),
+                    limit=escape_markdown_v2(str(persona_limit))
                 )
-
+            ]
             keyboard = []
+            fallback_lines = [f"Твои личности ({persona_count}/{persona_limit}):"] # Start plain text fallback
+
             for p in personas:
-                 # Display name and ID (ID in code block)
-                 button_text = f"👤 {escape_markdown_v2(p.name)} \\(ID: `{p.id}`\\)"
+                 # Add persona info to the message text (Markdown)
+                 message_lines.append(f"\n👤 *{escape_markdown_v2(p.name)}* \\(ID: `{p.id}`\\)")
+                 # Add persona info to plain text fallback
+                 fallback_lines.append(f"\n- {p.name} (ID: {p.id})")
+
                  # Define callback data for actions
                  edit_cb = f"edit_persona_{p.id}"
                  delete_cb = f"delete_persona_{p.id}"
                  add_cb = f"add_bot_{p.id}"
-                 # Check callback data length (max 64 bytes) - important!
+                 # Check callback data length
                  if len(edit_cb.encode('utf-8')) > 64 or len(delete_cb.encode('utf-8')) > 64 or len(add_cb.encode('utf-8')) > 64:
-                      logger.warning(f"Callback data for persona {p.id} might be too long, potentially causing issues.")
-                 # Add row with persona info (non-clickable) and action buttons
-                 keyboard.append([InlineKeyboardButton(button_text, callback_data=f"dummy_{p.id}")]) # Dummy button for display
+                      logger.warning(f"Callback data for persona {p.id} might be too long.")
+
+                 # Add action buttons for this persona
                  keyboard.append([
                      InlineKeyboardButton("⚙️ Редакт.", callback_data=edit_cb),
                      InlineKeyboardButton("🗑️ Удалить", callback_data=delete_cb),
                      InlineKeyboardButton("➕ В чат", callback_data=add_cb)
                  ])
+
+            # Combine message lines into a single string
+            text_to_send = "\n".join(message_lines)
+            fallback_text_plain = "\n".join(fallback_lines) # Combine fallback lines
+
             # Add back button if it's a callback
             if is_callback:
                 keyboard.append([InlineKeyboardButton("⬅️ Назад в Меню", callback_data="show_menu")])
@@ -2055,17 +2070,35 @@ async def my_personas(update: Union[Update, CallbackQuery], context: ContextType
 
             # Send or edit message
             if is_callback:
-                 if message_target.text != text or message_target.reply_markup != reply_markup:
-                     await query.edit_message_text(text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
+                 if message_target.text != text_to_send or message_target.reply_markup != reply_markup:
+                     await query.edit_message_text(text_to_send, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
                  else: await query.answer() # Silent answer
-            else: await message_target.reply_text(text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
+            else: await message_target.reply_text(text_to_send, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
 
             logger.info(f"User {user_id} requested mypersonas. Sent {persona_count} personas with action buttons.")
+
     except SQLAlchemyError as e:
         logger.error(f"Database error during my_personas for user {user_id}: {e}", exc_info=True)
         error_text = error_db
         if is_callback: await query.edit_message_text(error_text, parse_mode=ParseMode.MARKDOWN_V2)
         else: await message_target.reply_text(error_text, parse_mode=ParseMode.MARKDOWN_V2)
+    except TelegramError as e: # Catch Telegram errors including BadRequest
+        logger.error(f"Telegram error during my_personas for user {user_id}: {e}", exc_info=True)
+        if isinstance(e, BadRequest) and "Can't parse entities" in str(e):
+            logger.error(f"--> Failed text (MD): '{text_to_send[:500]}...'")
+            # Fallback to plain text
+            try:
+                if is_callback:
+                    await query.edit_message_text(fallback_text_plain, reply_markup=reply_markup, parse_mode=None)
+                else:
+                    await message_target.reply_text(fallback_text_plain, reply_markup=reply_markup, parse_mode=None)
+            except Exception as fallback_e:
+                 logger.error(f"Failed sending fallback mypersonas message: {fallback_e}")
+        else:
+            # Handle other Telegram errors
+            error_text = error_general
+            if is_callback: await query.edit_message_text(error_text, parse_mode=ParseMode.MARKDOWN_V2)
+            else: await message_target.reply_text(error_text, parse_mode=ParseMode.MARKDOWN_V2)
     except Exception as e:
         logger.error(f"Error in my_personas handler for user {user_id}: {e}", exc_info=True)
         error_text = error_general
@@ -2392,6 +2425,9 @@ async def profile(update: Union[Update, CallbackQuery], context: ContextTypes.DE
     error_general = escape_markdown_v2("❌ ошибка при обработке команды /profile.")
     error_user_not_found = escape_markdown_v2("❌ ошибка: пользователь не найден.")
 
+    # Variables for fallback message
+    profile_text_plain = "Ошибка загрузки профиля." # Default fallback
+
     with next(get_db()) as db:
         try:
             # Get user, preloading personas
@@ -2418,44 +2454,70 @@ async def profile(update: Union[Update, CallbackQuery], context: ContextTypes.DE
                 db.commit() # Commit reset
                 db.refresh(user_db) # Refresh state
 
-            # Prepare profile information (raw)
+            # --- Prepare profile information ---
             is_active_subscriber = user_db.is_active_subscriber
-            status_text_raw = "⭐ Premium" if is_active_subscriber else "🆓 Free"
-            expires_raw = ""
+            status_text_escaped = escape_markdown_v2("⭐ Premium" if is_active_subscriber else "🆓 Free")
+            expires_text_md = "" # String that might contain Markdown *...*
+            expires_text_plain = "" # Plain text version for fallback
+
             if is_active_subscriber and user_db.subscription_expires_at:
                  try:
-                     # Format expiry date and time
                      if user_db.subscription_expires_at > now + timedelta(days=365*10):
-                         expires_raw = "активна \\(бессрочно\\)"
+                         expires_text_md = escape_markdown_v2("активна (бессрочно)")
+                         expires_text_plain = "активна (бессрочно)"
                      else:
-                         expires_raw = f"активна до: *{user_db.subscription_expires_at.strftime('%d.%m.%Y %H:%M')}* UTC"
-                 except AttributeError: # Handle potential None or invalid date
-                      expires_raw = "активна \\(дата истечения некорректна\\)"
-            elif is_active_subscriber: # Subscribed but no expiry date (e.g., admin)
-                 expires_raw = "активна \\(бессрочно\\)"
+                         # Format date first
+                         date_str = user_db.subscription_expires_at.strftime('%d.%m.%Y %H:%M')
+                         # Create MD version with escaped date inside bold
+                         expires_text_md = f"активна до: *{escape_markdown_v2(date_str)}* UTC"
+                         # Create plain text version
+                         expires_text_plain = f"активна до: {date_str} UTC"
+                 except AttributeError:
+                      expires_text_md = escape_markdown_v2("активна (дата истечения некорректна)")
+                      expires_text_plain = "активна (дата истечения некорректна)"
+            elif is_active_subscriber:
+                 expires_text_md = escape_markdown_v2("активна (бессрочно)")
+                 expires_text_plain = "активна (бессрочно)"
             else:
-                 expires_raw = "нет активной подписки"
+                 expires_text_md = escape_markdown_v2("нет активной подписки")
+                 expires_text_plain = "нет активной подписки"
 
             persona_count = len(user_db.persona_configs) if user_db.persona_configs is not None else 0
             persona_limit_raw = f"{persona_count}/{user_db.persona_limit}"
             msg_limit_raw = f"{user_db.daily_message_count}/{user_db.message_limit}"
+            persona_limit_escaped = escape_markdown_v2(persona_limit_raw)
+            msg_limit_escaped = escape_markdown_v2(msg_limit_raw)
 
             # <<< СТИЛЬ: Обновлен текст профиля, использован Markdown >>>
-            # Construct profile text (Markdown)
+            # Construct profile text using MarkdownV2 syntax and escaped dynamic parts
             profile_text_md = (
                 f"👤 *Твой профиль*\n\n"
-                f"*Статус:* {escape_markdown_v2(status_text_raw)}\n"
-                f"{expires_raw}\n\n" # expires_raw already contains Markdown if needed
+                f"*Статус:* {status_text_escaped}\n" # Already escaped
+                f"{expires_text_md}\n\n" # Already escaped, might contain *...*
                 f"*Лимиты:*\n"
-                f"сообщения сегодня: `{escape_markdown_v2(msg_limit_raw)}`\n"
-                f"создано личностей: `{escape_markdown_v2(persona_limit_raw)}`\n\n"
+                f"сообщения сегодня: `{msg_limit_escaped}`\n" # Already escaped
+                f"создано личностей: `{persona_limit_escaped}`\n\n" # Already escaped
             )
-            # Add promo text if user is free
+            # Add promo text if user is free (already escaped in the constant part)
+            promo_text_md = "🚀 хочешь больше\\? жми `/subscribe` или кнопку 'Подписка' в `/menu`\\!"
+            promo_text_plain = "🚀 Хочешь больше? Жми /subscribe или кнопку 'Подписка' в /menu !"
             if not is_active_subscriber:
-                profile_text_md += "🚀 хочешь больше\\? жми `/subscribe` или кнопку 'Подписка' в `/menu`\\!"
+                profile_text_md += promo_text_md
 
-            # Use the constructed Markdown string
-            profile_text_escaped = profile_text_md
+            # Construct plain text fallback message
+            profile_text_plain = (
+                f"👤 Твой профиль\n\n"
+                f"Статус: {'Premium' if is_active_subscriber else 'Free'}\n"
+                f"{expires_text_plain}\n\n"
+                f"Лимиты:\n"
+                f"Сообщения сегодня: {msg_limit_raw}\n"
+                f"Создано личностей: {persona_limit_raw}\n\n"
+            )
+            if not is_active_subscriber:
+                profile_text_plain += promo_text_plain
+
+            # The final string contains Markdown formatting, DO NOT escape it again
+            final_text_to_send = profile_text_md
 
             # Prepare keyboard (only back button for callback)
             keyboard = [[InlineKeyboardButton("⬅️ Назад в Меню", callback_data="show_menu")]] if is_callback else None
@@ -2463,16 +2525,34 @@ async def profile(update: Union[Update, CallbackQuery], context: ContextTypes.DE
 
             # Send or edit message
             if is_callback:
-                if message_target.text != profile_text_escaped or message_target.reply_markup != reply_markup:
-                    await query.edit_message_text(profile_text_escaped, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
+                # Use final_text_to_send directly
+                if message_target.text != final_text_to_send or message_target.reply_markup != reply_markup:
+                    await query.edit_message_text(final_text_to_send, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
                 else:
                     await query.answer() # Silent answer
             else:
-                await message_target.reply_text(profile_text_escaped, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
+                # Use final_text_to_send directly
+                await message_target.reply_text(final_text_to_send, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
 
         except SQLAlchemyError as e:
              logger.error(f"Database error during profile for user {user_id}: {e}", exc_info=True)
              await context.bot.send_message(chat_id, error_db, parse_mode=ParseMode.MARKDOWN_V2)
+        except TelegramError as e: # Catch Telegram specific errors, including BadRequest
+            logger.error(f"Telegram error during profile for user {user_id}: {e}", exc_info=True)
+            # Handle potential Markdown parsing errors specifically
+            if isinstance(e, BadRequest) and "Can't parse entities" in str(e):
+                logger.error(f"--> Failed text (MD): '{final_text_to_send[:500]}...'")
+                # Fallback to plain text using the constructed plain text version
+                try:
+                    if is_callback:
+                        await query.edit_message_text(profile_text_plain, reply_markup=reply_markup, parse_mode=None)
+                    else:
+                        await message_target.reply_text(profile_text_plain, reply_markup=reply_markup, parse_mode=None)
+                except Exception as fallback_e:
+                     logger.error(f"Failed sending fallback profile message: {fallback_e}")
+            else:
+                # Handle other Telegram errors
+                await context.bot.send_message(chat_id, error_general, parse_mode=ParseMode.MARKDOWN_V2)
         except Exception as e:
             logger.error(f"Error in profile handler for user {user_id}: {e}", exc_info=True)
             await context.bot.send_message(chat_id, error_general, parse_mode=ParseMode.MARKDOWN_V2)
@@ -4046,7 +4126,8 @@ async def edit_mood_name_received(update: Update, context: ContextTypes.DEFAULT_
             current_moods = {}
             try: current_moods = json.loads(persona_config.mood_prompts_json or '{}')
             except json.JSONDecodeError: pass # Ignore if JSON is invalid, treat as empty
-# Check if name (case-insensitive) already exists
+
+            # Check if name (case-insensitive) already exists
             if any(existing_name.lower() == mood_name.lower() for existing_name in current_moods):
                 logger.info(f"User {user_id} tried mood name '{mood_name}' which already exists.")
                 cancel_button = InlineKeyboardButton("❌ Отмена", callback_data="edit_moods_back_cancel")
@@ -4094,8 +4175,7 @@ async def edit_mood_prompt_received(update: Update, context: ContextTypes.DEFAUL
     error_db = escape_markdown_v2("❌ ошибка базы данных при сохранении настроения.")
     error_general = escape_markdown_v2("❌ ошибка при сохранении настроения.")
     success_saved_fmt_raw = "✅ настроение *{name}* сохранено\\!"
-
-    # Check session state
+     # Check session state
     if not mood_name or not persona_id:
         logger.warning(f"User {user_id} in edit_mood_prompt_received, but mood_name ('{mood_name}') or persona_id ('{persona_id}') missing.")
         await update.message.reply_text(error_no_session, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
