@@ -200,14 +200,15 @@ def is_admin(user_id: int) -> bool:
 EDIT_PERSONA_CHOICE, EDIT_FIELD, EDIT_MOOD_CHOICE, EDIT_MOOD_NAME, EDIT_MOOD_PROMPT, DELETE_MOOD_CONFIRM, DELETE_PERSONA_CONFIRM, EDIT_MAX_MESSAGES = range(8)
 
 # Map for field names and their descriptions (plain text for prompts)
+# <<< ИЗМЕНЕНО: Добавлены более подробные описания для промптов >>>
 FIELD_INFO = {
-    "name": {"label": "Имя", "desc": "Как будут звать личность."},
-    "description": {"label": "Описание", "desc": "Подробное описание характера, предыстории, интересов."},
-    "system_prompt_template": {"label": "Системный промпт", "desc": "Основная инструкция для AI, определяющая роль и поведение. Используйте плейсхолдеры (см. /help)."},
-    "should_respond_prompt_template": {"label": "Промпт 'Отвечать?'", "desc": "Инструкция для AI, чтобы решать, отвечать ли на сообщение в группе (ожидается 'да'/'нет')."},
-    "spam_prompt_template": {"label": "Промпт спама", "desc": "Инструкция для генерации случайных сообщений (если включено)."},
-    "photo_prompt_template": {"label": "Промпт фото", "desc": "Инструкция для реакции на полученные фото."},
-    "voice_prompt_template": {"label": "Промпт голоса", "desc": "Инструкция для реакции на голосовые сообщения."},
+    "name": {"label": "Имя", "desc": "Как будут звать личность (2-50 симв)."},
+    "description": {"label": "Описание", "desc": "Подробное описание характера, предыстории, интересов (до 1500 симв)."},
+    "system_prompt_template": {"label": "Системный промпт", "desc": "Главная инструкция для AI, определяющая роль и поведение. Используйте плейсхолдеры (см. /help). (до 3000 симв)."},
+    "should_respond_prompt_template": {"label": "Промпт 'Отвечать?'", "desc": "Инструкция для AI, чтобы решать, отвечать ли на сообщение в группе (ожидается 'да'/'нет'). Используйте плейсхолдеры. (до 1000 симв)."},
+    "spam_prompt_template": {"label": "Промпт спама", "desc": "Инструкция для генерации случайных сообщений (если включено). Используйте плейсхолдеры. (до 1000 симв)."},
+    "photo_prompt_template": {"label": "Промпт фото", "desc": "Инструкция для реакции на полученные фото. Используйте плейсхолдеры. (до 1000 симв)."},
+    "voice_prompt_template": {"label": "Промпт голоса", "desc": "Инструкция для реакции на голосовые сообщения. Используйте плейсхолдеры. (до 1000 симв)."},
     "max_response_messages": {"label": "Макс. сообщений", "desc": "Максимальное кол-во сообщений в одном ответе AI (1-10)."}
 }
 
@@ -235,15 +236,15 @@ TOS_TEXT_RAW = """
 
 3. Ваши и наши права и обязанности
 3.1. Что ожидается от Вас (Ваши обязанности):
-*   Использовать Сервис только в законных целях и не нарушать никакие законы при его использовании.
-*   Не пытаться вмешаться в работу Сервиса или получить несанкционированный доступ.
-*   Не использовать Сервис для рассылки спама, вредоносных программ или любой запрещенной информации.
-*   Если требуется (например, для оплаты), предоставлять точную и правдивую информацию.
-*   Поскольку у Сервиса нет возрастных ограничений, Вы подтверждаете свою способность принять условия настоящего Соглашения.
+•   Использовать Сервис только в законных целях и не нарушать никакие законы при его использовании.
+•   Не пытаться вмешаться в работу Сервиса или получить несанкционированный доступ.
+•   Не использовать Сервис для рассылки спама, вредоносных программ или любой запрещенной информации.
+•   Если требуется (например, для оплаты), предоставлять точную и правдивую информацию.
+•   Поскольку у Сервиса нет возрастных ограничений, Вы подтверждаете свою способность принять условия настоящего Соглашения.
 3.2. Что можем делать мы (Наши права):
-*   Мы можем менять условия этого Соглашения. Если это произойдет, мы уведомим Вас, опубликовав новую версию Соглашения в нашем Telegram-канале или иным доступным способом в рамках Сервиса. Ваше дальнейшее использование Сервиса будет означать согласие с изменениями.
-*   Мы можем временно приостановить или полностью прекратить Ваш доступ к Сервису, если Вы нарушите условия этого Соглашения.
-*   Мы можем изменять сам Сервис: добавлять или убирать функции, менять лимиты или стоимость подписки.
+•   Мы можем менять условия этого Соглашения. Если это произойдет, мы уведомим Вас, опубликовав новую версию Соглашения в нашем Telegram-канале или иным доступным способом в рамках Сервиса. Ваше дальнейшее использование Сервиса будет означать согласие с изменениями.
+•   Мы можем временно приостановить или полностью прекратить Ваш доступ к Сервису, если Вы нарушите условия этого Соглашения.
+•   Мы можем изменять сам Сервис: добавлять или убирать функции, менять лимиты или стоимость подписки.
 
 4. Важное предупреждение об ограничении ответственности
 4.1. Сервис предоставляется "как есть". Это значит, что мы не можем гарантировать его идеальную работу без сбоев или ошибок. Технологии иногда подводят, и мы не несем ответственности за возможные проблемы, возникшие не по нашей прямой вине.
@@ -1093,10 +1094,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id_str = str(update.effective_chat.id)
     logger.info(f"CMD /start < User {user_id} ({username}) in Chat {chat_id_str}")
 
+    # <<< ДОБАВЛЕНО: Логирование перед проверкой подписки >>>
+    logger.debug(f"/start: Checking channel subscription for user {user_id}...")
     # Check subscription before proceeding
     if not await check_channel_subscription(update, context):
         await send_subscription_required_message(update, context)
         return
+    logger.debug(f"/start: Channel subscription check passed for user {user_id}.")
 
     await context.bot.send_chat_action(chat_id=chat_id_str, action=ChatAction.TYPING)
     reply_text_final = ""
@@ -1111,27 +1115,37 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         with next(get_db()) as db:
             # Get or create user, commit immediately to ensure user exists
             user = get_or_create_user(db, user_id, username)
-            db.commit()
-            db.refresh(user) # Refresh to get latest state after commit
+            if db.is_modified(user): # Commit only if user was created or modified
+                logger.info(f"/start: Committing new/updated user {user_id}.")
+                db.commit()
+                db.refresh(user) # Refresh to get latest state after commit
+            else:
+                logger.debug(f"/start: User {user_id} already exists and is up-to-date.")
 
             # Check if a persona is already active in this specific chat
+            logger.debug(f"/start: Checking for active persona in chat {chat_id_str}...")
             persona_info_tuple = get_persona_and_context_with_owner(chat_id_str, db)
             if persona_info_tuple:
                 # Persona active in this chat
                 persona, _, _ = persona_info_tuple
+                logger.info(f"/start: Persona '{persona.name}' is active in chat {chat_id_str}.")
                 part1_raw = f"привет! я {persona.name}. я уже активен в этом чате.\n"
                 part2_raw = "используй /help или /menu для списка команд."
                 reply_text_final = escape_markdown_v2(part1_raw + part2_raw)
                 reply_markup = ReplyKeyboardRemove() # No keyboard needed if bot active
             else:
                 # No persona active, show general welcome and user status
+                logger.info(f"/start: No active persona in chat {chat_id_str}. Showing welcome message.")
                 # Reload user with persona_configs relationship for accurate count
-                user = db.query(User).options(selectinload(User.persona_configs)).filter(User.id == user.id).one()
+                # No need to reload if already refreshed after creation/update
+                if not db.is_modified(user): # Reload only if not just created/updated
+                    user = db.query(User).options(selectinload(User.persona_configs)).filter(User.id == user.id).one()
 
                 # Reset daily limit if needed (can be done here or via scheduled task)
                 now = datetime.now(timezone.utc)
                 today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
                 if not user.last_message_reset or user.last_message_reset < today_start:
+                    logger.info(f"/start: Resetting daily limit for user {user_id}.")
                     user.daily_message_count = 0
                     user.last_message_reset = now
                     db.commit() # Commit the reset
@@ -1141,9 +1155,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 status_raw = "⭐ Premium" if user.is_active_subscriber else "🆓 Free"
                 expires_raw = ""
                 if user.is_active_subscriber and user.subscription_expires_at:
-                    expires_raw = f" до {user.subscription_expires_at.strftime('%d.%m.%Y')}"
+                     # Check if expiry is in the far future (admin/permanent)
+                     if user.subscription_expires_at > now + timedelta(days=365*10):
+                         expires_raw = " (бессрочно)"
+                     else:
+                         expires_raw = f" до {user.subscription_expires_at.strftime('%d.%m.%Y')}"
 
-                persona_count = len(user.persona_configs)
+                persona_count = len(user.persona_configs) if user.persona_configs else 0
                 persona_limit_raw = f"{persona_count}/{user.persona_limit}"
                 message_limit_raw = f"{user.daily_message_count}/{user.message_limit}"
 
@@ -1166,36 +1184,45 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 reply_markup = InlineKeyboardMarkup(keyboard)
 
             # Send the final message
+            logger.debug(f"/start: Sending final message to user {user_id}.")
             await update.message.reply_text(reply_text_final, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
 
     except SQLAlchemyError as e:
         logger.error(f"Database error during /start for user {user_id}: {e}", exc_info=True)
         error_msg_raw = "ошибка при загрузке данных. попробуй позже."
-        await update.message.reply_text(escape_markdown_v2(error_msg_raw), parse_mode=ParseMode.MARKDOWN_V2)
-    except BadRequest as e:
-        # Handle potential Markdown parsing errors
-        logger.error(f"BadRequest sending /start message for user {user_id}: {e}")
-        logger.error(f"--> Failed text (escaped): '{reply_text_final[:500]}...'")
-        # Fallback to plain text using the raw variables
-        try:
-            fallback_text_raw = (
-                 f"привет! 👋 я бот для создания ai-собеседников (@NunuAiBot).\n\n"
-                 f"твой статус: {status_raw}{expires_raw}\n"
-                 f"личности: {persona_limit_raw} | сообщения: {message_limit_raw}\n\n"
-                 f"начало работы:\n"
-                 f"/createpersona <имя> - создай ai-личность.\n"
-                 f"/mypersonas - посмотри своих личностей и управляй ими.\n"
-                 f"/menu - панель управления командами.\n"
-                 f"/profile - детали статуса | /subscribe - узнать о подписке"
-            ) if status_raw else "Привет! Произошла ошибка отображения стартового сообщения. Используй /help или /menu."
+        try: await update.message.reply_text(escape_markdown_v2(error_msg_raw), parse_mode=ParseMode.MARKDOWN_V2)
+        except Exception: pass
+    except TelegramError as e:
+        logger.error(f"Telegram error during /start for user {user_id}: {e}", exc_info=True)
+        # Handle potential Markdown parsing errors specifically
+        if isinstance(e, BadRequest) and "Can't parse entities" in str(e):
+            logger.error(f"--> Failed text (escaped): '{reply_text_final[:500]}...'")
+            # Fallback to plain text using the raw variables
+            try:
+                fallback_text_raw = (
+                     f"привет! 👋 я бот для создания ai-собеседников (@NunuAiBot).\n\n"
+                     f"твой статус: {status_raw}{expires_raw}\n"
+                     f"личности: {persona_limit_raw} | сообщения: {message_limit_raw}\n\n"
+                     f"начало работы:\n"
+                     f"/createpersona <имя> - создай ai-личность.\n"
+                     f"/mypersonas - посмотри своих личностей и управляй ими.\n"
+                     f"/menu - панель управления командами.\n"
+                     f"/profile - детали статуса | /subscribe - узнать о подписке"
+                ) if status_raw else "Привет! Произошла ошибка отображения стартового сообщения. Используй /help или /menu."
 
-            await update.message.reply_text(fallback_text_raw, reply_markup=reply_markup, parse_mode=None)
-        except Exception as fallback_e:
-             logger.error(f"Failed sending fallback start message: {fallback_e}")
+                await update.message.reply_text(fallback_text_raw, reply_markup=reply_markup, parse_mode=None)
+            except Exception as fallback_e:
+                 logger.error(f"Failed sending fallback start message: {fallback_e}")
+        else:
+            # Handle other Telegram errors
+            error_msg_raw = "произошла ошибка при обработке команды /start."
+            try: await update.message.reply_text(escape_markdown_v2(error_msg_raw), parse_mode=ParseMode.MARKDOWN_V2)
+            except Exception: pass
     except Exception as e:
         logger.error(f"Error in /start handler for user {user_id}: {e}", exc_info=True)
         error_msg_raw = "произошла ошибка при обработке команды /start."
-        await update.message.reply_text(escape_markdown_v2(error_msg_raw), parse_mode=ParseMode.MARKDOWN_V2)
+        try: await update.message.reply_text(escape_markdown_v2(error_msg_raw), parse_mode=ParseMode.MARKDOWN_V2)
+        except Exception: pass
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1214,9 +1241,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             await send_subscription_required_message(update, context)
             return
 
-    # Raw text with MarkdownV2 syntax already included
-    # Removed backticks ` and unnecessary \ before - and (
-    help_text_raw = """
+    # <<< ИЗМЕНЕНО: Экранируем все зарезервированные символы >>>
+    help_text_escaped = escape_markdown_v2("""
 *Помощь по командам:*
 
 *Основные:*
@@ -1240,9 +1266,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 /reset - Очистить память личности
 /mutebot - Запретить отвечать
 /unmutebot - Разрешить отвечать
-"""
-    # Use the raw text directly, as it contains Markdown
-    help_text_to_send = help_text_raw
+""")
+    # Use the escaped text
+    help_text_to_send = help_text_escaped
 
     # Add back button only if it's a callback
     keyboard = [[InlineKeyboardButton("⬅️ Назад в Меню", callback_data="show_menu")]] if is_callback else None
@@ -1266,10 +1292,36 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         else:
             # Handle other BadRequests (like parsing errors)
             logger.error(f"Failed sending/editing help message (BadRequest): {e}", exc_info=True)
-            logger.error(f"Failed help text (raw): '{help_text_raw[:200]}...'") # Log the raw text
+            logger.error(f"Failed help text (escaped): '{help_text_to_send[:200]}...'") # Log the escaped text
             try:
                 # Fallback: send the raw text without Markdown parsing
-                await context.bot.send_message(chat_id=chat_id_str, text=help_text_raw, reply_markup=reply_markup, parse_mode=None)
+                # <<< ИЗМЕНЕНО: Используем неэкранированный текст для fallback >>>
+                help_text_raw_no_md = """
+Помощь по командам:
+
+Основные:
+/start - Приветствие и ваш статус
+/help - Эта справка
+/menu - Панель управления командами
+
+Личности:
+/createpersona <имя> [описание] - Создать
+/mypersonas - Список и управление
+/editpersona <id> - Редактировать
+/deletepersona <id> - Удалить
+
+Аккаунт:
+/profile - Статус и лимиты
+/subscribe - Информация о подписке
+
+В чате (с активной личностью):
+/addbot <id> - Добавить личность в чат
+/mood [настроение] - Сменить настроение
+/reset - Очистить память личности
+/mutebot - Запретить отвечать
+/unmutebot - Разрешить отвечать
+"""
+                await context.bot.send_message(chat_id=chat_id_str, text=help_text_raw_no_md, reply_markup=reply_markup, parse_mode=None)
                 # If it was a callback, try to delete the old message to avoid confusion
                 if is_callback:
                     try: await query.delete_message()
@@ -2230,7 +2282,10 @@ async def profile(update: Union[Update, CallbackQuery], context: ContextTypes.DE
             if is_active_subscriber and user_db.subscription_expires_at:
                  try:
                      # Format expiry date and time
-                     expires_raw = f"активна до: {user_db.subscription_expires_at.strftime('%d.%m.%Y %H:%M')} UTC"
+                     if user_db.subscription_expires_at > now + timedelta(days=365*10):
+                         expires_raw = "активна (бессрочно)"
+                     else:
+                         expires_raw = f"активна до: {user_db.subscription_expires_at.strftime('%d.%m.%Y %H:%M')} UTC"
                  except AttributeError: # Handle potential None or invalid date
                       expires_raw = "активна (дата истечения некорректна)"
             elif is_active_subscriber: # Subscribed but no expiry date (e.g., admin)
@@ -2784,10 +2839,10 @@ async def edit_persona_choice(update: Update, context: ContextTypes.DEFAULT_TYPE
     error_general = escape_markdown_v2("Непредвиденная ошибка.")
     info_premium_mood = "⭐ Редактирование настроений доступно по подписке"
     info_premium_field_fmt_raw = "⭐ Поле '{field_name}' доступно по подписке"
-    # Updated prompt format: No current value for templates
-    prompt_edit_value_fmt_raw = "Отправь новое значение для поля '{field_name}'.\n\n_{field_desc}_"
+    # <<< ИЗМЕНЕНО: Улучшен промпт для шаблонных полей >>>
+    prompt_edit_template_fmt_raw = "Отправь новое значение для поля *{field_name}*.\n\n_{field_desc}_\n\nИспользуй плейсхолдеры (например, `{{persona_name}}`, `{{message}}`, `{{time_info}}` и др\\. \\- см\\. `/help`)\\. Отправь `.` чтобы оставить текущее значение без изменений\\."
     # Keep current value for max messages
-    prompt_edit_max_msg_fmt_raw = "Отправь новое значение для поля '{field_name}' (число от 1 до 10).\n\n_{field_desc}_\n\nТекущее: {current_value}"
+    prompt_edit_max_msg_fmt_raw = "Отправь новое значение для поля *{field_name}* (число от 1 до 10).\n\n_{field_desc}_\n\nТекущее: *{current_value}*"
     # <<< ИЗМЕНЕНО: Улучшен формат для простых полей с Markdown >>>
     prompt_edit_simple_value_fmt_raw = "Отправь новое значение для поля *{field_name}*.\n\n_{field_desc}_\n\nТекущее значение:\n```\n{current_value}\n```"
 
@@ -2885,38 +2940,60 @@ async def edit_persona_choice(update: Update, context: ContextTypes.DEFAULT_TYPE
         reply_markup = InlineKeyboardMarkup([[back_button]])
 
         await query.answer() # Answer callback
+        next_state = EDIT_FIELD # Default next state
 
-        # Handle max_response_messages separately (expects integer)
+        # Format the prompt message based on field type
         if field == "max_response_messages":
             current_value = getattr(persona_config, field, 3) # Get current value or default
             # Format prompt for integer input
-            final_prompt = escape_markdown_v2(prompt_edit_max_msg_fmt_raw.format(
-                field_name=field_display_name_plain,
-                field_desc=field_desc_plain,
-                current_value=current_value
-                ))
-            await query.edit_message_text(final_prompt, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
-            return EDIT_MAX_MESSAGES # Transition to max messages state
-        # Handle simple fields (name, description) - show current value
+            final_prompt = prompt_edit_max_msg_fmt_raw.format(
+                field_name=escape_markdown_v2(field_display_name_plain),
+                field_desc=escape_markdown_v2(field_desc_plain),
+                current_value=escape_markdown_v2(str(current_value))
+                )
+            next_state = EDIT_MAX_MESSAGES # Transition to max messages state
         elif field in ["name", "description"]:
             current_value_raw = getattr(persona_config, field, "") or "(пусто)" # Get current value or placeholder
             # Use specific format with current value (already escaped in the format string)
-            # <<< ИЗМЕНЕНО: Используем новый формат с Markdown >>>
             final_prompt = prompt_edit_simple_value_fmt_raw.format(
                 field_name=escape_markdown_v2(field_display_name_plain), # Escape parts separately
                 field_desc=escape_markdown_v2(field_desc_plain),
                 current_value=escape_markdown_v2(current_value_raw) # Escape the value itself
                 )
-            await query.edit_message_text(final_prompt, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
-            return EDIT_FIELD # Transition to field editing state
-        # Handle template fields - DO NOT show current value
+            next_state = EDIT_FIELD # Transition to field editing state
+        # Handle template fields - DO NOT show current value, but explain placeholders
         else:
-            final_prompt = escape_markdown_v2(prompt_edit_value_fmt_raw.format(
-                field_name=field_display_name_plain,
-                field_desc=field_desc_plain
-                ))
+            final_prompt = prompt_edit_template_fmt_raw.format(
+                field_name=escape_markdown_v2(field_display_name_plain),
+                field_desc=escape_markdown_v2(field_desc_plain)
+                )
+            next_state = EDIT_FIELD # Transition to field editing state
+
+        # Send the prompt message
+        logger.debug(f"Sending prompt for field '{field}' to user {user_id}. Next state: {next_state}")
+        try:
             await query.edit_message_text(final_prompt, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
-            return EDIT_FIELD # Transition to field editing state
+            logger.debug(f"Successfully sent prompt for field '{field}'.")
+        except BadRequest as e:
+            logger.error(f"BadRequest sending prompt for field '{field}': {e}")
+            logger.error(f"--> Failed prompt text (raw format used): '{final_prompt[:500]}...'") # Log the potentially problematic text
+            # Try sending plain text as fallback
+            try:
+                plain_text_prompt = f"Отправь новое значение для поля '{field_display_name_plain}'.\n\n{field_desc_plain}"
+                if field == "max_response_messages": plain_text_prompt += f"\nТекущее: {getattr(persona_config, field, 3)}"
+                elif field in ["name", "description"]: plain_text_prompt += f"\nТекущее:\n{getattr(persona_config, field, '') or '(пусто)'}"
+                await query.edit_message_text(plain_text_prompt, reply_markup=reply_markup, parse_mode=None)
+            except Exception as plain_e:
+                logger.error(f"Failed sending even plain text prompt for field '{field}': {plain_e}")
+                # If sending prompt fails critically, maybe end conversation?
+                await query.answer("Ошибка отображения запроса.", show_alert=True)
+                return await _try_return_to_edit_menu(update, context, user_id, persona_id) # Try to recover
+        except Exception as e:
+            logger.error(f"Unexpected error sending prompt for field '{field}': {e}", exc_info=True)
+            await query.answer("Ошибка отображения запроса.", show_alert=True)
+            return await _try_return_to_edit_menu(update, context, user_id, persona_id) # Try to recover
+
+        return next_state # Transition to the determined state
 
     if data == "edit_persona_back":
          # Handle back button press from field/mood input state
@@ -2938,7 +3015,12 @@ async def edit_persona_choice(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def edit_field_update(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Handles receiving the new value for a text field being edited."""
-    if not update.message or not update.message.text: return EDIT_FIELD # Ignore non-text messages
+    # <<< ДОБАВЛЕНО: Логирование входа в функцию >>>
+    logger.debug(f"Entering edit_field_update...")
+    if not update.message or not update.message.text:
+        logger.debug("edit_field_update: Ignoring non-text message.")
+        return EDIT_FIELD # Ignore non-text messages
+
     new_value = update.message.text.strip()
     field = context.user_data.get('edit_field')
     persona_id = context.user_data.get('edit_persona_id')
@@ -2956,6 +3038,7 @@ async def edit_field_update(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     prompt_next_edit_fmt_raw = "что еще изменить для {name} (id: {id})?"
     error_db = escape_markdown_v2("❌ ошибка базы данных при обновлении. попробуй еще раз.")
     error_general = escape_markdown_v2("❌ непредвиденная ошибка при обновлении.")
+    info_no_change = escape_markdown_v2("значение не изменено.") # <<< ДОБАВЛЕНО
 
     # Check if session data is present
     if not field or not persona_id:
@@ -2964,6 +3047,29 @@ async def edit_field_update(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return ConversationHandler.END
 
     field_display_name_plain = FIELD_INFO.get(field, {}).get("label", field) # Get display name
+
+    # <<< ДОБАВЛЕНО: Проверка на точку для пропуска обновления шаблонных полей >>>
+    is_template_field = field.endswith("_template")
+    if is_template_field and new_value == ".":
+        logger.info(f"User {user_id} chose not to update template field '{field}' for persona {persona_id}.")
+        await update.message.reply_text(info_no_change, parse_mode=ParseMode.MARKDOWN_V2)
+        # --- Return to Main Edit Menu ---
+        context.user_data.pop('edit_field', None) # Clear the field being edited
+        try:
+            with next(get_db()) as db:
+                persona_config = db.query(PersonaConfig).filter(PersonaConfig.id == persona_id).first()
+                if persona_config:
+                    keyboard = await _get_edit_persona_keyboard(persona_config) # Regenerate keyboard
+                    final_next_prompt = escape_markdown_v2(prompt_next_edit_fmt_raw.format(name=persona_config.name, id=persona_id))
+                    await update.message.reply_text(final_next_prompt, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN_V2)
+                    return EDIT_PERSONA_CHOICE # Transition back to choice state
+                else:
+                    logger.warning(f"Persona {persona_id} not found when returning to menu after skipping template update.")
+                    return ConversationHandler.END
+        except Exception as e:
+             logger.error(f"Error returning to edit menu after skipping template update: {e}", exc_info=True)
+             return ConversationHandler.END
+
 
     # --- Input Validation ---
     validation_error_msg = None
@@ -3054,7 +3160,10 @@ async def edit_field_update(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 async def edit_max_messages_update(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Handles receiving the new value for max_response_messages."""
-    if not update.message or not update.message.text: return EDIT_MAX_MESSAGES # Ignore non-text
+    logger.debug("Entering edit_max_messages_update...") # <<< ДОБАВЛЕНО
+    if not update.message or not update.message.text:
+        logger.debug("edit_max_messages_update: Ignoring non-text message.")
+        return EDIT_MAX_MESSAGES # Ignore non-text
     new_value_str = update.message.text.strip()
     field = "max_response_messages" # Hardcoded field name
     persona_id = context.user_data.get('edit_persona_id')
@@ -3437,7 +3546,7 @@ async def edit_mood_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     error_decode_mood = escape_markdown_v2("ошибка декодирования имени настроения.")
     prompt_new_name = escape_markdown_v2("введи название нового настроения (1-30 символов, буквы/цифры/дефис/подчерк., без пробелов):")
     # Updated prompt format: No current value
-    prompt_new_prompt_fmt_raw = "Редактирование настроения: {name}\n\nОтправь новый текст промпта:"
+    prompt_new_prompt_fmt_raw = "Редактирование настроения: *{name}*\n\nОтправь новый текст промпта (до 1500 симв\\.):"
     prompt_confirm_delete_fmt_raw = "точно удалить настроение '{name}'?"
 
     # Check session
@@ -3510,9 +3619,10 @@ async def edit_mood_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
         # Prepare prompt message asking for new prompt text (without showing current prompt)
         back_button = InlineKeyboardButton("⬅️ Назад", callback_data="edit_moods_back_cancel") # Back to mood list
-        final_prompt = escape_markdown_v2(prompt_new_prompt_fmt_raw.format(
-            name=original_mood_name
-            ))
+        # <<< ИЗМЕНЕНО: Улучшен текст запроса >>>
+        final_prompt = prompt_new_prompt_fmt_raw.format(
+            name=escape_markdown_v2(original_mood_name)
+            )
         await query.edit_message_text(final_prompt, reply_markup=InlineKeyboardMarkup([[back_button]]), parse_mode=ParseMode.MARKDOWN_V2)
         return EDIT_MOOD_PROMPT # Transition to prompt input state
 
@@ -3560,7 +3670,10 @@ async def edit_mood_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 async def edit_mood_name_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Handles receiving the name for a new mood."""
-    if not update.message or not update.message.text: return EDIT_MOOD_NAME # Ignore non-text
+    logger.debug("Entering edit_mood_name_received...") # <<< ДОБАВЛЕНО
+    if not update.message or not update.message.text:
+        logger.debug("edit_mood_name_received: Ignoring non-text message.")
+        return EDIT_MOOD_NAME # Ignore non-text
     mood_name_raw = update.message.text.strip()
     # Validate mood name format (letters, numbers, hyphen, underscore, no spaces)
     mood_name_match = re.match(r'^[\wа-яА-ЯёЁ-]+$', mood_name_raw, re.UNICODE)
@@ -3640,7 +3753,10 @@ async def edit_mood_name_received(update: Update, context: ContextTypes.DEFAULT_
 
 async def edit_mood_prompt_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Handles receiving the prompt text for a mood being edited or added."""
-    if not update.message or not update.message.text: return EDIT_MOOD_PROMPT # Ignore non-text
+    logger.debug("Entering edit_mood_prompt_received...") # <<< ДОБАВЛЕНО
+    if not update.message or not update.message.text:
+        logger.debug("edit_mood_prompt_received: Ignoring non-text message.")
+        return EDIT_MOOD_PROMPT # Ignore non-text
     mood_prompt = update.message.text.strip()
     mood_name = context.user_data.get('edit_mood_name') # Name being edited or added
     persona_id = context.user_data.get('edit_persona_id')
@@ -4024,32 +4140,43 @@ async def delete_persona_confirmed(update: Update, context: ContextTypes.DEFAULT
                   return ConversationHandler.END
 
              # Get persona name before deleting (for success message)
-             persona_to_delete = db.query(PersonaConfig).filter(PersonaConfig.id == persona_id, PersonaConfig.owner_id == user.id).first()
+             persona_to_delete = db.query(PersonaConfig).filter(PersonaConfig.id == persona_id, PersonaConfig.owner_id == user.id).first() # <<< ЗАВЕРШЕНО: Запрос для получения имени
              if persona_to_delete:
                  persona_name_deleted = persona_to_delete.name
+                 logger.info(f"Found persona '{persona_name_deleted}' (ID: {persona_id}) for deletion.")
+             else:
+                 # Persona might have been deleted between confirmation and this step
+                 logger.warning(f"Persona {persona_id} not found for user {user.id} just before calling delete function (might be already deleted).")
+                 # We'll proceed assuming it's already deleted, setting deleted_ok = True later
 
              # Call the delete function (handles commit/rollback inside)
              deleted_ok = delete_persona_config(db, persona_id, user.id)
 
              # If delete_persona_config returned False because it wasn't found, treat as success (already deleted)
              if not deleted_ok and not persona_to_delete:
-                 logger.warning(f"Persona {persona_id} not found for user {user.id} upon delete confirmation (likely already deleted).")
+                 logger.warning(f"Persona {persona_id} was not found by delete_persona_config (likely already deleted). Treating as success.")
                  deleted_ok = True # Consider it successful if already gone
 
     except SQLAlchemyError as e:
         logger.error(f"Database error during delete_persona_confirmed fetch/delete for {persona_id}: {e}", exc_info=True)
-        # deleted_ok remains False
+        deleted_ok = False # Ensure deletion is marked as failed
     except Exception as e:
         logger.error(f"Unexpected error during delete_persona_confirmed for {persona_id}: {e}", exc_info=True)
-        # deleted_ok remains False
+        deleted_ok = False # Ensure deletion is marked as failed
 
     # --- Send Final Message ---
     if deleted_ok:
         final_success_msg = escape_markdown_v2(success_deleted_fmt_raw.format(name=persona_name_deleted))
-        await query.edit_message_text(final_success_msg, reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2)
+        try:
+            await query.edit_message_text(final_success_msg, reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2)
+        except Exception as e:
+            logger.error(f"Failed to edit message with deletion success: {e}")
     else:
         # Deletion failed
-        await query.edit_message_text(error_delete_failed, reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2)
+        try:
+            await query.edit_message_text(error_delete_failed, reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2)
+        except Exception as e:
+            logger.error(f"Failed to edit message with deletion failure: {e}")
 
     # Clean up and end conversation
     context.user_data.clear()
@@ -4068,7 +4195,10 @@ async def delete_persona_cancel(update: Update, context: ContextTypes.DEFAULT_TY
     cancel_message = escape_markdown_v2("удаление отменено.")
 
     # Edit the confirmation message to show cancellation
-    await query.edit_message_text(cancel_message, reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2)
+    try:
+        await query.edit_message_text(cancel_message, reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2)
+    except Exception as e:
+        logger.error(f"Failed to edit message with deletion cancellation: {e}")
     # Clean up and end
     context.user_data.clear()
     return ConversationHandler.END
@@ -4199,3 +4329,4 @@ async def unmute_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             logger.error(f"Unexpected error during /unmutebot for chat {chat_id_str}: {e}", exc_info=True)
             await update.message.reply_text(error_general, parse_mode=ParseMode.MARKDOWN_V2)
             db.rollback()
+# --- END OF FILE handlers.py ---
