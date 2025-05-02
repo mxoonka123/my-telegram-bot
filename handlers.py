@@ -320,6 +320,11 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
              # Bot trying to interact with a chat that doesn't exist or it was kicked from
              logger.error(f"BadRequest: Chat not found error: {context.error}")
              return
+        # <<< ДОБАВЛЕНО: Обработка ошибки "Reply message not found" >>>
+        elif "reply message not found" in error_text:
+            logger.warning(f"BadRequest: Reply message not found. Original message might have been deleted. Update: {update}")
+            # Не отправляем сообщение пользователю, просто логируем
+            return
         else:
              # Log other BadRequest errors
              logger.error(f"Unhandled BadRequest error: {context.error}")
@@ -489,13 +494,22 @@ async def send_to_langdock(system_prompt: str, messages: List[Dict[str, str]]) -
         return escape_markdown_v2("произошла внутренняя ошибка при генерации ответа.")
 
 
-async def process_and_send_response(update: Optional[Update], context: ContextTypes.DEFAULT_TYPE, chat_id: Union[str, int], persona: Persona, full_bot_response_text: str, db: Session) -> bool:
+# <<< ИЗМЕНЕНО: Добавлен параметр reply_to_message_id >>>
+async def process_and_send_response(
+    update: Optional[Update],
+    context: ContextTypes.DEFAULT_TYPE,
+    chat_id: Union[str, int],
+    persona: Persona,
+    full_bot_response_text: str,
+    db: Session,
+    reply_to_message_id: Optional[int] = None # <<< ДОБАВЛЕНО
+) -> bool:
     """Processes the AI response, adds it to context, extracts GIFs, splits text, and sends messages."""
     if not full_bot_response_text or not full_bot_response_text.strip():
         logger.warning(f"Received empty response from AI for chat {chat_id}, persona {persona.name}. Not sending anything.")
         return False # Indicate context was not prepared with a response
 
-    logger.debug(f"Processing AI response for chat {chat_id}, persona {persona.name}. Raw length: {len(full_bot_response_text)}")
+    logger.debug(f"Processing AI response for chat {chat_id}, persona {persona.name}. Raw length: {len(full_bot_response_text)}. ReplyTo: {reply_to_message_id}")
 
     chat_id_str = str(chat_id)
     context_prepared = False # Flag to track if assistant message was added to DB context
@@ -553,13 +567,21 @@ async def process_and_send_response(update: Optional[Update], context: ContextTy
 
     # 5. Schedule sending GIFs and text parts
     send_tasks = []
+    first_message_sent = False # Flag to track if the first message (text or GIF) has been scheduled
 
     # Schedule GIFs first
     for gif in gif_links:
         try:
+            # <<< ИЗМЕНЕНО: Добавляем reply_to_message_id только для первого сообщения (GIF или текст) >>>
+            current_reply_id = reply_to_message_id if not first_message_sent else None
             # Use send_animation for GIFs
-            send_tasks.append(context.bot.send_animation(chat_id=chat_id_str, animation=gif))
-            logger.info(f"Scheduled sending gif: {gif}")
+            send_tasks.append(context.bot.send_animation(
+                chat_id=chat_id_str,
+                animation=gif,
+                reply_to_message_id=current_reply_id
+            ))
+            first_message_sent = True # Mark first message as scheduled
+            logger.info(f"Scheduled sending gif: {gif} (ReplyTo: {current_reply_id})")
         except Exception as e:
             logger.error(f"Error scheduling gif send {gif} to chat {chat_id_str}: {e}", exc_info=True)
 
@@ -583,20 +605,50 @@ async def process_and_send_response(update: Optional[Update], context: ContextTy
                  except Exception as e:
                       logger.warning(f"Failed to send typing action to {chat_id_str}: {e}")
 
+            # <<< ИЗМЕНЕНО: Добавляем reply_to_message_id только для первого сообщения (GIF или текст) >>>
+            current_reply_id = reply_to_message_id if not first_message_sent else None
+
             # Try sending with MarkdownV2 first
             try:
                  escaped_part = escape_markdown_v2(part_raw)
-                 logger.debug(f"Sending part {i+1}/{len(text_parts_to_send)} to chat {chat_id_str} (MDv2): '{escaped_part[:50]}...'")
-                 send_tasks.append(context.bot.send_message(chat_id=chat_id_str, text=escaped_part, parse_mode=ParseMode.MARKDOWN_V2))
+                 logger.debug(f"Sending part {i+1}/{len(text_parts_to_send)} to chat {chat_id_str} (MDv2, ReplyTo: {current_reply_id}): '{escaped_part[:50]}...'")
+                 send_tasks.append(context.bot.send_message(
+                     chat_id=chat_id_str,
+                     text=escaped_part,
+                     parse_mode=ParseMode.MARKDOWN_V2,
+                     reply_to_message_id=current_reply_id
+                 ))
+                 first_message_sent = True # Mark first message as scheduled
             except BadRequest as e:
                  # If Markdown parsing fails, retry with plain text
                  if "can't parse entities" in str(e).lower():
                       logger.error(f"Error sending part {i+1} (MarkdownV2 parse failed): {e} - Original: '{part_raw[:100]}...' Escaped: '{escaped_part[:100]}...'")
                       try:
                            logger.info(f"Retrying part {i+1} as plain text.")
-                           send_tasks.append(context.bot.send_message(chat_id=chat_id_str, text=part_raw, parse_mode=None))
+                           send_tasks.append(context.bot.send_message(
+                               chat_id=chat_id_str,
+                               text=part_raw,
+                               parse_mode=None,
+                               reply_to_message_id=current_reply_id
+                           ))
+                           first_message_sent = True # Mark first message as scheduled
                       except Exception as plain_e:
                            logger.error(f"Failed to schedule part {i+1} even as plain text: {plain_e}")
+                 # <<< ДОБАВЛЕНО: Обработка ошибки "Reply message not found" >>>
+                 elif "reply message not found" in str(e).lower():
+                     logger.warning(f"Cannot reply to message {reply_to_message_id} (likely deleted). Sending part {i+1} without reply.")
+                     try:
+                         # Retry sending without reply_to_message_id
+                         escaped_part = escape_markdown_v2(part_raw)
+                         send_tasks.append(context.bot.send_message(
+                             chat_id=chat_id_str,
+                             text=escaped_part,
+                             parse_mode=ParseMode.MARKDOWN_V2,
+                             reply_to_message_id=None # <<< УБРАН REPLY ID
+                         ))
+                         first_message_sent = True # Mark first message as scheduled
+                     except Exception as retry_e:
+                         logger.error(f"Failed to schedule part {i+1} even without reply: {retry_e}")
                  else:
                      # Handle other BadRequest errors
                      logger.error(f"Error scheduling text part {i+1} send (BadRequest, not parse): {e} - Original: '{part_raw[:100]}...' Escaped: '{escaped_part[:100]}...'")
@@ -611,7 +663,14 @@ async def process_and_send_response(update: Optional[Update], context: ContextTy
          # Log any errors that occurred during sending
          for i, result in enumerate(results):
               if isinstance(result, Exception):
-                  logger.error(f"Failed to send message/animation part {i}: {result}")
+                  # <<< ДОБАВЛЕНО: Более детальное логирование ошибки отправки >>>
+                  error_type = type(result).__name__
+                  error_msg = str(result)
+                  # Не логируем "Reply message not found" как ошибку здесь, т.к. уже обработали выше
+                  if "reply message not found" in error_msg.lower():
+                      logger.info(f"Sending message part {i} failed because reply target was lost (expected).")
+                  else:
+                      logger.error(f"Failed to send message/animation part {i}: {error_type} - {error_msg}")
 
     return context_prepared # Return whether the response was added to DB context
 
@@ -675,11 +734,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     user_id = update.effective_user.id
     username = update.effective_user.username or f"user_{user_id}" # Use ID if no username
     message_text = (update.message.text or update.message.caption or "").strip()
+    message_id = update.message.message_id # <<< ДОБАВЛЕНО: Получаем ID сообщения для reply
     if not message_text:
         # Ignore messages with only whitespace
         return
 
-    logger.info(f"MSG < User {user_id} ({username}) in Chat {chat_id_str}: {message_text[:100]}") # Log first 100 chars
+    logger.info(f"MSG < User {user_id} ({username}) in Chat {chat_id_str} (MsgID: {message_id}): {message_text[:100]}") # Log first 100 chars
 
     # 1. Check channel subscription
     if not await check_channel_subscription(update, context):
@@ -693,6 +753,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             persona_context_owner_tuple = get_persona_and_context_with_owner(chat_id_str, db)
             if not persona_context_owner_tuple:
                 # No active persona in this chat, ignore message for bot processing
+                logger.debug(f"No active persona in chat {chat_id_str}. Ignoring message.")
                 return
             persona, _, owner_user = persona_context_owner_tuple
             logger.debug(f"Handling message for persona '{persona.name}' owned by {owner_user.id} (TG ID: {owner_user.telegram_id}) in chat {chat_id_str}")
@@ -715,7 +776,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 try:
                     # Include username in context for multi-user chats
                     user_prefix = username
-                    context_content = f"{user_prefix}: {message_text}"
+                    # <<< ИЗМЕНЕНО: Убрано добавление ID сообщения в контекст, т.к. не используется LLM >>>
+                    # context_content = f"{user_prefix} (MsgID: {message_id}): {message_text}"
+                    context_content = f"{user_prefix}: {message_text}" # <<< ВОЗВРАЩЕНО: Простой формат для LLM
                     add_message_to_context(db, persona.chat_instance.id, "user", context_content)
                     context_user_msg_added = True
                     logger.debug("User message prepared for context (pending commit).")
@@ -851,8 +914,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             logger.debug(f"Received main response from Langdock: {response_text[:100]}...")
 
             # 11. Process and send the response(s) back to Telegram
-            # This function also adds the assistant response to the context list in the DB session
-            context_response_prepared = await process_and_send_response(update, context, chat_id_str, persona, response_text, db)
+            # <<< ИЗМЕНЕНО: Передаем message_id для ответа >>>
+            context_response_prepared = await process_and_send_response(
+                update, context, chat_id_str, persona, response_text, db, reply_to_message_id=message_id
+            )
 
             # 12. Commit all changes for this message interaction
             db.commit()
@@ -881,7 +946,8 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
     chat_id_str = str(update.effective_chat.id)
     user_id = update.effective_user.id
     username = update.effective_user.username or f"user_{user_id}"
-    logger.info(f"Received {media_type} message from user {user_id} ({username}) in chat {chat_id_str}")
+    message_id = update.message.message_id # <<< ДОБАВЛЕНО: Получаем ID сообщения для reply
+    logger.info(f"Received {media_type} message from user {user_id} ({username}) in chat {chat_id_str} (MsgID: {message_id})")
 
     # 1. Check channel subscription
     if not await check_channel_subscription(update, context):
@@ -893,6 +959,7 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
             # 2. Get active persona and owner
             persona_context_owner_tuple = get_persona_and_context_with_owner(chat_id_str, db)
             if not persona_context_owner_tuple:
+                logger.debug(f"No active persona in chat {chat_id_str} for media message.")
                 return # No active persona
             persona, _, owner_user = persona_context_owner_tuple
             logger.debug(f"Handling {media_type} for persona '{persona.name}' owned by {owner_user.id}")
@@ -985,7 +1052,10 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
             logger.debug(f"Received response from Langdock for {media_type}: {response_text[:100]}...")
 
             # 11. Process and send response
-            context_response_prepared = await process_and_send_response(update, context, chat_id_str, persona, response_text, db)
+            # <<< ИЗМЕНЕНО: Передаем message_id для ответа >>>
+            context_response_prepared = await process_and_send_response(
+                update, context, chat_id_str, persona, response_text, db, reply_to_message_id=message_id
+            )
 
             # 12. Commit all changes
             db.commit()
@@ -2718,8 +2788,8 @@ async def edit_persona_choice(update: Update, context: ContextTypes.DEFAULT_TYPE
     prompt_edit_value_fmt_raw = "Отправь новое значение для поля '{field_name}'.\n\n_{field_desc}_"
     # Keep current value for max messages
     prompt_edit_max_msg_fmt_raw = "Отправь новое значение для поля '{field_name}' (число от 1 до 10).\n\n_{field_desc}_\n\nТекущее: {current_value}"
-    # Prompt format for simple fields (name, description) - keep current value
-    prompt_edit_simple_value_fmt_raw = "Отправь новое значение для поля '{field_name}'.\n\n_{field_desc}_\n\nТекущее:\n`{current_value}`"
+    # <<< ИЗМЕНЕНО: Улучшен формат для простых полей с Markdown >>>
+    prompt_edit_simple_value_fmt_raw = "Отправь новое значение для поля *{field_name}*.\n\n_{field_desc}_\n\nТекущее значение:\n```\n{current_value}\n```"
 
 
     # Check if persona_id exists in context
@@ -2829,15 +2899,14 @@ async def edit_persona_choice(update: Update, context: ContextTypes.DEFAULT_TYPE
             return EDIT_MAX_MESSAGES # Transition to max messages state
         # Handle simple fields (name, description) - show current value
         elif field in ["name", "description"]:
-            current_value_raw = getattr(persona_config, field, "") # Get current value
-            # Truncate long values for display
-            current_value_display_for_prompt = current_value_raw[:300] + "..." if len(current_value_raw)>300 else current_value_raw
-            # Use specific format with current value
-            final_prompt = escape_markdown_v2(prompt_edit_simple_value_fmt_raw.format(
-                field_name=field_display_name_plain,
-                field_desc=field_desc_plain,
-                current_value=current_value_display_for_prompt
-                ))
+            current_value_raw = getattr(persona_config, field, "") or "(пусто)" # Get current value or placeholder
+            # Use specific format with current value (already escaped in the format string)
+            # <<< ИЗМЕНЕНО: Используем новый формат с Markdown >>>
+            final_prompt = prompt_edit_simple_value_fmt_raw.format(
+                field_name=escape_markdown_v2(field_display_name_plain), # Escape parts separately
+                field_desc=escape_markdown_v2(field_desc_plain),
+                current_value=escape_markdown_v2(current_value_raw) # Escape the value itself
+                )
             await query.edit_message_text(final_prompt, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
             return EDIT_FIELD # Transition to field editing state
         # Handle template fields - DO NOT show current value
