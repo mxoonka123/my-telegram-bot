@@ -1,3 +1,5 @@
+# --- START OF FILE main.py ---
+
 import logging
 import asyncio
 import os
@@ -11,7 +13,7 @@ from sqlalchemy.exc import SQLAlchemyError, OperationalError
 import aiohttp
 import httpx
 from typing import Optional
-import re # <<< ДОБАВЛЕНО
+import re # <<< Убедитесь, что импорт есть
 
 from telegram import Update
 from telegram.ext import (
@@ -483,12 +485,12 @@ def main() -> None:
             # State: Waiting for new text field value
             handlers.EDIT_FIELD: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.edit_field_update),
-                CallbackQueryHandler(handlers.edit_persona_choice, pattern='^edit_persona_back$') # Back button
+                CallbackQueryHandler(handlers.edit_persona_cancel, pattern='^cancel_edit$') # <<< ИЗМЕНЕНО: Отмена вместо Назад
                 ],
             # State: Waiting for new max messages value
             handlers.EDIT_MAX_MESSAGES: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.edit_max_messages_update),
-                CallbackQueryHandler(handlers.edit_persona_choice, pattern='^edit_persona_back$') # Back button
+                CallbackQueryHandler(handlers.edit_persona_cancel, pattern='^cancel_edit$') # <<< ИЗМЕНЕНО: Отмена вместо Назад
                 ],
             # State: Mood editing menu
             handlers.EDIT_MOOD_CHOICE: [
@@ -552,6 +554,8 @@ def main() -> None:
     application.add_handler(CommandHandler("menu", handlers.menu_command, block=False)) # Add /menu command
     application.add_handler(CommandHandler("profile", handlers.profile, block=False))
     application.add_handler(CommandHandler("subscribe", handlers.subscribe, block=False))
+    # <<< ИЗМЕНЕНО: Регистрация /placeholders >>>
+    application.add_handler(CommandHandler("placeholders", handlers.placeholders_command, block=False))
 
     # Persona Management Commands
     application.add_handler(CommandHandler("createpersona", handlers.create_persona, block=False))
@@ -597,3 +601,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+# --- END OF FILE main.py ---
