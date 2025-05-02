@@ -83,7 +83,7 @@ class User(Base):
                       return False # Safer to return False
             else:
                 # Transient or pending instance, use potentially unloaded relationship
-                logger.warning(f"Accessing can_create_persona for User {self.id} without required state info. Assuming count is 0 based on current attribute.")
+                # logger.warning(f"Accessing can_create_persona for User {self.id} without required state info. Assuming count is 0 based on current attribute.")
                 count = len(self.persona_configs) if self.persona_configs is not None else 0
 
         except Exception as e:
@@ -116,7 +116,7 @@ class PersonaConfig(Base):
 
     # Store the TEMPLATES here, formatting happens in handlers/persona class
     system_prompt_template = Column(Text, nullable=False, default=DEFAULT_SYSTEM_PROMPT_TEMPLATE)
-    mood_prompts_json = Column(Text, default=json.dumps(DEFAULT_MOOD_PROMPTS, ensure_ascii=False))
+    mood_prompts_json = Column(Text, default=json.dumps(DEFAULT_MOOD_PROMPTS, ensure_ascii=False, sort_keys=True)) # <<< ИЗМЕНЕНО: Добавлен sort_keys
     should_respond_prompt_template = Column(Text, nullable=False, default=DEFAULT_SHOULD_RESPOND_PROMPT_TEMPLATE)
     spam_prompt_template = Column(Text, nullable=True, default=DEFAULT_SPAM_PROMPT_TEMPLATE)
     photo_prompt_template = Column(Text, nullable=True, default=DEFAULT_PHOTO_PROMPT_TEMPLATE)
@@ -265,7 +265,6 @@ def initialize_database():
              "pool_timeout": 30,     # Seconds to wait for a connection before timing out
              "pool_recycle": 1800,   # Seconds after which a connection is recycled (prevents stale connections)
              "pool_pre_ping": True,  # Check connection validity before handing it out
-             # "prepared_statement_cache_size": 0 # REMOVED: Invalid argument for psycopg v3
          })
 
     try:
