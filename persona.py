@@ -83,11 +83,14 @@ class Persona:
          if not desc:
              return self.name[:50]
 
+         # Try to get the first sentence
          match = re.match(r"^([^\.!?]+(?:[\.!?]|$))", desc)
          if match:
               short_desc = match.group(1).strip()
+              # If first sentence is short enough, use it
               if len(short_desc) <= 50:
                   return short_desc
+              # Otherwise, truncate the first sentence by words
               words = short_desc.split()
               current_short = ""
               for word in words:
@@ -95,8 +98,9 @@ class Persona:
                        current_short += (" " if current_short else "") + word
                    else:
                        break
-              return current_short + "..." if current_short else self.name[:50]
+              return current_short + "..." if current_short else self.name[:50] # Fallback to name if even first word is too long
          else:
+              # If no sentence structure found, truncate the whole description by words
               words = desc.split()
               current_short = ""
               for word in words:
@@ -104,7 +108,7 @@ class Persona:
                        current_short += (" " if current_short else "") + word
                    else:
                        break
-              return current_short + "..." if current_short else self.name[:50]
+              return current_short + "..." if current_short else self.name[:50] # Fallback to name
 
 
     def format_system_prompt(self, user_id: int, username: str, message: str) -> str:
