@@ -1,3 +1,4 @@
+# --- START OF FILE db.py ---
 import json
 import logging
 from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, Boolean, ForeignKey, UniqueConstraint, func, BIGINT
@@ -13,8 +14,12 @@ import psycopg
 from config import (
     DATABASE_URL,
     DEFAULT_MOOD_PROMPTS,
-    DEFAULT_SYSTEM_PROMPT_TEMPLATE, DEFAULT_SHOULD_RESPOND_PROMPT_TEMPLATE,
-    DEFAULT_SPAM_PROMPT_TEMPLATE, DEFAULT_PHOTO_PROMPT_TEMPLATE, DEFAULT_VOICE_PROMPT_TEMPLATE,
+    # Убираем импорт старых шаблонов, кроме системного и настроений
+    DEFAULT_SYSTEM_PROMPT_TEMPLATE, # Оставляем как базовый шаблон для сборки
+    # DEFAULT_SHOULD_RESPOND_PROMPT_TEMPLATE, # Будет генерироваться
+    # DEFAULT_SPAM_PROMPT_TEMPLATE, # Будет генерироваться или убран
+    # DEFAULT_PHOTO_PROMPT_TEMPLATE, # Будет генерироваться
+    # DEFAULT_VOICE_PROMPT_TEMPLATE, # Будет генерироваться
     FREE_PERSONA_LIMIT, PAID_PERSONA_LIMIT, FREE_DAILY_MESSAGE_LIMIT, PAID_DAILY_MESSAGE_LIMIT,
     SUBSCRIPTION_DURATION_DAYS,
     MAX_CONTEXT_MESSAGES_SENT_TO_LLM,
@@ -112,16 +117,26 @@ class PersonaConfig(Base):
     id = Column(Integer, primary_key=True)
     owner_id = Column(Integer, ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True)
     name = Column(String, nullable=False)
-    description = Column(Text, nullable=True)
+    description = Column(Text, nullable=True) # Основное описание роли/характера
 
-    # Store the TEMPLATES here, formatting happens in handlers/persona class
-    system_prompt_template = Column(Text, nullable=False, default=DEFAULT_SYSTEM_PROMPT_TEMPLATE)
-    mood_prompts_json = Column(Text, default=json.dumps(DEFAULT_MOOD_PROMPTS, ensure_ascii=False, sort_keys=True)) # <<< ИЗМЕНЕНО: Добавлен sort_keys
-    should_respond_prompt_template = Column(Text, nullable=False, default=DEFAULT_SHOULD_RESPOND_PROMPT_TEMPLATE)
-    spam_prompt_template = Column(Text, nullable=True, default=DEFAULT_SPAM_PROMPT_TEMPLATE)
-    photo_prompt_template = Column(Text, nullable=True, default=DEFAULT_PHOTO_PROMPT_TEMPLATE)
-    voice_prompt_template = Column(Text, nullable=True, default=DEFAULT_VOICE_PROMPT_TEMPLATE)
+    # --- Новые поля для конструктора поведения ---
+    communication_style = Column(String, default="neutral") # e.g., neutral, friendly, sarcastic, brief, formal
+    verbosity_level = Column(String, default="medium") # e.g., concise, medium, talkative
+    group_reply_preference = Column(String, default="mentioned_or_contextual") # e.g., always, mentioned_only, mentioned_or_contextual, never
+    media_reaction = Column(String, default="text_only") # e.g., all, text_only, none
+    # --- Конец новых полей ---
+
+    # Настройки, которые остаются редактируемыми
+    mood_prompts_json = Column(Text, default=json.dumps(DEFAULT_MOOD_PROMPTS, ensure_ascii=False, sort_keys=True))
     max_response_messages = Column(Integer, default=3, nullable=False)
+
+    # Старые поля шаблонов (могут использоваться для генерации или остаться для совместимости/продвинутого режима)
+    # Пользователь их больше не редактирует напрямую через основной визард
+    system_prompt_template = Column(Text, nullable=False, default=DEFAULT_SYSTEM_PROMPT_TEMPLATE) # Базовый шаблон
+    should_respond_prompt_template = Column(Text, nullable=True) # Будет генерироваться
+    spam_prompt_template = Column(Text, nullable=True) # Будет генерироваться или убран
+    photo_prompt_template = Column(Text, nullable=True) # Будет генерироваться
+    voice_prompt_template = Column(Text, nullable=True) # Будет генерироваться
 
     owner = relationship("User", back_populates="persona_configs", lazy="selectin")
     bot_instances = relationship("BotInstance", back_populates="persona_config", cascade="all, delete-orphan", lazy="selectin")
@@ -600,30 +615,37 @@ def get_all_active_chat_bot_instances(db: Session) -> List[ChatBotInstance]:
         return []
 
 def create_persona_config(db: Session, owner_id: int, name: str, description: str = None) -> PersonaConfig:
-    """Creates a new PersonaConfig with default TEMPLATES and commits."""
+    """Creates a new PersonaConfig with default values for structured settings and commits."""
     logger.info(f"Attempting to create persona '{name}' for owner_id {owner_id}")
     if description is None:
         description = f"ai бот по имени {name}." # Default description
 
-    # Create the PersonaConfig object with default templates from config
+    # Create the PersonaConfig object with defaults for new fields
     persona = PersonaConfig(
         owner_id=owner_id,
         name=name,
         description=description,
-        # Set defaults during creation
+        # Устанавливаем дефолты для новых полей
+        communication_style="neutral",
+        verbosity_level="medium",
+        group_reply_preference="mentioned_or_contextual",
+        media_reaction="text_only",
+        # Устанавливаем дефолты для старых полей (настроения, макс. сообщения)
         mood_prompts_json = json.dumps(DEFAULT_MOOD_PROMPTS, ensure_ascii=False, sort_keys=True),
+        max_response_messages=3,
+        # Базовый системный промпт все еще нужен как основа
         system_prompt_template=DEFAULT_SYSTEM_PROMPT_TEMPLATE,
-        should_respond_prompt_template=DEFAULT_SHOULD_RESPOND_PROMPT_TEMPLATE,
-        spam_prompt_template=DEFAULT_SPAM_PROMPT_TEMPLATE,
-        photo_prompt_template=DEFAULT_PHOTO_PROMPT_TEMPLATE,
-        voice_prompt_template=DEFAULT_VOICE_PROMPT_TEMPLATE,
-        max_response_messages=3 # Explicitly set default value
+        # Остальные шаблоны пока оставляем пустыми или null, т.к. они будут генерироваться
+        should_respond_prompt_template=None,
+        spam_prompt_template=None,
+        photo_prompt_template=None,
+        voice_prompt_template=None,
     )
     try:
         db.add(persona)
         db.commit() # Commit the new persona
         db.refresh(persona) # Refresh to get the generated ID and load defaults correctly
-        logger.info(f"Successfully created PersonaConfig '{name}' with ID {persona.id} for owner_id {owner_id}. Default templates applied.")
+        logger.info(f"Successfully created PersonaConfig '{name}' with ID {persona.id} for owner_id {owner_id}. Default structured settings applied.")
         return persona
     except IntegrityError as e:
         # Handle potential unique constraint violation (owner_id, name)
@@ -857,3 +879,4 @@ def create_tables():
         db_log_url_on_error = str(engine.url).split('@')[-1] if '@' in str(engine.url) else str(engine.url)
         logger.critical(f"FATAL: Failed to create/verify database tables for {db_log_url_on_error}: {e}", exc_info=True)
         raise
+# --- END OF FILE db.py ---
