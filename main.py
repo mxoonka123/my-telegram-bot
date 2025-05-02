@@ -11,6 +11,7 @@ from sqlalchemy.exc import SQLAlchemyError, OperationalError
 import aiohttp
 import httpx
 from typing import Optional
+import re # <<< ДОБАВЛЕНО
 
 from telegram import Update
 from telegram.ext import (
