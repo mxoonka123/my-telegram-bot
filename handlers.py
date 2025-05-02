@@ -1160,8 +1160,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 # <<< СТИЛЬ: Обновлен текст >>>
                 part1_raw = f"привет! я {persona.name}. я уже активен в этом чате.\n"
                 part2_raw = "используй /menu для списка команд."
-                # Escape dynamic parts, keep static Markdown
-                reply_text_final = escape_markdown_v2(part1_raw) + escape_markdown_v2(part2_raw)
+                # <<< ИСПРАВЛЕНО: Экранируем всю строку целиком >>>
+                reply_text_final = escape_markdown_v2(part1_raw + part2_raw)
                 reply_markup = ReplyKeyboardRemove() # No keyboard needed if bot active
             else:
                 # No persona active, show general welcome and user status
@@ -1196,11 +1196,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 message_limit_raw = f"{user.daily_message_count}/{user.message_limit}"
 
                 # <<< СТИЛЬ: Обновлен текст приветствия, использован Markdown >>>
-                # Construct welcome message (raw parts and Markdown)
+                # Construct welcome message (Markdown)
                 start_text_md = (
-                    f"привет! 👋 я бот для создания ai\\-собеседников \\(`@{escape_markdown_v2(context.bot.username)}`\\)\\.\n\n"
+                    f"привет\\! 👋 я бот для создания ai\\-собеседников \\(`@{escape_markdown_v2(context.bot.username)}`\\)\\.\n\n"
                     f"*твой статус:* {escape_markdown_v2(status_raw)} {escape_markdown_v2(expires_raw)}\n"
-                    f"*личности:* {escape_markdown_v2(persona_limit_raw)} \\| *сообщения:* {escape_markdown_v2(message_limit_raw)}\n\n"
+                    f"*личности:* `{escape_markdown_v2(persona_limit_raw)}` \\| *сообщения:* `{escape_markdown_v2(message_limit_raw)}`\n\n"
                     f"*начало работы:*\n"
                     f"`/createpersona <имя>` \\- создай ai\\-личность\n"
                     f"`/mypersonas` \\- список твоих личностей\n"
@@ -1229,7 +1229,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.error(f"Telegram error during /start for user {user_id}: {e}", exc_info=True)
         # Handle potential Markdown parsing errors specifically
         if isinstance(e, BadRequest) and "Can't parse entities" in str(e):
-            logger.error(f"--> Failed text (escaped): '{reply_text_final[:500]}...'")
+            logger.error(f"--> Failed text (MD): '{reply_text_final[:500]}...'") # Log the MD text
             # Fallback to plain text using the raw variables
             try:
                 # <<< СТИЛЬ: Обновлен текст fallback >>>
@@ -1842,7 +1842,7 @@ async def create_persona(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     # <<< СТИЛЬ: Обновлены тексты ошибок и сообщений >>>
     # Define user messages (escaped and raw for formatting)
-    usage_text = escape_markdown_v2("формат: /createpersona <имя> [описание]\n_имя обязательно, описание нет\\._")
+    usage_text = escape_markdown_v2("формат: `/createpersona <имя> [описание]`\n_имя обязательно, описание нет\\._")
     error_name_len = escape_markdown_v2("❌ имя личности: 2\\-50 символов.")
     error_desc_len = escape_markdown_v2("❌ описание: до 1500 символов.")
     error_limit_reached_fmt_raw = "упс! 😕 достигнут лимит личностей ({current_count}/{limit}) для статуса {status_text}\\. чтобы создавать больше, используй /subscribe"
@@ -1917,7 +1917,7 @@ async def create_persona(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
              logger.warning(f"IntegrityError caught by handler for create_persona user {user_id} name '{persona_name}'.")
              persona_name_escaped = escape_markdown_v2(persona_name)
              # <<< СТИЛЬ: Обновлен текст ошибки >>>
-             error_msg_ie_raw = f"❌ ошибка: личность '{persona_name_escaped}' уже существует (возможно, гонка запросов). попробуй еще раз."
+             error_msg_ie_raw = f"❌ ошибка: личность '{persona_name_escaped}' уже существует \\(возможно, гонка запросов\\)\\. попробуй еще раз."
              await update.message.reply_text(escape_markdown_v2(error_msg_ie_raw), reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
              # No rollback needed here as create_persona_config handles its own rollback on IntegrityError
         except SQLAlchemyError as e:
@@ -2495,7 +2495,8 @@ async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE, from_cal
         if not await check_channel_subscription(update, context):
             await send_subscription_required_message(update, context)
             return
-# Check if Yookassa is configured
+
+    # Check if Yookassa is configured
     yookassa_ready = bool(YOOKASSA_SHOP_ID and YOOKASSA_SECRET_KEY and YOOKASSA_SHOP_ID.isdigit())
 
     # <<< СТИЛЬ: Обновлены тексты ошибок и сообщений >>>
@@ -3072,7 +3073,7 @@ async def edit_persona_choice(update: Update, context: ContextTypes.DEFAULT_TYPE
              await query.answer()
              return await edit_moods_menu(update, context, persona_config=persona_config)
 
-    if data == "show_advanced_settings": # <<< ДОБАВЛЕНО: Переход в расширенные настройки
+    if data == "show_advanced_settings": # <<< ДОБАВЛЕНО: Переход в расширенные настройки >>>
         logger.info(f"User {user_id} entering advanced settings for persona {persona_id}.")
         await query.answer()
         keyboard = await _get_edit_advanced_keyboard(persona_config) # Get advanced keyboard
@@ -3174,7 +3175,7 @@ async def edit_advanced_choice(update: Update, context: ContextTypes.DEFAULT_TYP
             ).first()
 
             if not persona_config:
-                logger.warning(f"User {user_id} in edit_advanced_choice: PersonaConfig {persona_id} not found/owned.")
+                logger.warning(f"User {user_id} in edit_advanced_choice: PersonaConfig {persona_id} not found or not owned.")
                 await query.answer("Личность не найдена", show_alert=True)
                 await context.bot.send_message(chat_id, error_not_found, reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2)
                 context.user_data.clear()
@@ -3891,6 +3892,7 @@ async def edit_mood_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -
          logger.error(f"DB Error fetching persona in edit_mood_choice: {e}", exc_info=True)
          await query.answer("❌ Ошибка базы данных", show_alert=True)
          await context.bot.send_message(chat_id, error_db, reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2)
+         # Try to return to main edit menu on error
          return await _try_return_to_edit_menu(update, context, user_id, persona_id)
 
     await query.answer() # Answer callback quickly
@@ -4044,8 +4046,7 @@ async def edit_mood_name_received(update: Update, context: ContextTypes.DEFAULT_
             current_moods = {}
             try: current_moods = json.loads(persona_config.mood_prompts_json or '{}')
             except json.JSONDecodeError: pass # Ignore if JSON is invalid, treat as empty
-
-            # Check if name (case-insensitive) already exists
+# Check if name (case-insensitive) already exists
             if any(existing_name.lower() == mood_name.lower() for existing_name in current_moods):
                 logger.info(f"User {user_id} tried mood name '{mood_name}' which already exists.")
                 cancel_button = InlineKeyboardButton("❌ Отмена", callback_data="edit_moods_back_cancel")
