@@ -33,23 +33,8 @@ DEFAULT_SYSTEM_PROMPT_TEMPLATE = '''Ты — {persona_name}. {persona_descriptio
 *   Твое текущее настроение: {mood_name} ({mood_prompt} - применяй это настроение к ответу, только если оно НЕ "Нейтрально").
 '''
 
-# Simplified Should Respond Prompt
-DEFAULT_SHOULD_RESPOND_TEMPLATE = '''Должен ли бот @{bot_username} (личность {persona_name}) ответить на сообщение "{last_user_message}" в групповом чате?
-Настройка ответа: {group_reply_preference}.
-
-Ответь ТОЛЬКО "Да" или "Нет".
-
-Правила:
-- always: Да
-- never: Нет
-- mentioned_only: Да, если есть @{bot_username}. Иначе Нет.
-- mentioned_or_contextual: Да, если есть @{bot_username} ИЛИ сообщение - ответ на реплику бота, ИЛИ явно обращено к боту. Иначе Нет.
-
-ИСТОРИЯ (для contextual):
-{context_summary}
-
-Ответ (Да/Нет):
-'''
+# Simplified Should Respond Prompt - ВЕРСИЯ 2
+DEFAULT_SHOULD_RESPOND_TEMPLATE = '''Чат-бот @{bot_username} (личность {persona_name}). Сообщение: "{last_user_message}". Настройка: {group_reply_preference}. Отвечать? (Только Да/Нет)'''
 
 logger = logging.getLogger(__name__)
 
