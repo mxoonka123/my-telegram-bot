@@ -25,6 +25,7 @@ from yookassa import Configuration, Payment
 from yookassa.domain.models.currency import Currency
 from yookassa.domain.request.payment_request_builder import PaymentRequestBuilder
 from yookassa.domain.models.receipt import Receipt, ReceiptItem
+from yookassa.domain.models.configuration import Configuration as YookassaConfig
 
 import config
 from config import (
@@ -1065,47 +1066,33 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handles the /help command and the show_help callback."""
-    is_callback = update.callback_query is not None
-    message_or_query = update.callback_query if is_callback else update.message
-    if not message_or_query: return
+    """Displays help information."""
+    user = update.effective_user
+    user_id = user.id
+    chat_id_str = str(update.effective_chat.id)
+    logger.info(f"CMD /help < User {user_id} in Chat {chat_id_str}")
 
-    user_id = update.effective_user.id
-    chat_id_str = str(message_or_query.message.chat.id if is_callback else message_or_query.chat.id)
-    logger.info(f"CMD /help or Callback 'show_help' < User {user_id} in Chat {chat_id_str}")
-
-    if not is_callback:
-        if not await check_channel_subscription(update, context):
-            await send_subscription_required_message(update, context)
-            return
-
-    help_text_md = """
-*❓ Помощь по командам*
-
-*Основные:*
-`/start` \\- приветствие и ваш статус
-`/help` \\- эта справка
-`/menu` \\- панель управления командами
-`/placeholders` \\- список плейсхолдеров для промптов
-
-*Личности:*
-`/createpersona <имя> [описание]` \\- создать
-`/mypersonas` \\- список и управление
-`/editpersona <id>` \\- редактировать \\(откроет визард\\)
-`/deletepersona <id>` \\- удалить
-
-*Аккаунт:*
-`/profile` \\- статус и лимиты
-`/subscribe` \\- информация о подписке
-
-*В чате (с активной личностью):*
-`/addbot <id>` \\- добавить личность в чат
-`/mood [настроение]` \\- сменить настроение
-`/reset` \\- очистить память личности
-`/mutebot` \\- запретить отвечать
-`/unmutebot` \\- разрешить отвечать
-"""
-    help_text_to_send = help_text_md
+    help_text_raw = (
+        "🤖 *команды бота:*\n\n"
+        "/start \\- начало работы с ботом\n"
+        "/help \\- эта справка\n"
+        "/menu \\- главное меню\n"
+        "/profile \\- информация о вашем профиле\n"
+        "/reset \\- сбросить диалог\n"
+        "/mute \\- отключить бота в чате\n"
+        "/unmute \\- включить бота в чате\n"
+        "/subscribe \\- информация о премиум подписке\n\n"
+        "🤖 *настройка личности:*\n\n"
+        "/mood \\- изменить настроение бота\n"
+        "/create \\- создать новую личность\n"
+        "/my \\- список ваших личностей\n"
+        "/edit \\- редактировать личность\n"
+        "/delete \\- удалить личность\n\n"
+        "🤖 *дополнительно:*\n\n"
+        "бот может отвечать на фото и голосовые сообщения\\.\n"
+        "в групповых чатах бот отвечает только на упоминания\\.\n"
+        "для добавления бота в группу используйте кнопку в меню\\."
+    )
 
     keyboard = [[InlineKeyboardButton("⬅️ Назад в Меню", callback_data="show_menu")]] if is_callback else None
     reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else ReplyKeyboardRemove()
@@ -1163,75 +1150,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     except Exception as e:
          logger.error(f"Error sending/editing help message: {e}", exc_info=True)
          if is_callback: await query.answer("❌ Ошибка отображения справки", show_alert=True)
-
-
-async def placeholders_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Displays available placeholders for prompts."""
-    if not update.message: return
-    user_id = update.effective_user.id
-    chat_id_str = str(update.effective_chat.id)
-    logger.info(f"CMD /placeholders < User {user_id} in Chat {chat_id_str}")
-
-    if not await check_channel_subscription(update, context):
-        await send_subscription_required_message(update, context)
-        return
-
-    await context.bot.send_chat_action(chat_id=chat_id_str, action=ChatAction.TYPING)
-
-    # Текст плейсхолдеров остается тем же, так как они используются в Persona классе
-    text_md = """
-*🧩 Доступные плейсхолдеры для промптов*
-
-Эти плейсхолдеры можно использовать в полях настроек личности \\(через `/editpersona`\\)\\. Бот автоматически заменит их на актуальные значения при генерации ответа\\.
-
-*Информация о личности:*
-`{persona_name}` \\- имя вашей личности
-`{persona_description}` \\- полное описание личности
-`{persona_description_short}` \\- краткое описание \\(первое предложение или ~50 симв\\.\\)
-`{mood_prompt}` \\- текст промпта для текущего настроения
-
-*Информация о контексте:*
-`{time_info}` \\- текущее время \\(UTC, МСК и др\\.\\)
-`{internet_info}` \\- напоминание AI о доступе к интернету \\(в системном промпте\\)
-`{username}` \\- имя пользователя Telegram, отправившего сообщение
-`{user_id}` \\- ID пользователя Telegram
-`{chat_id}` \\- ID текущего чата
-`{message}` \\- текст сообщения, на которое отвечает бот \\(*только* в Системном промпте и Промпте 'Отвечать\\?'\\)
-
-*Пример использования в Системном промпте:*
-`ты \\- {persona_name}, {persona_description_short}\\. твое настроение: {mood_prompt}\\. сейчас {time_info}\\. пользователь {username} написал: {message}`
-"""
-
-    try:
-        await update.message.reply_text(text_md, parse_mode=ParseMode.MARKDOWN_V2)
-    except Exception as e:
-        logger.error(f"Failed sending placeholders message: {e}", exc_info=True)
-        plain_text = """
-🧩 Доступные плейсхолдеры для промптов
-
-Эти плейсхолдеры можно использовать в полях настроек личности (через /editpersona). Бот автоматически заменит их на актуальные значения при генерации ответа.
-
-Информация о личности:
-{persona_name} - имя вашей личности
-{persona_description} - полное описание личности
-{persona_description_short} - краткое описание (первое предложение или ~50 симв.)
-{mood_prompt} - текст промпта для текущего настроения
-
-Информация о контексте:
-{time_info} - текущее время (UTC, МСК и др.)
-{internet_info} - напоминание AI о доступе к интернету (в системном промпте)
-{username} - имя пользователя Telegram, отправившего сообщение
-{user_id} - ID пользователя Telegram
-{chat_id} - ID текущего чата
-{message} - текст сообщения, на которое отвечает бот (только в Системном промпте и Промпте 'Отвечать?')
-
-Пример использования в Системном промпте:
-ты - {persona_name}, {persona_description_short}. твое настроение: {mood_prompt}. сейчас {time_info}. пользователь {username} написал: {message}
-"""
-        try:
-            await update.message.reply_text(plain_text, parse_mode=None)
-        except Exception as fallback_e:
-            logger.error(f"Failed sending plain placeholders message: {fallback_e}")
 
 
 async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2214,21 +2132,25 @@ async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE, from_cal
 
         text_md = (
             f"✨ *Премиум подписка* \\({escape_markdown_v2(price_raw)} {escape_markdown_v2(currency_raw)}/мес\\) ✨\n\n"
-            f"получи максимум возможностей:\n"
+            f"*Получите максимум возможностей:*\n"
             f"✅ до `{escape_markdown_v2(paid_limit_raw)}` сообщений в день \\(вместо `{escape_markdown_v2(free_limit_raw)}`\\)\n"
             f"✅ до `{escape_markdown_v2(paid_persona_raw)}` личностей \\(вместо `{escape_markdown_v2(free_persona_raw)}`\\)\n"
-            f"✅ полная настройка поведения\n" # Обновлен текст
-            f"✅ создание и редакт\\. своих настроений\n"
+            f"✅ полная настройка поведения\n"
+            f"✅ создание и редактирование своих настроений\n"
             f"✅ приоритетная поддержка\n\n"
-            f"подписка действует *{escape_markdown_v2(duration_raw)} дней*\\."
+            f"*Срок действия:* {escape_markdown_v2(duration_raw)} дней\\."
         )
         text = text_md
 
         text_raw = (
             f"✨ Премиум подписка ({price_raw} {currency_raw}/мес) ✨\n\n"
-            f"Получи максимум возможностей:\n✅ "
-            f"{paid_limit_raw} сообщений в день (вместо {free_limit_raw})\n✅ "
-            f"{paid_persona_raw} личностей (вместо {free_persona_raw})\n✅ полная настройка поведения\n✅ создание и редакт. своих настроений\n✅ приоритетная поддержка\n\nПодписка действует {duration_raw} дней."
+            f"Получите максимум возможностей:\n"
+            f"✅ {paid_limit_raw} сообщений в день (вместо {free_limit_raw})\n"
+            f"✅ {paid_persona_raw} личностей (вместо {free_persona_raw})\n"
+            f"✅ полная настройка поведения\n"
+            f"✅ создание и редактирование своих настроений\n"
+            f"✅ приоритетная поддержка\n\n"
+            f"Срок действия: {duration_raw} дней."
         )
 
         keyboard = [
@@ -2379,9 +2301,10 @@ async def generate_payment_link(update: Update, context: ContextTypes.DEFAULT_TY
     error_link_get_fmt_raw = "❌ не удалось получить ссылку от платежной системы{status_info}\\. попробуй позже."
     error_link_create_raw = "❌ не удалось создать ссылку для оплаты\\. {error_detail}\\. попробуй еще раз позже или свяжись с поддержкой."
     success_link = escape_markdown_v2(
-        "✅ ссылка для оплаты создана\\!\n\n"
-        "нажми кнопку ниже для перехода к оплате\\. "
-        "после успеха подписка активируется \\(может занять пару минут\\)\\."
+        "✨ *Ссылка для оплаты создана\\!*\n\n"
+        "Нажмите кнопку ниже для перехода к оплате\\.\n"
+        "После успешной оплаты подписка активируется автоматически \\(может занять до 5 минут\\)\\.\n\n"
+        "Если возникнут проблемы, обратитесь в поддержку\\."
     )
 
     text = ""
@@ -2397,7 +2320,7 @@ async def generate_payment_link(update: Update, context: ContextTypes.DEFAULT_TY
 
     try:
         current_shop_id = int(YOOKASSA_SHOP_ID)
-        Configuration.configure(account_id=current_shop_id, secret_key=config.YOOKASSA_SECRET_KEY)
+        YookassaConfig.configure(account_id=current_shop_id, secret_key=config.YOOKASSA_SECRET_KEY)
         logger.info(f"Yookassa configured within generate_payment_link (Shop ID: {current_shop_id}).")
     except ValueError:
          logger.error(f"YOOKASSA_SHOP_ID ({config.YOOKASSA_SHOP_ID}) invalid integer.")
