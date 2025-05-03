@@ -700,25 +700,32 @@ def get_active_chat_bot_instance_with_relations(db: Session, chat_id: Union[str,
     chat_id_str = str(chat_id)
     logger.debug(f"[get_active_chat_bot_instance] Searching for active instance in chat_id='{chat_id_str}'") # Log input
     try:
+        # --- TEMPORARILY REMOVED .options() FOR DEBUGGING --- 
         instance = db.query(ChatBotInstance)\
-            .options(
-                # Efficiently load nested relationships needed for Persona
-                selectinload(ChatBotInstance.bot_instance_ref) # -> BotInstance
-                .selectinload(BotInstance.persona_config)      # -> PersonaConfig
-                .selectinload(PersonaConfig.owner),            # -> User (owner of persona)
-                # Also load owner directly from BotInstance if needed elsewhere
-                selectinload(ChatBotInstance.bot_instance_ref)
-                .selectinload(BotInstance.owner)               # -> User (owner of instance)
-            )\
             .filter(ChatBotInstance.chat_id == chat_id_str, ChatBotInstance.active == True)\
             .first()
+        # --- END TEMPORARY CHANGE ---
         
-        # --- NEW Log --- 
+        # --- Log --- 
         if instance:
-            logger.debug(f"[get_active_chat_bot_instance] Found active instance: ID={instance.id}, BotInstanceID={instance.bot_instance_id}, PersonaID={instance.bot_instance_ref.persona_config_id if instance.bot_instance_ref else 'N/A'}")
+            # If found, we need to manually load relations now for subsequent code
+            logger.debug(f"[get_active_chat_bot_instance] Found active instance (without options): ID={instance.id}, BotInstanceID={instance.bot_instance_id}")
+            # Manually trigger loading of necessary relations if found
+            try:
+                _ = instance.bot_instance_ref # Access to trigger lazy load (or eager load if config allows)
+                if instance.bot_instance_ref:
+                     _ = instance.bot_instance_ref.persona_config
+                     if instance.bot_instance_ref.persona_config:
+                          _ = instance.bot_instance_ref.persona_config.owner
+                     _ = instance.bot_instance_ref.owner
+                logger.debug("[get_active_chat_bot_instance] Manually triggered relation loading.")
+            except Exception as load_err:
+                logger.error(f"[get_active_chat_bot_instance] Error manually loading relations after finding instance: {load_err}", exc_info=True)
+                # Return None if relations fail to load, as the calling code expects them
+                instance = None 
         else:
             logger.warning(f"[get_active_chat_bot_instance] No active instance found for chat_id='{chat_id_str}' using filter (active=True). Query returned None.")
-        # --- End NEW Log ---
+        # --- End Log ---
         return instance
     except (SQLAlchemyError, ProgrammingError) as e: # Catch ProgrammingError if schema is wrong
         if isinstance(e, ProgrammingError) and "does not exist" in str(e).lower():
