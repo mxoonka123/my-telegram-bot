@@ -373,12 +373,9 @@ async def send_to_langdock(system_prompt: str, messages: List[Dict[str, str]]) -
         logger.error("LANGDOCK_API_KEY is not set.")
         return escape_markdown_v2("❌ ошибка: ключ api не настроен.")
 
-    # --- NEW: Check if messages list is actually empty ---
     if not messages:
         logger.error("send_to_langdock called with an empty messages list!")
-        # Return an error message that is safe to send (no special chars)
         return "ошибка: нет сообщений для отправки в ai."
-    # --- END NEW Check ---
 
     headers = {
         "Authorization": f"Bearer {LANGDOCK_API_KEY}",
@@ -407,6 +404,7 @@ async def send_to_langdock(system_prompt: str, messages: List[Dict[str, str]]) -
 
         full_response = ""
         content = data.get("content")
+
         if isinstance(content, list) and content:
             first_content_block = content[0]
             if isinstance(first_content_block, dict) and first_content_block.get("type") == "text":
@@ -425,7 +423,8 @@ async def send_to_langdock(system_prompt: str, messages: List[Dict[str, str]]) -
                  full_response = choice["text"]
 
         if not full_response:
-             logger.warning(f"Could not extract text from Langdock response structure: {data}")
+             stop_reason = data.get('stop_reason')
+             logger.warning(f"Could not extract text from Langdock response structure (Content: {content}, StopReason: {stop_reason}). Response data: {data}")
              return escape_markdown_v2("ai вернул пустой ответ 🤷")
 
         return full_response.strip()
@@ -436,7 +435,6 @@ async def send_to_langdock(system_prompt: str, messages: List[Dict[str, str]]) -
     except httpx.HTTPStatusError as e:
         error_body = e.response.text
         logger.error(f"Langdock API HTTP error: {e.response.status_code} - {error_body}", exc_info=False)
-        # Ensure the fallback message is simple and doesn't need escaping itself
         error_text_raw = f"ой, ошибка связи с ai ({e.response.status_code})"
         try:
              error_data = json.loads(error_body)
@@ -446,7 +444,7 @@ async def send_to_langdock(system_prompt: str, messages: List[Dict[str, str]]) -
              elif isinstance(error_data.get('error'), str):
                    logger.error(f"Langdock API Error Message: {error_data['error']}")
         except Exception: pass
-        return error_text_raw # Return raw simple text, handle escaping later if needed
+        return error_text_raw
     except httpx.RequestError as e:
         logger.error(f"Langdock API request error: {e}", exc_info=True)
         return escape_markdown_v2("❌ не могу связаться с ai сейчас (ошибка сети)...")
@@ -474,6 +472,7 @@ async def process_and_send_response(
     chat_id_str = str(chat_id)
     context_prepared = False
 
+    # --- Сохранение ответа в контекст (без изменений) ---
     if persona.chat_instance:
         try:
             add_message_to_context(db, persona.chat_instance.id, "assistant", full_bot_response_text.strip())
@@ -485,6 +484,7 @@ async def process_and_send_response(
             logger.error(f"Unexpected Error preparing assistant response for context chat_instance {persona.chat_instance.id}: {e}", exc_info=True)
     else:
         logger.error("Cannot add AI response to context, chat_instance is None.")
+    # --- Конец сохранения в контекст ---
 
     all_text_content = full_bot_response_text.strip()
     gif_links = extract_gif_links(all_text_content)
