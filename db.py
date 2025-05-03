@@ -1,6 +1,7 @@
 import json
 import logging
 from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, Boolean, ForeignKey, UniqueConstraint, func, BIGINT, select, update as sql_update
+from sqlalchemy.engine.url import make_url
 from sqlalchemy.orm import sessionmaker, relationship, Session, joinedload, selectinload
 from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy.orm import declarative_base
@@ -264,67 +265,56 @@ def initialize_database():
     logger.info(f"Initializing database connection pool for: {db_log_url}")
 
     engine_args = {}
-    # Убираем connect_args_psycopg полностью для этого теста
-    # connect_args_psycopg = {}
-
     db_url_str = DATABASE_URL
 
     if DATABASE_URL.startswith("sqlite"):
-        # Для SQLite connect_args другие
         engine_args["connect_args"] = {"check_same_thread": False}
     elif DATABASE_URL.startswith("postgres"):
-        # --- Логика sslmode (без изменений) ---
-        if 'sslmode' not in DATABASE_URL:
-            logger.info("Adding sslmode=require to DATABASE_URL for PostgreSQL")
-            from sqlalchemy.engine.url import make_url
-            try:
-                url = make_url(DATABASE_URL)
-                if 'sslmode' not in (url.query or {}):
-                    url = url.set(query=dict(url.query or {}, sslmode='require'))
-                    db_url_str = str(url)
-                    db_log_url_mod = db_url_str.split('@')[-1] if '@' in db_url_str else db_url_str
-                    logger.info(f"Modified DATABASE_URL: {db_log_url_mod}")
-                else:
-                    logger.info("sslmode is already present in DATABASE_URL query parameters.")
-            except Exception as url_e:
-                 logger.error(f"Failed to parse or modify DATABASE_URL: {url_e}. Using original URL.")
-                 db_url_str = DATABASE_URL # Fallback
-        else:
-             logger.info("sslmode is explicitly present in DATABASE_URL string.")
-        # --- Конец логики sslmode ---
+        try:
+            url_object = make_url(DATABASE_URL)
 
-        # --- УБИРАЕМ connect_args_psycopg ---
-        # connect_args_psycopg.update({
-        #     "prepared_statement_cache_size": 0
-        # })
-        # --- КОНЕЦ УДАЛЕНИЯ ---
+            query_params = dict(url_object.query or {})
+            if 'sslmode' not in query_params:
+                query_params['sslmode'] = 'require'
+                logger.info("Adding sslmode=require to DATABASE_URL query parameters.")
 
-        # --- Настройки для SQLAlchemy create_engine() --- 
+            query_params['options'] = query_params.get('options', '') + ' -c prepared_statement_cache_size=0'
+            query_params['options'] = query_params['options'].strip()
+            logger.info("Adding 'options=-c prepared_statement_cache_size=0' to DATABASE_URL query parameters.")
+
+            url_object = url_object.set(query=query_params)
+            db_url_str = str(url_object)
+            db_log_url_mod = db_url_str.split('@')[-1] if '@' in db_url_str else db_url_str
+            logger.info(f"Modified DATABASE_URL with options: {db_log_url_mod}")
+
+        except Exception as url_e:
+             logger.error(f"Failed to parse or modify DATABASE_URL: {url_e}. Using original URL.")
+             db_url_str = DATABASE_URL # Fallback
+
         engine_args.update({
             "pool_size": 10,
             "max_overflow": 5,
             "pool_timeout": 30,
             "pool_recycle": 1800,
             "pool_pre_ping": True,
-            # --- УБИРАЕМ executemany_mode ---
-            # "executemany_mode": "values",
         })
-        # --- КОНЕЦ УДАЛЕНИЯ ---
-
-        # --- УБИРАЕМ добавление connect_args ---
-        # if connect_args_psycopg:
-        #     engine_args["connect_args"] = connect_args_psycopg
-        # --- КОНЕЦ УДАЛЕНИЯ ---
 
     try:
-        # Передаем engine_args в create_engine
         engine = create_engine(db_url_str, **engine_args, echo=False)
         SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
         logger.info("Database engine and session maker initialized.")
-        # Test connection
         logger.info("Attempting to establish initial database connection...")
         with engine.connect() as connection:
-             logger.info("Initial database connection successful.")
+             try:
+                 result = connection.execute(select(func.current_setting('prepared_statement_cache_size')))
+                 setting_value = result.scalar_one_or_none()
+                 logger.info(f"Database connection successful. Current 'prepared_statement_cache_size': {setting_value}")
+                 if setting_value != '0':
+                     logger.warning("Failed to set prepared_statement_cache_size=0 via URL options!")
+             except Exception as setting_check_err:
+                 logger.warning(f"Could not verify prepared_statement_cache_size setting: {setting_check_err}")
+                 logger.info("Database connection successful (setting check failed).")
+
     except OperationalError as e:
          err_str = str(e).lower()
          if "password authentication failed" in err_str:
@@ -337,11 +327,9 @@ def initialize_database():
              logger.critical(f"FATAL: Database operational error during initialization for {db_log_url}: {e}", exc_info=True)
          raise # Re-raise the critical error
     except ProgrammingError as e: # Ловим ошибки типа неверного пароля и т.д.
-        # --- ДОБАВЛЕНО: Специальная проверка на неверный параметр ---
         if "invalid connection option" in str(e).lower():
              logger.critical(f"FATAL: Invalid connection option passed to psycopg3: {e}", exc_info=True)
              logger.critical("Check the 'connect_args' dictionary in db.py:initialize_database.")
-        # --- КОНЕЦ ДОБАВЛЕНИЯ ---
         else:
             logger.critical(f"FATAL: Database programming error during initialization for {db_log_url}: {e}", exc_info=True)
         raise
