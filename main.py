@@ -13,7 +13,7 @@ import httpx
 from typing import Optional
 import re # <<< Убедитесь, что импорт есть
 
-from telegram import Update
+from telegram import Update, BotCommand
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, ContextTypes, filters,
     CallbackQueryHandler, ConversationHandler, Defaults
@@ -340,10 +340,23 @@ async def post_init(application: Application):
         me = await application.bot.get_me()
         logger.info(f"Bot started as @{me.username} (ID: {me.id})")
         application.bot_data['bot_username'] = me.username
+
+        # --- Устанавливаем кнопку меню --- 
+        commands = [
+            BotCommand("start", "🚀 Начало работы"),
+            BotCommand("menu", "🧭 Главное меню"),
+            BotCommand("help", "❓ Помощь"),
+            BotCommand("subscribe", "⭐ Подписка"),
+            BotCommand("profile", "👤 Профиль"),
+        ]
+        await application.bot.set_my_commands(commands)
+        logger.info("Bot menu button commands set.")
+        # --- Конец установки кнопки меню --- 
+
         # Schedule Telegraph setup after getting bot info
         asyncio.create_task(setup_telegraph_page(application))
     except Exception as e:
-        logger.error(f"Failed during post_init (get_me or scheduling setup_telegraph): {e}", exc_info=True)
+        logger.error(f"Failed during post_init (get_me or setting commands or scheduling setup_telegraph): {e}", exc_info=True)
 
     logger.info("Starting background tasks...")
     if application.job_queue:
