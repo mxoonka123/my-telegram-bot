@@ -421,20 +421,21 @@ def main() -> None:
         logger.critical("TELEGRAM_TOKEN not found in config or environment. Exiting.")
         return
 
-    # Sensible timeouts and connection pool settings
+    # Sensible defaults
     bot_defaults = Defaults(
         parse_mode=ParseMode.MARKDOWN_V2,
-        block=False, # Run handlers concurrently by default
-        connect_timeout=10.0,
-        read_timeout=20.0,
-        write_timeout=20.0,
+        block=False # Run handlers concurrently by default
     )
 
+    # Configure the application with timeouts directly
     application = (
         Application.builder()
         .token(token)
         .defaults(bot_defaults)
         .pool_timeout(10.0) # Timeout for getting connection from pool
+        .connect_timeout(10.0) # Connect timeout
+        .read_timeout(20.0)    # Read timeout
+        .write_timeout(20.0)   # Write timeout
         .connection_pool_size(10) # Default is 4, increase if needed
         .post_init(post_init)
         .build()
