@@ -1612,7 +1612,7 @@ async def my_personas(update: Union[Update, CallbackQuery], context: ContextType
     error_general = escape_markdown_v2("❌ произошла ошибка при получении списка личностей.")
     error_user_not_found = escape_markdown_v2("❌ ошибка: не удалось найти пользователя.")
     info_no_personas_fmt_raw = "у тебя пока нет личностей ({count}/{limit})\\. создай первую: `/createpersona <имя>`"
-    info_list_header_fmt_raw = "🎭 *твои личности* ({count}/{limit}):"
+    info_list_header_fmt_raw = "🎭 *твои личности* \\\\({count}/{limit}\\\\):"
     fallback_text_plain = "Ошибка загрузки списка личностей."
 
     try:
@@ -2537,26 +2537,29 @@ async def _show_edit_wizard_menu(update: Update, context: ContextTypes.DEFAULT_T
     group_reply = persona_config.group_reply_preference or "mentioned_or_contextual"
     media_react = persona_config.media_reaction or "text_only"
 
-    # Map internal keys to user-friendly text
-    style_map = {"neutral": "Нейтрал.", "friendly": "Дружел.", "sarcastic": "Саркаст.", "formal": "Формал.", "brief": "Краткий"}
-    verbosity_map = {"concise": "Лаконич.", "medium": "Средне", "talkative": "Болтлив."}
-    group_reply_map = {"always": "Всегда", "mentioned_only": "По @", "mentioned_or_contextual": "По @/конт.", "never": "Никогда"}
-    media_react_map = {"all": "Все", "text_only": "Текст", "none": "Никак", "photo_only": "Фото", "voice_only": "Голос"}
+    # Map internal keys to user-friendly text (ПОЛНЫЕ СЛОВА)
+    style_map = {"neutral": "Нейтральный", "friendly": "Дружелюбный", "sarcastic": "Саркастичный", "formal": "Формальный", "brief": "Краткий"}
+    verbosity_map = {"concise": "Лаконичный", "medium": "Средний", "talkative": "Разговорчивый"}
+    group_reply_map = {"always": "Всегда", "mentioned_only": "По @", "mentioned_or_contextual": "По @ / Контексту", "never": "Никогда"}
+    media_react_map = {"all": "Текст+GIF", "text_only": "Только текст", "none": "Никак", "photo_only": "Только фото", "voice_only": "Только голос"}
 
-    # Build keyboard
+    # Build keyboard with full text
     keyboard = [
-        [InlineKeyboardButton("✏️ Имя", callback_data="edit_wizard_name"),
-         InlineKeyboardButton("📜 Описание", callback_data="edit_wizard_description")],
+        [
+            InlineKeyboardButton("✏️ Имя", callback_data="edit_wizard_name"),
+            InlineKeyboardButton("📜 Описание", callback_data="edit_wizard_description")
+        ],
         [InlineKeyboardButton(f"💬 Стиль ({style_map.get(style, '?')})", callback_data="edit_wizard_comm_style")],
-        [InlineKeyboardButton(f"🗣️ Разговорч. ({verbosity_map.get(verbosity, '?')})", callback_data="edit_wizard_verbosity")],
-        [InlineKeyboardButton(f"👥 Отв. в гр. ({group_reply_map.get(group_reply, '?')})", callback_data="edit_wizard_group_reply")],
-        [InlineKeyboardButton(f"🖼️ Реакт. медиа ({media_react_map.get(media_react, '?')})", callback_data="edit_wizard_media_reaction")],
+        [InlineKeyboardButton(f"🗣️ Разговорчивость ({verbosity_map.get(verbosity, '?')})", callback_data="edit_wizard_verbosity")],
+        [InlineKeyboardButton(f"👥 Отв. в группе ({group_reply_map.get(group_reply, '?')})", callback_data="edit_wizard_group_reply")],
+        [InlineKeyboardButton(f"🖼️ Реакт. на медиа ({media_react_map.get(media_react, '?')})", callback_data="edit_wizard_media_reaction")],
         [InlineKeyboardButton(f"🎭 Настроения{star if not is_premium else ''}", callback_data="edit_wizard_moods")],
         [InlineKeyboardButton("✅ Завершить", callback_data="finish_edit")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    msg_text = f"⚙️ *Настройка личности: {escape_markdown_v2(persona_config.name)}* \\(ID: `{persona_id}`\\)\n\nВыберите, что изменить:"
+    msg_text = f"⚙️ *Настройка личности: {escape_markdown_v2(persona_config.name)}* \\(ID: `{persona_id}`\)\\
+\nВыберите, что изменить:"
 
     try:
         if query:
