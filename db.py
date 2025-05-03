@@ -264,7 +264,8 @@ def initialize_database():
     logger.info(f"Initializing database connection pool for: {db_log_url}")
 
     engine_args = {}
-    connect_args_psycopg = {} # Словарь для аргументов, передаваемых в psycopg.connect()
+    # Убираем connect_args_psycopg полностью для этого теста
+    # connect_args_psycopg = {}
 
     db_url_str = DATABASE_URL
 
@@ -292,29 +293,28 @@ def initialize_database():
              logger.info("sslmode is explicitly present in DATABASE_URL string.")
         # --- Конец логики sslmode ---
 
-        # --- Настройки для psycopg3 connect() ---
-        connect_args_psycopg.update({
-            # Отключаем кеш prepared statements в psycopg3
-            "prepared_statement_cache_size": 0
-            # Сюда можно добавить другие параметры для psycopg.connect, если нужно
-        })
-        # --- Конец настроек psycopg3 connect() ---
+        # --- УБИРАЕМ connect_args_psycopg ---
+        # connect_args_psycopg.update({
+        #     "prepared_statement_cache_size": 0
+        # })
+        # --- КОНЕЦ УДАЛЕНИЯ ---
 
-        # --- Настройки для SQLAlchemy create_engine() ---
+        # --- Настройки для SQLAlchemy create_engine() --- 
         engine_args.update({
             "pool_size": 10,
             "max_overflow": 5,
             "pool_timeout": 30,
             "pool_recycle": 1800,
             "pool_pre_ping": True,
-            # executemany_mode - это аргумент create_engine, НЕ connect_args
-            "executemany_mode": "values",
+            # --- УБИРАЕМ executemany_mode ---
+            # "executemany_mode": "values",
         })
-        # --- Конец настроек create_engine() ---
+        # --- КОНЕЦ УДАЛЕНИЯ ---
 
-        # Добавляем connect_args в engine_args, только если они есть
-        if connect_args_psycopg:
-            engine_args["connect_args"] = connect_args_psycopg
+        # --- УБИРАЕМ добавление connect_args ---
+        # if connect_args_psycopg:
+        #     engine_args["connect_args"] = connect_args_psycopg
+        # --- КОНЕЦ УДАЛЕНИЯ ---
 
     try:
         # Передаем engine_args в create_engine
