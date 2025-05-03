@@ -43,14 +43,9 @@ DEFAULT_MOOD_PROMPTS = {
     "нейтрально": "ты в спокойном, нейтральном настроении. отвечай ровно, без явных эмоций.",
 }
 
-# Шаблоны промптов (используют плейсхолдеры {placeholder_name})
-# <<< СТИЛЬ: Убраны упоминания "подростка", сделано более общим, стиль приведен к единообразию >>>
+# Шаблоны промптов (используют плейсхолдеры {placeholder_name}) - теперь генерируются в persona.py
 DEFAULT_SYSTEM_PROMPT_TEMPLATE = "описание твоей личности: {persona_description}. твое текущее настроение: {mood_prompt}. {internet_info} {time_info} твое имя {persona_name}. сообщение от {username} (id: {user_id}) в чате {chat_id}: {message}"
-DEFAULT_SHOULD_RESPOND_PROMPT_TEMPLATE = "ты — {persona_description_short} ({persona_name}). ты обычный участник чата {chat_id}. если сообщение адресовано тебе, касается твоей роли ({persona_description}), твоих интересов, или ты считаешь важным ответить — напиши 'да'. если сообщение тебя не касается или не требует ответа — напиши 'нет'. отвечай только 'да' или 'нет'. если сомневаешься, лучше ответь 'да'. сообщение: {message}"
-DEFAULT_SPAM_PROMPT_TEMPLATE = "ты {persona_description_short} ({persona_name}). напиши короткую фразу от своего лица, не обращаясь ни к кому. не используй приветствия. сейчас {time_info}."
-DEFAULT_PHOTO_PROMPT_TEMPLATE = "ты {persona_description_short} ({persona_name}). тебе прислали фото в чате {chat_id}. кратко опиши, что видишь, и добавь комментарий от своего лица, согласно твоей роли ({persona_description}). сейчас {time_info}."
-DEFAULT_VOICE_PROMPT_TEMPLATE = "ты {persona_description_short} ({persona_name}). тебе прислали голосовое сообщение в чате {chat_id}. представь, что прослушал его. кратко прокомментируй от своего лица, согласно твоей роли ({persona_description}). сейчас {time_info}."
-
+# Остальные DEFAULT_*_PROMPT_TEMPLATE удалены, так как они генерируются в классе Persona
 
 # Общие инструкции и дополнения к промптам
 # <<< СТИЛЬ: Немного скорректированы формулировки >>>
