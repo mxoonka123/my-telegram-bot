@@ -1654,7 +1654,8 @@ async def my_personas(update: Union[Update, CallbackQuery], context: ContextType
             fallback_lines = [f"Твои личности ({persona_count}/{persona_limit}):"]
 
             for p in personas:
-                 message_lines.append(f"\n👤 *{escape_markdown_v2(p.name)}* \\(ID: `{p.id}`\\)")
+                 # Используем двойные бэкслеши для экранирования скобок в f-строке
+                 message_lines.append(f"\n👤 *{escape_markdown_v2(p.name)}* \\\\(ID: `{p.id}`\\\\)")
                  fallback_lines.append(f"\n- {p.name} (ID: {p.id})")
 
                  edit_cb = f"edit_persona_{p.id}"
