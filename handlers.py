@@ -1897,9 +1897,26 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     user_id = query.from_user.id
     username = query.from_user.username or f"id_{user_id}"
     data = query.data
-    logger.info(f"CALLBACK < User {user_id} ({username}) in Chat {chat_id_str} data: {data}")
 
-    # --- Subscription Check ---
+    # --- Check if data matches known conversation entry patterns --- 
+    # If it matches, let the ConversationHandler deal with it.
+    # Add patterns for ALL conversation entry points here.
+    convo_entry_patterns = [
+        r'^edit_persona_',    # Edit persona entry
+        r'^delete_persona_',  # Delete persona entry
+        # Add other ConversationHandler entry point patterns if they exist
+    ]
+    for pattern in convo_entry_patterns:
+        if re.match(pattern, data):
+            logger.debug(f"Callback {data} matches convo entry pattern '{pattern}', letting ConversationHandler handle it.")
+            # Don't answer here, let the convo handler answer.
+            # We don't explicitly pass it on, PTB should handle it if we don't.
+            return # <--- Let PTB handle routing
+
+    # Log only callbacks handled by this general handler
+    logger.info(f"GENERAL CALLBACK < User {user_id} ({username}) in Chat {chat_id_str} data: {data}")
+
+    # --- Subscription Check --- 
     needs_subscription_check = True
     # Callbacks that DON'T require subscription check
     no_check_callbacks = (
@@ -1933,6 +1950,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         await query.answer()
         await confirm_pay(update, context)
     elif data.startswith("add_bot_"):
+        # No need to answer here, add_bot_to_chat does it
         await add_bot_to_chat(update, context)
     elif data == "show_help":
         await query.answer()
