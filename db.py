@@ -20,6 +20,17 @@ from config import (
     ADMIN_USER_ID
 )
 
+# --- Default Templates (Add missing one) ---
+DEFAULT_SHOULD_RESPOND_TEMPLATE = (
+    "Ты чат-бот. Проанализируй последнее сообщение в диалоге от пользователя '{username}' и предыдущий контекст.\\n"
+    "Тебя зовут: {persona_name}.\\n"
+    "Твоя личность: {persona_description}\\n"
+    "Твоя настройка ответа в группе: {group_reply_preference}.\\n"
+    "Сообщение пользователя: {message_text}\\n\\n"
+    "Тебе нужно решить, должен ли ты отвечать на это сообщение, исходя из твоей настройки ответа в группе и содержания сообщения.\\n"
+    "Отвечай только 'Да' или 'Нет'."
+)
+
 logger = logging.getLogger(__name__)
 
 Base = declarative_base()
