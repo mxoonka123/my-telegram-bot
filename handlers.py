@@ -388,7 +388,7 @@ async def send_to_langdock(system_prompt: str, messages: List[Dict[str, str]]) -
         "system": system_prompt,
         "messages": messages_to_send,
         "max_tokens": 1024,
-        "temperature": 0.7,
+        "temperature": 0.65, # Снижаем с 0.7 до 0.65
         "top_p": 0.95,
         "stream": False
     }
