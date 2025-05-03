@@ -2105,23 +2105,21 @@ async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE, from_cal
     yookassa_ready = bool(YOOKASSA_SHOP_ID and YOOKASSA_SECRET_KEY and YOOKASSA_SHOP_ID.isdigit())
 
     error_payment_unavailable = escape_markdown_v2("❌ к сожалению, функция оплаты сейчас недоступна \\(проблема с настройками\\)\\. 😥")
-    # Убираем ручное экранирование !
-    info_confirm = escape_markdown_v2(
-         "✅ отлично!\n\n"  # <--- Просто ! без бэкслешей
+    # Возвращаемся к escape_markdown_v2, но с чистой строкой
+    info_confirm_raw = (
+         "✅ отлично!\n\n"  # <--- Обычный восклицательный знак
          "нажимая кнопку 'Оплатить' ниже, вы подтверждаете, что ознакомились и полностью согласны с "
-         "пользовательским соглашением\\."
+         "пользовательским соглашением." # <--- Обычная точка
          "\n\n👇"
     )
     text = ""
     reply_markup = None
-    text_raw = ""
 
     if not yookassa_ready:
         text = error_payment_unavailable
-        keyboard = [[InlineKeyboardButton("⬅️ Назад в Меню", callback_data="show_menu")]] if from_callback else None
-        reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
-        logger.warning("Yookassa credentials not set or shop ID is not numeric in subscribe handler.")
-        text_raw = "❌ к сожалению, функция оплаты сейчас недоступна (проблема с настройками). 😥"
+        keyboard = [[InlineKeyboardButton("⬅️ Назад", callback_data="subscribe_info")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        logger.warning("Yookassa credentials not set or shop ID is not numeric in confirm_pay handler.")
     else:
         price_raw = f"{SUBSCRIPTION_PRICE_RUB:.0f}"
         currency_raw = SUBSCRIPTION_CURRENCY
