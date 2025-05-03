@@ -683,6 +683,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     with next(get_db()) as db:
         try:
             persona_context_owner_tuple = get_persona_and_context_with_owner(chat_id_str, db)
+
+            # --- NEW Log --- 
+            if persona_context_owner_tuple is None:
+                logger.warning(f"handle_message: get_persona_and_context_with_owner returned None for chat {chat_id_str}. No active persona found?")
+            else:
+                 logger.info(f"handle_message: Found active persona '{persona_context_owner_tuple[0].name}' for chat {chat_id_str}.")
+            # --- End NEW Log ---
+
             if not persona_context_owner_tuple:
                 logger.debug(f"No active persona in chat {chat_id_str}. Ignoring message.")
                 return
