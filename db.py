@@ -620,6 +620,7 @@ def link_bot_instance_to_chat(db: Session, bot_instance_id: int, chat_id: Union[
     chat_link = None
     chat_id_str = str(chat_id)
     created_new = False # Flag to check if we created a new link
+    session_valid = True # Assume session is valid initially
     try:
         chat_link = db.query(ChatBotInstance).filter(
             ChatBotInstance.chat_id == chat_id_str,
@@ -635,21 +636,35 @@ def link_bot_instance_to_chat(db: Session, bot_instance_id: int, chat_id: Union[
                  chat_link.is_muted = False
                  needs_commit = True
                  # Clear context on reactivation
-                 deleted_ctx_result = chat_link.context.delete(synchronize_session='fetch')
-                 deleted_ctx = deleted_ctx_result if isinstance(deleted_ctx_result, int) else 0
-                 logger.debug(f"[link_bot_instance] Cleared {deleted_ctx} context messages for reactivated ChatBotInstance {chat_link.id}.")
+                 try:
+                     deleted_ctx_result = chat_link.context.delete(synchronize_session='fetch')
+                     deleted_ctx = deleted_ctx_result if isinstance(deleted_ctx_result, int) else 0
+                     logger.debug(f"[link_bot_instance] Cleared {deleted_ctx} context messages for reactivated ChatBotInstance {chat_link.id}.")
+                 except Exception as del_ctx_err:
+                     logger.error(f"[link_bot_instance] Error clearing context during reactivation: {del_ctx_err}", exc_info=True)
+                     # Continue reactivation even if context clear fails?
             else:
                 logger.info(f"[link_bot_instance] ChatBotInstance link for bot {bot_instance_id} in chat {chat_id_str} is already active. Clearing context on re-add request.")
-                deleted_ctx_result = chat_link.context.delete(synchronize_session='fetch')
-                deleted_ctx = deleted_ctx_result if isinstance(deleted_ctx_result, int) else 0
-                logger.debug(f"[link_bot_instance] Cleared {deleted_ctx} context messages for already active ChatBotInstance {chat_link.id}.")
-                needs_commit = True # Still commit to save the context deletion
+                try:
+                    deleted_ctx_result = chat_link.context.delete(synchronize_session='fetch')
+                    deleted_ctx = deleted_ctx_result if isinstance(deleted_ctx_result, int) else 0
+                    logger.debug(f"[link_bot_instance] Cleared {deleted_ctx} context messages for already active ChatBotInstance {chat_link.id}.")
+                except Exception as del_ctx_err:
+                     logger.error(f"[link_bot_instance] Error clearing context for already active link: {del_ctx_err}", exc_info=True)
+                needs_commit = True # Still commit to save the potential active=True change if it happened (or just context clear)
 
             if needs_commit: 
-                logger.debug(f"[link_bot_instance] Committing changes for existing link ID {chat_link.id}. Active: {chat_link.active}")
-                db.commit()
-                logger.debug(f"[link_bot_instance] Commit successful for existing link ID {chat_link.id}.")
+                try:
+                    logger.debug(f"[link_bot_instance] Committing changes for existing link ID {chat_link.id}. Active: {chat_link.active}")
+                    db.commit()
+                    logger.debug(f"[link_bot_instance] Commit successful for existing link ID {chat_link.id}.")
+                except SQLAlchemyError as commit_err:
+                     logger.error(f"[link_bot_instance] Commit FAILED for existing link ID {chat_link.id}: {commit_err}", exc_info=True)
+                     db.rollback()
+                     session_valid = False # Mark session as potentially invalid
+                     chat_link = None # Cannot proceed if commit failed
         else:
+            # --- Create NEW link block with detailed logging --- 
             logger.info(f"[link_bot_instance] Creating new ChatBotInstance link for bot {bot_instance_id} in chat {chat_id_str}")
             created_new = True
             chat_link = ChatBotInstance(
@@ -659,33 +674,49 @@ def link_bot_instance_to_chat(db: Session, bot_instance_id: int, chat_id: Union[
                 current_mood="нейтрально",
                 is_muted=False
             )
-            db.add(chat_link)
-            logger.debug(f"[link_bot_instance] Added new link to session. Active: {chat_link.active}. Attempting commit...")
-            db.commit() # Commit the new link
-            logger.debug(f"[link_bot_instance] Commit successful for new link. Assigned ID: {chat_link.id}")
+            try:
+                 logger.debug(f"[link_bot_instance] Adding new link object to session (ID before commit: {chat_link.id})")
+                 db.add(chat_link)
+                 logger.debug(f"[link_bot_instance] Added new link to session. Active: {chat_link.active}. Attempting commit...")
+                 db.commit() # Commit the new link
+                 logger.debug(f"[link_bot_instance] Commit successful for new link. Assigned ID: {chat_link.id}. Active: {chat_link.active}")
+            except SQLAlchemyError as commit_err:
+                 logger.error(f"[link_bot_instance] Commit FAILED during new link creation: {commit_err}", exc_info=True)
+                 db.rollback()
+                 session_valid = False
+                 chat_link = None # Link wasn't created successfully
+            # --- End Create NEW link block ---
 
-        if chat_link and chat_link.id: # Ensure ID is assigned after commit
-            db.refresh(chat_link)
-            logger.debug(f"[link_bot_instance] Refreshed link state. ID: {chat_link.id}, Active: {chat_link.active}")
-            # --- Verification Query --- 
-            # Verify immediately after commit/refresh within the same function
-            verification_instance = db.query(ChatBotInstance).filter(
-                 ChatBotInstance.id == chat_link.id,
-                 ChatBotInstance.active == True # Explicitly check active=True here
-            ).first()
-            if verification_instance:
-                logger.info(f"[link_bot_instance] VERIFICATION SUCCESS: Found active ChatBotInstance ID {verification_instance.id} immediately after commit/refresh.")
-            else:
-                 logger.error(f"[link_bot_instance] VERIFICATION FAILED: Could NOT find active ChatBotInstance ID {chat_link.id} immediately after commit/refresh! Active status might be wrong or commit failed silently.")
-                 # Check if it exists but is inactive
-                 inactive_check = db.query(ChatBotInstance).filter(ChatBotInstance.id == chat_link.id).first()
-                 if inactive_check:
-                     logger.error(f"[link_bot_instance] VERIFICATION INFO: Instance ID {chat_link.id} EXISTS but its active status is {inactive_check.active}.")
+        # Refresh and Verification only if chat_link exists and session is assumed valid
+        if chat_link and chat_link.id and session_valid: 
+            try:
+                 logger.debug(f"[link_bot_instance] Attempting to refresh link state for ID: {chat_link.id}...")
+                 db.refresh(chat_link)
+                 logger.debug(f"[link_bot_instance] Refreshed link state. ID: {chat_link.id}, Active: {chat_link.active}")
+                 
+                 # --- Verification Query --- 
+                 verification_instance = db.query(ChatBotInstance).filter(
+                      ChatBotInstance.id == chat_link.id,
+                      ChatBotInstance.active == True 
+                 ).first()
+                 if verification_instance:
+                     logger.info(f"[link_bot_instance] VERIFICATION SUCCESS: Found active ChatBotInstance ID {verification_instance.id} immediately after commit/refresh.")
                  else:
-                     logger.error(f"[link_bot_instance] VERIFICATION INFO: Instance ID {chat_link.id} does NOT exist at all after commit.")
-            # --- End Verification Query ---
-        else:
-            logger.error("[link_bot_instance] chat_link object is None or has no ID after commit attempt.")
+                      logger.error(f"[link_bot_instance] VERIFICATION FAILED: Could NOT find active ChatBotInstance ID {chat_link.id} immediately after commit/refresh! Active status might be wrong or commit failed silently.")
+                      inactive_check = db.query(ChatBotInstance).filter(ChatBotInstance.id == chat_link.id).first()
+                      if inactive_check:
+                          logger.error(f"[link_bot_instance] VERIFICATION INFO: Instance ID {chat_link.id} EXISTS but its active status is {inactive_check.active}.")
+                      else:
+                          logger.error(f"[link_bot_instance] VERIFICATION INFO: Instance ID {chat_link.id} does NOT exist at all after commit.")
+                 # --- End Verification Query ---
+            except SQLAlchemyError as refresh_err:
+                 logger.error(f"[link_bot_instance] Refresh FAILED for link ID {chat_link.id}: {refresh_err}", exc_info=True)
+                 # Chat link might be invalid after failed refresh, but maybe verification can still run?
+                 # Let's return the potentially stale chat_link for now, but log the error.
+        elif session_valid:
+            logger.error("[link_bot_instance] chat_link object is None or has no ID after commit attempt, but session was assumed valid.")
+        elif not session_valid:
+             logger.error("[link_bot_instance] Cannot refresh or verify chat_link because commit failed.")
 
         return chat_link
 
