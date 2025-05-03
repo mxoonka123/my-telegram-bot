@@ -810,7 +810,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 db.rollback()
                 return
 
+            # --- DEBUG LOGGING START ---
+            logger.debug(f"--- Sending to Langdock --- Chat: {chat_id_str}, Persona: {persona.name}")
+            logger.debug(f"System Prompt:\n---\n{system_prompt}\n---")
+            # Log context messages carefully, limit length if necessary
+            context_log_str = "\n".join([f"  {msg.get('role')}: {str(msg.get('content', ''))[:150]}{'...' if len(str(msg.get('content', ''))) > 150 else ''}" for msg in context_for_ai])
+            logger.debug(f"Context ({len(context_for_ai)} messages):\n---\n{context_log_str}\n---")
+            # --- DEBUG LOGGING END ---
+
             response_text = await send_to_langdock(system_prompt, context_for_ai)
+
+            # --- DEBUG LOGGING START ---
+            logger.debug(f"Raw Response from Langdock:\n---\n{response_text}\n---")
+            # --- DEBUG LOGGING END ---
+
             logger.debug(f"Received main response from Langdock: {response_text[:100]}...")
 
             context_response_prepared = await process_and_send_response(
