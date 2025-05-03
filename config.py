@@ -10,11 +10,11 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 LANGDOCK_API_KEY = os.getenv("LANGDOCK_API_KEY", "")
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./bot_data.db") # Пример для локального запуска
 
-YOOKASSA_SHOP_ID = os.getenv("YOOKASSA_SHOP_ID", "1073069") # Пример ID магазина
-YOOKASSA_SECRET_KEY = os.getenv("YOOKASSA_SECRET_KEY", "live_GzsoyntwE72gRAGwfSQzoYHPCcZ5bOOLg6LKVAAuxbE") # Пример ключа
+YOOKASSA_SHOP_ID = os.getenv("YOOKASSA_SHOP_ID", "") # ID магазина
+YOOKASSA_SECRET_KEY = os.getenv("YOOKASSA_SECRET_KEY", "") # Секретный ключ
 
-# ВАЖНО: Укажите ваш реальный URL, предоставленный Railway или ngrok для локального теста
-WEBHOOK_URL_BASE = os.getenv("WEBHOOK_URL_BASE", "https://your-railway-app-url.up.railway.app")
+# URL вашего приложения на Railway
+WEBHOOK_URL_BASE = os.getenv("WEBHOOK_URL_BASE", "")
 
 LANGDOCK_BASE_URL = os.getenv("LANGDOCK_BASE_URL", "https://api.langdock.com/anthropic/eu/")
 LANGDOCK_MODEL = os.getenv("LANGDOCK_MODEL", "claude-3-5-sonnet-20240620")
