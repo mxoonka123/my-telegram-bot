@@ -2264,17 +2264,28 @@ async def confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         reply_markup = InlineKeyboardMarkup(keyboard)
         logger.warning("Yookassa credentials not set or shop ID is not numeric in confirm_pay handler.")
     else:
-        text = info_confirm
+        # Формируем текст СРАЗУ с экранированием для MarkdownV2
+        info_confirm_md = (
+             "✅ отлично\\!\\n\\n"  # Экранируем !
+             "нажимая кнопку 'Оплатить' ниже, вы подтверждаете, что ознакомились и полностью согласны с "
+             "пользовательским соглашением\\." # Экранируем .
+             "\\n\\n👇"
+        )
+        text = info_confirm_md # Передаем уже экранированный текст
         price_raw = f"{SUBSCRIPTION_PRICE_RUB:.0f}"
         currency_raw = SUBSCRIPTION_CURRENCY
-        button_text = f"💳 Оплатить {price_raw} {currency_raw}"
+        # Экранируем символы в тексте кнопки, если они там могут быть (на всякий случай)
+        button_text_raw = f"💳 Оплатить {price_raw} {currency_raw}"
+        button_text = button_text_raw # Кнопки не требуют Markdown экранирования
 
         keyboard = [
             [InlineKeyboardButton(button_text, callback_data="subscribe_pay")]
         ]
+        # URL в кнопке не требует экранирования
         if tos_url:
              keyboard.append([InlineKeyboardButton("📜 Условия использования (прочитано)", url=tos_url)])
         else:
+             # Текст кнопки не требует спец. экранирования, т.к. не MD
              keyboard.append([InlineKeyboardButton("📜 Условия (ошибка загрузки)", callback_data="view_tos")])
 
         keyboard.append([InlineKeyboardButton("⬅️ Назад", callback_data="subscribe_info")])
