@@ -1794,10 +1794,12 @@ async def add_bot_to_chat(update: Update, context: ContextTypes.DEFAULT_TYPE, pe
 
             if existing_active_link:
                 if existing_active_link.bot_instance_ref and existing_active_link.bot_instance_ref.persona_config_id == local_persona_id:
-                    final_already_active_msg = error_already_active_fmt_raw.format(name=escape_markdown_v2(persona.name))
+                    # Готовим простой текст для сообщения
+                    already_active_msg_plain = f"✅ личность '{persona.name}' уже активна в этом чате."
                     reply_target = update.callback_query.message if is_callback else message_or_callback_msg
                     if is_callback: await update.callback_query.answer(f"'{persona.name}' уже активна", show_alert=True)
-                    await reply_target.reply_text(final_already_active_msg, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
+                    # Отправляем как простой текст
+                    await reply_target.reply_text(already_active_msg_plain, reply_markup=ReplyKeyboardRemove(), parse_mode=None)
 
                     logger.info(f"Clearing context for already active persona {persona.name} in chat {chat_id_str} on re-add.")
                     deleted_ctx_result = existing_active_link.context.delete(synchronize_session='fetch')
