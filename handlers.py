@@ -373,6 +373,13 @@ async def send_to_langdock(system_prompt: str, messages: List[Dict[str, str]]) -
         logger.error("LANGDOCK_API_KEY is not set.")
         return escape_markdown_v2("❌ ошибка: ключ api не настроен.")
 
+    # --- NEW: Check if messages list is actually empty ---
+    if not messages:
+        logger.error("send_to_langdock called with an empty messages list!")
+        # Return an error message that is safe to send (no special chars)
+        return "ошибка: нет сообщений для отправки в ai."
+    # --- END NEW Check ---
+
     headers = {
         "Authorization": f"Bearer {LANGDOCK_API_KEY}",
         "Content-Type": "application/json",
@@ -429,7 +436,8 @@ async def send_to_langdock(system_prompt: str, messages: List[Dict[str, str]]) -
     except httpx.HTTPStatusError as e:
         error_body = e.response.text
         logger.error(f"Langdock API HTTP error: {e.response.status_code} - {error_body}", exc_info=False)
-        error_text_raw = f"ой, произошла ошибка при связи с ai ({e.response.status_code})..."
+        # Ensure the fallback message is simple and doesn't need escaping itself
+        error_text_raw = f"ой, ошибка связи с ai ({e.response.status_code})"
         try:
              error_data = json.loads(error_body)
              if isinstance(error_data.get('error'), dict) and 'message' in error_data['error']:
@@ -438,7 +446,7 @@ async def send_to_langdock(system_prompt: str, messages: List[Dict[str, str]]) -
              elif isinstance(error_data.get('error'), str):
                    logger.error(f"Langdock API Error Message: {error_data['error']}")
         except Exception: pass
-        return escape_markdown_v2(error_text_raw)
+        return error_text_raw # Return raw simple text, handle escaping later if needed
     except httpx.RequestError as e:
         logger.error(f"Langdock API request error: {e}", exc_info=True)
         return escape_markdown_v2("❌ не могу связаться с ai сейчас (ошибка сети)...")
@@ -678,8 +686,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             if not persona_context_owner_tuple:
                 logger.debug(f"No active persona in chat {chat_id_str}. Ignoring message.")
                 return
-            persona, _, owner_user = persona_context_owner_tuple
-            logger.debug(f"Handling message for persona '{persona.name}' owned by {owner_user.id} (TG ID: {owner_user.telegram_id}) in chat {chat_id_str}")
+            persona, initial_context_from_db, owner_user = persona_context_owner_tuple
+            logger.debug(f"Handling message for persona '{persona.name}' owned by {owner_user.id} (TG ID: {owner_user.telegram_id}) in chat {chat_id_str}. Initial DB context len: {len(initial_context_from_db)}")
 
             limit_ok = check_and_update_user_limits(db, owner_user)
             limit_state_updated = db.is_modified(owner_user)
@@ -691,20 +699,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     db.commit()
                 return
 
+            # Prepare current user message for context
+            current_user_message_content = f"{username}: {message_text}"
+            current_user_message_dict = {"role": "user", "content": current_user_message_content}
+
             context_user_msg_added = False
             if persona.chat_instance:
                 try:
-                    context_content = f"{username}: {message_text}"
-                    add_message_to_context(db, persona.chat_instance.id, "user", context_content)
+                    # Add to DB session (will be committed later)
+                    add_message_to_context(db, persona.chat_instance.id, "user", current_user_message_content)
                     context_user_msg_added = True
-                    logger.debug("User message prepared for context (pending commit).")
+                    logger.debug("User message prepared for context DB (pending commit).")
                 except (SQLAlchemyError, Exception) as e_ctx:
-                    logger.error(f"Error preparing user message for context: {e_ctx}", exc_info=True)
+                    logger.error(f"Error preparing user message for context DB: {e_ctx}", exc_info=True)
                     await update.message.reply_text(escape_markdown_v2("❌ ошибка при сохранении вашего сообщения."), parse_mode=ParseMode.MARKDOWN_V2)
                     db.rollback()
                     return
             else:
-                logger.error("Cannot add user message to context, chat_instance is None unexpectedly.")
+                logger.error("Cannot add user message to context DB, chat_instance is None unexpectedly.")
                 await update.message.reply_text(escape_markdown_v2("❌ системная ошибка: не удалось связать сообщение с личностью."), parse_mode=ParseMode.MARKDOWN_V2)
                 db.rollback()
                 return
@@ -736,7 +748,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
             should_ai_respond = True
             ai_decision_response = None
+            ai_decision_message_dict = None # To store the potential decision for context
             context_ai_decision_added = False
+
             if update.effective_chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
                 reply_pref = persona.group_reply_preference
                 logger.debug(f"Group chat detected. Persona '{persona.name}' reply preference: {reply_pref}")
@@ -747,12 +761,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     should_ai_respond = True
                     logger.debug("Group reply preference is 'always'. Will respond.")
                 else: # mentioned_only or mentioned_or_contextual
-                    # Use the Persona method to get the appropriate prompt
                     should_respond_prompt = persona.format_should_respond_prompt(message_text)
                     if should_respond_prompt:
                         try:
                             logger.debug(f"Checking should_respond for persona {persona.name} in chat {chat_id_str} (pref: {reply_pref})...")
-                            context_for_should_respond = get_context_for_chat_bot(db, persona.chat_instance.id)
+                            # Build context FOR THE CHECK including the current user message
+                            context_for_should_respond = initial_context_from_db + [current_user_message_dict]
+
                             ai_decision_response = await send_to_langdock(
                                 system_prompt=should_respond_prompt,
                                 messages=context_for_should_respond
@@ -760,25 +775,32 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                             answer = ai_decision_response.strip().lower()
                             logger.debug(f"should_respond AI decision for '{message_text[:50]}...': '{answer}'")
 
-                            if answer.startswith("да"):
+                            if answer.startswith("да"): # More robust check
                                 should_ai_respond = True
-                            elif answer.startswith("нет"):
+                            elif answer.startswith("нет"): # More robust check
                                 should_ai_respond = False
+                            elif "error" in answer or "ошибка" in answer: # Handle error message from send_to_langdock
+                                 logger.warning(f"Error received during should_respond check: '{answer}'. Defaulting to respond.")
+                                 should_ai_respond = True
                             else:
                                 logger.warning(f"Unclear should_respond answer '{answer}'. Defaulting to respond for safety.")
                                 should_ai_respond = True
 
+                            # Prepare decision message for potential DB storage and context
+                            ai_decision_content = f"[Decision: {answer}]"
+                            ai_decision_message_dict = {"role": "assistant", "content": ai_decision_content}
+
                             if ai_decision_response and persona.chat_instance:
                                 try:
-                                    add_message_to_context(db, persona.chat_instance.id, "assistant", f"[Decision: {answer}]")
+                                    add_message_to_context(db, persona.chat_instance.id, "assistant", ai_decision_content)
                                     context_ai_decision_added = True
-                                    logger.debug("Added AI decision response to context (pending commit).")
+                                    logger.debug("Added AI decision response to context DB (pending commit).")
                                 except Exception as e_ctx_dec:
-                                    logger.error(f"Failed to add AI decision to context: {e_ctx_dec}")
+                                    logger.error(f"Failed to add AI decision to context DB: {e_ctx_dec}")
 
                         except Exception as e:
                             logger.error(f"Error in should_respond logic: {e}", exc_info=True)
-                            should_ai_respond = True
+                            should_ai_respond = True # Default to respond on error
                     else:
                         logger.warning(f"Could not generate should_respond prompt for pref '{reply_pref}'. Defaulting to respond.")
                         should_ai_respond = True
@@ -788,25 +810,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                  db.commit()
                  return
 
-            context_for_ai = []
-            if persona.chat_instance:
-                try:
-                    context_for_ai = get_context_for_chat_bot(db, persona.chat_instance.id)
-                except (SQLAlchemyError, Exception) as e_ctx:
-                     logger.error(f"DB Error getting context for AI main response: {e_ctx}", exc_info=True)
-                     await update.message.reply_text(escape_markdown_v2("❌ ошибка при получении контекста для ответа."), parse_mode=ParseMode.MARKDOWN_V2)
-                     db.rollback()
-                     return
-            else:
-                 logger.error("Cannot get context for AI main response, chat_instance is None.")
-                 db.rollback()
-                 return
+            # --- Build final context for the main AI response --- 
+            context_for_ai = initial_context_from_db + [current_user_message_dict]
+            if ai_decision_message_dict:
+                # Include the AI's decision process if it happened
+                context_for_ai.append(ai_decision_message_dict)
+            # --- End building final context ---
 
             # Use the Persona method to format the main system prompt
             system_prompt = persona.format_system_prompt(user_id, username, message_text)
             if not system_prompt:
                 logger.error(f"System prompt formatting failed for persona {persona.name}.")
-                await update.message.reply_text(escape_markdown_v2("❌ ошибка при подготовке ответа."), parse_mode=ParseMode.MARKDOWN_V2)
+                # Use simple text for error message to avoid parsing issues
+                await update.message.reply_text("❌ ошибка при подготовке ответа.", parse_mode=None)
                 db.rollback()
                 return
 
@@ -824,6 +840,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             logger.debug(f"Raw Response from Langdock:\n---\n{response_text}\n---")
             # --- DEBUG LOGGING END ---
 
+            # Check if Langdock returned an error message
+            if response_text.startswith("ой, ошибка связи с ai") or response_text.startswith("ошибка:"):
+                logger.error(f"Langdock returned an error message: {response_text}")
+                # Send the simple error message to the user (no Markdown)
+                await update.message.reply_text(response_text, parse_mode=None)
+                # Commit any pending changes (like user message or decision)
+                db.commit()
+                return
+
             logger.debug(f"Received main response from Langdock: {response_text[:100]}...")
 
             context_response_prepared = await process_and_send_response(
@@ -835,14 +860,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
         except SQLAlchemyError as e:
              logger.error(f"Database error during handle_message for chat {chat_id_str}: {e}", exc_info=True)
-             try: await update.message.reply_text(escape_markdown_v2("❌ ошибка базы данных, попробуйте позже."), parse_mode=ParseMode.MARKDOWN_V2)
+             try: await update.message.reply_text("❌ ошибка базы данных, попробуйте позже.", parse_mode=None)
              except Exception: pass
              db.rollback()
         except TelegramError as e:
              logger.error(f"Telegram API error during handle_message for chat {chat_id_str}: {e}", exc_info=True)
         except Exception as e:
             logger.error(f"General error processing message in chat {chat_id_str}: {e}", exc_info=True)
-            try: await update.message.reply_text(escape_markdown_v2("❌ произошла непредвиденная ошибка."), parse_mode=ParseMode.MARKDOWN_V2)
+            try: await update.message.reply_text("❌ произошла непредвиденная ошибка.", parse_mode=None)
             except Exception: pass
             db.rollback()
 
