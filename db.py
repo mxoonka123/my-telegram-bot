@@ -698,8 +698,9 @@ def unlink_bot_instance_from_chat(db: Session, chat_id: Union[str, int], bot_ins
 def get_active_chat_bot_instance_with_relations(db: Session, chat_id: Union[str, int]) -> Optional[ChatBotInstance]:
     """Fetches the active ChatBotInstance for a chat, loading related objects efficiently."""
     chat_id_str = str(chat_id)
+    logger.debug(f"[get_active_chat_bot_instance] Searching for active instance in chat_id='{chat_id_str}'") # Log input
     try:
-        return db.query(ChatBotInstance)\
+        instance = db.query(ChatBotInstance)\
             .options(
                 # Efficiently load nested relationships needed for Persona
                 selectinload(ChatBotInstance.bot_instance_ref) # -> BotInstance
@@ -711,6 +712,14 @@ def get_active_chat_bot_instance_with_relations(db: Session, chat_id: Union[str,
             )\
             .filter(ChatBotInstance.chat_id == chat_id_str, ChatBotInstance.active == True)\
             .first()
+        
+        # --- NEW Log --- 
+        if instance:
+            logger.debug(f"[get_active_chat_bot_instance] Found active instance: ID={instance.id}, BotInstanceID={instance.bot_instance_id}, PersonaID={instance.bot_instance_ref.persona_config_id if instance.bot_instance_ref else 'N/A'}")
+        else:
+            logger.warning(f"[get_active_chat_bot_instance] No active instance found for chat_id='{chat_id_str}' using filter (active=True). Query returned None.")
+        # --- End NEW Log ---
+        return instance
     except (SQLAlchemyError, ProgrammingError) as e: # Catch ProgrammingError if schema is wrong
         if isinstance(e, ProgrammingError) and "does not exist" in str(e).lower():
              logger.error(f"Database schema error getting active chatbot instance for chat {chat_id_str}: {e}. Columns missing!")
