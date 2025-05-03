@@ -116,7 +116,7 @@ class PersonaConfig(Base):
     system_prompt_template = Column(Text, nullable=False, default=DEFAULT_SYSTEM_PROMPT_TEMPLATE)
     # Other templates are generated dynamically by Persona class, so columns can be removed
     # OR kept nullable if needed for backward compatibility / advanced mode
-    # should_respond_prompt_template = Column(Text, nullable=True)
+    should_respond_prompt_template = Column(Text, nullable=True)
     # spam_prompt_template = Column(Text, nullable=True)
     # photo_prompt_template = Column(Text, nullable=True)
     # voice_prompt_template = Column(Text, nullable=True)
@@ -445,35 +445,42 @@ def activate_subscription(db: Session, user_id: int) -> bool:
 # --- Persona Operations ---
 
 def create_persona_config(db: Session, owner_id: int, name: str, description: str = None) -> PersonaConfig:
-    """Creates a new PersonaConfig with defaults and commits."""
-    logger.info(f"Attempting to create persona '{name}' for owner_id {owner_id}")
-    if description is None:
-        description = f"ai бот по имени {name}."
-
-    # Create PersonaConfig with defaults from the model definition
-    persona = PersonaConfig(
-        owner_id=owner_id,
-        name=name,
-        description=description,
-        # Structured fields get defaults from model
-        # Mood prompts JSON gets default from model
-        # max_response_messages gets default from model
-        # system_prompt_template gets default from model
-    )
+    """Creates a new PersonaConfig with default settings."""
     try:
-        db.add(persona)
-        db.commit() # Commit the new persona
-        db.refresh(persona) # Refresh to get ID and load defaults
-        logger.info(f"Successfully created PersonaConfig '{name}' with ID {persona.id} for owner_id {owner_id}.")
-        return persona
+        # Prepare default mood prompts if necessary
+        default_moods = json.dumps(DEFAULT_MOOD_PROMPTS, ensure_ascii=False, sort_keys=True)
+
+        new_persona = PersonaConfig(
+            owner_id=owner_id,
+            name=name,
+            description=description,
+            # Provide defaults for all potentially NOT NULL fields
+            communication_style="neutral",
+            verbosity_level="medium",
+            group_reply_preference="mentioned_or_contextual",
+            media_reaction="text_only",
+            mood_prompts_json=default_moods,
+            max_response_messages=3,
+            system_prompt_template=DEFAULT_SYSTEM_PROMPT_TEMPLATE,
+            should_respond_prompt_template=DEFAULT_SHOULD_RESPOND_TEMPLATE # <-- Added default
+        )
+        db.add(new_persona)
+        db.commit()
+        db.refresh(new_persona)
+        logger.info(f"Successfully created persona '{new_persona.name}' (ID: {new_persona.id}) for owner_id {owner_id}")
+        return new_persona
     except IntegrityError as e:
-        logger.warning(f"IntegrityError creating persona '{name}' for owner {owner_id}: {e}", exc_info=False)
+        logger.warning(f"IntegrityError creating persona '{name}' for owner {owner_id}: {e}")
+        db.rollback()
+        raise # Re-raise for the handler to catch
+    except SQLAlchemyError as e:
+        logger.error(f"Database error creating persona '{name}' for owner {owner_id}: {e}", exc_info=True)
+        db.rollback()
+        raise # Re-raise for the handler
+    except Exception as e:
+        logger.error(f"Unexpected error creating persona '{name}' for owner {owner_id}: {e}", exc_info=True)
         db.rollback()
         raise
-    except SQLAlchemyError as e:
-         logger.error(f"Failed to commit new persona '{name}' for owner {owner_id}: {e}", exc_info=True)
-         db.rollback()
-         raise
 
 def get_personas_by_owner(db: Session, owner_id: int) -> List[PersonaConfig]:
     """Gets all personas owned by a user."""
