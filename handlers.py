@@ -2571,8 +2571,8 @@ async def _show_edit_wizard_menu(update: Update, context: ContextTypes.DEFAULT_T
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    # Объединяю f-строку и исправляю экранирование скобок
-    msg_text = f"⚙️ *Настройка личности: {escape_markdown_v2(persona_config.name)}* \\\\(ID: `{persona_id}`\\\\)\\\\n\\nВыберите, что изменить:" # ( -> \\(, ) -> \\)
+    # Исправляю экранирование скобок (снова)
+    msg_text = f"⚙️ *Настройка личности: {escape_markdown_v2(persona_config.name)}* \\(ID: `{persona_id}`\\)\n\nВыберите, что изменить:"
 
     try:
         if query:
