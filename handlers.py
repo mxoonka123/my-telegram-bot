@@ -4023,3 +4023,78 @@ async def edit_max_messages_received(update: Update, context: ContextTypes.DEFAU
     else:
         logger.warning(f"Unknown callback in edit_max_messages_received: {data}")
         return EDIT_MAX_MESSAGES
+
+async def clear_memory(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handles the /clear command to clear persona context in the current chat."""
+    if not update.message: return
+    chat_id_str = str(update.effective_chat.id)
+    user_id = update.effective_user.id
+    username = update.effective_user.username or f"id_{user_id}"
+    logger.info(f"CMD /clear < User {user_id} ({username}) in Chat {chat_id_str}")
+
+    if not await check_channel_subscription(update, context):
+        await send_subscription_required_message(update, context)
+        return
+
+    await context.bot.send_chat_action(chat_id=chat_id_str, action=ChatAction.TYPING)
+
+    # Сообщения для пользователя
+    msg_no_persona = escape_markdown_v2("🎭 В этом чате нет активной личности, память которой можно было бы очистить.")
+    msg_not_owner = escape_markdown_v2("❌ Только владелец личности или администратор бота могут очистить её память.")
+    msg_no_instance = escape_markdown_v2("❌ Ошибка: не найден экземпляр связи бота с этим чатом.")
+    msg_db_error = escape_markdown_v2("❌ Ошибка базы данных при очистке памяти.")
+    msg_general_error = escape_markdown_v2("❌ Непредвиденная ошибка при очистке памяти.")
+    msg_success_fmt = "✅ Память личности '{name}' в этом чате очищена ({count} сообщений удалено)." # Используем format позже
+
+    with next(get_db()) as db:
+        try:
+            # Находим активную личность и ее владельца
+            persona_info_tuple = get_persona_and_context_with_owner(chat_id_str, db)
+            if not persona_info_tuple:
+                await update.message.reply_text(msg_no_persona, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
+                return
+
+            persona, _, owner_user = persona_info_tuple
+            persona_name_raw = persona.name
+            persona_name_escaped = escape_markdown_v2(persona_name_raw)
+
+            # Проверяем права доступа
+            if owner_user.telegram_id != user_id and not is_admin(user_id):
+                logger.warning(f"User {user_id} attempted to clear memory for persona '{persona_name_raw}' owned by {owner_user.telegram_id} in chat {chat_id_str}.")
+                await update.message.reply_text(msg_not_owner, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
+                return
+
+            chat_bot_instance = persona.chat_instance
+            if not chat_bot_instance:
+                 logger.error(f"Clear command: ChatBotInstance not found for persona {persona_name_raw} in chat {chat_id_str}")
+                 await update.message.reply_text(msg_no_instance, parse_mode=ParseMode.MARKDOWN_V2)
+                 return
+
+            # Удаляем контекст
+            chat_bot_instance_id = chat_bot_instance.id
+            logger.warning(f"User {user_id} clearing context for ChatBotInstance {chat_bot_instance_id} (Persona '{persona_name_raw}') in chat {chat_id_str}.")
+
+            # Создаем SQL запрос на удаление
+            stmt = delete(ChatContext).where(ChatContext.chat_bot_instance_id == chat_bot_instance_id)
+            result = db.execute(stmt)
+            deleted_count = result.rowcount # Получаем количество удаленных строк
+            db.commit()
+
+            logger.info(f"Deleted {deleted_count} context messages for instance {chat_bot_instance_id}.")
+            # Форматируем сообщение об успехе с реальным количеством
+            final_success_msg_raw = msg_success_fmt.format(name=persona_name_raw, count=deleted_count)
+            final_success_msg_escaped = escape_markdown_v2(final_success_msg_raw)
+
+            await update.message.reply_text(final_success_msg_escaped, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
+
+        except SQLAlchemyError as e:
+            logger.error(f"Database error during /clear for chat {chat_id_str}: {e}", exc_info=True)
+            await update.message.reply_text(msg_db_error, parse_mode=ParseMode.MARKDOWN_V2)
+            db.rollback()
+        except Exception as e:
+            logger.error(f"Error in /clear handler for chat {chat_id_str}: {e}", exc_info=True)
+            await update.message.reply_text(msg_general_error, parse_mode=ParseMode.MARKDOWN_V2)
+            db.rollback()
+
+
+# ... (остальные функции) ...
