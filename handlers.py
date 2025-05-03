@@ -1169,37 +1169,42 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             await send_subscription_required_message(update, context)
             return
 
-    # --- ИСПРАВЛЕННЫЙ ТЕКСТ СПРАВКИ С ПРАВИЛЬНЫМ ЭКРАНИРОВАНИЕМ MARKDOWN V2 ---
-    help_text_md = (
-        "_Основные команды:_\n"
-        "`/start`        \\- Начало работы\n"
-        "`/help`         \\- Эта справка\n"
-        "`/menu`         \\- Главное меню\n"
-        "`/profile`      \\- Ваш профиль и лимиты\n"
-        "`/subscribe`    \\- Информация о подписке\n\n"
+    # --- ИСПРАВЛЕННЫЙ ТЕКСТ СПРАВКИ v3 ---
+    # Используем f-строку и escape_markdown_v2 для описаний
+    # Команды в ``, параметры < > [] внутри них НЕ экранируем
+    help_text_md = f"""
+*_Основные команды:_*
+`/start`        - {escape_markdown_v2("Начало работы")}
+`/help`         - {escape_markdown_v2("Эта справка")}
+`/menu`         - {escape_markdown_v2("Главное меню")}
+`/profile`      - {escape_markdown_v2("Ваш профиль и лимиты")}
+`/subscribe`    - {escape_markdown_v2("Информация о подписке")}
 
-        "_Управление личностью в чате:_\n"
-        "`/mood`         \\- Сменить настроение\n"
-        "`/clear`        \\- Очистить память \\(контекст\\)\n"
-        "`/reset`        \\- Сбросить диалог \\(то же, что `/clear`\\)\n"
-        "`/mutebot`      \\- Запретить отвечать в чате\n"
-        "`/unmutebot`    \\- Разрешить отвечать в чате\n\n"
+*_Управление личностью в чате:_*
+`/mood`         - {escape_markdown_v2("Сменить настроение")}
+`/clear`        - {escape_markdown_v2("Очистить память (контекст)")}
+`/reset`        - {escape_markdown_v2("Сбросить диалог (то же, что /clear)")}
+`/mutebot`      - {escape_markdown_v2("Запретить отвечать в чате")}
+`/unmutebot`    - {escape_markdown_v2("Разрешить отвечать в чате")}
 
-        "_Создание и настройка личностей:_\n"
-        "`/createpersona \\<имя\\> \\[описание\\]` \\- Создать новую\n"
-        "`/mypersonas`    \\- Список ваших личностей\n"
-        "`/editpersona \\<id\\>`   \\- Редактировать \\(имя, описание, стиль, настроения и др\\.\\)\n"
-        "`/deletepersona \\<id\\>` \\- Удалить личность\n\n"
+*_Создание и настройка личностей:_*
+`/createpersona <имя> [описание]` - {escape_markdown_v2("Создать новую")}
+`/mypersonas`    - {escape_markdown_v2("Список ваших личностей")}
+`/editpersona <id>`   - {escape_markdown_v2("Редактировать (имя, описание, стиль, настроения и др.)")}
+`/deletepersona <id>` - {escape_markdown_v2("Удалить личность")}
 
-        "_Дополнительно:_\n"
-        "• Бот может реагировать на фото и голосовые сообщения \\(настраивается в `/editpersona \\<id\\>`\\)\\.\n"
-        "• В группах бот отвечает согласно настройке \\(по умолчанию \\- на упоминания или по контексту\\)\\.\n"
-        "• Чтобы добавить созданную личность в чат, используйте кнопку '➕ В чат' в `/mypersonas`\\."
-    )
+*_Дополнительно:_*
+• {escape_markdown_v2("Бот может реагировать на фото и голосовые сообщения (настраивается в /editpersona <id>).")}
+• {escape_markdown_v2("В группах бот отвечает согласно настройке (по умолчанию - на упоминания или по контексту).")}
+• {escape_markdown_v2("Чтобы добавить созданную личность в чат, используйте кнопку '➕ В чат' в /mypersonas.")}
+"""
+    # Убираем лишние пробелы/переносы по краям f-строки
+    help_text_md = help_text_md.strip()
     # --- КОНЕЦ ИСПРАВЛЕННОГО ТЕКСТА ---
 
-    # Простой текст для запасного варианта (оставляем как было)
-    help_text_raw_no_md = re.sub(r'[`*_\\\\[\]()~>#+-=|{}.!]', '', help_text_md)
+    # Простой текст для запасного варианта
+    # Улучшаем удаление символов Markdown
+    help_text_raw_no_md = re.sub(r'[`*_~\\[\\]()|{}+#-.!=]', '', help_text_md)
 
     keyboard = [[InlineKeyboardButton("⬅️ Назад в Меню", callback_data="show_menu")]] if is_callback else None
     reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else ReplyKeyboardRemove()
@@ -1208,15 +1213,12 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         if is_callback:
             query = update.callback_query
             if query.message.text != help_text_md or query.message.reply_markup != reply_markup:
-                 # Убедимся, что используем правильный parse_mode
                  await query.edit_message_text(help_text_md, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
             else:
                  await query.answer()
         else:
-            # Убедимся, что используем правильный parse_mode
             await message_or_query.reply_text(help_text_md, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
     except BadRequest as e:
-        # ... (обработка ошибок BadRequest как раньше, включая отправку help_text_raw_no_md) ...
         if is_callback and "Message is not modified" in str(e):
             logger.debug("Help message not modified, skipping edit.")
             await query.answer()
@@ -1232,7 +1234,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 logger.error(f"Failed sending plain help message: {fallback_e}")
                 if is_callback: await query.answer("❌ Ошибка отображения справки", show_alert=True)
     except Exception as e:
-         # ... (обработка других ошибок как раньше) ...
          logger.error(f"Error sending/editing help message: {e}", exc_info=True)
          if is_callback: await query.answer("❌ Ошибка отображения справки", show_alert=True)
 
