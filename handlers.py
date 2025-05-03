@@ -1169,38 +1169,37 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             await send_subscription_required_message(update, context)
             return
 
-    # --- ОБНОВЛЕННЫЙ ТЕКСТ СПРАВКИ ---
-    # Используем _ для курсива, * для жирного
+    # --- ИСПРАВЛЕННЫЙ ТЕКСТ СПРАВКИ С ПРАВИЛЬНЫМ ЭКРАНИРОВАНИЕМ MARKDOWN V2 ---
     help_text_md = (
-        "*Основные команды:*\n" # Заменил * на _ для курсива заголовка
+        "_Основные команды:_\n"
         "`/start`        \\- Начало работы\n"
         "`/help`         \\- Эта справка\n"
         "`/menu`         \\- Главное меню\n"
         "`/profile`      \\- Ваш профиль и лимиты\n"
         "`/subscribe`    \\- Информация о подписке\n\n"
 
-        "*Управление личностью в чате:*\n" # Заменил * на _
-        "`/mood`         \\- Сменить настроение \n" # Убрал лишнее слово "личности"
-        "`/clear`        \\- Очистить память \\(контекст\\) \n" # <--- ДОБАВЛЕНА КОМАНДА
-        "`/reset`        \\- Сбросить диалог \\(то же, что /clear\\)\n" # Добавил пояснение для /reset
+        "_Управление личностью в чате:_\n"
+        "`/mood`         \\- Сменить настроение\n"
+        "`/clear`        \\- Очистить память \\(контекст\\)\n"
+        "`/reset`        \\- Сбросить диалог \\(то же, что `/clear`\\)\n"
         "`/mutebot`      \\- Запретить отвечать в чате\n"
         "`/unmutebot`    \\- Разрешить отвечать в чате\n\n"
 
-        "*Создание и настройка личностей:*\n" # Заменил * на _
-        "`/createpersona <имя> [описание]` \\- Создать новую\n"
+        "_Создание и настройка личностей:_\n"
+        "`/createpersona \\<имя\\> \\[описание\\]` \\- Создать новую\n"
         "`/mypersonas`    \\- Список ваших личностей\n"
-        "`/editpersona <id>`   \\- Редактировать \\(имя, описание, стиль, настроения и др\\.\\)\n" # Добавил пояснение
-        "`/deletepersona <id>` \\- Удалить личность\n\n"
+        "`/editpersona \\<id\\>`   \\- Редактировать \\(имя, описание, стиль, настроения и др\\.\\)\n"
+        "`/deletepersona \\<id\\>` \\- Удалить личность\n\n"
 
-        "*Дополнительно:*\n" # Заменил * на _
-        "• Бот может реагировать на фото и голосовые сообщения \\(настраивается в `/editpersona`\\)\\.\n"
+        "_Дополнительно:_\n"
+        "• Бот может реагировать на фото и голосовые сообщения \\(настраивается в `/editpersona \\<id\\>`\\)\\.\n"
         "• В группах бот отвечает согласно настройке \\(по умолчанию \\- на упоминания или по контексту\\)\\.\n"
-        "• Чтобы добавить созданную личность в чат, используйте кнопку '➕ В чат' в `/mypersonas`\\." # Уточнил
+        "• Чтобы добавить созданную личность в чат, используйте кнопку '➕ В чат' в `/mypersonas`\\."
     )
-    # --- КОНЕЦ ОБНОВЛЕННОГО ТЕКСТА ---
+    # --- КОНЕЦ ИСПРАВЛЕННОГО ТЕКСТА ---
 
-    # Простой текст для запасного варианта (убираем Markdown)
-    help_text_raw_no_md = re.sub(r'[`*_\\\\[\]()~>#+-=|{}.!]', '', help_text_md) # Убираем все спецсимволы MD
+    # Простой текст для запасного варианта (оставляем как было)
+    help_text_raw_no_md = re.sub(r'[`*_\\\\[\]()~>#+-=|{}.!]', '', help_text_md)
 
     keyboard = [[InlineKeyboardButton("⬅️ Назад в Меню", callback_data="show_menu")]] if is_callback else None
     reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else ReplyKeyboardRemove()
@@ -1208,14 +1207,16 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     try:
         if is_callback:
             query = update.callback_query
-            # Сравниваем с help_text_md, т.к. отправляем с разметкой
             if query.message.text != help_text_md or query.message.reply_markup != reply_markup:
+                 # Убедимся, что используем правильный parse_mode
                  await query.edit_message_text(help_text_md, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
             else:
                  await query.answer()
         else:
+            # Убедимся, что используем правильный parse_mode
             await message_or_query.reply_text(help_text_md, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
     except BadRequest as e:
+        # ... (обработка ошибок BadRequest как раньше, включая отправку help_text_raw_no_md) ...
         if is_callback and "Message is not modified" in str(e):
             logger.debug("Help message not modified, skipping edit.")
             await query.answer()
@@ -1223,7 +1224,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             logger.error(f"Failed sending/editing help message (BadRequest): {e}", exc_info=True)
             logger.error(f"Failed help text (MD): '{help_text_md[:200]}...'")
             try:
-                # Отправляем простой текст без форматирования
                 if is_callback:
                     await query.edit_message_text(help_text_raw_no_md, reply_markup=reply_markup, parse_mode=None)
                 else:
@@ -1232,6 +1232,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 logger.error(f"Failed sending plain help message: {fallback_e}")
                 if is_callback: await query.answer("❌ Ошибка отображения справки", show_alert=True)
     except Exception as e:
+         # ... (обработка других ошибок как раньше) ...
          logger.error(f"Error sending/editing help message: {e}", exc_info=True)
          if is_callback: await query.answer("❌ Ошибка отображения справки", show_alert=True)
 
