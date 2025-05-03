@@ -1680,9 +1680,11 @@ async def my_personas(update: Union[Update, CallbackQuery], context: ContextType
 
             if is_callback:
                  if message_target.text != text_to_send or message_target.reply_markup != reply_markup:
-                     await query.edit_message_text(text_to_send, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
+                     # Отправляем как простой текст
+                     await query.edit_message_text(fallback_text_plain, reply_markup=reply_markup, parse_mode=None)
                  else: await query.answer()
-            else: await message_target.reply_text(text_to_send, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
+            # Отправляем как простой текст
+            else: await message_target.reply_text(fallback_text_plain, reply_markup=reply_markup, parse_mode=None)
 
             logger.info(f"User {user_id} requested mypersonas. Sent {persona_count} personas with action buttons.")
 
@@ -1838,7 +1840,10 @@ async def add_bot_to_chat(update: Update, context: ContextTypes.DEFAULT_TYPE, pe
                      name=escape_markdown_v2(persona.name),
                      id=local_persona_id
                      )
-                 await context.bot.send_message(chat_id=chat_id_str, text=final_success_msg, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
+                 # Готовим простой текст
+                 final_success_msg_plain = f"✅ личность '{persona.name}' (id: {local_persona_id}) активирована в этом чате! память очищена."
+                 # Отправляем как простой текст
+                 await context.bot.send_message(chat_id=chat_id_str, text=final_success_msg_plain, reply_markup=ReplyKeyboardRemove(), parse_mode=None)
                  if is_callback:
                       try:
                            await update.callback_query.delete_message()
