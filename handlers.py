@@ -493,6 +493,20 @@ async def process_and_send_response(
         all_text_content = re.sub(r'\s*' + re.escape(gif) + r'\s*', " ", all_text_content, flags=re.IGNORECASE).strip()
     all_text_content = re.sub(r'\s{2,}', ' ', all_text_content).strip()
 
+    # --- ЭТОТ БЛОК ДОЛЖЕН БЫТЬ ЗДЕСЬ ---
+    max_messages_setting = persona.config.max_response_messages if persona.config else 0
+    max_messages = 3 # Default value
+
+    if max_messages_setting <= 0: # 0 или отрицательное -> Случайно
+        max_messages = random.randint(1, 3)
+        logger.debug(f"Max messages set to Random. Chosen: {max_messages}")
+    elif 1 <= max_messages_setting <= 10:
+        max_messages = max_messages_setting
+        logger.debug(f"Max messages set to {max_messages} from config.")
+    else:
+        logger.warning(f"Invalid max_response_messages value ({max_messages_setting}) for persona {persona.id}. Using default: {max_messages}")
+    # --- КОНЕЦ БЛОКА ОПРЕДЕЛЕНИЯ max_messages ---
+
     # --- ИСПОЛЬЗУЕМ ОБНОВЛЕННЫЙ postprocess_response ---
     # Передаем max_messages в функцию postprocess_response
     text_parts_to_send = postprocess_response(all_text_content, max_messages)
