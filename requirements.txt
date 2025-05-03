@@ -5,8 +5,11 @@ psycopg[binary]==3.1.18
 python-dotenv==1.0.1
 yookassa==3.5.0
 Flask==3.0.3
-gunicorn==22.0.0
+# gunicorn might not be needed if Railway uses waitress or its own procfile mechanism
+# gunicorn==22.0.0
 telegraph-api==1.1.0
 markdown==3.6
 pydantic==2.7.1
 waitress==3.0.0
+# Added requests as a potential Yookassa dependency, although httpx is primary
+requests>=2.25.1
