@@ -21,16 +21,17 @@ from config import (
 )
 
 # --- Default Templates (Add missing one) ---
-# Simplified System Prompt
+# Simplified System Prompt v3 (Stricter Rules)
 DEFAULT_SYSTEM_PROMPT_TEMPLATE = '''Ты — {persona_name}. {persona_description}
 
-ТВОЯ ГЛАВНАЯ ЗАДАЧА: Отвечай в диалоге, ПОЛНОСТЬЮ ИГНОРИРУЯ ВСЕ ПРИВЕТСТВИЯ, если диалог уже начат (смотри историю сообщений). ПРОДОЛЖАЙ БЕСЕДУ, учитывая предыдущие сообщения.
+!!! СТРОЖАЙШИЕ ПРАВИЛА, КОТОРЫЕ ТЫ ОБЯЗАН ВЫПОЛНЯТЬ !!!
+1.  **НИКАКИХ ПРИВЕТСТВИЙ ПОСЛЕ НАЧАЛА ДИАЛОГА:** Если история сообщений НЕ ПУСТАЯ, твой ответ НИКОГДА, НИ ЗА ЧТО не должен начинаться с приветствия (Привет, Здравствуй, и т.п.). НИКОГДА. СРАЗУ ПИШИ ПО ДЕЛУ. Исключение: только САМОЕ ПЕРВОЕ сообщение боту в чате.
+2.  **ИСПОЛЬЗУЙ КОНТЕКСТ:** ПРОЧИТАЙ ВСЕ СООБЩЕНИЯ в истории. Твой ответ ДОЛЖЕН быть логичным ПРОДОЛЖЕНИЕМ диалога. НЕ ПОВТОРЯЙСЯ.
 
-*   **Стиль:** {communication_style}, {verbosity_level}.
-*   **Настроение:** {mood_name} ({mood_prompt} - используй, если настроение не "Нейтрально").
-*   **GIF:** Можешь вставить ОДНУ ссылку на GIF (https://...gif).
-*   **Формат:** Только *курсив* или **жирный** текст. БЕЗ списков, заголовков, блоков кода.
-*   **Длина:** Старайся отвечать в 1-3 сообщениях.
+*   Стиль: {communication_style}, {verbosity_level}.
+*   Настроение: {mood_name} ({mood_prompt} - применяй только если не Нейтрально).
+*   (Опционально: 1 GIF-ссылка).
+*   (Опционально: *курсив*, **жирный**).
 '''
 
 # Simplified Should Respond Prompt
@@ -628,12 +629,13 @@ def link_bot_instance_to_chat(db: Session, bot_instance_id: int, chat_id: Union[
         ).with_for_update().first()
 
         if chat_link:
+            # --- Reactivation Logic ---
             needs_commit = False
             if not chat_link.active:
                  logger.info(f"[link_bot_instance] Reactivating existing ChatBotInstance {chat_link.id} for bot {bot_instance_id} in chat {chat_id_str}")
                  chat_link.active = True
-                 chat_link.current_mood = "нейтрально"
-                 chat_link.is_muted = False
+                 chat_link.current_mood = "нейтрально" # Reset mood
+                 chat_link.is_muted = False # Unmute on reactivation
                  needs_commit = True
                  # Clear context on reactivation
                  try:
@@ -642,29 +644,39 @@ def link_bot_instance_to_chat(db: Session, bot_instance_id: int, chat_id: Union[
                      logger.debug(f"[link_bot_instance] Cleared {deleted_ctx} context messages for reactivated ChatBotInstance {chat_link.id}.")
                  except Exception as del_ctx_err:
                      logger.error(f"[link_bot_instance] Error clearing context during reactivation: {del_ctx_err}", exc_info=True)
-                     # Continue reactivation even if context clear fails?
             else:
+                # If already active, clear context on re-add request as a reset
                 logger.info(f"[link_bot_instance] ChatBotInstance link for bot {bot_instance_id} in chat {chat_id_str} is already active. Clearing context on re-add request.")
                 try:
                     deleted_ctx_result = chat_link.context.delete(synchronize_session='fetch')
                     deleted_ctx = deleted_ctx_result if isinstance(deleted_ctx_result, int) else 0
                     logger.debug(f"[link_bot_instance] Cleared {deleted_ctx} context messages for already active ChatBotInstance {chat_link.id}.")
+                    needs_commit = True # Commit the context clearing
                 except Exception as del_ctx_err:
                      logger.error(f"[link_bot_instance] Error clearing context for already active link: {del_ctx_err}", exc_info=True)
-                needs_commit = True # Still commit to save the potential active=True change if it happened (or just context clear)
+                # No commit needed if context clear failed or wasn't necessary
 
-            if needs_commit: 
+            if needs_commit:
                 try:
+                    # Simplified logging for commit
                     logger.debug(f"[link_bot_instance] Committing changes for existing link ID {chat_link.id}. Active: {chat_link.active}")
                     db.commit()
                     logger.debug(f"[link_bot_instance] Commit successful for existing link ID {chat_link.id}.")
+                    # Refresh after successful commit
+                    try:
+                        db.refresh(chat_link)
+                        logger.debug(f"[link_bot_instance] Refreshed existing link state ID: {chat_link.id}, Active: {chat_link.active}")
+                    except SQLAlchemyError as refresh_err:
+                         logger.error(f"[link_bot_instance] Refresh FAILED after commit for existing link ID {chat_link.id}: {refresh_err}", exc_info=True)
+                         # Link might be stale, but we committed.
                 except SQLAlchemyError as commit_err:
                      logger.error(f"[link_bot_instance] Commit FAILED for existing link ID {chat_link.id}: {commit_err}", exc_info=True)
                      db.rollback()
                      session_valid = False # Mark session as potentially invalid
                      chat_link = None # Cannot proceed if commit failed
+            # --- End Reactivation Logic ---
         else:
-            # --- Create NEW link block with detailed logging --- 
+            # --- Create NEW link block ---
             logger.info(f"[link_bot_instance] Creating new ChatBotInstance link for bot {bot_instance_id} in chat {chat_id_str}")
             created_new = True
             chat_link = ChatBotInstance(
@@ -675,11 +687,18 @@ def link_bot_instance_to_chat(db: Session, bot_instance_id: int, chat_id: Union[
                 is_muted=False
             )
             try:
-                 logger.debug(f"[link_bot_instance] Adding new link object to session (ID before commit: {chat_link.id})")
                  db.add(chat_link)
+                 # Simplified logging for commit
                  logger.debug(f"[link_bot_instance] Added new link to session. Active: {chat_link.active}. Attempting commit...")
                  db.commit() # Commit the new link
-                 logger.debug(f"[link_bot_instance] Commit successful for new link. Assigned ID: {chat_link.id}. Active: {chat_link.active}")
+                 logger.info(f"[link_bot_instance] Commit successful for new link. Assigned ID: {chat_link.id}. Active: {chat_link.active}")
+                 # Refresh after successful commit
+                 try:
+                     db.refresh(chat_link)
+                     logger.debug(f"[link_bot_instance] Refreshed new link state ID: {chat_link.id}, Active: {chat_link.active}")
+                 except SQLAlchemyError as refresh_err:
+                     logger.error(f"[link_bot_instance] Refresh FAILED after commit for new link ID {chat_link.id}: {refresh_err}", exc_info=True)
+                     # Link might be stale, but we committed.
             except SQLAlchemyError as commit_err:
                  logger.error(f"[link_bot_instance] Commit FAILED during new link creation: {commit_err}", exc_info=True)
                  db.rollback()
@@ -687,37 +706,14 @@ def link_bot_instance_to_chat(db: Session, bot_instance_id: int, chat_id: Union[
                  chat_link = None # Link wasn't created successfully
             # --- End Create NEW link block ---
 
-        # Refresh and Verification only if chat_link exists and session is assumed valid
-        if chat_link and chat_link.id and session_valid: 
-            try:
-                 logger.debug(f"[link_bot_instance] Attempting to refresh link state for ID: {chat_link.id}...")
-                 db.refresh(chat_link)
-                 logger.debug(f"[link_bot_instance] Refreshed link state. ID: {chat_link.id}, Active: {chat_link.active}")
-                 
-                 # --- Verification Query --- 
-                 verification_instance = db.query(ChatBotInstance).filter(
-                      ChatBotInstance.id == chat_link.id,
-                      ChatBotInstance.active == True 
-                 ).first()
-                 if verification_instance:
-                     logger.info(f"[link_bot_instance] VERIFICATION SUCCESS: Found active ChatBotInstance ID {verification_instance.id} immediately after commit/refresh.")
-                 else:
-                      logger.error(f"[link_bot_instance] VERIFICATION FAILED: Could NOT find active ChatBotInstance ID {chat_link.id} immediately after commit/refresh! Active status might be wrong or commit failed silently.")
-                      inactive_check = db.query(ChatBotInstance).filter(ChatBotInstance.id == chat_link.id).first()
-                      if inactive_check:
-                          logger.error(f"[link_bot_instance] VERIFICATION INFO: Instance ID {chat_link.id} EXISTS but its active status is {inactive_check.active}.")
-                      else:
-                          logger.error(f"[link_bot_instance] VERIFICATION INFO: Instance ID {chat_link.id} does NOT exist at all after commit.")
-                 # --- End Verification Query ---
-            except SQLAlchemyError as refresh_err:
-                 logger.error(f"[link_bot_instance] Refresh FAILED for link ID {chat_link.id}: {refresh_err}", exc_info=True)
-                 # Chat link might be invalid after failed refresh, but maybe verification can still run?
-                 # Let's return the potentially stale chat_link for now, but log the error.
-        elif session_valid:
-            logger.error("[link_bot_instance] chat_link object is None or has no ID after commit attempt, but session was assumed valid.")
+        # Return the chat_link object (potentially stale if refresh failed, or None if commit failed)
+        if chat_link and session_valid:
+             logger.debug(f"[link_bot_instance] Returning ChatBotInstance object (ID: {chat_link.id}, Active: {chat_link.active})")
         elif not session_valid:
-             logger.error("[link_bot_instance] Cannot refresh or verify chat_link because commit failed.")
-
+             logger.warning("[link_bot_instance] Returning None because commit failed.")
+        else:
+             logger.warning("[link_bot_instance] Returning None (link not found or not created).")
+             
         return chat_link
 
     except IntegrityError as e:
