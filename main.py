@@ -16,7 +16,7 @@ import re # <<< Убедитесь, что импорт есть
 from telegram import Update
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, ContextTypes, filters,
-    CallbackQueryHandler, ConversationHandler, Defaults # <<< Убедитесь, что Defaults импортирован
+    CallbackQueryHandler, ConversationHandler, Defaults
 )
 from telegram.constants import ParseMode, ChatMemberStatus
 from telegram.error import TelegramError, Forbidden, BadRequest
@@ -95,14 +95,12 @@ def handle_yookassa_webhook():
             user_db_id = None
 
             try:
-                # Use a context manager for the session
                 with db.get_db() as db_session:
                     flask_logger.info(f"Webhook Payment {payment.id}: Searching for user with TG ID {telegram_user_id}")
                     user = db_session.query(db.User).filter(db.User.telegram_id == telegram_user_id).first()
                     if user:
                         user_db_id = user.id
                         flask_logger.info(f"Webhook Payment {payment.id}: Found user DB ID {user_db_id}. Calling activate_subscription.")
-                        # activate_subscription handles its own commit/rollback
                         if db.activate_subscription(db_session, user.id):
                             flask_logger.info(f"Subscription activated for user {telegram_user_id} (DB ID: {user_db_id}) via webhook payment {payment.id}.")
                             activation_success = True
@@ -127,19 +125,17 @@ def handle_yookassa_webhook():
                     success_text_escaped = escape_markdown_v2(success_text_raw)
 
                     try:
-                        # Get the running event loop or None
-                        loop = asyncio.get_event_loop_policy().get_event_loop()
+                        loop = asyncio.get_running_loop()
                     except RuntimeError:
                         loop = None
 
-                    # Schedule the coroutine safely
                     if loop and loop.is_running():
                          future = asyncio.run_coroutine_threadsafe(
                             app.bot.send_message(chat_id=telegram_user_id, text=success_text_escaped, parse_mode=ParseMode.MARKDOWN_V2),
                             loop
                          )
                          try:
-                             future.result(timeout=10) # Wait for completion with timeout
+                             future.result(timeout=10)
                              flask_logger.info(f"Sent activation confirmation to user {telegram_user_id}")
                          except asyncio.TimeoutError:
                              flask_logger.error(f"Timeout sending activation confirmation to user {telegram_user_id}")
@@ -150,7 +146,6 @@ def handle_yookassa_webhook():
                          except Exception as send_e:
                              flask_logger.error(f"Failed to send activation message to user {telegram_user_id}: {send_e}", exc_info=True)
                     else:
-                         # If no loop running (unlikely in production), run in a new temporary loop
                          flask_logger.warning("No running event loop found for webhook notification. Creating temporary loop.")
                          temp_loop = asyncio.new_event_loop()
                          try:
@@ -245,7 +240,6 @@ async def setup_telegraph_page(application: Application):
              logger.error("handlers.TOS_TEXT_RAW is missing, empty or not a string. Cannot create ToS page.")
              return
 
-        # Format the raw text from handlers.py
         tos_content_raw_for_telegraph = handlers.TOS_TEXT_RAW.replace("**", "").replace("*", "")
         tos_content_formatted_for_telegraph = tos_content_raw_for_telegraph.format(
             subscription_duration=config.SUBSCRIPTION_DURATION_DAYS,
@@ -253,14 +247,12 @@ async def setup_telegraph_page(application: Application):
             subscription_currency=config.SUBSCRIPTION_CURRENCY
         )
 
-        # Convert formatted text to Telegraph node array
         content_node_array = []
         current_list_items = []
         for p_raw in tos_content_formatted_for_telegraph.strip().splitlines():
             p = p_raw.strip()
             if not p: continue
 
-            # Handle list items (starting with • or *)
             if p.startswith("• ") or p.startswith("* "):
                 current_list_items.append({"tag": "li", "children": [p[2:].strip()]})
                 continue
@@ -274,7 +266,6 @@ async def setup_telegraph_page(application: Application):
             if re.match(r"^\d+\.\s+", p) or re.match(r"^\d+\.\d+\.\s+", p):
                 content_node_array.append({"tag": "h4", "children": [p]})
             else:
-                # Default to paragraph
                 content_node_array.append({"tag": "p", "children": [p]})
 
         # Add any remaining list items at the end
@@ -285,32 +276,28 @@ async def setup_telegraph_page(application: Application):
             logger.error("content_node_array empty after processing. Cannot create page.")
             return
 
-        # Convert node array to JSON string for the API call
         content_json_string = json.dumps(content_node_array, ensure_ascii=False)
         logger.debug(f"Telegraph content node array JSON: {content_json_string[:500]}...")
 
-        # Use httpx for the API call directly
         telegraph_api_url = "https://api.telegra.ph/createPage"
         payload = {
             "access_token": access_token,
             "title": tos_title,
             "author_name": author_name,
-            "content": content_json_string, # Pass the JSON string
+            "content": content_json_string,
             "return_content": False
         }
 
         logger.info(f"Sending direct request to {telegraph_api_url} to create/update ToS page...")
-        # Log payload safely (truncate long content)
         logger.debug(f"Telegraph payload (first 500 chars of content): { {k: (v[:500] + '...' if k=='content' and isinstance(v, str) and len(v) > 500 else v) for k, v in payload.items()} }")
 
         async with httpx.AsyncClient() as client:
-            response = await client.post(telegraph_api_url, json=payload) # Send JSON payload
+            response = await client.post(telegraph_api_url, json=payload)
 
         logger.info(f"Telegraph API direct response status: {response.status_code}")
         response_data = response.json()
         logger.debug(f"Telegraph API direct response JSON: {response_data}")
 
-        # Check response and extract URL
         if response_data.get("ok"):
             result = response_data.get("result")
             if result and isinstance(result, dict) and result.get("url"):
@@ -319,32 +306,24 @@ async def setup_telegraph_page(application: Application):
             else:
                 logger.error(f"Telegraph API direct request OK=true, but result invalid/missing url. Result: {result}")
         else:
-            # Log specific Telegraph errors
             error_message = response_data.get("error", "Unknown error")
             logger.error(f"Telegraph API direct request returned error: {error_message}")
-            # Provide hints for common errors
             if "CONTENT_INVALID" in error_message or "PAGE_SAVE_FAILED" in error_message:
                  logger.error(f">>> Received error possibly related to content format! Check payload JSON structure or content.")
                  logger.debug(f"Content JSON sent: {content_json_string}")
             elif "ACCESS_TOKEN_INVALID" in error_message:
                  logger.error(">>> TELEGRAPH_ACCESS_TOKEN is invalid!")
-            # Raise HTTP errors for non-OK responses if needed for further handling
-            response.raise_for_status()
+            response.raise_for_status() # Raise HTTP errors for non-OK responses
 
     except httpx.HTTPStatusError as http_err:
-         # Log HTTP errors specifically
          logger.error(f"HTTP Status error during direct Telegraph request: {http_err.response.status_code} - {http_err.response.text}", exc_info=False)
     except httpx.RequestError as http_err:
-         # Log network errors
          logger.error(f"HTTPX network error during direct Telegraph request: {http_err}", exc_info=True)
     except json.JSONDecodeError as json_err:
-         # Log JSON errors (both dumping content and decoding response)
          logger.error(f"Failed to dump content_node_array to JSON or decode response: {json_err}", exc_info=True)
     except Exception as e:
-         # Catch any other unexpected errors
          logger.error(f"Unexpected error during direct Telegra.ph page creation: {e}", exc_info=True)
 
-    # Store the URL if successfully obtained
     if page_url:
         application.bot_data['tos_url'] = page_url
         logger.info(f"Final ToS URL set in bot_data: {page_url}")
@@ -409,31 +388,23 @@ def main() -> None:
             logger.info("Successfully tested database connection after initialization.")
             # Optional: Add a simple query to test if the new columns exist now
             try:
-                # Use select() from sqlalchemy directly
                 conn.execute(db.select(db.PersonaConfig.communication_style).limit(1))
                 logger.info("Successfully queried a new column (communication_style). Schema seems updated.")
             except ProgrammingError as pe:
-                 # Check if the error is specifically about the column not existing
-                 # The exact error message might vary slightly depending on the DB driver
-                 if "column" in str(pe).lower() and "does not exist" in str(pe).lower() and "communication_style" in str(pe).lower():
+                 if "UndefinedColumn" in str(pe):
                       logger.critical("FATAL: Database schema is still incorrect! Missing columns like 'communication_style'.")
                       logger.critical("Please run the ALTER TABLE commands in Supabase SQL Editor and restart the bot.")
                       return # Stop if schema is wrong
                  else:
-                     # Re-raise other programming errors (e.g., syntax errors in the query itself)
-                     logger.critical(f"Database programming error during schema check: {pe}", exc_info=True)
-                     raise # Re-raise the critical error
+                     raise # Re-raise other programming errors
             except Exception as test_e:
-                # Log other potential errors during the test query
                 logger.warning(f"Could not verify new column existence, continuing: {test_e}")
 
     except (OperationalError, SQLAlchemyError, ProgrammingError, RuntimeError, ValueError) as e:
-         # Catch database-related errors during initialization
          logger.critical(f"Database initialization or connection test failed: {e}. Exiting.")
          logger.critical("Ensure DATABASE_URL is correct and the database schema matches the models in db.py.")
          return
     except Exception as e:
-         # Catch any other unexpected critical errors during setup
          logger.critical(f"An unexpected critical error during DB setup: {e}. Exiting.", exc_info=True)
          return
     logger.info("Database setup appears complete.")
@@ -450,32 +421,25 @@ def main() -> None:
         logger.critical("TELEGRAM_TOKEN not found in config or environment. Exiting.")
         return
 
-    # --- CORRECTED Defaults Initialization ---
-    # Removed timeout arguments as they are not valid for Defaults constructor
+    # Sensible timeouts and connection pool settings
     bot_defaults = Defaults(
         parse_mode=ParseMode.MARKDOWN_V2,
-        block=False # Run handlers concurrently by default
-        # Removed: connect_timeout=10.0,
-        # Removed: read_timeout=20.0,
-        # Removed: write_timeout=20.0,
+        block=False, # Run handlers concurrently by default
+        connect_timeout=10.0,
+        read_timeout=20.0,
+        write_timeout=20.0,
     )
-    logger.info("Bot Defaults configured (timeouts removed).")
 
-    # Configure Application Builder (timeouts can potentially be set here if needed, check library docs)
-    # Example: application_builder.connect_timeout(10.0).read_timeout(20.0) ...
-    application_builder = Application.builder().token(token).defaults(bot_defaults)
-
-    # Add connection pool settings to the builder
-    application_builder.pool_timeout(10.0) # Timeout for getting connection from pool
-    application_builder.connection_pool_size(10) # Default is 4, increase if needed
-
-    # Add post_init hook
-    application_builder.post_init(post_init)
-
-    # Build the application
-    application = application_builder.build()
+    application = (
+        Application.builder()
+        .token(token)
+        .defaults(bot_defaults)
+        .pool_timeout(10.0) # Timeout for getting connection from pool
+        .connection_pool_size(10) # Default is 4, increase if needed
+        .post_init(post_init)
+        .build()
+    )
     logger.info("Telegram Application built.")
-
 
     # --- Conversation Handlers Definition ---
 
@@ -486,43 +450,30 @@ def main() -> None:
             CallbackQueryHandler(handlers.edit_persona_button_callback, pattern='^edit_persona_')
         ],
         states={
-            # State for the main wizard menu
             handlers.EDIT_WIZARD_MENU: [CallbackQueryHandler(handlers.edit_wizard_menu_handler, pattern='^edit_wizard_|^finish_edit$')],
-            # States for editing specific fields (receiving text input)
             handlers.EDIT_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.edit_name_received)],
             handlers.EDIT_DESCRIPTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.edit_description_received)],
-            # States for selecting options via buttons
             handlers.EDIT_COMM_STYLE: [CallbackQueryHandler(handlers.edit_comm_style_received, pattern='^set_comm_style_|^back_to_wizard_menu$')],
             handlers.EDIT_VERBOSITY: [CallbackQueryHandler(handlers.edit_verbosity_received, pattern='^set_verbosity_|^back_to_wizard_menu$')],
             handlers.EDIT_GROUP_REPLY: [CallbackQueryHandler(handlers.edit_group_reply_received, pattern='^set_group_reply_|^back_to_wizard_menu$')],
             handlers.EDIT_MEDIA_REACTION: [CallbackQueryHandler(handlers.edit_media_reaction_received, pattern='^set_media_react_|^back_to_wizard_menu$')],
-            # --- Mood Editing Sub-Conversation States ---
-            handlers.EDIT_MOODS_ENTRY: [CallbackQueryHandler(handlers.edit_moods_entry, pattern='^edit_wizard_moods$')], # Entry via button
+            handlers.EDIT_MOODS_ENTRY: [CallbackQueryHandler(handlers.edit_moods_entry, pattern='^edit_wizard_moods$')], # Specific pattern
             handlers.EDIT_MOOD_CHOICE: [CallbackQueryHandler(handlers.edit_mood_choice, pattern='^editmood_|^deletemood_confirm_|^back_to_wizard_menu$|^edit_moods_back_cancel$')],
-            handlers.EDIT_MOOD_NAME: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.edit_mood_name_received),
-                CallbackQueryHandler(handlers.edit_mood_choice, pattern='^edit_moods_back_cancel$') # Allow cancel via button
-                ],
-            handlers.EDIT_MOOD_PROMPT: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.edit_mood_prompt_received),
-                CallbackQueryHandler(handlers.edit_mood_choice, pattern='^edit_moods_back_cancel$') # Allow cancel via button
-                ],
-            handlers.DELETE_MOOD_CONFIRM: [
-                CallbackQueryHandler(handlers.delete_mood_confirmed, pattern='^deletemood_delete_'),
-                CallbackQueryHandler(handlers.edit_mood_choice, pattern='^edit_moods_back_cancel$') # Allow cancel via button
-                ]
+            handlers.EDIT_MOOD_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.edit_mood_name_received), CallbackQueryHandler(handlers.edit_mood_choice, pattern='^edit_moods_back_cancel$')],
+            handlers.EDIT_MOOD_PROMPT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.edit_mood_prompt_received), CallbackQueryHandler(handlers.edit_mood_choice, pattern='^edit_moods_back_cancel$')],
+            handlers.DELETE_MOOD_CONFIRM: [CallbackQueryHandler(handlers.delete_mood_confirmed, pattern='^deletemood_delete_'), CallbackQueryHandler(handlers.edit_mood_choice, pattern='^edit_moods_back_cancel$')]
         },
         fallbacks=[ # Shared fallbacks for entire wizard
-            CommandHandler('cancel', handlers.edit_persona_cancel), # Cancel via command
-            CallbackQueryHandler(handlers.edit_persona_finish, pattern='^finish_edit$'), # Finish explicitly via button
-            # Use specific back/cancel buttons within states where possible, but allow general cancel command
+            CommandHandler('cancel', handlers.edit_persona_cancel),
+            CallbackQueryHandler(handlers.edit_persona_finish, pattern='^finish_edit$'), # Finish explicitly
+            # Use specific back buttons within states where possible, but allow general cancel
             CallbackQueryHandler(handlers.edit_persona_cancel, pattern='^cancel_wizard$'), # Optional explicit cancel button pattern
-            # Back/Cancel buttons handled within specific states (e.g., edit_mood_choice)
-            CallbackQueryHandler(handlers.edit_wizard_menu_handler, pattern='^back_to_wizard_menu$'), # Back to main menu button
+            CallbackQueryHandler(handlers.edit_mood_choice, pattern='^edit_moods_back_cancel$'), # Back from mood steps
+            CallbackQueryHandler(handlers.edit_wizard_menu_handler, pattern='^back_to_wizard_menu$'), # Back to main menu
         ],
-        per_message=False, # Use one conversation per user+chat
+        per_message=False,
         name="edit_persona_wizard",
-        conversation_timeout=timedelta(minutes=15).total_seconds() # Timeout after 15 mins of inactivity
+        conversation_timeout=timedelta(minutes=15).total_seconds()
     )
 
     # Delete Persona Conversation Handler
@@ -532,19 +483,18 @@ def main() -> None:
             CallbackQueryHandler(handlers.delete_persona_button_callback, pattern='^delete_persona_')
             ],
         states={
-            # State for awaiting confirmation button press
             handlers.DELETE_PERSONA_CONFIRM: [
-                CallbackQueryHandler(handlers.delete_persona_confirmed, pattern='^delete_persona_confirm_'), # Confirm delete
-                CallbackQueryHandler(handlers.delete_persona_cancel, pattern='^delete_persona_cancel$')      # Cancel delete
+                CallbackQueryHandler(handlers.delete_persona_confirmed, pattern='^delete_persona_confirm_'),
+                CallbackQueryHandler(handlers.delete_persona_cancel, pattern='^delete_persona_cancel$')
                 ]
         },
         fallbacks=[
-            CommandHandler('cancel', handlers.delete_persona_cancel), # Cancel via command
-            CallbackQueryHandler(handlers.delete_persona_cancel, pattern='^delete_persona_cancel$') # Cancel via button (redundant but safe)
+            CommandHandler('cancel', handlers.delete_persona_cancel),
+            CallbackQueryHandler(handlers.delete_persona_cancel, pattern='^delete_persona_cancel$')
             ],
-        per_message=False, # One conversation per user+chat
+        per_message=False,
         name="delete_persona_conversation",
-        conversation_timeout=timedelta(minutes=5).total_seconds() # Shorter timeout for confirmation
+        conversation_timeout=timedelta(minutes=5).total_seconds()
     )
     logger.info("Conversation Handlers configured.")
 
@@ -557,17 +507,18 @@ def main() -> None:
     application.add_handler(CommandHandler("menu", handlers.menu_command))
     application.add_handler(CommandHandler("profile", handlers.profile))
     application.add_handler(CommandHandler("subscribe", handlers.subscribe))
-    application.add_handler(CommandHandler("placeholders", handlers.placeholders_command)) # Re-added placeholders command
+    # --- REMOVED placeholders command ---
+    # application.add_handler(CommandHandler("placeholders", handlers.placeholders_command))
 
     # Persona Management Commands
     application.add_handler(CommandHandler("createpersona", handlers.create_persona))
     application.add_handler(CommandHandler("mypersonas", handlers.my_personas))
 
-    # Add Conversation Handlers (should generally come before broad handlers like CallbackQueryHandler)
+    # Add Conversation Handlers
     application.add_handler(edit_persona_conv_handler)
     application.add_handler(delete_persona_conv_handler)
 
-    # In-Chat Commands (for interacting with active persona)
+    # In-Chat Commands
     application.add_handler(CommandHandler("addbot", handlers.add_bot_to_chat))
     application.add_handler(CommandHandler("mood", handlers.mood))
     application.add_handler(CommandHandler("reset", handlers.reset))
@@ -575,14 +526,13 @@ def main() -> None:
     application.add_handler(CommandHandler("unmutebot", handlers.unmute_bot))
 
     # Message Handlers (ensure correct filters and order)
-    # Handle specific media types first
     application.add_handler(MessageHandler(filters.PHOTO & ~filters.COMMAND, handlers.handle_photo))
     application.add_handler(MessageHandler(filters.VOICE & ~filters.COMMAND, handlers.handle_voice))
-    # Handle general text messages last among message types
+    # Text handler should be after specific media handlers if they are exclusive
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.handle_message))
 
-    # General Callback Query Handler (for buttons *not* part of conversations)
-    # Place this after conversation handlers to ensure conversation callbacks are prioritized
+    # General Callback Query Handler (for buttons *not* in conversations)
+    # Ensure this is added *after* ConversationHandlers if patterns might overlap
     application.add_handler(CallbackQueryHandler(handlers.handle_callback_query))
 
     # Error Handler (should be last)
@@ -593,9 +543,9 @@ def main() -> None:
     # --- Start Bot ---
     logger.info("Starting bot polling...")
     application.run_polling(
-        allowed_updates=Update.ALL_TYPES, # Process all update types
-        drop_pending_updates=True, # Good for development, consider False for production
-        timeout=30, # Increase polling timeout for reading updates
+        allowed_updates=Update.ALL_TYPES,
+        drop_pending_updates=True, # Good for development, consider False for production if needed
+        timeout=30, # Increase polling timeout
     )
     logger.info("----- Bot Stopped -----")
 
