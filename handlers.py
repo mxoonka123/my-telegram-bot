@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session, joinedload, selectinload
 from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy import func
+from sqlalchemy import delete
 
 from yookassa import Configuration as YookassaConfig, Payment
 from yookassa.domain.models.currency import Currency
@@ -1802,8 +1803,10 @@ async def add_bot_to_chat(update: Update, context: ContextTypes.DEFAULT_TYPE, pe
                     await reply_target.reply_text(already_active_msg_plain, reply_markup=ReplyKeyboardRemove(), parse_mode=None)
 
                     logger.info(f"Clearing context for already active persona {persona.name} in chat {chat_id_str} on re-add.")
-                    deleted_ctx_result = existing_active_link.context.delete(synchronize_session='fetch')
-                    deleted_ctx = deleted_ctx_result if isinstance(deleted_ctx_result, int) else 0
+                    # Правильное удаление контекста для dynamic relationship
+                    stmt = delete(ChatContext).where(ChatContext.chat_bot_instance_id == existing_active_link.id)
+                    delete_result = db.execute(stmt)
+                    deleted_ctx = delete_result.rowcount # Получаем количество удаленных строк
                     db.commit()
                     logger.debug(f"Cleared {deleted_ctx} context messages for re-added ChatBotInstance {existing_active_link.id}.")
                     return
