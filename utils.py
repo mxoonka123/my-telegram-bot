@@ -85,8 +85,8 @@ def extract_gif_links(text: str) -> List[str]:
     return list(dict.fromkeys(valid_links))
 
 
-def postprocess_response(response: str) -> List[str]:
-    """Splits the bot's response into suitable message parts."""
+def postprocess_response(response: str, max_messages: int = 3) -> List[str]:
+    """Splits the bot's response into suitable message parts, prioritizing newlines."""
     if not response or not isinstance(response, str):
         return []
 
@@ -94,52 +94,81 @@ def postprocess_response(response: str) -> List[str]:
     response = re.sub(r'\s+', ' ', response).strip().strip('_*`')
     if not response: return []
 
-    # 2. Split by sentence-ending punctuation followed by space or end-of-string.
-    #    Keep the delimiters. Use lookbehind. Handle multiple delimiters.
-    sentences = re.split(r'(?<=[.!?…])\s*', response) # Split after delimiter and optional space
+    # --- НОВАЯ ЛОГИКА: Приоритет \n ---
+    # 2. Сначала пробуем разбить по двойному переносу строки (частый маркер сообщений)
+    parts = [p.strip() for p in response.split('\n\n') if p.strip()]
+    if len(parts) > 1:
+        logger.debug(f"Split by '\\n\\n' into {len(parts)} parts.")
+    else:
+        # 3. Если двойной перенос не сработал, пробуем по одинарному
+        parts = [p.strip() for p in response.split('\n') if p.strip()]
+        if len(parts) > 1:
+            logger.debug(f"Split by '\\n' into {len(parts)} parts.")
+        else:
+            # 4. Если и одинарный не сработал, используем старую логику по предложениям
+            logger.debug("Splitting by sentences as fallback.")
+            sentences = re.split(r'(?<=[.!?…])\s+', response)
+            parts = [s.strip() for s in sentences if s.strip()]
+            if not parts: # Если даже по предложениям не разбилось
+                parts = [response] # Возвращаем исходный текст как одну часть
+    # --- КОНЕЦ НОВОЙ ЛОГИКИ ---
 
-    # 3. Merge sentences into messages, respecting length limits
+    # 5. Объединяем/Обрезаем части, если их больше чем max_messages
     merged_messages = []
     current_message = ""
-    max_length = 4000 # Telegram's approximate limit, reduced for safety
-    ideal_length = 300 # Try to keep messages shorter for readability
+    max_length = 4000 # Telegram limit
+    ideal_length = 1000 # Try to keep messages reasonably short
 
-    for sentence in sentences:
-        sentence = sentence.strip()
-        if not sentence: continue
+    for part in parts:
+        if not part: continue
 
-        # Check length BEFORE adding space
-        potential_len = len(current_message) + len(sentence) + (1 if current_message else 0)
-
+        # Если текущее сообщение пустое, просто начинаем его
         if not current_message:
-            # Start new message if current is empty
-            current_message = sentence
-        elif potential_len <= ideal_length:
-            # Append if fits within ideal length
-            current_message += " " + sentence
-        elif len(sentence) < ideal_length // 2 and potential_len <= max_length:
-             # Append short sentences if total doesn't exceed max
-             current_message += " " + sentence
+            current_message = part
+        # Если добавление следующей части не превышает идеальную длину
+        elif len(current_message) + len(part) + 1 <= ideal_length:
+            current_message += "\n" + part # Используем \n для соединения частей, если объединяем
+        # Если добавление превышает идеальную, но не максимальную, и частей мало
+        elif len(merged_messages) < max_messages - 1 and len(current_message) + len(part) + 1 <= max_length:
+             # Завершаем текущее, начинаем новое
+             merged_messages.append(current_message)
+             current_message = part
+        # Если превышает максимальную или уже набрали достаточно сообщений
         else:
-            # Sentence is too long or makes current message too long
-            # Finish the current message and start a new one
+            # Завершаем текущее, начинаем новое
             merged_messages.append(current_message)
-            current_message = sentence
+            current_message = part
 
-        # Force split if current message exceeds max length (should be rare with above logic)
-        if len(current_message) > max_length:
-             # Find a good split point (e.g., space) near the max length
-             split_point = current_message.rfind(' ', 0, max_length)
-             if split_point == -1: split_point = max_length # Force split if no space found
+        # Принудительное разделение, если current_message слишком длинное
+        while len(current_message) > max_length:
+            split_point = current_message.rfind('\n', 0, max_length) # Ищем последний перенос строки
+            if split_point == -1:
+                split_point = current_message.rfind('.', 0, max_length) # Ищем точку
+            if split_point == -1:
+                split_point = current_message.rfind(' ', 0, max_length) # Ищем пробел
+            if split_point == -1:
+                split_point = max_length # Крайний случай
 
-             merged_messages.append(current_message[:split_point].strip())
-             current_message = current_message[split_point:].strip()
+            merged_messages.append(current_message[:split_point].strip())
+            current_message = current_message[split_point:].strip()
+            if len(merged_messages) >= max_messages: # Прекращаем, если достигли лимита
+                 current_message = "" # Обнуляем остаток
+                 break
 
-    # Add the last part
-    if current_message:
+    # Добавляем последнюю часть, если она есть и лимит не достигнут
+    if current_message and len(merged_messages) < max_messages:
         merged_messages.append(current_message)
 
-    # Final cleanup
+    # 6. Окончательная очистка и возврат
     final_messages = [msg.strip() for msg in merged_messages if msg.strip()]
 
-    return final_messages if final_messages else [response] # Fallback to single message
+    # Обрезаем до max_messages, если все еще больше (на всякий случай)
+    if len(final_messages) > max_messages:
+        logger.warning(f"Postprocess still resulted in {len(final_messages)} parts, trimming to {max_messages}.")
+        final_messages = final_messages[:max_messages]
+        # Можно добавить "..." к последнему сообщению, если нужно
+        if final_messages:
+            final_messages[-1] = final_messages[-1].rstrip('. ') + "..."
+
+
+    return final_messages if final_messages else ([response] if response else []) # Возвращаем исходное, если ничего не получилось
