@@ -3653,7 +3653,9 @@ async def _start_delete_convo(update: Update, context: ContextTypes.DEFAULT_TYPE
     chat_id = effective_target.chat.id
     is_callback = update.callback_query is not None
     reply_target = update.callback_query.message if is_callback else update.effective_message
+    logger.info(f"--- _start_delete_convo: User={user_id}, PersonaID={persona_id}, IsCallback={is_callback} ---") # <--- ЛОГ
 
+    # ... (проверка подписки, chat action) ...
     if not is_callback:
         if not await check_channel_subscription(update, context):
             await send_subscription_required_message(update, context)
@@ -3662,6 +3664,7 @@ async def _start_delete_convo(update: Update, context: ContextTypes.DEFAULT_TYPE
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
     context.user_data.clear()
 
+    # Сообщения для пользователя
     error_not_found_fmt_raw = "❌ личность с id `{id}` не найдена или не твоя."
     prompt_delete_fmt_raw = "🚨 *ВНИМАНИЕ\\!* 🚨\nудалить личность '{name}' \\(ID: `{id}`\\)?\n\nэто действие *НЕОБРАТИМО\\!*"
     error_db = escape_markdown_v2("❌ ошибка базы данных.")
@@ -3669,17 +3672,20 @@ async def _start_delete_convo(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     try:
         with next(get_db()) as db:
+            logger.debug(f"Fetching PersonaConfig {persona_id} for owner {user_id}...") # <--- ЛОГ
             persona_config = db.query(PersonaConfig).options(selectinload(PersonaConfig.owner)).filter(
                 PersonaConfig.id == persona_id,
                 PersonaConfig.owner.has(User.telegram_id == user_id)
             ).first()
 
             if not persona_config:
+                 logger.warning(f"Persona {persona_id} not found or not owned by user {user_id}.") # <--- ЛОГ
                  final_error_msg = error_not_found_fmt_raw.format(id=persona_id)
                  if is_callback: await update.callback_query.answer("Личность не найдена", show_alert=True)
                  await reply_target.reply_text(final_error_msg, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
                  return ConversationHandler.END
 
+            logger.debug(f"Persona found: {persona_config.name}. Storing ID in user_data.") # <--- ЛОГ
             context.user_data['delete_persona_id'] = persona_id
             persona_name_display = persona_config.name[:20] + "..." if len(persona_config.name) > 20 else persona_config.name
             keyboard = [
@@ -3688,6 +3694,8 @@ async def _start_delete_convo(update: Update, context: ContextTypes.DEFAULT_TYPE
              ]
             reply_markup = InlineKeyboardMarkup(keyboard)
             msg_text = prompt_delete_fmt_raw.format(name=escape_markdown_v2(persona_config.name), id=persona_id)
+
+            logger.debug(f"Sending confirmation message for persona {persona_id}.") # <--- ЛОГ
             if is_callback:
                  query = update.callback_query
                  try:
@@ -3704,7 +3712,7 @@ async def _start_delete_convo(update: Update, context: ContextTypes.DEFAULT_TYPE
             else:
                  await reply_target.reply_text(msg_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
 
-            logger.info(f"User {user_id} initiated delete for persona {persona_id}. Asking confirmation.")
+            logger.info(f"User {user_id} initiated delete for persona {persona_id}. Asking confirmation. Returning state DELETE_PERSONA_CONFIRM.") # <--- ЛОГ
             return DELETE_PERSONA_CONFIRM
     except SQLAlchemyError as e:
          logger.error(f"Database error starting delete persona {persona_id}: {e}", exc_info=True)
@@ -3763,69 +3771,86 @@ async def delete_persona_confirmed(update: Update, context: ContextTypes.DEFAULT
 
     data = query.data
     user_id = query.from_user.id
-    persona_id = context.user_data.get('delete_persona_id')
+    persona_id_from_data = None
+    try:
+        persona_id_from_data = int(data.split('_')[-1])
+    except (IndexError, ValueError):
+        logger.error(f"Could not parse persona_id from delete confirmation callback data: {data}")
+        await query.answer("❌ Ошибка данных", show_alert=True)
+        # return DELETE_PERSONA_CONFIRM # Остаемся в том же состоянии или END? Лучше END
+        return ConversationHandler.END
+
+    persona_id_from_state = context.user_data.get('delete_persona_id')
     chat_id = query.message.chat.id
 
-    logger.info(f"--- delete_persona_confirmed: User={user_id}, PersonaID={persona_id}, Data={data} ---")
+    logger.info(f"--- delete_persona_confirmed: User={user_id}, Data={data}, ID_from_data={persona_id_from_data}, ID_from_state={persona_id_from_state} ---") # <--- ЛОГ
 
+    # Сообщения об ошибках
     error_no_session = escape_markdown_v2("❌ ошибка: неверные данные для удаления или сессия потеряна\\. начни снова \\(/mypersonas\\)\\.")
     error_delete_failed = escape_markdown_v2("❌ не удалось удалить личность \\(ошибка базы данных\\)\\.")
     success_deleted_fmt_raw = "✅ личность '{name}' удалена."
 
-    expected_pattern = f"delete_persona_confirm_{persona_id}"
-    if not persona_id or data != expected_pattern:
-         logger.warning(f"User {user_id}: Mismatch or missing ID in delete_persona_confirmed. ID='{persona_id}', Data='{data}'")
+    # Проверяем совпадение ID из данных кнопки и из состояния пользователя
+    if not persona_id_from_state or persona_id_from_data != persona_id_from_state:
+         logger.warning(f"User {user_id}: Mismatch or missing ID in delete_persona_confirmed. State='{persona_id_from_state}', Callback='{persona_id_from_data}'") # <--- ЛОГ
          await query.answer("❌ Ошибка сессии", show_alert=True)
          await context.bot.send_message(chat_id, error_no_session, reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2)
          context.user_data.clear()
          return ConversationHandler.END
 
     await query.answer("Удаляем...")
-    logger.warning(f"User {user_id} CONFIRMED DELETION of persona {persona_id}.")
+    logger.warning(f"User {user_id} CONFIRMED DELETION of persona {persona_id_from_state}.") # <--- ЛОГ
     deleted_ok = False
-    persona_name_deleted = f"ID {persona_id}"
+    persona_name_deleted = f"ID {persona_id_from_state}"
 
     try:
         with next(get_db()) as db:
+             logger.debug(f"Fetching user {user_id} from DB...") # <--- ЛОГ
              user = db.query(User).filter(User.telegram_id == user_id).first()
              if not user:
-                  logger.error(f"User {user_id} not found in DB during persona deletion.")
+                  logger.error(f"User {user_id} not found in DB during persona deletion.") # <--- ЛОГ
                   await context.bot.send_message(chat_id, escape_markdown_v2("❌ Ошибка: пользователь не найден."), reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2)
                   context.user_data.clear()
                   return ConversationHandler.END
 
-             persona_to_delete = db.query(PersonaConfig).filter(PersonaConfig.id == persona_id, PersonaConfig.owner_id == user.id).first()
-             if persona_to_delete:
-                 persona_name_deleted = persona_to_delete.name
-                 logger.info(f"Found persona '{persona_name_deleted}' (ID: {persona_id}) for deletion.")
+             # --- ВАЖНО: Передаем user.id (внутренний ID), а не user_id (telegram ID) ---
+             logger.info(f"Calling db.delete_persona_config with persona_id={persona_id_from_state}, owner_id={user.id}") # <--- ЛОГ
+             deleted_ok = delete_persona_config(db, persona_id_from_state, user.id)
+             logger.info(f"db.delete_persona_config returned: {deleted_ok}") # <--- ЛОГ
+
+             # Получаем имя для сообщения об успехе/неудаче (если еще не удалено)
+             if deleted_ok:
+                 # Имя уже могло быть удалено, используем ID
+                 persona_name_deleted = f"ID {persona_id_from_state}" # Безопаснее использовать ID
              else:
-                 logger.warning(f"Persona {persona_id} not found for user {user.id} just before calling delete function (might be already deleted).")
-
-             deleted_ok = delete_persona_config(db, persona_id, user.id)
-
-             if not deleted_ok and not persona_to_delete:
-                 logger.warning(f"Persona {persona_id} was not found by delete_persona_config (likely already deleted). Treating as success.")
-                 deleted_ok = True
+                 # Попробуем получить имя, если вдруг удаление не прошло, но личность есть
+                 persona_maybe = db.query(PersonaConfig.name).filter(PersonaConfig.id == persona_id_from_state).scalar()
+                 if persona_maybe:
+                     persona_name_deleted = persona_maybe
 
     except SQLAlchemyError as e:
-        logger.error(f"Database error during delete_persona_confirmed fetch/delete for {persona_id}: {e}", exc_info=True)
+        logger.error(f"Database error during delete_persona_confirmed fetch/delete for {persona_id_from_state}: {e}", exc_info=True) # <--- ЛОГ
         deleted_ok = False
     except Exception as e:
-        logger.error(f"Unexpected error during delete_persona_confirmed for {persona_id}: {e}", exc_info=True)
+        logger.error(f"Unexpected error during delete_persona_confirmed for {persona_id_from_state}: {e}", exc_info=True) # <--- ЛОГ
         deleted_ok = False
 
     if deleted_ok:
         final_success_msg = success_deleted_fmt_raw.format(name=escape_markdown_v2(persona_name_deleted))
+        logger.info(f"Sending success message for deletion of persona {persona_id_from_state}") # <--- ЛОГ
         try:
             await query.edit_message_text(final_success_msg, reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2)
         except Exception as e:
             logger.error(f"Failed to edit message with deletion success: {e}")
     else:
+        logger.warning(f"Sending failure message for deletion of persona {persona_id_from_state}") # <--- ЛОГ
         try:
+            # Используем имя, которое было до попытки удаления, если оно есть
             await query.edit_message_text(error_delete_failed, reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2)
         except Exception as e:
             logger.error(f"Failed to edit message with deletion failure: {e}")
 
+    logger.debug("Clearing user_data and ending delete conversation.") # <--- ЛОГ
     context.user_data.clear()
     return ConversationHandler.END
 
