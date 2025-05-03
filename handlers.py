@@ -828,7 +828,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
             if not should_ai_respond:
                  logger.debug(f"Decided not to respond based on should_respond logic or preference.")
-                 db.commit()
+                 # --- COMMIT IF NEEDED --- #
+                 # Commit if limit state or user message context was added, but we are exiting early
+                 if limit_state_updated or context_user_msg_added or context_ai_decision_added:
+                     try:
+                         logger.debug("Committing limit/context updates before exiting due to no-response decision.")
+                         db.commit()
+                     except SQLAlchemyError as commit_err:
+                         logger.error(f"Failed to commit before exiting on no-response decision: {commit_err}", exc_info=True)
+                         db.rollback() # Rollback on commit failure
+                 # --- END COMMIT IF NEEDED --- #
                  return
 
             # --- Build final context for the main AI response --- 
@@ -867,7 +876,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 # Send the simple error message to the user (no Markdown)
                 await update.message.reply_text(response_text, parse_mode=None)
                 # Commit any pending changes (like user message or decision)
-                db.commit()
+                # --- COMMIT IF NEEDED (before error exit) --- #
+                if limit_state_updated or context_user_msg_added or context_ai_decision_added:
+                    try:
+                        logger.debug("Committing limit/context updates before exiting due to Langdock error.")
+                        db.commit()
+                    except SQLAlchemyError as commit_err:
+                        logger.error(f"Failed to commit before exiting on Langdock error: {commit_err}", exc_info=True)
+                        db.rollback()
+                # --- END COMMIT --- #
                 return
 
             logger.debug(f"Received main response from Langdock: {response_text[:100]}...")
@@ -876,21 +893,29 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 update, context, chat_id_str, persona, response_text, db, reply_to_message_id=message_id
             )
 
-            db.commit()
-            logger.debug(f"Committed DB changes for handle_message chat {chat_id_str} (LimitUpdated: {limit_state_updated}, UserMsgAdded: {context_user_msg_added}, AIDecisionAdded: {context_ai_decision_added}, BotRespAdded: {context_response_prepared})")
+            # --- FINAL COMMIT --- #
+            # Commit everything together if successful
+            try:
+                db.commit()
+                logger.debug(f"Committed DB changes for handle_message chat {chat_id_str} (LimitUpdated: {limit_state_updated}, UserMsgAdded: {context_user_msg_added}, AIDecisionAdded: {context_ai_decision_added}, BotRespAdded: {context_response_prepared})")
+            except SQLAlchemyError as final_commit_err:
+                 logger.error(f"FINAL COMMIT FAILED in handle_message: {final_commit_err}", exc_info=True)
+                 db.rollback() # Rollback on final commit failure
+            # --- END FINAL COMMIT --- #
 
         except SQLAlchemyError as e:
              logger.error(f"Database error during handle_message for chat {chat_id_str}: {e}", exc_info=True)
              try: await update.message.reply_text("❌ ошибка базы данных, попробуйте позже.", parse_mode=None)
              except Exception: pass
-             db.rollback()
+             db.rollback() # Ensure rollback on SQLAlchemyError
         except TelegramError as e:
              logger.error(f"Telegram API error during handle_message for chat {chat_id_str}: {e}", exc_info=True)
+             # No DB rollback needed here unless a DB operation caused it, which would be caught above
         except Exception as e:
             logger.error(f"General error processing message in chat {chat_id_str}: {e}", exc_info=True)
             try: await update.message.reply_text("❌ произошла непредвиденная ошибка.", parse_mode=None)
             except Exception: pass
-            db.rollback()
+            db.rollback() # Ensure rollback on general exceptions that might involve DB state
 
 
 async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media_type: str) -> None:
