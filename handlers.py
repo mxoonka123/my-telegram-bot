@@ -21,11 +21,11 @@ from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy import func
 
-from yookassa import Configuration, Payment
+from yookassa import Configuration as YookassaConfig, Payment
 from yookassa.domain.models.currency import Currency
 from yookassa.domain.request.payment_request_builder import PaymentRequestBuilder
 from yookassa.domain.models.receipt import Receipt, ReceiptItem
-from yookassa.domain.models.configuration import Configuration as YookassaConfig
+
 
 import config
 from config import (
