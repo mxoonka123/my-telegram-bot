@@ -507,8 +507,9 @@ def get_persona_by_id_and_owner(db: Session, owner_telegram_id: int, persona_id:
 
 def delete_persona_config(db: Session, persona_id: int, owner_id: int) -> bool:
     """Deletes a PersonaConfig by its ID and owner's internal ID, and commits."""
-    logger.warning(f"Attempting to delete PersonaConfig {persona_id} owned by User ID {owner_id}")
+    logger.warning(f"--- delete_persona_config: Attempting to delete PersonaConfig ID={persona_id} owned by User ID={owner_id} ---")
     try:
+        logger.debug(f"Querying for PersonaConfig id={persona_id} owner_id={owner_id} with_for_update...")
         persona = db.query(PersonaConfig).filter(
             PersonaConfig.id == persona_id,
             PersonaConfig.owner_id == owner_id
@@ -516,16 +517,23 @@ def delete_persona_config(db: Session, persona_id: int, owner_id: int) -> bool:
 
         if persona:
             persona_name = persona.name
-            logger.info(f"Deleting PersonaConfig {persona_id} ('{persona_name}')...")
+            logger.info(f"Found PersonaConfig {persona_id} ('{persona_name}'). Proceeding with deletion.")
             db.delete(persona)
+            logger.debug(f"Called db.delete() for persona {persona_id}. Attempting commit...")
             db.commit()
-            logger.info(f"Successfully deleted PersonaConfig {persona_id} (Name: '{persona_name}')")
+            logger.info(f"Successfully committed deletion of PersonaConfig {persona_id} (Name: '{persona_name}')")
             return True
         else:
             logger.warning(f"PersonaConfig {persona_id} not found or not owned by User ID {owner_id} for deletion.")
             return False
     except SQLAlchemyError as e:
-        logger.error(f"Failed to commit deletion of PersonaConfig {persona_id}: {e}", exc_info=True)
+        logger.error(f"SQLAlchemyError during commit/delete of PersonaConfig {persona_id}: {e}", exc_info=True)
+        logger.debug(f"Rolling back transaction for persona {persona_id} deletion.")
+        db.rollback()
+        return False
+    except Exception as e:
+        logger.error(f"Unexpected error during delete_persona_config for {persona_id}: {e}", exc_info=True)
+        logger.debug(f"Rolling back transaction for persona {persona_id} deletion due to unexpected error.")
         db.rollback()
         return False
 
