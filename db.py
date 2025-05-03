@@ -294,6 +294,8 @@ def initialize_database():
             "pool_timeout": 30,
             "pool_recycle": 1800, # Recycle connections every 30 mins
             "pool_pre_ping": True,
+            "executemany_mode": "values", # Recommended with psycopg3
+            "use_prepared_statements": False # Disable prepared statements
         })
 
     try:
