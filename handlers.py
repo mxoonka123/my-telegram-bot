@@ -493,41 +493,11 @@ async def process_and_send_response(
         all_text_content = re.sub(r'\s*' + re.escape(gif) + r'\s*', " ", all_text_content, flags=re.IGNORECASE).strip()
     all_text_content = re.sub(r'\s{2,}', ' ', all_text_content).strip()
 
-    text_parts_to_send = postprocess_response(all_text_content)
-    logger.debug(f"Initial split using postprocess_response resulted in {len(text_parts_to_send)} parts.")
-
-    # Determine max messages from settings
-    max_messages_setting = persona.config.max_response_messages if persona.config else 0
-    max_messages = 3 # Default value if something is wrong
-
-    if max_messages_setting <= 0: # 0 or negative means "Random"
-        max_messages = random.randint(1, 3) # Random number from 1 to 3
-        logger.debug(f"Max messages set to Random. Chosen: {max_messages}")
-    elif 1 <= max_messages_setting <= 10:
-        max_messages = max_messages_setting
-        logger.debug(f"Max messages set to {max_messages} from config.")
-    else: # If value is incorrect, use default
-        logger.warning(f"Invalid max_response_messages value ({max_messages_setting}) for persona {persona.id}. Using default: {max_messages}")
-
-    # --- NEW: Secondary split by newline if needed and requested --- 
-    if max_messages > 1 and len(text_parts_to_send) == 1 and '\n' in text_parts_to_send[0]:
-        original_part = text_parts_to_send[0]
-        newline_split_parts = [part.strip() for part in original_part.split('\n') if part.strip()]
-        if len(newline_split_parts) > 1:
-            text_parts_to_send = newline_split_parts
-            logger.info(f"postprocess_response gave 1 part, but max_messages > 1. Split by newline into {len(text_parts_to_send)} parts.")
-    # --- End of NEW logic --- 
-
-    if len(text_parts_to_send) > max_messages:
-        logger.info(f"Limiting response parts from {len(text_parts_to_send)} to {max_messages} for persona {persona.name}")
-        text_parts_to_send = text_parts_to_send[:max_messages]
-        if text_parts_to_send:
-             ellipsis_raw = "..."
-             last_part = text_parts_to_send[-1].rstrip('. ')
-             if last_part and isinstance(last_part, str):
-                text_parts_to_send[-1] = f"{last_part}{ellipsis_raw}"
-             else:
-                text_parts_to_send[-1] = ellipsis_raw
+    # --- ИСПОЛЬЗУЕМ ОБНОВЛЕННЫЙ postprocess_response ---
+    # Передаем max_messages в функцию postprocess_response
+    text_parts_to_send = postprocess_response(all_text_content, max_messages)
+    logger.debug(f"postprocess_response (with max_messages={max_messages}) resulted in {len(text_parts_to_send)} parts.")
+    # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
     send_tasks = []
     first_message_sent = False
