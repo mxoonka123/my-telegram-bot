@@ -619,6 +619,7 @@ def link_bot_instance_to_chat(db: Session, bot_instance_id: int, chat_id: Union[
     """Links a BotInstance to a chat. Creates or reactivates the link. Commits the change."""
     chat_link = None
     chat_id_str = str(chat_id)
+    created_new = False # Flag to check if we created a new link
     try:
         chat_link = db.query(ChatBotInstance).filter(
             ChatBotInstance.chat_id == chat_id_str,
@@ -628,7 +629,7 @@ def link_bot_instance_to_chat(db: Session, bot_instance_id: int, chat_id: Union[
         if chat_link:
             needs_commit = False
             if not chat_link.active:
-                 logger.info(f"Reactivating existing ChatBotInstance {chat_link.id} for bot {bot_instance_id} in chat {chat_id_str}")
+                 logger.info(f"[link_bot_instance] Reactivating existing ChatBotInstance {chat_link.id} for bot {bot_instance_id} in chat {chat_id_str}")
                  chat_link.active = True
                  chat_link.current_mood = "нейтрально"
                  chat_link.is_muted = False
@@ -636,17 +637,21 @@ def link_bot_instance_to_chat(db: Session, bot_instance_id: int, chat_id: Union[
                  # Clear context on reactivation
                  deleted_ctx_result = chat_link.context.delete(synchronize_session='fetch')
                  deleted_ctx = deleted_ctx_result if isinstance(deleted_ctx_result, int) else 0
-                 logger.debug(f"Cleared {deleted_ctx} context messages for reactivated ChatBotInstance {chat_link.id}.")
+                 logger.debug(f"[link_bot_instance] Cleared {deleted_ctx} context messages for reactivated ChatBotInstance {chat_link.id}.")
             else:
-                logger.info(f"ChatBotInstance link for bot {bot_instance_id} in chat {chat_id_str} is already active. Clearing context on re-add request.")
+                logger.info(f"[link_bot_instance] ChatBotInstance link for bot {bot_instance_id} in chat {chat_id_str} is already active. Clearing context on re-add request.")
                 deleted_ctx_result = chat_link.context.delete(synchronize_session='fetch')
                 deleted_ctx = deleted_ctx_result if isinstance(deleted_ctx_result, int) else 0
-                logger.debug(f"Cleared {deleted_ctx} context messages for already active ChatBotInstance {chat_link.id}.")
-                needs_commit = True
+                logger.debug(f"[link_bot_instance] Cleared {deleted_ctx} context messages for already active ChatBotInstance {chat_link.id}.")
+                needs_commit = True # Still commit to save the context deletion
 
-            if needs_commit: db.commit()
+            if needs_commit: 
+                logger.debug(f"[link_bot_instance] Committing changes for existing link ID {chat_link.id}. Active: {chat_link.active}")
+                db.commit()
+                logger.debug(f"[link_bot_instance] Commit successful for existing link ID {chat_link.id}.")
         else:
-            logger.info(f"Creating new ChatBotInstance link for bot {bot_instance_id} in chat {chat_id_str}")
+            logger.info(f"[link_bot_instance] Creating new ChatBotInstance link for bot {bot_instance_id} in chat {chat_id_str}")
+            created_new = True
             chat_link = ChatBotInstance(
                 chat_id=chat_id_str,
                 bot_instance_id=bot_instance_id,
@@ -655,10 +660,33 @@ def link_bot_instance_to_chat(db: Session, bot_instance_id: int, chat_id: Union[
                 is_muted=False
             )
             db.add(chat_link)
+            logger.debug(f"[link_bot_instance] Added new link to session. Active: {chat_link.active}. Attempting commit...")
             db.commit() # Commit the new link
+            logger.debug(f"[link_bot_instance] Commit successful for new link. Assigned ID: {chat_link.id}")
 
-        if chat_link:
+        if chat_link and chat_link.id: # Ensure ID is assigned after commit
             db.refresh(chat_link)
+            logger.debug(f"[link_bot_instance] Refreshed link state. ID: {chat_link.id}, Active: {chat_link.active}")
+            # --- Verification Query --- 
+            # Verify immediately after commit/refresh within the same function
+            verification_instance = db.query(ChatBotInstance).filter(
+                 ChatBotInstance.id == chat_link.id,
+                 ChatBotInstance.active == True # Explicitly check active=True here
+            ).first()
+            if verification_instance:
+                logger.info(f"[link_bot_instance] VERIFICATION SUCCESS: Found active ChatBotInstance ID {verification_instance.id} immediately after commit/refresh.")
+            else:
+                 logger.error(f"[link_bot_instance] VERIFICATION FAILED: Could NOT find active ChatBotInstance ID {chat_link.id} immediately after commit/refresh! Active status might be wrong or commit failed silently.")
+                 # Check if it exists but is inactive
+                 inactive_check = db.query(ChatBotInstance).filter(ChatBotInstance.id == chat_link.id).first()
+                 if inactive_check:
+                     logger.error(f"[link_bot_instance] VERIFICATION INFO: Instance ID {chat_link.id} EXISTS but its active status is {inactive_check.active}.")
+                 else:
+                     logger.error(f"[link_bot_instance] VERIFICATION INFO: Instance ID {chat_link.id} does NOT exist at all after commit.")
+            # --- End Verification Query ---
+        else:
+            logger.error("[link_bot_instance] chat_link object is None or has no ID after commit attempt.")
+
         return chat_link
 
     except IntegrityError as e:
@@ -698,33 +726,35 @@ def unlink_bot_instance_from_chat(db: Session, chat_id: Union[str, int], bot_ins
 def get_active_chat_bot_instance_with_relations(db: Session, chat_id: Union[str, int]) -> Optional[ChatBotInstance]:
     """Fetches the active ChatBotInstance for a chat, loading related objects efficiently."""
     chat_id_str = str(chat_id)
-    logger.debug(f"[get_active_chat_bot_instance] Searching for active instance in chat_id='{chat_id_str}'") # Log input
+    logger.debug(f"[get_active_chat_bot_instance] Searching for instance in chat_id='{chat_id_str}'") # Log input
+    instance = None
     try:
-        # --- TEMPORARILY REMOVED .options() FOR DEBUGGING --- 
+        # --- Check for ANY instance first (active or inactive) --- 
+        any_instance = db.query(ChatBotInstance).filter(ChatBotInstance.chat_id == chat_id_str).first()
+        if any_instance and not any_instance.active:
+            logger.warning(f"[get_active_chat_bot_instance] Found an INACTIVE instance for chat_id='{chat_id_str}' (ID: {any_instance.id}). This might be the issue.")
+        elif not any_instance:
+             logger.warning(f"[get_active_chat_bot_instance] No instance (active or inactive) found at all for chat_id='{chat_id_str}'.")
+        # --- End check --- 
+
+        # Now query specifically for the active one, restoring options
         instance = db.query(ChatBotInstance)\
+            .options( # Restore options
+                selectinload(ChatBotInstance.bot_instance_ref) 
+                .selectinload(BotInstance.persona_config)      
+                .selectinload(PersonaConfig.owner),            
+                selectinload(ChatBotInstance.bot_instance_ref)
+                .selectinload(BotInstance.owner)               
+            )\
             .filter(ChatBotInstance.chat_id == chat_id_str, ChatBotInstance.active == True)\
             .first()
-        # --- END TEMPORARY CHANGE ---
         
         # --- Log --- 
         if instance:
-            # If found, we need to manually load relations now for subsequent code
-            logger.debug(f"[get_active_chat_bot_instance] Found active instance (without options): ID={instance.id}, BotInstanceID={instance.bot_instance_id}")
-            # Manually trigger loading of necessary relations if found
-            try:
-                _ = instance.bot_instance_ref # Access to trigger lazy load (or eager load if config allows)
-                if instance.bot_instance_ref:
-                     _ = instance.bot_instance_ref.persona_config
-                     if instance.bot_instance_ref.persona_config:
-                          _ = instance.bot_instance_ref.persona_config.owner
-                     _ = instance.bot_instance_ref.owner
-                logger.debug("[get_active_chat_bot_instance] Manually triggered relation loading.")
-            except Exception as load_err:
-                logger.error(f"[get_active_chat_bot_instance] Error manually loading relations after finding instance: {load_err}", exc_info=True)
-                # Return None if relations fail to load, as the calling code expects them
-                instance = None 
+            logger.debug(f"[get_active_chat_bot_instance] Found ACTIVE instance (with options): ID={instance.id}, BotInstanceID={instance.bot_instance_id}, PersonaID={instance.bot_instance_ref.persona_config_id if instance.bot_instance_ref else 'N/A'}")
         else:
-            logger.warning(f"[get_active_chat_bot_instance] No active instance found for chat_id='{chat_id_str}' using filter (active=True). Query returned None.")
+            # No need for the extra warning here, already checked above if an inactive one exists
+            pass
         # --- End Log ---
         return instance
     except (SQLAlchemyError, ProgrammingError) as e: # Catch ProgrammingError if schema is wrong
