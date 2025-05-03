@@ -1486,7 +1486,8 @@ async def create_persona(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     await context.bot.send_chat_action(chat_id=chat_id_str, action=ChatAction.TYPING)
 
-    usage_text = escape_markdown_v2("формат: `/createpersona <имя> [описание]`\n_имя обязательно, описание нет\\._")
+    # Убираем ручное экранирование \.
+    usage_text = escape_markdown_v2("формат: `/createpersona <имя> [описание]`\n_имя обязательно, описание нет._")
     error_name_len = escape_markdown_v2("❌ имя личности: 2\\-50 символов.")
     error_desc_len = escape_markdown_v2("❌ описание: до 1500 символов.")
     error_limit_reached_fmt_raw = "упс! 😕 достигнут лимит личностей ({current_count}/{limit}) для статуса {status_text}\\. чтобы создавать больше, используй /subscribe"
