@@ -264,13 +264,15 @@ def initialize_database():
     logger.info(f"Initializing database connection pool for: {db_log_url}")
 
     engine_args = {}
-    connect_args_psycopg = {} # <--- Создаем отдельный словарь для connect_args
+    connect_args_psycopg = {} # Словарь для аргументов, передаваемых в psycopg.connect()
 
     db_url_str = DATABASE_URL
 
     if DATABASE_URL.startswith("sqlite"):
+        # Для SQLite connect_args другие
         engine_args["connect_args"] = {"check_same_thread": False}
     elif DATABASE_URL.startswith("postgres"):
+        # --- Логика sslmode (без изменений) ---
         if 'sslmode' not in DATABASE_URL:
             logger.info("Adding sslmode=require to DATABASE_URL for PostgreSQL")
             from sqlalchemy.engine.url import make_url
@@ -288,27 +290,34 @@ def initialize_database():
                  db_url_str = DATABASE_URL # Fallback
         else:
              logger.info("sslmode is explicitly present in DATABASE_URL string.")
+        # --- Конец логики sslmode ---
 
-        # Добавляем настройки psycopg в connect_args_psycopg
+        # --- Настройки для psycopg3 connect() ---
         connect_args_psycopg.update({
-            "executemany_mode": "values",
-            "prepared_statement_cache_size": 0 # Эквивалент отключения кеша prepared statements в psycopg3
-            # 'use_prepared_statements': False - Этот аргумент не для psycopg3, используем кеш=0
+            # Отключаем кеш prepared statements в psycopg3
+            "prepared_statement_cache_size": 0
+            # Сюда можно добавить другие параметры для psycopg.connect, если нужно
         })
+        # --- Конец настроек psycopg3 connect() ---
 
-        # Основные настройки engine остаются в engine_args
+        # --- Настройки для SQLAlchemy create_engine() ---
         engine_args.update({
             "pool_size": 10,
             "max_overflow": 5,
             "pool_timeout": 30,
             "pool_recycle": 1800,
             "pool_pre_ping": True,
+            # executemany_mode - это аргумент create_engine, НЕ connect_args
+            "executemany_mode": "values",
         })
-        # Добавляем connect_args в engine_args, если они есть
+        # --- Конец настроек create_engine() ---
+
+        # Добавляем connect_args в engine_args, только если они есть
         if connect_args_psycopg:
             engine_args["connect_args"] = connect_args_psycopg
 
     try:
+        # Передаем engine_args в create_engine
         engine = create_engine(db_url_str, **engine_args, echo=False)
         SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
         logger.info("Database engine and session maker initialized.")
@@ -327,8 +336,14 @@ def initialize_database():
          else:
              logger.critical(f"FATAL: Database operational error during initialization for {db_log_url}: {e}", exc_info=True)
          raise # Re-raise the critical error
-    except ProgrammingError as e: # Catch errors like wrong password type etc.
-        logger.critical(f"FATAL: Database programming error during initialization for {db_log_url}: {e}", exc_info=True)
+    except ProgrammingError as e: # Ловим ошибки типа неверного пароля и т.д.
+        # --- ДОБАВЛЕНО: Специальная проверка на неверный параметр ---
+        if "invalid connection option" in str(e).lower():
+             logger.critical(f"FATAL: Invalid connection option passed to psycopg3: {e}", exc_info=True)
+             logger.critical("Check the 'connect_args' dictionary in db.py:initialize_database.")
+        # --- КОНЕЦ ДОБАВЛЕНИЯ ---
+        else:
+            logger.critical(f"FATAL: Database programming error during initialization for {db_log_url}: {e}", exc_info=True)
         raise
     except Exception as e:
          logger.critical(f"FATAL: An unexpected error occurred during database initialization for {db_log_url}: {e}", exc_info=True)
