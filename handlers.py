@@ -200,8 +200,9 @@ def is_admin(user_id: int) -> bool:
  # Mood Editing Sub-Conversation States
  EDIT_MOOD_CHOICE, EDIT_MOOD_NAME, EDIT_MOOD_PROMPT, DELETE_MOOD_CONFIRM,
  # Delete Persona Conversation State
- DELETE_PERSONA_CONFIRM
- ) = range(13) # Total 13 states
+ DELETE_PERSONA_CONFIRM,
+ EDIT_MAX_MESSAGES # <-- Новый стейт
+ ) = range(14) # Total 14 states
 
 # --- Terms of Service Text ---
 # (Assuming TOS_TEXT_RAW and TOS_TEXT are defined as before)
@@ -487,9 +488,18 @@ async def process_and_send_response(
     text_parts_to_send = postprocess_response(all_text_content)
     logger.debug(f"Postprocessed text into {len(text_parts_to_send)} parts.")
 
-    max_messages = 3
-    if persona.config and hasattr(persona.config, 'max_response_messages'):
-         max_messages = max(1, persona.config.max_response_messages or 3)
+    # Определяем максимальное количество сообщений из настроек
+    max_messages_setting = persona.config.max_response_messages if persona.config else 0
+    max_messages = 3 # Значение по умолчанию, если что-то не так
+
+    if max_messages_setting <= 0: # 0 или отрицательное значение означает "Случайно"
+        max_messages = random.randint(1, 3) # Случайное число от 1 до 3
+        logger.debug(f"Max messages set to Random. Chosen: {max_messages}")
+    elif 1 <= max_messages_setting <= 10:
+        max_messages = max_messages_setting
+        logger.debug(f"Max messages set to {max_messages} from config.")
+    else: # Если значение некорректное, используем дефолтное
+        logger.warning(f"Invalid max_response_messages value ({max_messages_setting}) for persona {persona.id}. Using default: {max_messages}")
 
     if len(text_parts_to_send) > max_messages:
         logger.info(f"Limiting response parts from {len(text_parts_to_send)} to {max_messages} for persona {persona.name}")
@@ -2569,6 +2579,16 @@ async def _show_edit_wizard_menu(update: Update, context: ContextTypes.DEFAULT_T
     group_reply_map = {"always": "Всегда", "mentioned_only": "По @", "mentioned_or_contextual": "По @ / Контексту", "never": "Никогда"}
     media_react_map = {"all": "Текст+GIF", "text_only": "Только текст", "none": "Никак", "photo_only": "Только фото", "voice_only": "Только голос"}
 
+    # Получаем текущее значение макс. сообщений
+    max_msgs_setting = persona_config.max_response_messages
+    max_msgs_display = str(max_msgs_setting) if max_msgs_setting > 0 else "Случайно (1-3)"
+    if max_msgs_setting == 0: # Используем 0 для "Случайно"
+        max_msgs_display = "Случайно (1-3)"
+    elif max_msgs_setting < 0: # Если вдруг старое значение, тоже считаем случайным
+        max_msgs_display = "Случайно (1-3)"
+    else:
+        max_msgs_display = str(max_msgs_setting)
+
     # Build keyboard with full text
     keyboard = [
         [
@@ -2579,6 +2599,7 @@ async def _show_edit_wizard_menu(update: Update, context: ContextTypes.DEFAULT_T
         [InlineKeyboardButton(f"🗣️ Разговорчивость ({verbosity_map.get(verbosity, '?')})", callback_data="edit_wizard_verbosity")],
         [InlineKeyboardButton(f"👥 Отв. в группе ({group_reply_map.get(group_reply, '?')})", callback_data="edit_wizard_group_reply")],
         [InlineKeyboardButton(f"🖼️ Реакт. на медиа ({media_react_map.get(media_react, '?')})", callback_data="edit_wizard_media_reaction")],
+        [InlineKeyboardButton(f"🗨️ Макс. сообщ. ({max_msgs_display})", callback_data="edit_wizard_max_msgs")], # <-- Новая кнопка
         [InlineKeyboardButton(f"🎭 Настроения{star if not is_premium else ''}", callback_data="edit_wizard_moods")],
         [InlineKeyboardButton("✅ Завершить", callback_data="finish_edit")]
     ]
@@ -2638,6 +2659,8 @@ async def edit_wizard_menu_handler(update: Update, context: ContextTypes.DEFAULT
         return await edit_group_reply_prompt(update, context)
     elif data == "edit_wizard_media_reaction":
         return await edit_media_reaction_prompt(update, context)
+    elif data == "edit_wizard_max_msgs":
+        return await edit_max_messages_prompt(update, context)
     elif data == "edit_wizard_moods":
         with next(get_db()) as db:
             owner = db.query(User).join(PersonaConfig).filter(PersonaConfig.id == persona_id).first()
@@ -3835,3 +3858,71 @@ async def unmute_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             logger.error(f"Unexpected error during /unmutebot for chat {chat_id_str}: {e}", exc_info=True)
             await update.message.reply_text(error_general, parse_mode=ParseMode.MARKDOWN_V2)
             db.rollback()
+
+# --- Новые функции для настройки макс. сообщений ---
+
+async def edit_max_messages_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Sends prompt to choose max messages."""
+    persona_id = context.user_data.get('edit_persona_id')
+    with next(get_db()) as db:
+        current_value = db.query(PersonaConfig.max_response_messages).filter(PersonaConfig.id == persona_id).scalar() or 0
+
+    prompt_text = escape_markdown_v2(f"🗨️ Выберите макс. кол-во сообщений в одном ответе бота (текущее: {'Случайно (1-3)' if current_value <= 0 else current_value}):")
+
+    keyboard = [
+        # Ряд 1: 1-5
+        [InlineKeyboardButton(f"{'✅ ' if current_value == 1 else ''}1", callback_data="set_max_msgs_1"),
+         InlineKeyboardButton(f"{'✅ ' if current_value == 2 else ''}2", callback_data="set_max_msgs_2"),
+         InlineKeyboardButton(f"{'✅ ' if current_value == 3 else ''}3", callback_data="set_max_msgs_3"),
+         InlineKeyboardButton(f"{'✅ ' if current_value == 4 else ''}4", callback_data="set_max_msgs_4"),
+         InlineKeyboardButton(f"{'✅ ' if current_value == 5 else ''}5", callback_data="set_max_msgs_5")],
+        # Ряд 2: 6-10
+        [InlineKeyboardButton(f"{'✅ ' if current_value == 6 else ''}6", callback_data="set_max_msgs_6"),
+         InlineKeyboardButton(f"{'✅ ' if current_value == 7 else ''}7", callback_data="set_max_msgs_7"),
+         InlineKeyboardButton(f"{'✅ ' if current_value == 8 else ''}8", callback_data="set_max_msgs_8"),
+         InlineKeyboardButton(f"{'✅ ' if current_value == 9 else ''}9", callback_data="set_max_msgs_9"),
+         InlineKeyboardButton(f"{'✅ ' if current_value == 10 else ''}10", callback_data="set_max_msgs_10")],
+        # Ряд 3: Случайно и Назад
+        [InlineKeyboardButton(f"{'✅ ' if current_value <= 0 else ''}🎲 Случайно (1-3)", callback_data="set_max_msgs_0")],
+        [InlineKeyboardButton("⬅️ Назад", callback_data="back_to_wizard_menu")]
+    ]
+
+    await _send_prompt(update, context, prompt_text, InlineKeyboardMarkup(keyboard))
+    return EDIT_MAX_MESSAGES
+
+async def edit_max_messages_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Handles receiving the choice for max messages."""
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    persona_id = context.user_data.get('edit_persona_id')
+
+    if data == "back_to_wizard_menu":
+        with next(get_db()) as db:
+            persona = db.query(PersonaConfig).filter(PersonaConfig.id == persona_id).first()
+            return await _show_edit_wizard_menu(update, context, persona)
+
+    if data.startswith("set_max_msgs_"):
+        try:
+            new_value = int(data.replace("set_max_msgs_", "")) # 0 для Случайно
+            if not (0 <= new_value <= 10):
+                raise ValueError("Value out of range")
+
+            with next(get_db()) as db:
+                persona = db.query(PersonaConfig).filter(PersonaConfig.id == persona_id).with_for_update().first()
+                if persona:
+                    persona.max_response_messages = new_value
+                    db.commit()
+                    display_val = 'Случайно (1-3)' if new_value <= 0 else str(new_value)
+                    logger.info(f"Set max_response_messages to {display_val} ({new_value}) for persona {persona_id}")
+                    return await _show_edit_wizard_menu(update, context, persona)
+                else:
+                    await query.edit_message_text(escape_markdown_v2("❌ Ошибка: личность не найдена."))
+                    return ConversationHandler.END
+        except (ValueError, Exception) as e:
+            logger.error(f"Error setting max_response_messages for {persona_id} from data '{data}': {e}")
+            await query.edit_message_text(escape_markdown_v2("❌ Ошибка при сохранении настройки."))
+            return await _try_return_to_wizard_menu(update, context, query.from_user.id, persona_id)
+    else:
+        logger.warning(f"Unknown callback in edit_max_messages_received: {data}")
+        return EDIT_MAX_MESSAGES
