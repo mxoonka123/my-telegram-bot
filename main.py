@@ -475,7 +475,13 @@ def main() -> None:
             handlers.EDIT_MOOD_CHOICE: [CallbackQueryHandler(handlers.edit_mood_choice, pattern='^editmood_|^deletemood_confirm_|^back_to_wizard_menu$|^edit_moods_back_cancel$')],
             handlers.EDIT_MOOD_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.edit_mood_name_received), CallbackQueryHandler(handlers.edit_mood_choice, pattern='^edit_moods_back_cancel$')],
             handlers.EDIT_MOOD_PROMPT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.edit_mood_prompt_received), CallbackQueryHandler(handlers.edit_mood_choice, pattern='^edit_moods_back_cancel$')],
-            handlers.DELETE_MOOD_CONFIRM: [CallbackQueryHandler(handlers.delete_mood_confirmed, pattern='^deletemood_delete_'), CallbackQueryHandler(handlers.edit_mood_choice, pattern='^edit_moods_back_cancel$')]
+            handlers.DELETE_MOOD_CONFIRM: [CallbackQueryHandler(handlers.delete_mood_confirmed, pattern='^deletemood_delete_'), CallbackQueryHandler(handlers.edit_mood_choice, pattern='^edit_moods_back_cancel$')],
+            # Add the state for handling max messages selection
+            handlers.EDIT_MAX_MESSAGES: [
+                CallbackQueryHandler(handlers.edit_max_messages_received, pattern='^set_max_msgs_') # Handle selection buttons
+                # Add back button handler for this state as well
+                # CallbackQueryHandler(handlers.edit_wizard_menu_handler, pattern='^back_to_wizard_menu$') # Already in fallbacks? Check below
+            ]
         },
         fallbacks=[ # Shared fallbacks for entire wizard
             CommandHandler('cancel', handlers.edit_persona_cancel),
@@ -483,7 +489,7 @@ def main() -> None:
             # Use specific back buttons within states where possible, but allow general cancel
             CallbackQueryHandler(handlers.edit_persona_cancel, pattern='^cancel_wizard$'), # Optional explicit cancel button pattern
             CallbackQueryHandler(handlers.edit_mood_choice, pattern='^edit_moods_back_cancel$'), # Back from mood steps
-            CallbackQueryHandler(handlers.edit_wizard_menu_handler, pattern='^back_to_wizard_menu$'), # Back to main menu
+            CallbackQueryHandler(handlers.edit_wizard_menu_handler, pattern='^back_to_wizard_menu$'), # Back to main menu FROM ANYWHERE
         ],
         per_message=False,
         name="edit_persona_wizard",
