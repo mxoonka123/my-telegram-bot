@@ -1066,13 +1066,25 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Displays help information."""
+    """Handles the /help command and the show_help callback."""
+    # Определяем, был ли вызов через команду или кнопку
+    is_callback = update.callback_query is not None
+    message_or_query = update.callback_query if is_callback else update.message
+    if not message_or_query: return
+
     user = update.effective_user
     user_id = user.id
-    chat_id_str = str(update.effective_chat.id)
-    logger.info(f"CMD /help < User {user_id} in Chat {chat_id_str}")
+    chat_id_str = str(message_or_query.message.chat.id if is_callback else message_or_query.chat.id)
+    logger.info(f"CMD /help or Callback 'show_help' < User {user_id} in Chat {chat_id_str}")
 
-    help_text_raw = (
+    # Проверка подписки только для команды, не для коллбэка
+    if not is_callback:
+        if not await check_channel_subscription(update, context):
+            await send_subscription_required_message(update, context)
+            return
+
+    # Текст справки (оставляем тот же)
+    help_text_md = (
         "🤖 *команды бота:*\n\n"
         "/start \\- начало работы с ботом\n"
         "/help \\- эта справка\n"
@@ -1094,52 +1106,31 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "для добавления бота в группу используйте кнопку в меню\\."
     )
 
+    # Кнопка "Назад" только для коллбэка
     keyboard = [[InlineKeyboardButton("⬅️ Назад в Меню", callback_data="show_menu")]] if is_callback else None
     reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else ReplyKeyboardRemove()
 
+    # Отправка или редактирование сообщения
     try:
         if is_callback:
             query = update.callback_query
-            if query.message.text != help_text_to_send or query.message.reply_markup != reply_markup:
-                 await query.edit_message_text(help_text_to_send, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
+            if query.message.text != help_text_md or query.message.reply_markup != reply_markup:
+                 await query.edit_message_text(help_text_md, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
             else:
                  await query.answer()
         else:
-            await update.message.reply_text(help_text_to_send, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
+            await message_or_query.reply_text(help_text_md, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
     except BadRequest as e:
         if is_callback and "Message is not modified" in str(e):
             logger.debug("Help message not modified, skipping edit.")
             await query.answer()
         else:
             logger.error(f"Failed sending/editing help message (BadRequest): {e}", exc_info=True)
-            logger.error(f"Failed help text (MD): '{help_text_to_send[:200]}...'")
+            logger.error(f"Failed help text (MD): '{help_text_md[:200]}...'")
+            # Простой текст для запасного варианта
+            help_text_raw_no_md = help_text_md.replace('\\', '') # Убираем двойные слэши для простого текста
             try:
-                help_text_raw_no_md = """
-❓ Помощь по командам
-
-Основные:
-/start - приветствие и ваш статус
-/help - эта справка
-/menu - панель управления командами
-/placeholders - список плейсхолдеров для промптов
-
-Личности:
-/createpersona <имя> [описание] - создать
-/mypersonas - список и управление
-/editpersona <id> - редактировать (откроет визард)
-/deletepersona <id> - удалить
-
-Аккаунт:
-/profile - статус и лимиты
-/subscribe - информация о подписке
-
-В чате (с активной личностью):
-/addbot <id> - добавить личность в чат
-/mood [настроение] - сменить настроение
-/reset - очистить память личности
-/mutebot - запретить отвечать
-/unmutebot - разрешить отвечать
-"""
+                # Отправляем простой текст без форматирования
                 await context.bot.send_message(chat_id=chat_id_str, text=help_text_raw_no_md, reply_markup=reply_markup, parse_mode=None)
                 if is_callback:
                     try: await query.delete_message()
