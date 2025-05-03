@@ -805,10 +805,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                                     logger.debug("Added AI decision response to context DB (pending commit).")
                                 except Exception as e_ctx_dec:
                                     logger.error(f"Failed to add AI decision to context DB: {e_ctx_dec}")
+                                    # --- ADD ROLLBACK --- 
+                                    try:
+                                        db.rollback()
+                                    except Exception as rb_err:
+                                        logger.error(f"Rollback failed after context add error: {rb_err}")
+                                    # --- END ROLLBACK --- 
 
                         except Exception as e:
                             logger.error(f"Error in should_respond logic: {e}", exc_info=True)
                             should_ai_respond = True # Default to respond on error
+                            # --- ADD ROLLBACK --- 
+                            try:
+                                logger.warning("Rolling back transaction due to error in should_respond logic (outer catch).")
+                                db.rollback()
+                            except Exception as rb_err:
+                                logger.error(f"Rollback failed after should_respond logic error: {rb_err}", exc_info=True)
+                            # --- END ROLLBACK --- 
                     else:
                         logger.warning(f"Could not generate should_respond prompt for pref '{reply_pref}'. Defaulting to respond.")
                         should_ai_respond = True
