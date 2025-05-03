@@ -1155,7 +1155,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handles the /help command and the show_help callback."""
-    # Определяем, был ли вызов через команду или кнопку
     is_callback = update.callback_query is not None
     message_or_query = update.callback_query if is_callback else update.message
     if not message_or_query: return
@@ -1165,43 +1164,51 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     chat_id_str = str(message_or_query.message.chat.id if is_callback else message_or_query.chat.id)
     logger.info(f"CMD /help or Callback 'show_help' < User {user_id} in Chat {chat_id_str}")
 
-    # Проверка подписки только для команды, не для коллбэка
     if not is_callback:
         if not await check_channel_subscription(update, context):
             await send_subscription_required_message(update, context)
             return
 
-    # Текст справки (исправляем команды на полные)
+    # --- ОБНОВЛЕННЫЙ ТЕКСТ СПРАВКИ ---
+    # Используем _ для курсива, * для жирного
     help_text_md = (
-        "🤖 *команды бота:*\n\n"
-        "/start \\- начало работы с ботом\n"
-        "/help \\- эта справка\n"
-        "/menu \\- главное меню\n"
-        "/profile \\- информация о вашем профиле\n"
-        "/reset \\- сбросить диалог\n"
-        "/mutebot \\- отключить бота в чате\n" # Исправлено
-        "/unmutebot \\- включить бота в чате\n" # Исправлено
-        "/subscribe \\- информация о премиум подписке\n\n"
-        "🤖 *настройка личности:*\n\n"
-        "/mood \\- изменить настроение бота\n"
-        "/createpersona <имя> \\- создать новую личность\n" # Исправлено
-        "/mypersonas \\- список ваших личностей\n" # Исправлено
-        "/editpersona <id> \\- редактировать личность\n" # Исправлено
-        "/deletepersona <id> \\- удалить личность\n\n" # Исправлено
-        "🤖 *дополнительно:*\n\n"
-        "бот может отвечать на фото и голосовые сообщения\\.\n"
-        "в групповых чатах бот отвечает только на упоминания\\.\n"
-        "для добавления бота в группу используйте кнопку в меню\\."
-    )
+        "*Основные команды:*\n" # Заменил * на _ для курсива заголовка
+        "`/start`        \\- Начало работы\n"
+        "`/help`         \\- Эта справка\n"
+        "`/menu`         \\- Главное меню\n"
+        "`/profile`      \\- Ваш профиль и лимиты\n"
+        "`/subscribe`    \\- Информация о подписке\n\n"
 
-    # Кнопка "Назад" только для коллбэка
+        "*Управление личностью в чате:*\n" # Заменил * на _
+        "`/mood`         \\- Сменить настроение \n" # Убрал лишнее слово "личности"
+        "`/clear`        \\- Очистить память \\(контекст\\) \n" # <--- ДОБАВЛЕНА КОМАНДА
+        "`/reset`        \\- Сбросить диалог \\(то же, что /clear\\)\n" # Добавил пояснение для /reset
+        "`/mutebot`      \\- Запретить отвечать в чате\n"
+        "`/unmutebot`    \\- Разрешить отвечать в чате\n\n"
+
+        "*Создание и настройка личностей:*\n" # Заменил * на _
+        "`/createpersona <имя> [описание]` \\- Создать новую\n"
+        "`/mypersonas`    \\- Список ваших личностей\n"
+        "`/editpersona <id>`   \\- Редактировать \\(имя, описание, стиль, настроения и др\\.\\)\n" # Добавил пояснение
+        "`/deletepersona <id>` \\- Удалить личность\n\n"
+
+        "*Дополнительно:*\n" # Заменил * на _
+        "• Бот может реагировать на фото и голосовые сообщения \\(настраивается в `/editpersona`\\)\\.\n"
+        "• В группах бот отвечает согласно настройке \\(по умолчанию \\- на упоминания или по контексту\\)\\.\n"
+        "• Чтобы добавить созданную личность в чат, используйте кнопку '➕ В чат' в `/mypersonas`\\." # Уточнил
+    )
+    # --- КОНЕЦ ОБНОВЛЕННОГО ТЕКСТА ---
+
+    # Простой текст для запасного варианта (убираем Markdown)
+    help_text_raw_no_md = re.sub(r'[`*_\\\\[\]()~>#+-=|{}.!]', '', help_text_md) # Убираем все спецсимволы MD
+
     keyboard = [[InlineKeyboardButton("⬅️ Назад в Меню", callback_data="show_menu")]] if is_callback else None
     reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else ReplyKeyboardRemove()
 
-    # Отправка или редактирование сообщения
     try:
         if is_callback:
             query = update.callback_query
+            # Сравниваем с help_text_md, т.к. отправляем с разметкой
             if query.message.text != help_text_md or query.message.reply_markup != reply_markup:
                  await query.edit_message_text(help_text_md, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
             else:
@@ -1215,14 +1222,12 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         else:
             logger.error(f"Failed sending/editing help message (BadRequest): {e}", exc_info=True)
             logger.error(f"Failed help text (MD): '{help_text_md[:200]}...'")
-            # Простой текст для запасного варианта
-            help_text_raw_no_md = help_text_md.replace('\\', '') # Убираем двойные слэши для простого текста
             try:
                 # Отправляем простой текст без форматирования
-                await context.bot.send_message(chat_id=chat_id_str, text=help_text_raw_no_md, reply_markup=reply_markup, parse_mode=None)
                 if is_callback:
-                    try: await query.delete_message()
-                    except: pass
+                    await query.edit_message_text(help_text_raw_no_md, reply_markup=reply_markup, parse_mode=None)
+                else:
+                    await message_or_query.reply_text(help_text_raw_no_md, reply_markup=reply_markup, parse_mode=None)
             except Exception as fallback_e:
                 logger.error(f"Failed sending plain help message: {fallback_e}")
                 if is_callback: await query.answer("❌ Ошибка отображения справки", show_alert=True)
