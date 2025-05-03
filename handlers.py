@@ -2597,8 +2597,10 @@ async def _show_edit_wizard_menu(update: Update, context: ContextTypes.DEFAULT_T
         ],
         [InlineKeyboardButton(f"💬 Стиль ({style_map.get(style, '?')})", callback_data="edit_wizard_comm_style")],
         [InlineKeyboardButton(f"🗣️ Разговорчивость ({verbosity_map.get(verbosity, '?')})", callback_data="edit_wizard_verbosity")],
-        [InlineKeyboardButton(f"👥 Отв. в группе ({group_reply_map.get(group_reply, '?')})", callback_data="edit_wizard_group_reply")],
-        [InlineKeyboardButton(f"🖼️ Реакт. на медиа ({media_react_map.get(media_react, '?')})", callback_data="edit_wizard_media_reaction")],
+        # Use full words below
+        [InlineKeyboardButton(f"👥 Ответы в группе ({group_reply_map.get(group_reply, '?')})", callback_data="edit_wizard_group_reply")],
+        [InlineKeyboardButton(f"🖼️ Реакция на медиа ({media_react_map.get(media_react, '?')})", callback_data="edit_wizard_media_reaction")],
+        # End of full words change
         [InlineKeyboardButton(f"🗨️ Макс. сообщ. ({max_msgs_display})", callback_data="edit_wizard_max_msgs")], # <-- Новая кнопка
         [InlineKeyboardButton(f"🎭 Настроения{star if not is_premium else ''}", callback_data="edit_wizard_moods")],
         [InlineKeyboardButton("✅ Завершить", callback_data="finish_edit")]
@@ -2606,7 +2608,7 @@ async def _show_edit_wizard_menu(update: Update, context: ContextTypes.DEFAULT_T
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     # Исправляю экранирование скобок (снова)
-    msg_text = f"⚙️ *Настройка личности: {escape_markdown_v2(persona_config.name)}* \\(ID: `{persona_id}`\\)\n\nВыберите, что изменить:"
+    msg_text = f"⚙️ *Настройка личности: {escape_markdown_v2(persona_config.name)}* \\\\(ID: `{persona_id}`\\\\)\n\nВыберите, что изменить:"
 
     try:
         if query:
