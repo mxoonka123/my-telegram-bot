@@ -2284,11 +2284,13 @@ async def confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         reply_markup = InlineKeyboardMarkup(keyboard)
 
     try:
-        # Используем info_confirm_raw (без экранирования) и parse_mode=None
-        current_text_to_send = info_confirm_raw
+        # Диагностика: Используем максимально простой текст
+        # current_text_to_send = info_confirm_raw
+        current_text_to_send = "Нажмите кнопку Оплатить ниже:"
+        logger.debug(f"Attempting to edit message for confirm_pay. Text: '{current_text_to_send}', ParseMode: None")
         if query.message.text != current_text_to_send or query.message.reply_markup != reply_markup:
             await query.edit_message_text(
-                current_text_to_send, # Отправляем исходный текст
+                current_text_to_send, # Отправляем ПРОСТОЙ текст
                 reply_markup=reply_markup,
                 disable_web_page_preview=True,
                 parse_mode=None # <--- Убираем Markdown
