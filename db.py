@@ -1,7 +1,6 @@
 import json
 import logging
 from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, Boolean, ForeignKey, UniqueConstraint, func, BIGINT, select, update as sql_update
-from sqlalchemy.engine.url import make_url
 from sqlalchemy.orm import sessionmaker, relationship, Session, joinedload, selectinload
 from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy.orm import declarative_base
@@ -225,47 +224,30 @@ SessionLocal = None
 
 def initialize_database():
     global engine, SessionLocal
-    if not DATABASE_URL:
+    # --- УПРОЩЕНИЕ ---
+    # Просто берем URL как есть из переменной окружения
+    db_url_str = DATABASE_URL
+    if not db_url_str:
         logger.critical("DATABASE_URL environment variable is not set!")
         raise ValueError("DATABASE_URL environment variable is not set!")
 
-    db_log_url = DATABASE_URL.split('@')[-1] if '@' in DATABASE_URL else DATABASE_URL
+    db_log_url = db_url_str.split('@')[-1] if '@' in db_url_str else db_url_str
     logger.info(f"Initializing database connection pool for: {db_log_url}")
+    # Логируем URL, который БУДЕТ использован (маскируем пароль)
+    try:
+        # Попробуем импортировать make_url только для логирования
+        from sqlalchemy.engine.url import make_url
+        log_url_display = make_url(db_url_str).render_as_string(hide_password=True)
+    except Exception:
+        log_url_display = "Could not parse DATABASE_URL for logging."
+    logger.info(f"Using DATABASE_URL directly: {log_url_display}")
+    # --- КОНЕЦ УПРОЩЕНИЯ ---
 
     engine_args = {}
-    db_url_str = DATABASE_URL
-
-    if DATABASE_URL.startswith("sqlite"):
+    if db_url_str.startswith("sqlite"):
         engine_args["connect_args"] = {"check_same_thread": False}
-    elif DATABASE_URL.startswith("postgres"):
-        try:
-            url_object = make_url(DATABASE_URL)
-            query_params = dict(url_object.query or {})
-
-            # Добавляем sslmode=require, если его нет
-            if 'sslmode' not in query_params:
-                query_params['sslmode'] = 'require'
-                logger.info("Adding sslmode=require to DATABASE_URL query parameters.")
-
-            # Добавляем параметр для отключения prepared statements через URL
-            options_str = query_params.get('options', '')
-            option_to_add = '-c prepared_statement_cache_size=0'
-            if option_to_add not in options_str.split(): # Проверяем, что именно этой опции нет
-                 options_str += f' {option_to_add}'
-                 query_params['options'] = options_str.strip()
-                 logger.info(f"Adding '{option_to_add}' to DATABASE_URL query options.")
-            else:
-                 logger.info(f"'{option_to_add}' already present in DATABASE_URL query options.")
-
-            url_object = url_object.set(query=query_params)
-            db_url_str = str(url_object)
-            db_log_url_mod = db_url_str.split('@')[-1] if '@' in db_url_str else db_url_str
-            logger.info(f"Final DATABASE_URL for connection: {make_url(db_url_str).render_as_string(hide_password=True)}")
-
-        except Exception as url_e:
-             logger.error(f"Failed to parse or modify DATABASE_URL: {url_e}. Using original URL.")
-             db_url_str = DATABASE_URL # Fallback
-
+    elif db_url_str.startswith("postgres"):
+        # Базовые настройки пула
         engine_args.update({
             "pool_size": 10,
             "max_overflow": 5,
@@ -275,26 +257,21 @@ def initialize_database():
         })
 
     try:
+        # Создаем engine с URL из переменной и базовыми engine_args
         engine = create_engine(db_url_str, **engine_args, echo=False)
         SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
         logger.info("Database engine and session maker initialized.")
 
         logger.info("Attempting to establish initial database connection...")
         with engine.connect() as connection:
-             try:
-                 result = connection.execute(select(func.current_setting('prepared_statement_cache_size')))
-                 setting_value = result.scalar_one_or_none()
-                 logger.info(f"Database connection successful. Current 'prepared_statement_cache_size': {setting_value}")
-                 if setting_value != '0':
-                     logger.warning("Failed to set prepared_statement_cache_size=0 via URL options!")
-             except Exception as setting_check_err:
-                 logger.warning(f"Could not verify prepared_statement_cache_size setting: {setting_check_err}")
-                 logger.info("Database connection successful (setting check failed).")
+             logger.info("Database connection successful.")
+             # Можно убрать проверку prepared_statement_cache_size, т.к. мы задали его в URL
 
     except OperationalError as e:
          err_str = str(e).lower()
          if "password authentication failed" in err_str or "wrong password" in err_str:
              logger.critical(f"FATAL: Database password authentication failed for {db_log_url}.")
+             logger.critical(f"Verify the password in the DATABASE_URL variable in Railway matches the Supabase DB password.")
          elif "database" in err_str and "does not exist" in err_str:
              logger.critical(f"FATAL: Database specified in DATABASE_URL does not exist ({db_log_url}).")
          elif "connection refused" in err_str or "timed out" in err_str or "could not translate host name" in err_str:
