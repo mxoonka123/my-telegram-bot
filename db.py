@@ -264,6 +264,8 @@ def initialize_database():
     logger.info(f"Initializing database connection pool for: {db_log_url}")
 
     engine_args = {}
+    connect_args_psycopg = {} # <--- Создаем отдельный словарь для connect_args
+
     db_url_str = DATABASE_URL
 
     if DATABASE_URL.startswith("sqlite"):
@@ -287,19 +289,27 @@ def initialize_database():
         else:
              logger.info("sslmode is explicitly present in DATABASE_URL string.")
 
-        # Recommended pool settings for production PostgreSQL
+        # Добавляем настройки psycopg в connect_args_psycopg
+        connect_args_psycopg.update({
+            "executemany_mode": "values",
+            "prepared_statement_cache_size": 0 # Эквивалент отключения кеша prepared statements в psycopg3
+            # 'use_prepared_statements': False - Этот аргумент не для psycopg3, используем кеш=0
+        })
+
+        # Основные настройки engine остаются в engine_args
         engine_args.update({
             "pool_size": 10,
             "max_overflow": 5,
             "pool_timeout": 30,
-            "pool_recycle": 1800, # Recycle connections every 30 mins
+            "pool_recycle": 1800,
             "pool_pre_ping": True,
-            "executemany_mode": "values", # Recommended with psycopg3
-            "use_prepared_statements": False # Disable prepared statements
         })
+        # Добавляем connect_args в engine_args, если они есть
+        if connect_args_psycopg:
+            engine_args["connect_args"] = connect_args_psycopg
 
     try:
-        engine = create_engine(db_url_str, **engine_args, echo=False) # echo=False for production
+        engine = create_engine(db_url_str, **engine_args, echo=False)
         SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
         logger.info("Database engine and session maker initialized.")
         # Test connection
