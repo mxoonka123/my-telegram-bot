@@ -1,5 +1,3 @@
-# --- START OF FILE main.py ---
-
 import logging
 import asyncio
 import os
@@ -9,7 +7,7 @@ from flask import Flask, request, abort, Response
 from yookassa import Configuration as YookassaConfig
 from yookassa.domain.notification import WebhookNotification
 import json
-from sqlalchemy.exc import SQLAlchemyError, OperationalError
+from sqlalchemy.exc import SQLAlchemyError, OperationalError, ProgrammingError
 import aiohttp
 import httpx
 from typing import Optional
@@ -85,12 +83,12 @@ def handle_yookassa_webhook():
             metadata = payment.metadata
             if not metadata or 'telegram_user_id' not in metadata:
                 flask_logger.error(f"Webhook error: 'telegram_user_id' missing in metadata for payment {payment.id}.")
-                return Response(status=200)
+                return Response(status=200) # Respond OK to YK even if metadata is bad
             try:
                 telegram_user_id = int(metadata['telegram_user_id'])
             except (ValueError, TypeError) as e:
                 flask_logger.error(f"Webhook error: Invalid 'telegram_user_id' {metadata.get('telegram_user_id')} for payment {payment.id}. Error: {e}")
-                return Response(status=200)
+                return Response(status=200) # Respond OK to YK
 
             flask_logger.info(f"Attempting subscription activation for TG User ID: {telegram_user_id} from Payment ID: {payment.id}")
             activation_success = False
@@ -207,11 +205,13 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
+# Adjust log levels for noisy libraries
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("apscheduler").setLevel(logging.WARNING)
-logging.getLogger("telegram").setLevel(logging.INFO)
-logging.getLogger("telegram.ext").setLevel(logging.INFO)
-logging.getLogger("sqlalchemy").setLevel(logging.WARNING)
+logging.getLogger("telegram").setLevel(logging.INFO) # Keep INFO for basic TG operations
+logging.getLogger("telegram.ext").setLevel(logging.INFO) # Keep INFO for PTB core
+logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING) # Hide SQL queries by default
+logging.getLogger("sqlalchemy.pool").setLevel(logging.WARNING)
 logging.getLogger("werkzeug").setLevel(logging.WARNING)
 logging.getLogger("telegraph_api").setLevel(logging.INFO)
 logging.getLogger("aiohttp").setLevel(logging.WARNING)
@@ -235,11 +235,12 @@ async def setup_telegraph_page(application: Application):
     page_url = None
 
     try:
-        tos_content_raw_for_telegraph = handlers.TOS_TEXT_RAW.replace("**", "").replace("*", "")
-        if not tos_content_raw_for_telegraph or not isinstance(tos_content_raw_for_telegraph, str):
-             logger.error("handlers.TOS_TEXT_RAW is empty or not a string. Cannot create ToS page.")
+        # Ensure TOS_TEXT_RAW is defined and is a string in handlers.py
+        if not hasattr(handlers, 'TOS_TEXT_RAW') or not isinstance(handlers.TOS_TEXT_RAW, str) or not handlers.TOS_TEXT_RAW:
+             logger.error("handlers.TOS_TEXT_RAW is missing, empty or not a string. Cannot create ToS page.")
              return
 
+        tos_content_raw_for_telegraph = handlers.TOS_TEXT_RAW.replace("**", "").replace("*", "")
         tos_content_formatted_for_telegraph = tos_content_raw_for_telegraph.format(
             subscription_duration=config.SUBSCRIPTION_DURATION_DAYS,
             subscription_price=f"{config.SUBSCRIPTION_PRICE_RUB:.0f}",
@@ -256,17 +257,18 @@ async def setup_telegraph_page(application: Application):
                 current_list_items.append({"tag": "li", "children": [p[2:].strip()]})
                 continue
 
+            # End current list if a non-list item follows
             if current_list_items:
                 content_node_array.append({"tag": "ul", "children": current_list_items})
                 current_list_items = []
 
-            if re.match(r"^\d+\.\s+", p):
-                content_node_array.append({"tag": "h4", "children": [p]})
-            elif re.match(r"^\d+\.\d+\.\s+", p):
+            # Use h4 for main section numbers and subsections like 1. or 1.1.
+            if re.match(r"^\d+\.\s+", p) or re.match(r"^\d+\.\d+\.\s+", p):
                 content_node_array.append({"tag": "h4", "children": [p]})
             else:
                 content_node_array.append({"tag": "p", "children": [p]})
 
+        # Add any remaining list items at the end
         if current_list_items:
             content_node_array.append({"tag": "ul", "children": current_list_items})
 
@@ -287,14 +289,12 @@ async def setup_telegraph_page(application: Application):
         }
 
         logger.info(f"Sending direct request to {telegraph_api_url} to create/update ToS page...")
-        logger.debug(f"Telegraph payload: {payload}")
+        logger.debug(f"Telegraph payload (first 500 chars of content): { {k: (v[:500] + '...' if k=='content' and isinstance(v, str) and len(v) > 500 else v) for k, v in payload.items()} }")
 
         async with httpx.AsyncClient() as client:
             response = await client.post(telegraph_api_url, json=payload)
 
         logger.info(f"Telegraph API direct response status: {response.status_code}")
-        response.raise_for_status()
-
         response_data = response.json()
         logger.debug(f"Telegraph API direct response JSON: {response_data}")
 
@@ -313,6 +313,7 @@ async def setup_telegraph_page(application: Application):
                  logger.debug(f"Content JSON sent: {content_json_string}")
             elif "ACCESS_TOKEN_INVALID" in error_message:
                  logger.error(">>> TELEGRAPH_ACCESS_TOKEN is invalid!")
+            response.raise_for_status() # Raise HTTP errors for non-OK responses
 
     except httpx.HTTPStatusError as http_err:
          logger.error(f"HTTP Status error during direct Telegraph request: {http_err.response.status_code} - {http_err.response.text}", exc_info=False)
@@ -339,24 +340,27 @@ async def post_init(application: Application):
         me = await application.bot.get_me()
         logger.info(f"Bot started as @{me.username} (ID: {me.id})")
         application.bot_data['bot_username'] = me.username
+        # Schedule Telegraph setup after getting bot info
         asyncio.create_task(setup_telegraph_page(application))
     except Exception as e:
         logger.error(f"Failed during post_init (get_me or scheduling setup_telegraph): {e}", exc_info=True)
 
     logger.info("Starting background tasks...")
     if application.job_queue:
+        # Run daily limit reset check more frequently initially, then less often
         application.job_queue.run_repeating(
             tasks.reset_daily_limits_task,
-            interval=timedelta(minutes=15),
+            interval=timedelta(hours=1), # Check hourly
             first=timedelta(seconds=15),
             name="daily_limit_reset_check"
         )
+        # Run subscription check reasonably often
         application.job_queue.run_repeating(
             tasks.check_subscription_expiry_task,
             interval=timedelta(minutes=30),
             first=timedelta(seconds=30),
             name="subscription_expiry_check",
-            data=application
+            data=application # Pass application instance to the task if needed
         )
         logger.info("Background tasks scheduled.")
     else:
@@ -368,37 +372,70 @@ def main() -> None:
     """Starts the bot, Flask server, and background tasks."""
     logger.info("----- Bot Starting -----")
 
+    # --- Database Initialization ---
+    # CRITICAL: Ensure DB schema matches models before proceeding
     try:
+        logger.info("Initializing database connection...")
         db.initialize_database()
-        db.create_tables()
-    except (OperationalError, SQLAlchemyError, RuntimeError, ValueError) as e:
-         logger.critical(f"Database initialization failed: {e}. Exiting.")
+        logger.info("Verifying database tables (this does NOT create missing columns automatically)...")
+        # create_tables() might fail if schema exists but is wrong.
+        # A proper migration tool (like Alembic) is recommended for production.
+        # For now, we rely on the user having fixed the schema manually.
+        db.create_tables() # This will create tables IF THEY DON'T EXIST AT ALL.
+        logger.info("Database connection initialized and tables verified/created.")
+        # Test connection again
+        with db.engine.connect() as conn:
+            logger.info("Successfully tested database connection after initialization.")
+            # Optional: Add a simple query to test if the new columns exist now
+            try:
+                conn.execute(db.select(db.PersonaConfig.communication_style).limit(1))
+                logger.info("Successfully queried a new column (communication_style). Schema seems updated.")
+            except ProgrammingError as pe:
+                 if "UndefinedColumn" in str(pe):
+                      logger.critical("FATAL: Database schema is still incorrect! Missing columns like 'communication_style'.")
+                      logger.critical("Please run the ALTER TABLE commands in Supabase SQL Editor and restart the bot.")
+                      return # Stop if schema is wrong
+                 else:
+                     raise # Re-raise other programming errors
+            except Exception as test_e:
+                logger.warning(f"Could not verify new column existence, continuing: {test_e}")
+
+    except (OperationalError, SQLAlchemyError, ProgrammingError, RuntimeError, ValueError) as e:
+         logger.critical(f"Database initialization or connection test failed: {e}. Exiting.")
+         logger.critical("Ensure DATABASE_URL is correct and the database schema matches the models in db.py.")
          return
     except Exception as e:
          logger.critical(f"An unexpected critical error during DB setup: {e}. Exiting.", exc_info=True)
          return
-    logger.info("Database setup complete.")
+    logger.info("Database setup appears complete.")
 
+    # --- Start Flask Webhook Server ---
     flask_thread = threading.Thread(target=run_flask, name="FlaskWebhookThread", daemon=True)
     flask_thread.start()
     logger.info("Flask thread for Yookassa webhook started.")
 
+    # --- Initialize Telegram Bot ---
     logger.info("Initializing Telegram Bot Application...")
     token = config.TELEGRAM_TOKEN
     if not token:
-        logger.critical("TELEGRAM_TOKEN not found in config. Exiting.")
+        logger.critical("TELEGRAM_TOKEN not found in config or environment. Exiting.")
         return
 
-    bot_defaults = Defaults(parse_mode=ParseMode.MARKDOWN_V2)
+    # Sensible timeouts and connection pool settings
+    bot_defaults = Defaults(
+        parse_mode=ParseMode.MARKDOWN_V2,
+        block=False, # Run handlers concurrently by default
+        connect_timeout=10.0,
+        read_timeout=20.0,
+        write_timeout=20.0,
+    )
 
     application = (
         Application.builder()
         .token(token)
-        .connect_timeout(30)
-        .read_timeout(60)
-        .write_timeout(60)
-        .pool_timeout(30)
         .defaults(bot_defaults)
+        .pool_timeout(10.0) # Timeout for getting connection from pool
+        .connection_pool_size(10) # Default is 4, increase if needed
         .post_init(post_init)
         .build()
     )
@@ -406,56 +443,40 @@ def main() -> None:
 
     # --- Conversation Handlers Definition ---
 
-    # <<< ИЗМЕНЕНО: Обновление ConversationHandler для визарда редактирования >>>
+    # Edit Persona Wizard Conversation Handler
     edit_persona_conv_handler = ConversationHandler(
         entry_points=[
             CommandHandler('editpersona', handlers.edit_persona_start),
             CallbackQueryHandler(handlers.edit_persona_button_callback, pattern='^edit_persona_')
         ],
         states={
-            # Главное меню визарда
-            handlers.EDIT_WIZARD_MENU: [
-                CallbackQueryHandler(handlers.edit_wizard_menu_handler, pattern='^edit_wizard_|^finish_edit$')
-            ],
-            # Состояния для ввода текстовых полей
+            handlers.EDIT_WIZARD_MENU: [CallbackQueryHandler(handlers.edit_wizard_menu_handler, pattern='^edit_wizard_|^finish_edit$')],
             handlers.EDIT_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.edit_name_received)],
             handlers.EDIT_DESCRIPTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.edit_description_received)],
-            # Состояния для выбора опций (обработчики получают callback)
             handlers.EDIT_COMM_STYLE: [CallbackQueryHandler(handlers.edit_comm_style_received, pattern='^set_comm_style_|^back_to_wizard_menu$')],
             handlers.EDIT_VERBOSITY: [CallbackQueryHandler(handlers.edit_verbosity_received, pattern='^set_verbosity_|^back_to_wizard_menu$')],
             handlers.EDIT_GROUP_REPLY: [CallbackQueryHandler(handlers.edit_group_reply_received, pattern='^set_group_reply_|^back_to_wizard_menu$')],
             handlers.EDIT_MEDIA_REACTION: [CallbackQueryHandler(handlers.edit_media_reaction_received, pattern='^set_media_react_|^back_to_wizard_menu$')],
-            # Точка входа в под-диалог настроений
-            handlers.EDIT_MOODS_ENTRY: [CallbackQueryHandler(handlers.edit_moods_entry)], # Этот обработчик переведет в EDIT_MOOD_CHOICE
-            # Состояния под-диалога настроений (остаются как были)
-            handlers.EDIT_MOOD_CHOICE: [
-                CallbackQueryHandler(handlers.edit_mood_choice, pattern='^editmood_|^deletemood_confirm_|^back_to_wizard_menu$|^edit_moods_back_cancel$') # Добавлен back_to_wizard_menu
-            ],
-            handlers.EDIT_MOOD_NAME: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.edit_mood_name_received),
-                CallbackQueryHandler(handlers.edit_mood_choice, pattern='^edit_moods_back_cancel$') # Back/Cancel button
-            ],
-            handlers.EDIT_MOOD_PROMPT: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.edit_mood_prompt_received),
-                CallbackQueryHandler(handlers.edit_mood_choice, pattern='^edit_moods_back_cancel$') # Back/Cancel button
-            ],
-            handlers.DELETE_MOOD_CONFIRM: [
-                CallbackQueryHandler(handlers.delete_mood_confirmed, pattern='^deletemood_delete_'), # Confirm delete
-                CallbackQueryHandler(handlers.edit_mood_choice, pattern='^edit_moods_back_cancel$') # Cancel delete
-            ]
+            handlers.EDIT_MOODS_ENTRY: [CallbackQueryHandler(handlers.edit_moods_entry, pattern='^edit_wizard_moods$')], # Specific pattern
+            handlers.EDIT_MOOD_CHOICE: [CallbackQueryHandler(handlers.edit_mood_choice, pattern='^editmood_|^deletemood_confirm_|^back_to_wizard_menu$|^edit_moods_back_cancel$')],
+            handlers.EDIT_MOOD_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.edit_mood_name_received), CallbackQueryHandler(handlers.edit_mood_choice, pattern='^edit_moods_back_cancel$')],
+            handlers.EDIT_MOOD_PROMPT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.edit_mood_prompt_received), CallbackQueryHandler(handlers.edit_mood_choice, pattern='^edit_moods_back_cancel$')],
+            handlers.DELETE_MOOD_CONFIRM: [CallbackQueryHandler(handlers.delete_mood_confirmed, pattern='^deletemood_delete_'), CallbackQueryHandler(handlers.edit_mood_choice, pattern='^edit_moods_back_cancel$')]
         },
-        fallbacks=[ # Обработчики для выхода из диалога
+        fallbacks=[ # Shared fallbacks for entire wizard
             CommandHandler('cancel', handlers.edit_persona_cancel),
-            CallbackQueryHandler(handlers.edit_persona_cancel, pattern='^finish_edit$'), # Завершение через кнопку
-            CallbackQueryHandler(handlers.edit_persona_cancel, pattern='^edit_moods_back_cancel$'), # Отмена из под-диалога настроений
-            CallbackQueryHandler(handlers.edit_persona_cancel, pattern='^back_to_wizard_menu$'), # Кнопка "Назад" в шагах визарда тоже может отменять
+            CallbackQueryHandler(handlers.edit_persona_finish, pattern='^finish_edit$'), # Finish explicitly
+            # Use specific back buttons within states where possible, but allow general cancel
+            CallbackQueryHandler(handlers.edit_persona_cancel, pattern='^cancel_wizard$'), # Optional explicit cancel button pattern
+            CallbackQueryHandler(handlers.edit_mood_choice, pattern='^edit_moods_back_cancel$'), # Back from mood steps
+            CallbackQueryHandler(handlers.edit_wizard_menu_handler, pattern='^back_to_wizard_menu$'), # Back to main menu
         ],
         per_message=False,
-        name="edit_persona_wizard", # Новое имя для ясности
+        name="edit_persona_wizard",
         conversation_timeout=timedelta(minutes=15).total_seconds()
     )
 
-    # Delete Persona Conversation (без изменений)
+    # Delete Persona Conversation Handler
     delete_persona_conv_handler = ConversationHandler(
         entry_points=[
             CommandHandler('deletepersona', handlers.delete_persona_start),
@@ -481,37 +502,40 @@ def main() -> None:
     logger.info("Registering handlers...")
 
     # Basic Commands
-    application.add_handler(CommandHandler("start", handlers.start, block=False))
-    application.add_handler(CommandHandler("help", handlers.help_command, block=False))
-    application.add_handler(CommandHandler("menu", handlers.menu_command, block=False))
-    application.add_handler(CommandHandler("profile", handlers.profile, block=False))
-    application.add_handler(CommandHandler("subscribe", handlers.subscribe, block=False))
-    application.add_handler(CommandHandler("placeholders", handlers.placeholders_command, block=False))
+    application.add_handler(CommandHandler("start", handlers.start))
+    application.add_handler(CommandHandler("help", handlers.help_command))
+    application.add_handler(CommandHandler("menu", handlers.menu_command))
+    application.add_handler(CommandHandler("profile", handlers.profile))
+    application.add_handler(CommandHandler("subscribe", handlers.subscribe))
+    # --- REMOVED placeholders command ---
+    # application.add_handler(CommandHandler("placeholders", handlers.placeholders_command))
 
     # Persona Management Commands
-    application.add_handler(CommandHandler("createpersona", handlers.create_persona, block=False))
-    application.add_handler(CommandHandler("mypersonas", handlers.my_personas, block=False))
+    application.add_handler(CommandHandler("createpersona", handlers.create_persona))
+    application.add_handler(CommandHandler("mypersonas", handlers.my_personas))
 
     # Add Conversation Handlers
     application.add_handler(edit_persona_conv_handler)
     application.add_handler(delete_persona_conv_handler)
 
     # In-Chat Commands
-    application.add_handler(CommandHandler("addbot", handlers.add_bot_to_chat, block=False))
-    application.add_handler(CommandHandler("mood", handlers.mood, block=False))
-    application.add_handler(CommandHandler("reset", handlers.reset, block=False))
-    application.add_handler(CommandHandler("mutebot", handlers.mute_bot, block=False))
-    application.add_handler(CommandHandler("unmutebot", handlers.unmute_bot, block=False))
+    application.add_handler(CommandHandler("addbot", handlers.add_bot_to_chat))
+    application.add_handler(CommandHandler("mood", handlers.mood))
+    application.add_handler(CommandHandler("reset", handlers.reset))
+    application.add_handler(CommandHandler("mutebot", handlers.mute_bot))
+    application.add_handler(CommandHandler("unmutebot", handlers.unmute_bot))
 
-    # Message Handlers
-    application.add_handler(MessageHandler(filters.PHOTO & ~filters.COMMAND, handlers.handle_photo, block=False))
-    application.add_handler(MessageHandler(filters.VOICE & ~filters.COMMAND, handlers.handle_voice, block=False))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.handle_message, block=False))
+    # Message Handlers (ensure correct filters and order)
+    application.add_handler(MessageHandler(filters.PHOTO & ~filters.COMMAND, handlers.handle_photo))
+    application.add_handler(MessageHandler(filters.VOICE & ~filters.COMMAND, handlers.handle_voice))
+    # Text handler should be after specific media handlers if they are exclusive
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.handle_message))
 
-    # Callback Query Handler (for non-conversation buttons)
+    # General Callback Query Handler (for buttons *not* in conversations)
+    # Ensure this is added *after* ConversationHandlers if patterns might overlap
     application.add_handler(CallbackQueryHandler(handlers.handle_callback_query))
 
-    # Error Handler
+    # Error Handler (should be last)
     application.add_error_handler(handlers.error_handler)
 
     logger.info("Handlers registered.")
@@ -520,12 +544,10 @@ def main() -> None:
     logger.info("Starting bot polling...")
     application.run_polling(
         allowed_updates=Update.ALL_TYPES,
-        drop_pending_updates=True,
-        timeout=20,
+        drop_pending_updates=True, # Good for development, consider False for production if needed
+        timeout=30, # Increase polling timeout
     )
     logger.info("----- Bot Stopped -----")
 
 if __name__ == "__main__":
     main()
-
-# --- END OF FILE main.py ---
