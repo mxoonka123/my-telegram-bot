@@ -471,25 +471,28 @@ def main() -> None:
             handlers.EDIT_VERBOSITY: [CallbackQueryHandler(handlers.edit_verbosity_received, pattern='^set_verbosity_|^back_to_wizard_menu$')],
             handlers.EDIT_GROUP_REPLY: [CallbackQueryHandler(handlers.edit_group_reply_received, pattern='^set_group_reply_|^back_to_wizard_menu$')],
             handlers.EDIT_MEDIA_REACTION: [CallbackQueryHandler(handlers.edit_media_reaction_received, pattern='^set_media_react_|^back_to_wizard_menu$')],
-            handlers.EDIT_MOODS_ENTRY: [CallbackQueryHandler(handlers.edit_moods_entry, pattern='^edit_wizard_moods$')], # Specific pattern
-            handlers.EDIT_MOOD_CHOICE: [CallbackQueryHandler(handlers.edit_mood_choice, pattern='^editmood_|^deletemood_confirm_|^back_to_wizard_menu$|^edit_moods_back_cancel$')],
+            handlers.EDIT_MOODS_ENTRY: [
+                CallbackQueryHandler(handlers.edit_moods_entry, pattern='^edit_wizard_moods$'),
+                CallbackQueryHandler(handlers.edit_wizard_menu_handler, pattern='^back_to_wizard_menu$')
+            ],
+            handlers.EDIT_MOOD_CHOICE: [
+                CallbackQueryHandler(handlers.edit_mood_choice, pattern='^editmood_|^deletemood_confirm_|^editmood_add$'),
+                CallbackQueryHandler(handlers.edit_wizard_menu_handler, pattern='^back_to_wizard_menu$'),
+                CallbackQueryHandler(handlers.edit_mood_choice, pattern='^edit_moods_back_cancel$')
+            ],
             handlers.EDIT_MOOD_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.edit_mood_name_received), CallbackQueryHandler(handlers.edit_mood_choice, pattern='^edit_moods_back_cancel$')],
             handlers.EDIT_MOOD_PROMPT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.edit_mood_prompt_received), CallbackQueryHandler(handlers.edit_mood_choice, pattern='^edit_moods_back_cancel$')],
             handlers.DELETE_MOOD_CONFIRM: [CallbackQueryHandler(handlers.delete_mood_confirmed, pattern='^deletemood_delete_'), CallbackQueryHandler(handlers.edit_mood_choice, pattern='^edit_moods_back_cancel$')],
             # Add the state for handling max messages selection
             handlers.EDIT_MAX_MESSAGES: [
-                CallbackQueryHandler(handlers.edit_max_messages_received, pattern='^set_max_msgs_') # Handle selection buttons
-                # Add back button handler for this state as well
-                # CallbackQueryHandler(handlers.edit_wizard_menu_handler, pattern='^back_to_wizard_menu$') # Already in fallbacks? Check below
+                CallbackQueryHandler(handlers.edit_max_messages_received, pattern='^set_max_msgs_'), # Обработка выбора
+                CallbackQueryHandler(handlers.edit_wizard_menu_handler, pattern='^back_to_wizard_menu$') # Кнопка Назад
             ]
         },
-        fallbacks=[ # Shared fallbacks for entire wizard
+        fallbacks=[ # Общие точки выхода из диалога
             CommandHandler('cancel', handlers.edit_persona_cancel),
-            CallbackQueryHandler(handlers.edit_persona_finish, pattern='^finish_edit$'), # Finish explicitly
-            # Use specific back buttons within states where possible, but allow general cancel
-            CallbackQueryHandler(handlers.edit_persona_cancel, pattern='^cancel_wizard$'), # Optional explicit cancel button pattern
-            CallbackQueryHandler(handlers.edit_mood_choice, pattern='^edit_moods_back_cancel$'), # Back from mood steps
-            CallbackQueryHandler(handlers.edit_wizard_menu_handler, pattern='^back_to_wizard_menu$'), # Back to main menu FROM ANYWHERE
+            CallbackQueryHandler(handlers.edit_persona_finish, pattern='^finish_edit$'),
+            CallbackQueryHandler(handlers.edit_persona_cancel, pattern='^cancel_wizard$'),
         ],
         per_message=False,
         name="edit_persona_wizard",
