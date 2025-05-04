@@ -3664,14 +3664,18 @@ async def _start_delete_convo(update: Update, context: ContextTypes.DEFAULT_TYPE
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
     context.user_data.clear()
 
-    # Сообщения для пользователя
-    error_not_found_fmt_raw = "❌ личность с id `{id}` не найдена или не твоя."
-    prompt_delete_fmt_raw = "🚨 *ВНИМАНИЕ\\!* 🚨\nудалить личность '{name}' \\(ID: `{id}`\\)?\n\nэто действие *НЕОБРАТИМО\\!*"
-    error_db = escape_markdown_v2("❌ ошибка базы данных.")
-    error_general = escape_markdown_v2("❌ непредвиденная ошибка.")
+    # --- ИСПРАВЛЕНИЕ: Экранируем сообщения ---
+    error_not_found_fmt_raw = "❌ Личность с ID `{id}` не найдена или не твоя." # Убираем экранирование тут
+    prompt_delete_fmt_raw = "🚨 *ВНИМАНИЕ\\!* 🚨\nУдалить личность '{name}' \\(ID: `{id}`\\)?\n\nЭто действие *НЕОБРАТИМО\\!*" # Оставляем экранирование для ! и ( )
+    error_db_raw = "❌ Ошибка базы данных."
+    error_general_raw = "❌ Непредвиденная ошибка."
+    error_db = escape_markdown_v2(error_db_raw)
+    error_general = escape_markdown_v2(error_general_raw)
+    # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
 
     try:
         with next(get_db()) as db:
+            # ... (поиск persona_config) ...
             logger.debug(f"Fetching PersonaConfig {persona_id} for owner {user_id}...") # <--- ЛОГ
             persona_config = db.query(PersonaConfig).options(selectinload(PersonaConfig.owner)).filter(
                 PersonaConfig.id == persona_id,
@@ -3679,12 +3683,15 @@ async def _start_delete_convo(update: Update, context: ContextTypes.DEFAULT_TYPE
             ).first()
 
             if not persona_config:
+                 # --- ИСПРАВЛЕНИЕ: Экранируем перед отправкой ---
+                 final_error_msg = escape_markdown_v2(error_not_found_fmt_raw.format(id=persona_id))
+                 # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
                  logger.warning(f"Persona {persona_id} not found or not owned by user {user_id}.") # <--- ЛОГ
-                 final_error_msg = error_not_found_fmt_raw.format(id=persona_id)
                  if is_callback: await update.callback_query.answer("Личность не найдена", show_alert=True)
                  await reply_target.reply_text(final_error_msg, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
                  return ConversationHandler.END
 
+            # ... (создание клавиатуры) ...
             logger.debug(f"Persona found: {persona_config.name}. Storing ID in user_data.") # <--- ЛОГ
             context.user_data['delete_persona_id'] = persona_id
             persona_name_display = persona_config.name[:20] + "..." if len(persona_config.name) > 20 else persona_config.name
@@ -3693,8 +3700,11 @@ async def _start_delete_convo(update: Update, context: ContextTypes.DEFAULT_TYPE
                  [InlineKeyboardButton("❌ НЕТ, ОСТАВИТЬ", callback_data="delete_persona_cancel")]
              ]
             reply_markup = InlineKeyboardMarkup(keyboard)
+
+            # Используем уже частично экранированный prompt_delete_fmt_raw
             msg_text = prompt_delete_fmt_raw.format(name=escape_markdown_v2(persona_config.name), id=persona_id)
 
+            # ... (отправка/редактирование сообщения) ...
             logger.debug(f"Sending confirmation message for persona {persona_id}.") # <--- ЛОГ
             if is_callback:
                  query = update.callback_query
@@ -3714,6 +3724,7 @@ async def _start_delete_convo(update: Update, context: ContextTypes.DEFAULT_TYPE
 
             logger.info(f"User {user_id} initiated delete for persona {persona_id}. Asking confirmation. Returning state DELETE_PERSONA_CONFIRM.") # <--- ЛОГ
             return DELETE_PERSONA_CONFIRM
+    # ... (обработка ошибок) ...
     except SQLAlchemyError as e:
          logger.error(f"Database error starting delete persona {persona_id}: {e}", exc_info=True)
          await context.bot.send_message(chat_id, error_db, parse_mode=ParseMode.MARKDOWN_V2)
@@ -3777,7 +3788,6 @@ async def delete_persona_confirmed(update: Update, context: ContextTypes.DEFAULT
     except (IndexError, ValueError):
         logger.error(f"Could not parse persona_id from delete confirmation callback data: {data}")
         await query.answer("❌ Ошибка данных", show_alert=True)
-        # return DELETE_PERSONA_CONFIRM # Остаемся в том же состоянии или END? Лучше END
         return ConversationHandler.END
 
     persona_id_from_state = context.user_data.get('delete_persona_id')
