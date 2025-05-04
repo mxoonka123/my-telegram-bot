@@ -3787,7 +3787,7 @@ async def delete_persona_confirmed(update: Update, context: ContextTypes.DEFAULT
 
     # Сообщения об ошибках
     error_no_session = escape_markdown_v2("❌ ошибка: неверные данные для удаления или сессия потеряна\\. начни снова \\(/mypersonas\\)\\.")
-    error_delete_failed = escape_markdown_v2("❌ не удалось удалить личность \\(ошибка базы данных\\)\\.")
+    error_delete_failed = escape_markdown_v2("❌ Не удалось удалить личность (ошибка базы данных).") # Используем escape
     success_deleted_fmt_raw = "✅ личность '{name}' удалена."
 
     # Проверяем совпадение ID из данных кнопки и из состояния пользователя
@@ -3843,9 +3843,9 @@ async def delete_persona_confirmed(update: Update, context: ContextTypes.DEFAULT
         except Exception as e:
             logger.error(f"Failed to edit message with deletion success: {e}")
     else:
-        logger.warning(f"Sending failure message for deletion of persona {persona_id_from_state}") # <--- ЛОГ
+        logger.warning(f"Sending failure message for deletion of persona {persona_id_from_state}")
         try:
-            # Используем имя, которое было до попытки удаления, если оно есть
+            # Отправляем экранированное сообщение об ошибке
             await query.edit_message_text(error_delete_failed, reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2)
         except Exception as e:
             logger.error(f"Failed to edit message with deletion failure: {e}")
