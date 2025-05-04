@@ -1,6 +1,6 @@
 import json
 import logging
-from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, Boolean, ForeignKey, UniqueConstraint, func, BIGINT, select, update as sql_update
+from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, Boolean, ForeignKey, UniqueConstraint, func, BIGINT, select, update as sql_update, delete
 from sqlalchemy.orm import sessionmaker, relationship, Session, joinedload, selectinload
 from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy.orm import declarative_base
@@ -509,17 +509,47 @@ def delete_persona_config(db: Session, persona_id: int, owner_id: int) -> bool:
     """Deletes a PersonaConfig by its ID and owner's internal ID, and commits."""
     logger.warning(f"--- delete_persona_config: Attempting to delete PersonaConfig ID={persona_id} owned by User ID={owner_id} ---")
     try:
-        logger.debug(f"Querying for PersonaConfig id={persona_id} owner_id={owner_id} with_for_update...")
-        persona = db.query(PersonaConfig).filter(
+        logger.debug(f"Querying for PersonaConfig id={persona_id} owner_id={owner_id}...")
+        # Загружаем сразу связанные bot_instances и их chat_links для эффективности
+        persona = db.query(PersonaConfig).options(
+            selectinload(PersonaConfig.bot_instances).selectinload(BotInstance.chat_links)
+        ).filter(
             PersonaConfig.id == persona_id,
             PersonaConfig.owner_id == owner_id
-        ).with_for_update().first()
+        ).first() # Убираем with_for_update, т.к. будем удалять вручную частично
 
         if persona:
             persona_name = persona.name
             logger.info(f"Found PersonaConfig {persona_id} ('{persona_name}'). Proceeding with deletion.")
+
+            # --- НАЧАЛО: Ручное удаление ChatContext ---
+            chat_bot_instance_ids_to_clear = []
+            if persona.bot_instances:
+                for bot_instance in persona.bot_instances:
+                    if bot_instance.chat_links:
+                        chat_bot_instance_ids_to_clear.extend([link.id for link in bot_instance.chat_links])
+
+            if chat_bot_instance_ids_to_clear:
+                logger.info(f"Manually deleting ChatContext records for ChatBotInstance IDs: {chat_bot_instance_ids_to_clear}")
+                try:
+                    # Создаем SQL запрос на удаление контекста
+                    stmt = delete(ChatContext).where(ChatContext.chat_bot_instance_id.in_(chat_bot_instance_ids_to_clear))
+                    result = db.execute(stmt)
+                    deleted_ctx_count = result.rowcount
+                    logger.info(f"Manually deleted {deleted_ctx_count} ChatContext records.")
+                    # НЕ делаем commit здесь, все будет в одном коммите в конце
+                except SQLAlchemyError as ctx_del_err:
+                    logger.error(f"SQLAlchemyError during manual ChatContext deletion for persona {persona_id}: {ctx_del_err}", exc_info=True)
+                    logger.debug("Rolling back transaction due to ChatContext deletion error.")
+                    db.rollback()
+                    return False # Ошибка при удалении контекста
+            else:
+                logger.info(f"No related ChatContext records found to delete for persona {persona_id}.")
+            # --- КОНЕЦ: Ручное удаление ChatContext ---
+
+            # Теперь удаляем саму персону (каскад сработает для BotInstance и ChatBotInstance)
+            logger.debug(f"Calling db.delete() for persona {persona_id}. Attempting commit...")
             db.delete(persona)
-            logger.debug(f"Called db.delete() for persona {persona_id}. Attempting commit...")
             db.commit()
             logger.info(f"Successfully committed deletion of PersonaConfig {persona_id} (Name: '{persona_name}')")
             return True
