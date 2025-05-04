@@ -20,35 +20,17 @@ from config import (
 )
 
 # --- Default Templates ---
-# Simplified System Prompt v6 (Запреты и требования в начале)
+# Simplified System Prompt v8 (Фокус на роли и запрете приветствий)
 DEFAULT_SYSTEM_PROMPT_TEMPLATE = '''Твоя роль: {persona_name}. Описание: {persona_description}.
 
-ВАЖНО:
--   **НИКОГДА НЕ НАЧИНАЙ С ПРИВЕТСТВИЯ**, если это не самое первое сообщение в диалоге. Сразу отвечай по делу.
--   **РАЗБИВАЙ ДЛИННЫЕ ОТВЕТЫ** на 2-4 предложения, разделяя их `\n\n`.
--   **ПИШИ ТОЛЬКО СТРОЧНЫМИ БУКВАМИ**.
+!!! ГЛАВНОЕ ПРАВИЛО: НЕ НАЧИНАЙ С ПРИВЕТСТВИЯ, если это не самое первое сообщение в диалоге. Сразу отвечай по делу.
 
-Твой стиль: {communication_style}, {verbosity_level}.
-Твое настроение: {mood_name} ({mood_prompt}) - учитывай, если не "Нейтрально".
+Стиль: {communication_style}, {verbosity_level}.
+Настроение: {mood_name} ({mood_prompt}) - учитывай, если не "Нейтрально".
 
 Прочитай историю диалога и ответь на последнее сообщение пользователя ({username}, id: {user_id}) в чате {chat_id}.
+ПОМНИ: Не здоровайся, если диалог уже идет!
 '''
-
-# Simplified Should Respond Prompt v3 (Возвращаем детализацию + строгость)
-DEFAULT_SHOULD_RESPOND_TEMPLATE = '''Проанализируй сообщение и контекст. Должен ли чат-бот @{bot_username} (личность {persona_name}) ответить на последнее сообщение пользователя: "{last_user_message}"?
-Настройка ответа в группе: {group_reply_preference}.
-
-Правила принятия решения:
-- always: Всегда отвечать "Да".
-- never: Всегда отвечать "Нет".
-- mentioned_only: Ответить "Да" ТОЛЬКО если в сообщении есть упоминание @{bot_username}. Иначе "Нет".
-- mentioned_or_contextual: Ответить "Да" если есть упоминание @{bot_username}, ИЛИ если сообщение является прямым ответом/продолжением предыдущей реплики бота, ИЛИ если сообщение явно обращено к боту по смыслу. В остальных случаях - "Нет".
-
-История диалога (для mentioned_or_contextual):
-{context_summary}
-
-Твой ответ ДОЛЖЕН быть ТОЛЬКО ОДНИМ СЛОВОМ: "Да" или "Нет". Без каких-либо других слов или знаков препинания.
-Ответ:'''
 
 logger = logging.getLogger(__name__)
 
@@ -127,7 +109,6 @@ class PersonaConfig(Base):
     max_response_messages = Column(Integer, default=3, nullable=False)
 
     system_prompt_template = Column(Text, nullable=False, default=DEFAULT_SYSTEM_PROMPT_TEMPLATE)
-    should_respond_prompt_template = Column(Text, nullable=True, default=DEFAULT_SHOULD_RESPOND_TEMPLATE)
 
     owner = relationship("User", back_populates="persona_configs", lazy="selectin")
     bot_instances = relationship("BotInstance", back_populates="persona_config", cascade="all, delete-orphan", lazy="selectin")
@@ -446,8 +427,7 @@ def create_persona_config(db: Session, owner_id: int, name: str, description: st
             media_reaction="text_only",
             mood_prompts_json=default_moods,
             max_response_messages=3,
-            system_prompt_template=DEFAULT_SYSTEM_PROMPT_TEMPLATE,
-            should_respond_prompt_template=DEFAULT_SHOULD_RESPOND_TEMPLATE
+            system_prompt_template=DEFAULT_SYSTEM_PROMPT_TEMPLATE
         )
         db.add(new_persona)
         db.commit()
