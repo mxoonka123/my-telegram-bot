@@ -460,19 +460,20 @@ async def process_and_send_response(
     persona: Persona,
     full_bot_response_text: str,
     db: Session,
-    reply_to_message_id: Optional[int] = None
+    reply_to_message_id: Optional[int] = None,
+    is_first_message: bool = False # Новый параметр
 ) -> bool:
     """Processes the AI response, adds it to context, extracts GIFs, splits text, and sends messages."""
     if not full_bot_response_text or not full_bot_response_text.strip():
         logger.warning(f"Received empty response from AI for chat {chat_id}, persona {persona.name}. Not sending anything.")
         return False
 
-    logger.debug(f"Processing AI response for chat {chat_id}, persona {persona.name}. Raw length: {len(full_bot_response_text)}. ReplyTo: {reply_to_message_id}")
+    logger.debug(f"Processing AI response for chat {chat_id}, persona {persona.name}. Raw length: {len(full_bot_response_text)}. ReplyTo: {reply_to_message_id}. IsFirstMsg: {is_first_message}")
 
     chat_id_str = str(chat_id)
     context_prepared = False
 
-    # --- Сохранение ответа в контекст (без изменений) ---
+    # Сохранение ответа в контекст
     if persona.chat_instance:
         try:
             add_message_to_context(db, persona.chat_instance.id, "assistant", full_bot_response_text.strip())
@@ -484,7 +485,6 @@ async def process_and_send_response(
             logger.error(f"Unexpected Error preparing assistant response for context chat_instance {persona.chat_instance.id}: {e}", exc_info=True)
     else:
         logger.error("Cannot add AI response to context, chat_instance is None.")
-    # --- Конец сохранения в контекст ---
 
     all_text_content = full_bot_response_text.strip()
     gif_links = extract_gif_links(all_text_content)
@@ -493,11 +493,9 @@ async def process_and_send_response(
         all_text_content = re.sub(r'\s*' + re.escape(gif) + r'\s*', " ", all_text_content, flags=re.IGNORECASE).strip()
     all_text_content = re.sub(r'\s{2,}', ' ', all_text_content).strip()
 
-    # --- ЭТОТ БЛОК ДОЛЖЕН БЫТЬ ЗДЕСЬ ---
     max_messages_setting = persona.config.max_response_messages if persona.config else 0
-    max_messages = 3 # Default value
-
-    if max_messages_setting <= 0: # 0 или отрицательное -> Случайно
+    max_messages = 3
+    if max_messages_setting <= 0:
         max_messages = random.randint(1, 3)
         logger.debug(f"Max messages set to Random. Chosen: {max_messages}")
     elif 1 <= max_messages_setting <= 10:
@@ -505,17 +503,31 @@ async def process_and_send_response(
         logger.debug(f"Max messages set to {max_messages} from config.")
     else:
         logger.warning(f"Invalid max_response_messages value ({max_messages_setting}) for persona {persona.id}. Using default: {max_messages}")
-    # --- КОНЕЦ БЛОКА ОПРЕДЕЛЕНИЯ max_messages ---
 
-    # --- ИСПОЛЬЗУЕМ ОБНОВЛЕННЫЙ postprocess_response ---
-    # Передаем max_messages в функцию postprocess_response
     text_parts_to_send = postprocess_response(all_text_content, max_messages)
     logger.debug(f"postprocess_response (with max_messages={max_messages}) resulted in {len(text_parts_to_send)} parts.")
-    # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+
+    # --- WORKAROUND: Принудительная разбивка по предложениям, если нужно больше сообщений ---
+    if len(text_parts_to_send) == 1 and max_messages > 1:
+        logger.info(f"Only 1 part returned, but max_messages={max_messages}. Attempting sentence split.")
+        sentences = re.split(r'(?<=[.!?…])\s+', text_parts_to_send[0])
+        potential_parts = [s.strip() for s in sentences if s.strip()]
+        if len(potential_parts) > 1:
+             logger.info(f"Splitting into {len(potential_parts)} sentences.")
+             text_parts_to_send = potential_parts
+             # Обрезаем до max_messages, если предложений больше
+             if len(text_parts_to_send) > max_messages:
+                  logger.info(f"Trimming sentences from {len(text_parts_to_send)} to {max_messages}.")
+                  text_parts_to_send = text_parts_to_send[:max_messages]
+                  if text_parts_to_send and text_parts_to_send[-1]:
+                       last_part = text_parts_to_send[-1].rstrip('.!?… ')
+                       text_parts_to_send[-1] = f"{last_part}..."
+    # --- КОНЕЦ WORKAROUND ---
 
     send_tasks = []
     first_message_sent = False
 
+    # --- Отправка GIF (без изменений) ---
     for gif in gif_links:
         try:
             current_reply_id = reply_to_message_id if not first_message_sent else None
@@ -529,66 +541,90 @@ async def process_and_send_response(
         except Exception as e:
             logger.error(f"Error scheduling gif send {gif} to chat {chat_id_str}: {e}", exc_info=True)
 
+    # --- Отправка текста ---
     if text_parts_to_send:
         chat_type = None
         if update and hasattr(update, 'effective_chat') and update.effective_chat:
             chat_type = update.effective_chat.type
 
-        for i, part in enumerate(text_parts_to_send):
-            part_raw = part.strip()
-            if not part_raw: continue
+        # --- WORKAROUND: Удаление приветствия из первого сообщения ---        
+        if text_parts_to_send and not is_first_message:
+            first_part = text_parts_to_send[0]
+            # Более простой паттерн для поиска приветствия в начале строки, учитывая возможные знаки и регистр
+            greetings_pattern = r"^\s*(?:привет|здравствуй|добр(?:ый|ое|ого)\s+(?:день|утро|вечер)|хай|ку|здорово|салют|о[йи])(?:[,.!\s]|\b)"
+            match = re.match(greetings_pattern, first_part, re.IGNORECASE)
+            if match:
+                # Находим, где заканчивается совпадение (т.е. начинается остальной текст)
+                end_of_greeting = match.end()
+                cleaned_part = first_part[end_of_greeting:].strip()
+                if cleaned_part: # Убедимся, что что-то осталось
+                    logger.warning(f"Removed greeting from first message part. Original: '{first_part[:50]}...' New: '{cleaned_part[:50]}...'")
+                    text_parts_to_send[0] = cleaned_part
+                else:
+                    logger.warning(f"Greeting removal resulted in empty first part. Original: '{first_part[:50]}...' Removing part.")
+                    text_parts_to_send.pop(0) # Удаляем пустую часть
+            # else: # Убираем лог, если приветствие не найдено, это норма
+            #     logger.debug(f"No greeting found in first part: '{first_part[:50]}...'")
+        # --- КОНЕЦ WORKAROUND ---
 
-            if chat_type in [ChatType.GROUP, ChatType.SUPERGROUP]:
-                 try:
-                     asyncio.create_task(context.bot.send_chat_action(chat_id=chat_id_str, action=ChatAction.TYPING))
-                     await asyncio.sleep(random.uniform(0.6, 1.2))
-                 except Exception as e:
-                      logger.warning(f"Failed to send typing action to {chat_id_str}: {e}")
+        if not text_parts_to_send: # Если после удаления приветствия ничего не осталось
+             logger.warning("No text parts left to send after removing greeting.")
+        else:
+            for i, part in enumerate(text_parts_to_send):
+                part_raw = part.strip()
+                if not part_raw: continue
 
-            current_reply_id = reply_to_message_id if not first_message_sent else None
-
-            try:
-                 escaped_part = escape_markdown_v2(part_raw)
-                 logger.debug(f"Sending part {i+1}/{len(text_parts_to_send)} to chat {chat_id_str} (MDv2, ReplyTo: {current_reply_id}): '{escaped_part[:50]}...'")
-                 send_tasks.append(context.bot.send_message(
-                     chat_id=chat_id_str,
-                     text=escaped_part,
-                     parse_mode=ParseMode.MARKDOWN_V2,
-                     reply_to_message_id=current_reply_id
-                 ))
-                 first_message_sent = True
-            except BadRequest as e:
-                 if "can't parse entities" in str(e).lower():
-                      logger.error(f"Error sending part {i+1} (MarkdownV2 parse failed): {e} - Original: '{part_raw[:100]}...' Escaped: '{escaped_part[:100]}...'")
-                      try:
-                           logger.info(f"Retrying part {i+1} as plain text.")
-                           send_tasks.append(context.bot.send_message(
-                               chat_id=chat_id_str,
-                               text=part_raw,
-                               parse_mode=None,
-                               reply_to_message_id=current_reply_id
-                           ))
-                           first_message_sent = True
-                      except Exception as plain_e:
-                           logger.error(f"Failed to schedule part {i+1} even as plain text: {plain_e}")
-                 elif "reply message not found" in str(e).lower():
-                     logger.warning(f"Cannot reply to message {reply_to_message_id} (likely deleted). Sending part {i+1} without reply.")
+                if chat_type in [ChatType.GROUP, ChatType.SUPERGROUP]:
                      try:
-                         escaped_part = escape_markdown_v2(part_raw)
-                         send_tasks.append(context.bot.send_message(
-                             chat_id=chat_id_str,
-                             text=escaped_part,
-                             parse_mode=ParseMode.MARKDOWN_V2,
-                             reply_to_message_id=None
-                         ))
-                         first_message_sent = True
-                     except Exception as retry_e:
-                         logger.error(f"Failed to schedule part {i+1} even without reply: {retry_e}")
-                 else:
-                     logger.error(f"Error scheduling text part {i+1} send (BadRequest, not parse): {e} - Original: '{part_raw[:100]}...' Escaped: '{escaped_part[:100]}...'")
-            except Exception as e:
-                 logger.error(f"Error scheduling text part {i+1} send: {e}", exc_info=True)
-                 break
+                         asyncio.create_task(context.bot.send_chat_action(chat_id=chat_id_str, action=ChatAction.TYPING))
+                         await asyncio.sleep(random.uniform(0.6, 1.2))
+                     except Exception as e:
+                          logger.warning(f"Failed to send typing action to {chat_id_str}: {e}")
+
+                current_reply_id = reply_to_message_id if not first_message_sent else None
+
+                try:
+                     escaped_part = escape_markdown_v2(part_raw)
+                     logger.debug(f"Sending part {i+1}/{len(text_parts_to_send)} to chat {chat_id_str} (MDv2, ReplyTo: {current_reply_id}): '{escaped_part[:50]}...'")
+                     send_tasks.append(context.bot.send_message(
+                         chat_id=chat_id_str,
+                         text=escaped_part,
+                         parse_mode=ParseMode.MARKDOWN_V2,
+                         reply_to_message_id=current_reply_id
+                     ))
+                     first_message_sent = True
+                except BadRequest as e:
+                     if "can't parse entities" in str(e).lower():
+                          logger.error(f"Error sending part {i+1} (MarkdownV2 parse failed): {e} - Original: '{part_raw[:100]}...' Escaped: '{escaped_part[:100]}...'")
+                          try:
+                               logger.info(f"Retrying part {i+1} as plain text.")
+                               send_tasks.append(context.bot.send_message(
+                                   chat_id=chat_id_str,
+                                   text=part_raw,
+                                   parse_mode=None,
+                                   reply_to_message_id=current_reply_id
+                               ))
+                               first_message_sent = True
+                          except Exception as plain_e:
+                               logger.error(f"Failed to schedule part {i+1} even as plain text: {plain_e}")
+                     elif "reply message not found" in str(e).lower():
+                         logger.warning(f"Cannot reply to message {reply_to_message_id} (likely deleted). Sending part {i+1} without reply.")
+                         try:
+                             escaped_part = escape_markdown_v2(part_raw)
+                             send_tasks.append(context.bot.send_message(
+                                 chat_id=chat_id_str,
+                                 text=escaped_part,
+                                 parse_mode=ParseMode.MARKDOWN_V2,
+                                 reply_to_message_id=None
+                             ))
+                             first_message_sent = True
+                         except Exception as retry_e:
+                             logger.error(f"Failed to schedule part {i+1} even without reply: {retry_e}")
+                     else:
+                         logger.error(f"Error scheduling text part {i+1} send (BadRequest, not parse): {e} - Original: '{part_raw[:100]}...' Escaped: '{escaped_part[:100]}...'")
+                except Exception as e:
+                     logger.error(f"Error scheduling text part {i+1} send: {e}", exc_info=True)
+                     break
 
     if send_tasks:
          results = await asyncio.gather(*send_tasks, return_exceptions=True)
@@ -668,18 +704,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         try:
             persona_context_owner_tuple = get_persona_and_context_with_owner(chat_id_str, db)
 
-            # --- NEW Log --- 
-            if persona_context_owner_tuple is None:
-                logger.warning(f"handle_message: get_persona_and_context_with_owner returned None for chat {chat_id_str}. No active persona found?")
-            else:
-                 logger.info(f"handle_message: Found active persona '{persona_context_owner_tuple[0].name}' for chat {chat_id_str}.")
-            # --- End NEW Log ---
-
             if not persona_context_owner_tuple:
-                logger.debug(f"No active persona in chat {chat_id_str}. Ignoring message.")
+                logger.warning(f"handle_message: get_persona_and_context_with_owner returned None for chat {chat_id_str}. No active persona found?")
                 return
             persona, initial_context_from_db, owner_user = persona_context_owner_tuple
-            logger.debug(f"Handling message for persona '{persona.name}' owned by {owner_user.id} (TG ID: {owner_user.telegram_id}) in chat {chat_id_str}. Initial DB context len: {len(initial_context_from_db)}")
+            logger.info(f"handle_message: Found active persona '{persona.name}' for chat {chat_id_str}.")
 
             limit_ok = check_and_update_user_limits(db, owner_user)
             limit_state_updated = db.is_modified(owner_user)
@@ -687,18 +716,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             if not limit_ok:
                 logger.info(f"Owner {owner_user.telegram_id} exceeded daily message limit ({owner_user.daily_message_count}/{owner_user.message_limit}).")
                 await send_limit_exceeded_message(update, context, owner_user)
-                if limit_state_updated:
-                    db.commit()
+                if limit_state_updated: db.commit()
                 return
 
-            # Prepare current user message for context
+            # --- Добавление сообщения пользователя в контекст (как раньше) ---
             current_user_message_content = f"{username}: {message_text}"
             current_user_message_dict = {"role": "user", "content": current_user_message_content}
-
             context_user_msg_added = False
             if persona.chat_instance:
                 try:
-                    # Add to DB session (will be committed later)
                     add_message_to_context(db, persona.chat_instance.id, "user", current_user_message_content)
                     context_user_msg_added = True
                     logger.debug("User message prepared for context DB (pending commit).")
@@ -712,180 +738,85 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 await update.message.reply_text(escape_markdown_v2("❌ системная ошибка: не удалось связать сообщение с личностью."), parse_mode=ParseMode.MARKDOWN_V2)
                 db.rollback()
                 return
+            # --- Конец добавления ---
 
             if persona.chat_instance and persona.chat_instance.is_muted:
-                logger.debug(f"Persona '{persona.name}' is muted in chat {chat_id_str}. Message saved to context, but ignoring response.")
-                db.commit()
+                logger.debug(f"Persona '{persona.name}' is muted. Saving context and exiting.")
+                if limit_state_updated or context_user_msg_added: db.commit()
                 return
 
-            available_moods = persona.get_all_mood_names()
-            matched_mood = None
-            if message_text:
-                 mood_lower = message_text.lower()
-                 for m in available_moods:
-                     if m.lower() == mood_lower:
-                         matched_mood = m
-                         break
-            if matched_mood:
-                 logger.info(f"Message '{message_text}' matched mood name '{matched_mood}'. Changing mood.")
-                 db.commit()
-                 with next(get_db()) as mood_db_session:
-                      persona_for_mood_tuple = get_persona_and_context_with_owner(chat_id_str, mood_db_session)
-                      if persona_for_mood_tuple:
-                           await mood(update, context, db=mood_db_session, persona=persona_for_mood_tuple[0])
-                      else:
-                          logger.error(f"Could not re-fetch persona for mood change in chat {chat_id_str}")
-                          await update.message.reply_text(escape_markdown_v2("❌ ошибка при смене настроения."), parse_mode=ParseMode.MARKDOWN_V2)
-                 return
-
+            # --- УПРОЩЕННАЯ ЛОГИКА ОТВЕТА В ГРУППЕ ---
             should_ai_respond = True
-            ai_decision_response = None
-            ai_decision_message_dict = None # To store the potential decision for context
-            context_ai_decision_added = False
-
             if update.effective_chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
                 reply_pref = persona.group_reply_preference
-                logger.debug(f"Group chat detected. Persona '{persona.name}' reply preference: {reply_pref}")
+                bot_username = context.bot_data.get('bot_username', "YOUR_BOT_USERNAME") # Получаем имя бота
+                is_mentioned = f"@{bot_username}".lower() in message_text.lower()
+                is_reply_to_bot = update.message.reply_to_message and update.message.reply_to_message.from_user.id == context.bot.id
+
+                logger.debug(f"Group chat. Pref: {reply_pref}, Mentioned: {is_mentioned}, ReplyToBot: {is_reply_to_bot}")
+
                 if reply_pref == "never":
                     should_ai_respond = False
-                    logger.debug("Group reply preference is 'never'. Skipping response.")
-                elif reply_pref == "always":
-                    should_ai_respond = True
-                    logger.debug("Group reply preference is 'always'. Will respond.")
-                else: # mentioned_only or mentioned_or_contextual
-                    should_respond_prompt = persona.format_should_respond_prompt(message_text)
-                    if should_respond_prompt:
-                        try:
-                            logger.debug(f"Checking should_respond for persona {persona.name} in chat {chat_id_str} (pref: {reply_pref})...")
-                            # Build context FOR THE CHECK including the current user message
-                            context_for_should_respond = initial_context_from_db + [current_user_message_dict]
+                elif reply_pref == "mentioned_only":
+                    should_ai_respond = is_mentioned or is_reply_to_bot # Отвечаем на упоминание ИЛИ реплай боту
+                elif reply_pref == "mentioned_or_contextual":
+                    # В текущей реализации без LLM-проверки контекста,
+                    # отвечаем только на упоминание или реплай боту.
+                    # Можно будет усложнить позже, если нужно анализировать контекст.
+                    should_ai_respond = is_mentioned or is_reply_to_bot
+                # Для 'always' should_ai_respond остается True
 
-                            ai_decision_response = await send_to_langdock(
-                                system_prompt=should_respond_prompt,
-                                messages=context_for_should_respond
-                            )
-                            answer = ai_decision_response.strip().lower()
-                            logger.debug(f"should_respond AI decision for '{message_text[:50]}...': '{answer}'")
+                if not should_ai_respond:
+                    logger.debug(f"Decided not to respond based on group preference '{reply_pref}', mention={is_mentioned}, reply={is_reply_to_bot}.")
+                    # Коммитим изменения лимитов и контекста пользователя
+                    if limit_state_updated or context_user_msg_added: db.commit()
+                    return
+            # --- КОНЕЦ УПРОЩЕННОЙ ЛОГИКИ ---
 
-                            if answer.startswith("да"): # More robust check
-                                should_ai_respond = True
-                            elif answer.startswith("нет"): # More robust check
-                                should_ai_respond = False
-                            elif "error" in answer or "ошибка" in answer: # Handle error message from send_to_langdock
-                                 logger.warning(f"Error received during should_respond check: '{answer}'. Defaulting to respond.")
-                                 should_ai_respond = True
-                            else:
-                                logger.warning(f"Unclear should_respond answer '{answer}'. Defaulting to respond for safety.")
-                                should_ai_respond = True
-
-                            # Prepare decision message for potential DB storage and context
-                            ai_decision_content = f"[Decision: {answer}]"
-                            ai_decision_message_dict = {"role": "assistant", "content": ai_decision_content}
-
-                            if ai_decision_response and persona.chat_instance:
-                                try:
-                                    add_message_to_context(db, persona.chat_instance.id, "assistant", ai_decision_content)
-                                    context_ai_decision_added = True
-                                    logger.debug("Added AI decision response to context DB (pending commit).")
-                                except Exception as e_ctx_dec:
-                                    logger.error(f"Failed to add AI decision to context DB: {e_ctx_dec}")
-                                    # --- ADD ROLLBACK --- 
-                                    try:
-                                        db.rollback()
-                                    except Exception as rb_err:
-                                        logger.error(f"Rollback failed after context add error: {rb_err}")
-                                    # --- END ROLLBACK --- 
-
-                        except Exception as e:
-                            logger.error(f"Error in should_respond logic: {e}", exc_info=True)
-                            should_ai_respond = True # Default to respond on error
-                            # --- ADD ROLLBACK --- 
-                            try:
-                                logger.warning("Rolling back transaction due to error in should_respond logic (outer catch).")
-                                db.rollback()
-                            except Exception as rb_err:
-                                logger.error(f"Rollback failed after should_respond logic error: {rb_err}", exc_info=True)
-                            # --- END ROLLBACK --- 
-                    else:
-                        logger.warning(f"Could not generate should_respond prompt for pref '{reply_pref}'. Defaulting to respond.")
-                        should_ai_respond = True
-
-            if not should_ai_respond:
-                 logger.debug(f"Decided not to respond based on should_respond logic or preference.")
-                 # --- COMMIT IF NEEDED --- #
-                 # Commit if limit state or user message context was added, but we are exiting early
-                 if limit_state_updated or context_user_msg_added or context_ai_decision_added:
-                     try:
-                         logger.debug("Committing limit/context updates before exiting due to no-response decision.")
-                         db.commit()
-                     except SQLAlchemyError as commit_err:
-                         logger.error(f"Failed to commit before exiting on no-response decision: {commit_err}", exc_info=True)
-                         db.rollback() # Rollback on commit failure
-                 # --- END COMMIT IF NEEDED --- #
-                 return
-
-            # --- Build final context for the main AI response --- 
+            # --- Формирование контекста и промпта ---
+            # Контекст теперь только initial_context_from_db + current_user_message_dict
             context_for_ai = initial_context_from_db + [current_user_message_dict]
-            if ai_decision_message_dict:
-                # Include the AI's decision process if it happened
-                context_for_ai.append(ai_decision_message_dict)
-            # --- End building final context ---
-
-            # Use the Persona method to format the main system prompt
             system_prompt = persona.format_system_prompt(user_id, username, message_text)
             if not system_prompt:
                 logger.error(f"System prompt formatting failed for persona {persona.name}.")
-                # Use simple text for error message to avoid parsing issues
-                await update.message.reply_text("❌ ошибка при подготовке ответа.", parse_mode=None)
+                await update.message.reply_text(escape_markdown_v2("❌ ошибка при подготовке ответа."), parse_mode=ParseMode.MARKDOWN_V2)
                 db.rollback()
                 return
+            # --- Конец формирования ---
 
-            # --- DEBUG LOGGING START ---
             logger.debug(f"--- Sending to Langdock --- Chat: {chat_id_str}, Persona: {persona.name}")
             logger.debug(f"System Prompt:\n---\n{system_prompt}\n---")
-            # Log context messages carefully, limit length if necessary
             context_log_str = "\n".join([f"  {msg.get('role')}: {str(msg.get('content', ''))[:150]}{'...' if len(str(msg.get('content', ''))) > 150 else ''}" for msg in context_for_ai])
             logger.debug(f"Context ({len(context_for_ai)} messages):\n---\n{context_log_str}\n---")
-            # --- DEBUG LOGGING END ---
 
             response_text = await send_to_langdock(system_prompt, context_for_ai)
 
-            # --- DEBUG LOGGING START ---
             logger.debug(f"Raw Response from Langdock:\n---\n{response_text}\n---")
-            # --- DEBUG LOGGING END ---
 
-            # Check if Langdock returned an error message
-            if response_text.startswith("ой, ошибка связи с ai") or response_text.startswith("ошибка:"):
-                logger.error(f"Langdock returned an error message: {response_text}")
-                # Send the simple error message to the user (no Markdown)
-                await update.message.reply_text(response_text, parse_mode=None)
-                # Commit any pending changes (like user message or decision)
-                # --- COMMIT IF NEEDED (before error exit) --- #
-                if limit_state_updated or context_user_msg_added or context_ai_decision_added:
-                    try:
-                        logger.debug("Committing limit/context updates before exiting due to Langdock error.")
-                        db.commit()
-                    except SQLAlchemyError as commit_err:
-                        logger.error(f"Failed to commit before exiting on Langdock error: {commit_err}", exc_info=True)
-                        db.rollback()
-                # --- END COMMIT --- #
+            if response_text.startswith("ai вернул пустой ответ") or \
+               response_text.startswith("ошибка:") or \
+               response_text.startswith("ой, ошибка связи с ai"):
+                logger.error(f"Langdock returned an error/empty message: {response_text}")
+                # Отправляем сообщение об ошибке/пустом ответе пользователю
+                await update.message.reply_text(response_text, parse_mode=ParseMode.MARKDOWN_V2 if response_text.startswith("ai вернул") else None)
+                # Коммитим изменения лимитов и контекста пользователя
+                if limit_state_updated or context_user_msg_added: db.commit()
                 return
 
-            logger.debug(f"Received main response from Langdock: {response_text[:100]}...")
-
             context_response_prepared = await process_and_send_response(
-                update, context, chat_id_str, persona, response_text, db, reply_to_message_id=message_id
+                update, context, chat_id_str, persona, response_text, db,
+                reply_to_message_id=message_id,
+                is_first_message=(len(initial_context_from_db) == 0) # Передаем флаг первого сообщения
             )
 
-            # --- FINAL COMMIT --- #
-            # Commit everything together if successful
+            # Финальный коммит
             try:
+                # Коммитим все: лимиты, сообщение юзера, ответ бота
                 db.commit()
-                logger.debug(f"Committed DB changes for handle_message chat {chat_id_str} (LimitUpdated: {limit_state_updated}, UserMsgAdded: {context_user_msg_added}, AIDecisionAdded: {context_ai_decision_added}, BotRespAdded: {context_response_prepared})")
+                logger.debug(f"Committed DB changes for handle_message chat {chat_id_str}")
             except SQLAlchemyError as final_commit_err:
                  logger.error(f"FINAL COMMIT FAILED in handle_message: {final_commit_err}", exc_info=True)
-                 db.rollback() # Rollback on final commit failure
-            # --- END FINAL COMMIT --- #
+                 db.rollback()
 
         except SQLAlchemyError as e:
              logger.error(f"Database error during handle_message for chat {chat_id_str}: {e}", exc_info=True)
@@ -894,7 +825,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
              db.rollback() # Ensure rollback on SQLAlchemyError
         except TelegramError as e:
              logger.error(f"Telegram API error during handle_message for chat {chat_id_str}: {e}", exc_info=True)
-             # No DB rollback needed here unless a DB operation caused it, which would be caught above
         except Exception as e:
             logger.error(f"General error processing message in chat {chat_id_str}: {e}", exc_info=True)
             try: await update.message.reply_text("❌ произошла непредвиденная ошибка.", parse_mode=None)
