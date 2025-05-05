@@ -822,6 +822,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 if limit_state_updated or context_user_msg_added: db.commit()
                 return
 
+            logger.info(f"RAW LLM RESPONSE before postprocessing (len={len(response_text)}):\n'''\n{response_text}\n'''")
+
+            # --- ОБРАБОТКА ОТВЕТА ---
+            # 1. Удаляем лишние пробелы и переносы строк в начале и конце
+            response_text = response_text.strip()
+            # 2. Заменяем множественные пробелы на один
+            response_text = re.sub(r'\s+', ' ', response_text)
+            # 3. Убираем лишние переносы строк
+            response_text = re.sub(r'\n\s*\n', '\n\n', response_text)
+            # 4. Добавляем пробелы после точек, если их нет
+            response_text = re.sub(r'([.!?])([A-ZА-Я])', r'\1 \2', response_text)
+            # --- КОНЕЦ ПРЕДВАРИТЕЛЬНОЙ ОБРАБОТКИ ---
+
             context_response_prepared = await process_and_send_response(
                 update, context, chat_id_str, persona, response_text, db,
                 reply_to_message_id=message_id,
