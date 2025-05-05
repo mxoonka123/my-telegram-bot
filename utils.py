@@ -123,8 +123,8 @@ def _split_aggressively(text: str, max_len: int) -> List[str]:
 # --- V9: Simple Aggressive Split (Always Split) ---
 def postprocess_response(response: str, max_messages: int) -> List[str]:
     """
-    Simple Aggressive Split (Always Split) v9.
-    Always splits text into messages, even if it fits in one.
+    Natural Split (Always Split) v10.
+    Splits text into natural chunks while preserving sentence integrity.
     """
     if not response or not isinstance(response, str):
         return []
@@ -133,68 +133,67 @@ def postprocess_response(response: str, max_messages: int) -> List[str]:
     if not response:
         return []
 
-    logger.debug(f"--- Postprocessing response (Simple Aggressive Split v9 - Always Split) ---")
+    logger.debug(f"--- Postprocessing response (Natural Split v10 - Always Split) ---")
     
-    # Always split into at least 2 messages
-    target_messages = max(2, min(10, max_messages)) if max_messages > 0 else random.randint(2, 3)
-    
-    # Calculate target length per message
-    target_len = max(MIN_SENSIBLE_LEN, math.ceil(len(response) / target_messages))
-    
-    # Split by sentences first
+    # Split by sentences first, preserving punctuation
     sentences = [s.strip() for s in re.split(r'(?<=[.!?…])\s+', response) if s.strip()]
     logger.debug(f"Found {len(sentences)} sentences in response.")
     
-    # Build messages
+    # Calculate target length per message based on sentences
+    target_len = max(MIN_SENSIBLE_LEN, math.ceil(len(response) / max(2, min(10, max_messages))))
+    
+    # Build messages, trying to keep sentences together
     messages = []
     current_msg = ""
+    current_len = 0
     
     for sentence in sentences:
         if not sentence: continue
         
+        # Calculate new length with sentence
+        new_len = current_len + len(sentence) + (2 if current_msg else 0)  # +2 for \n\n
+        
         # If adding this sentence would exceed length, finalize current message
-        if current_msg and len(current_msg) + len(sentence) + 1 > target_len:
+        if current_msg and new_len > target_len:
             messages.append(current_msg)
-            current_msg = ""
-            if len(messages) >= target_messages:
+            current_msg = sentence
+            current_len = len(sentence)
+            
+            # If we have enough messages, try to keep remaining sentences together
+            if len(messages) >= max_messages - 1:
                 break
-        
-        # Add sentence to current message
-        current_msg = f"{current_msg}\n{sentence}".strip() if current_msg else sentence
-        
-        # Always finalize message after each sentence if we're still below target
-        if len(messages) < target_messages and current_msg:
-            messages.append(current_msg)
-            current_msg = ""
+        else:
+            # Add sentence to current message with double newline
+            current_msg = f"{current_msg}\n\n{sentence}" if current_msg else sentence
+            current_len = new_len
     
-    # Add remaining text
-    if current_msg and len(messages) < target_messages:
+    # Add remaining text if any
+    if current_msg:
         messages.append(current_msg)
     
-    # If we have too few messages, split the last one
-    while len(messages) < target_messages and messages:
-        last_msg = messages.pop()
-        split_point = len(last_msg) // 2
-        messages.extend([last_msg[:split_point], last_msg[split_point:]])
+    # If we have too few messages, try to split larger ones naturally
+    if len(messages) < max_messages:
+        for i in range(len(messages) - 1, -1, -1):
+            if len(messages) >= max_messages:
+                break
+            
+            msg = messages[i]
+            if len(msg) > target_len * 1.5:  # Only split if significantly larger
+                # Try to split at a natural point (comma, space)
+                split_point = msg.rfind(' ', 0, len(msg)//2)
+                if split_point == -1:
+                    split_point = len(msg)//2
+                
+                messages[i] = msg[:split_point].strip()
+                messages.insert(i + 1, msg[split_point:].strip())
     
-    # Final aggressive split if any message is still too long
-    final_messages = []
-    for i, msg in enumerate(messages):
-        if len(msg) > TELEGRAM_MAX_LEN:
-            logger.debug(f"Message {i+1}/{len(messages)} is too long ({len(msg)} chars), splitting...")
-            final_messages.extend(_split_aggressively(msg, TELEGRAM_MAX_LEN))
-        else:
-            final_messages.append(msg)
-        
-        # Log message lengths
-        logger.debug(f"Final message {i+1}/{len(final_messages)} length: {len(final_messages[i])} chars")
-    
-    # Ensure we don't exceed target number of messages
-    final_messages = final_messages[:target_messages]
+    # Final check and trim if needed
+    if len(messages) > max_messages:
+        messages = messages[:max_messages]
     
     # Log final results
-    logger.info(f"Final processed messages... count: {len(final_messages)}")
-    for i, msg in enumerate(final_messages):
-        logger.debug(f"Finalized message {i+1}/{len(final_messages)} (len={len(msg)}): {msg[:50]}...")
+    logger.info(f"Final processed messages... count: {len(messages)}")
+    for i, msg in enumerate(messages):
+        logger.debug(f"Finalized message {i+1}/{len(messages)} (len={len(msg)}): {msg[:50]}...")
     
-    return final_messages
+    return messages
