@@ -87,8 +87,8 @@ def extract_gif_links(text: str) -> List[str]:
 def postprocess_response(response: str, max_messages: int) -> List[str]:
     """
     Splits the bot's response into suitable message parts.
-    V10: Prioritizes LLM newlines, but attempts further aggressive splitting
-         on the longest part if part count < max_messages and text is long.
+    V11: Prioritizes LLM newlines, then splits by sentences, ensuring
+         sentence completeness within messages.
     """
     telegram_max_len = 4096
     if not response or not isinstance(response, str):
@@ -195,50 +195,93 @@ def postprocess_response(response: str, max_messages: int) -> List[str]:
              logger.info("Newline parts count is sufficient or longest part is short. Using newline parts.")
              final_parts = initial_parts # Используем исходные части
 
-    # 3. Агрессивная разбивка, если переносы НЕ найдены ИЗНАЧАЛЬНО
+    # 3. Если переносы НЕ найдены -> Разбивка по предложениям
     else: # not processed_by_newline
-        logger.warning("No newlines found. Using V10 aggressive splitting on the whole text.")
-        aggressive_parts = []
-        # Используем ту же логику агрессивной разбивки
-        estimated_len = math.ceil(len(response) / max_messages)
-        estimated_len = max(estimated_len, 50)
-        estimated_len = min(estimated_len, telegram_max_len - 10)
-        start = 0
-        for i in range(max_messages):
-            end = min(start + estimated_len, len(response))
-            if i == max_messages - 1: end = len(response)
-            if end < len(response):
-                space_pos = response.rfind(' ', start, end)
-                if space_pos > start: end = space_pos + 1
-            part = response[start:end].strip()
-            if part: aggressive_parts.append(part)
-            start = end
-            if start >= len(response): break
-        logger.info(f"Aggressive splitting created {len(aggressive_parts)} parts.")
-        final_parts = aggressive_parts # Результат агрессивной разбивки
+        logger.warning("No newlines found. Attempting split by sentences.")
+        # Используем lookbehind для сохранения знака препинания
+        sentences = re.split(r'(?<=[.!?…])\s+', response)
+        sentences = [s.strip() for s in sentences if s.strip()] # Очищаем пустые
 
-    # 4. Если после всего частей нет
-    if not final_parts:
-        logger.warning("Could not split response using any method V10.")
-        if len(response) > telegram_max_len:
-             return [response[:telegram_max_len - 3] + "..."]
+        if not sentences: # Если регулярка ничего не нашла
+             logger.error("Could not split response by sentences. Returning original.")
+             # Возвращаем как есть (или обрезанное)
+             if len(response) > telegram_max_len:
+                 return [response[:telegram_max_len - 3] + "..."]
+             else:
+                 return [response]
+
+        logger.info(f"Split by sentences resulted in {len(sentences)} potential sentences.")
+
+        current_message_parts = []
+        current_len = 0
+        # Целевое количество предложений на сообщение (примерно)
+        # Не менее 1, не более 5 (можно настроить)
+        sentences_per_msg_target = max(1, min(5, math.ceil(len(sentences) / max_messages)))
+
+        for i, sentence in enumerate(sentences):
+            sentence_len = len(sentence)
+            # Проверяем, поместится ли СЛЕДУЮЩЕЕ предложение в ТЕКУЩЕЕ сообщение
+            # И не превышено ли целевое кол-во предложений (с небольшой гибкостью)
+            # И не превышен ли лимит сообщений
+            separator_len = 1 if current_message_parts else 0 # Пробел между предложениями
+
+            # Условие для добавления предложения в текущее сообщение:
+            # 1. Это первое предложение для этого сообщения.
+            # ИЛИ
+            # 2. Оно влезает по длине.
+            # И
+            # 3. Количество сообщений еще не достигло максимума.
+            # И
+            # 4. Количество предложений в текущем сообщении еще не слишком велико
+            #    (позволяем чуть больше целевого, если влезает по длине)
+
+            can_add = False
+            if not current_message_parts: # Первое предложение всегда добавляем
+                can_add = True
+            elif current_len + separator_len + sentence_len <= telegram_max_len and \
+                 len(final_messages) < max_messages: #and \
+                 #len(current_message_parts) < sentences_per_msg_target + 1: # Не слишком много предложений
+                 can_add = True
+
+            if can_add:
+                current_message_parts.append(sentence)
+                current_len += separator_len + sentence_len
+            else:
+                # Если добавить нельзя, "закрываем" предыдущее сообщение
+                if current_message_parts:
+                    final_messages.append(" ".join(current_message_parts))
+                # Начинаем новое сообщение с текущего предложения
+                # Но только если мы еще не достигли лимита сообщений
+                if len(final_messages) < max_messages:
+                    current_message_parts = [sentence]
+                    current_len = sentence_len
+                else:
+                    # Лимит сообщений достигнут, прекращаем обработку предложений
+                    logger.warning(f"Reached max_messages ({max_messages}) during sentence assembly. Remaining sentences discarded.")
+                    current_message_parts = [] # Очищаем, чтобы не добавилось в конце
+                    break
+
+        # Добавляем последнее собранное сообщение, если оно не пустое
+        if current_message_parts and len(final_messages) < max_messages:
+            final_messages.append(" ".join(current_message_parts))
+
+        # Добавляем многоточие, если не все предложения влезли
+        if len(final_messages) < len(sentences) and final_messages:
+             last_msg = final_messages[-1].rstrip('.!?… ')
+             if not last_msg.endswith('...'): final_messages[-1] = f"{last_msg}..."
+
+        logger.info(f"Sentence splitting resulted in {len(final_messages)} messages.")
+
+    # 4. Финальная проверка длины и очистка (ОБЯЗАТЕЛЬНО)
+    processed_messages = []
+    for msg in final_messages:
+        msg_cleaned = "\n".join(line.strip() for line in msg.strip().splitlines() if line.strip())
+        if not msg_cleaned: continue
+        if len(msg_cleaned) > telegram_max_len:
+            logger.warning(f"Final message part exceeds limit ({len(msg_cleaned)} > {telegram_max_len}). Truncating.")
+            processed_messages.append(msg_cleaned[:telegram_max_len - 3] + "...")
         else:
-             return [response]
-
-    # 5. ОБРЕЗАЕМ (Trimming), если частей все еще БОЛЬШЕ чем max_messages
-    # Это может случиться, если доразбивка + оставшиеся части > max_messages
-    trimmed_messages = []
-    if len(final_parts) > max_messages:
-        logger.warning(f"Parts count ({len(final_parts)}) still > max_messages ({max_messages}) after processing. Trimming.")
-        trimmed_messages = final_parts[:max_messages]
-        # Добавляем многоточие к последней
-        if trimmed_messages and trimmed_messages[-1]:
-             last_p = trimmed_messages[-1].rstrip('.!?… ')
-             if not last_p.endswith('...'): trimmed_messages[-1] = f"{last_p}..."
-    else:
-        trimmed_messages = final_parts
-
-    # 6. Финальная проверка длины и очистка
+            processed_messages.append(msg_cleaned)
     processed_messages = []
     for msg in trimmed_messages:
         msg_cleaned = "\n".join(line.strip() for line in msg.strip().splitlines() if line.strip())
