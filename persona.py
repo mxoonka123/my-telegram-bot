@@ -5,13 +5,14 @@ from datetime import datetime, timezone, timedelta
 import logging
 import urllib.parse
 
+# Убедимся, что импортируем нужные вещи
 from config import (
-    DEFAULT_MOOD_PROMPTS, BASE_PROMPT_SUFFIX, INTERNET_INFO_PROMPT,
-    LANGDOCK_RESPONSE_INSTRUCTIONS, DEFAULT_SYSTEM_PROMPT_TEMPLATE
+    DEFAULT_MOOD_PROMPTS, BASE_PROMPT_SUFFIX, LANGDOCK_RESPONSE_INSTRUCTIONS
 )
+# Шаблон DEFAULT_SYSTEM_PROMPT_TEMPLATE теперь берется из DB, но нужен для fallback
+from db import PersonaConfig, ChatBotInstance, User, DEFAULT_SYSTEM_PROMPT_TEMPLATE
+
 from utils import get_time_info
-# Make sure db types are imported if needed, but typically they are passed in
-from db import PersonaConfig, ChatBotInstance, User, DEFAULT_SHOULD_RESPOND_TEMPLATE
 
 logger = logging.getLogger(__name__)
 
@@ -136,11 +137,10 @@ class Persona:
 
     def format_system_prompt(self, user_id: int, username: str, message: str) -> str:
         """Formats the main system prompt using template and dynamic info."""
-        template = self._get_system_template() # Получаем актуальный шаблон из БД/дефолта
+        template = self._get_system_template() # Получаем актуальный шаблон
         mood_instruction = self.get_mood_prompt_snippet()
         mood_name = self.current_mood
 
-        # Получаем текстовые описания стиля и разговорчивости
         style_map = {"neutral": "Нейтральный", "friendly": "Дружелюбный", "sarcastic": "Саркастичный", "formal": "Формальный", "brief": "Краткий"}
         verbosity_map = {"concise": "Лаконичный", "medium": "Средний", "talkative": "Разговорчивый"}
         style_text = style_map.get(self.communication_style, style_map["neutral"])
@@ -148,10 +148,9 @@ class Persona:
 
         chat_id_info = str(self.chat_instance.chat_id) if self.chat_instance else "unknown_chat"
 
-        # --- ВАЖНО: Используем ТОЛЬКО КЛЮЧИ ИЗ ШАБЛОНА V9 ---
+        # --- Блок try...except для форматирования ---
         try:
-            # Ключи в шаблоне V9: persona_name, persona_description, communication_style,
-            # verbosity_level, mood_name, mood_prompt, username, user_id, chat_id, last_user_message
+            # Словарь с плейсхолдерами для шаблона V9
             placeholders = {
                 'persona_name': self.name,
                 'persona_description': self.description,
@@ -164,11 +163,12 @@ class Persona:
                 'chat_id': chat_id_info,
                 'last_user_message': message
             }
+            # Форматируем шаблон, используя словарь
             formatted_prompt = template.format(**placeholders)
-            # Логируем, что используем правильные ключи
             logger.debug(f"Formatting system prompt V9 with keys: {list(placeholders.keys())}")
 
         except KeyError as e:
+            # Этот блок выполняется, если в шаблоне есть ключ, которого нет в placeholders
             logger.error(f"FATAL: Missing key in system prompt template V9: {e}. Template sample: {template[:100]}...", exc_info=True)
             # Fallback на простой формат БЕЗ ШАБЛОНА
             fallback_parts = [
@@ -179,9 +179,11 @@ class Persona:
             ]
             formatted_prompt = " ".join(fallback_parts)
             logger.warning("Using fallback system prompt due to template error.")
+
         except Exception as format_err:
+            # Этот блок выполняется при других ошибках форматирования
             logger.error(f"FATAL: Unexpected error formatting system prompt V9: {format_err}. Template sample: {template[:100]}...", exc_info=True)
-             # Fallback на простой формат БЕЗ ШАБЛОНА
+            # Fallback на простой формат БЕЗ ШАБЛОНА
             fallback_parts = [
                 f"Ты {self.name}. {self.description}.",
                 f"Стиль: {style_text}. Разговорчивость: {verbosity_text}.",
@@ -190,26 +192,10 @@ class Persona:
             ]
             formatted_prompt = " ".join(fallback_parts)
             logger.warning("Using fallback system prompt due to unexpected formatting error.")
-        # --- КОНЕЦ ВАЖНОГО БЛОКА ---
+        # --- Конец блока try...except ---
 
         # Если нужно добавить общие инструкции *после* форматирования шаблона
-        # formatted_prompt += " Твоя задача - отвечать кратко." # Пример
-
-        return formatted_prompt.strip()
-        except KeyError as e:
-            logger.error(f"Missing key in system prompt template: {e}. Template: {template[:100]}...")
-            # Fallback to simpler format if template fails
-            fallback_parts = [
-                f"Ты {self.name}. {self.description}.",
-                f"Стиль: {style_text}. Разговорчивость: {verbosity_text}.",
-                f"Настроение: {mood_name} ({mood_instruction}).",
-                f"Ответь на сообщение от {username} (id: {user_id}) в чате {chat_id_info}: {message}"
-            ]
-            formatted_prompt = " ".join(fallback_parts)
-
-        # Можно добавить общие инструкции, если они не включены в шаблон
-        # formatted_prompt += " " + BASE_PROMPT_SUFFIX
-        # formatted_prompt += " " + LANGDOCK_RESPONSE_INSTRUCTIONS
+        # formatted_prompt += " " + BASE_PROMPT_SUFFIX # Пример
 
         return formatted_prompt.strip()
 
