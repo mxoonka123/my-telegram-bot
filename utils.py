@@ -86,6 +86,10 @@ def extract_gif_links(text: str) -> List[str]:
 
 # --- СУПЕР ПРОСТАЯ ВЕРСИЯ V6 ---
 def postprocess_response(response: str, max_messages: int) -> List[str]:
+    # --- ДОБАВЛЯЕМ ЭТОТ ЛОГ ---
+    logger.error("!!!!!!!!! UTILS: postprocess_response V6 CALLED !!!!!!!!!!")
+    # --- КОНЕЦ ДОБАВЛЕНИЯ ---
+
     telegram_max_len = 4096
     if not response or not isinstance(response, str): return []
     response = response.strip()
