@@ -730,33 +730,40 @@ def get_active_chat_bot_instance_with_relations(db: Session, chat_id: Union[str,
     logger.debug(f"[get_active_chat_bot_instance] Searching for instance in chat_id='{chat_id_str}'")
     instance = None
     try:
-        any_instance = db.query(ChatBotInstance).filter(ChatBotInstance.chat_id == chat_id_str).first()
-        if any_instance and not any_instance.active:
-            logger.warning(f"[get_active_chat_bot_instance] Found an INACTIVE instance for chat_id='{chat_id_str}' (ID: {any_instance.id}). This might be the issue.")
-        elif not any_instance:
-             logger.warning(f"[get_active_chat_bot_instance] No instance (active or inactive) found at all for chat_id='{chat_id_str}'.")
-
+        # --- ИЗМЕНЕНИЯ ТОЛЬКО ВНУТРИ .options() ---
         instance = db.query(ChatBotInstance)\
             .options(
-                selectinload(ChatBotInstance.bot_instance_ref)
-                .selectinload(BotInstance.persona_config)
-                .selectinload(PersonaConfig.owner),
-                selectinload(ChatBotInstance.bot_instance_ref)
-                .selectinload(BotInstance.owner)
+                selectinload(ChatBotInstance.bot_instance_ref) # Оставляем selectinload
+                .selectinload(BotInstance.persona_config)      # Оставляем selectinload
+                .joinedload(PersonaConfig.owner),           # <-- ИЗМЕНЕНО НА joinedload
+                selectinload(ChatBotInstance.bot_instance_ref) # Оставляем selectinload (хотя вторая ветка может быть избыточна, но оставим для мин. изменений)
+                .joinedload(BotInstance.owner)              # <-- ИЗМЕНЕНО НА joinedload
             )\
             .filter(ChatBotInstance.chat_id == chat_id_str, ChatBotInstance.active == True)\
             .first()
+        # --- КОНЕЦ ИЗМЕНЕНИЙ ВНУТРИ .options() ---
 
         if instance:
-            logger.debug(f"[get_active_chat_bot_instance] Found ACTIVE instance (with options): ID={instance.id}, BotInstanceID={instance.bot_instance_id}, PersonaID={instance.bot_instance_ref.persona_config_id if instance.bot_instance_ref else 'N/A'}")
+            logger.debug(f"[get_active_chat_bot_instance] Found ACTIVE instance (with options): ID={instance.id}, BotInstanceID={instance.bot_instance_id}, PersonaID={instance.bot_instance_ref.persona_config_id if instance.bot_instance_ref and instance.bot_instance_ref.persona_config else 'N/A'}")
+            # Проверка, загрузился ли владелец (для отладки)
+            owner_loaded = (instance.bot_instance_ref and instance.bot_instance_ref.owner) or \
+                           (instance.bot_instance_ref and instance.bot_instance_ref.persona_config and instance.bot_instance_ref.persona_config.owner)
+            logger.debug(f"[get_active_chat_bot_instance] Owner object loaded via joinedload: {'Yes' if owner_loaded else 'No'}")
         else:
-            pass
+             logger.warning(f"[get_active_chat_bot_instance] No active instance found for chat_id='{chat_id_str}'.") # Изменено с debug на warning
+             # Попробуем найти неактивную для диагностики
+             any_instance = db.query(ChatBotInstance).filter(ChatBotInstance.chat_id == chat_id_str).first()
+             if any_instance:
+                  logger.warning(f"[get_active_chat_bot_instance] Found INACTIVE instance (ID: {any_instance.id}). This might be the issue.")
+
         return instance
-    except (SQLAlchemyError, ProgrammingError) as e:
+    except (SQLAlchemyError, ProgrammingError) as e: # Обрабатываем и ProgrammingError
         if isinstance(e, ProgrammingError) and "does not exist" in str(e).lower():
              logger.error(f"Database schema error getting active chatbot instance for chat {chat_id_str}: {e}. Columns missing!")
         elif "operator does not exist" in str(e).lower() and ("character varying = bigint" in str(e).lower() or "bigint = character varying" in str(e).lower()):
-             logger.error(f"Type mismatch error querying ChatBotInstance for chat_id '{chat_id}': {e}. Check model and DB schema for chat_id.", exc_info=False)
+             logger.error(f"Type mismatch error querying ChatBotInstance for chat_id '{chat_id_str}': {e}. Check model and DB schema for chat_id.", exc_info=False)
+        elif isinstance(e, ProgrammingError) and "prepared statement" in str(e).lower() and "already exists" in str(e).lower():
+             logger.error(f"Duplicate PreparedStatement error during instance fetch for chat {chat_id_str}: {e}", exc_info=True) # Логируем конкретно
         else:
              logger.error(f"DB error getting active chatbot instance for chat {chat_id_str}: {e}", exc_info=True)
         return None
