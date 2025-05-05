@@ -21,12 +21,15 @@ from config import (
 )
 
 # --- Default Templates ---
-# Simplified System Prompt v8 (Фокус на роли и запрете приветствий)
+# Simplified System Prompt v8 (как в прошлый раз)
 DEFAULT_SYSTEM_PROMPT_TEMPLATE = '''Твоя роль: {persona_name}. Описание: {persona_description}.
 
-!!! ГЛАВНОЕ ПРАВИЛО: НЕ НАЧИНАЙ С ПРИВЕТСТВИЯ, если это не самое первое сообщение в диалоге. Сразу отвечай по делу.
+ВАЖНО:
+-   **НИКОГДА НЕ НАЧИНАЙ С ПРИВЕТСТВИЯ**, если это не самое первое сообщение в диалоге. Сразу отвечай по делу.
+-   **РАЗБИВАЙ ДЛИННЫЕ ОТВЕТЫ** на 2-4 предложения, разделяя их `\n\n`.
+-   **ПИШИ ТОЛЬКО СТРОЧНЫМИ БУКВАМИ**.
 
-Стиль: {communication_style}, {verbosity_level}.
+Твой стиль: {communication_style}, {verbosity_level}.
 Настроение: {mood_name} ({mood_prompt}) - учитывай, если не "Нейтрально".
 
 Прочитай историю диалога и ответь на последнее сообщение пользователя ({username}, id: {user_id}) в чате {chat_id}.
@@ -127,6 +130,7 @@ class PersonaConfig(Base):
     max_response_messages = Column(Integer, default=3, nullable=False)
 
     system_prompt_template = Column(Text, nullable=False, default=DEFAULT_SYSTEM_PROMPT_TEMPLATE)
+    should_respond_prompt_template = Column(Text, nullable=True, default=DEFAULT_SHOULD_RESPOND_TEMPLATE)
 
     owner = relationship("User", back_populates="persona_configs", lazy="selectin")
     bot_instances = relationship("BotInstance", back_populates="persona_config", cascade="all, delete-orphan", lazy="selectin")
@@ -443,7 +447,8 @@ def create_persona_config(db: Session, owner_id: int, name: str, description: st
             media_reaction="text_only",
             mood_prompts_json=default_moods,
             max_response_messages=3,
-            system_prompt_template=DEFAULT_SYSTEM_PROMPT_TEMPLATE
+            system_prompt_template=DEFAULT_SYSTEM_PROMPT_TEMPLATE,
+            should_respond_prompt_template=DEFAULT_SHOULD_RESPOND_TEMPLATE
         )
         db.add(new_persona)
         db.commit()
