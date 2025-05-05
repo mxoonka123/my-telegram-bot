@@ -507,23 +507,6 @@ async def process_and_send_response(
     text_parts_to_send = postprocess_response(all_text_content, max_messages)
     logger.debug(f"postprocess_response (with max_messages={max_messages}) resulted in {len(text_parts_to_send)} parts.")
 
-    # --- WORKAROUND: Принудительная разбивка по предложениям, если нужно больше сообщений ---
-    if len(text_parts_to_send) == 1 and max_messages > 1:
-        logger.info(f"Only 1 part returned, but max_messages={max_messages}. Attempting sentence split.")
-        sentences = re.split(r'(?<=[.!?…])\s+', text_parts_to_send[0])
-        potential_parts = [s.strip() for s in sentences if s.strip()]
-        if len(potential_parts) > 1:
-             logger.info(f"Splitting into {len(potential_parts)} sentences.")
-             text_parts_to_send = potential_parts
-             # Обрезаем до max_messages, если предложений больше
-             if len(text_parts_to_send) > max_messages:
-                  logger.info(f"Trimming sentences from {len(text_parts_to_send)} to {max_messages}.")
-                  text_parts_to_send = text_parts_to_send[:max_messages]
-                  if text_parts_to_send and text_parts_to_send[-1]:
-                       last_part = text_parts_to_send[-1].rstrip('.!?… ')
-                       text_parts_to_send[-1] = f"{last_part}..."
-    # --- КОНЕЦ WORKAROUND ---
-
     send_tasks = []
     first_message_sent = False
 
