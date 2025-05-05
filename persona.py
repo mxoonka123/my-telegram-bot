@@ -136,7 +136,7 @@ class Persona:
 
     def format_system_prompt(self, user_id: int, username: str, message: str) -> str:
         """Formats the main system prompt using template and dynamic info."""
-        template = self._get_system_template()
+        template = self._get_system_template() # Получаем актуальный шаблон из БД/дефолта
         mood_instruction = self.get_mood_prompt_snippet()
         mood_name = self.current_mood
 
@@ -148,21 +148,54 @@ class Persona:
 
         chat_id_info = str(self.chat_instance.chat_id) if self.chat_instance else "unknown_chat"
 
+        # --- ВАЖНО: Используем ТОЛЬКО КЛЮЧИ ИЗ ШАБЛОНА V9 ---
         try:
             # Ключи в шаблоне V9: persona_name, persona_description, communication_style,
             # verbosity_level, mood_name, mood_prompt, username, user_id, chat_id, last_user_message
-            formatted_prompt = template.format(
-                persona_name=self.name,
-                persona_description=self.description,
-                communication_style=style_text,
-                verbosity_level=verbosity_text,
-                mood_name=mood_name,
-                mood_prompt=mood_instruction,
-                username=username,
-                user_id=user_id,
-                chat_id=chat_id_info,
-                last_user_message=message
-            )
+            placeholders = {
+                'persona_name': self.name,
+                'persona_description': self.description,
+                'communication_style': style_text,
+                'verbosity_level': verbosity_text,
+                'mood_name': mood_name,
+                'mood_prompt': mood_instruction,
+                'username': username,
+                'user_id': user_id,
+                'chat_id': chat_id_info,
+                'last_user_message': message
+            }
+            formatted_prompt = template.format(**placeholders)
+            # Логируем, что используем правильные ключи
+            logger.debug(f"Formatting system prompt V9 with keys: {list(placeholders.keys())}")
+
+        except KeyError as e:
+            logger.error(f"FATAL: Missing key in system prompt template V9: {e}. Template sample: {template[:100]}...", exc_info=True)
+            # Fallback на простой формат БЕЗ ШАБЛОНА
+            fallback_parts = [
+                f"Ты {self.name}. {self.description}.",
+                f"Стиль: {style_text}. Разговорчивость: {verbosity_text}.",
+                f"Настроение: {mood_name} ({mood_instruction}).",
+                f"Ответь на сообщение от {username} (id: {user_id}) в чате {chat_id_info}: {message}"
+            ]
+            formatted_prompt = " ".join(fallback_parts)
+            logger.warning("Using fallback system prompt due to template error.")
+        except Exception as format_err:
+            logger.error(f"FATAL: Unexpected error formatting system prompt V9: {format_err}. Template sample: {template[:100]}...", exc_info=True)
+             # Fallback на простой формат БЕЗ ШАБЛОНА
+            fallback_parts = [
+                f"Ты {self.name}. {self.description}.",
+                f"Стиль: {style_text}. Разговорчивость: {verbosity_text}.",
+                f"Настроение: {mood_name} ({mood_instruction}).",
+                f"Ответь на сообщение от {username} (id: {user_id}) в чате {chat_id_info}: {message}"
+            ]
+            formatted_prompt = " ".join(fallback_parts)
+            logger.warning("Using fallback system prompt due to unexpected formatting error.")
+        # --- КОНЕЦ ВАЖНОГО БЛОКА ---
+
+        # Если нужно добавить общие инструкции *после* форматирования шаблона
+        # formatted_prompt += " Твоя задача - отвечать кратко." # Пример
+
+        return formatted_prompt.strip()
         except KeyError as e:
             logger.error(f"Missing key in system prompt template: {e}. Template: {template[:100]}...")
             # Fallback to simpler format if template fails
