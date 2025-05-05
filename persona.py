@@ -138,33 +138,30 @@ class Persona:
         """Formats the main system prompt using template and dynamic info."""
         template = self._get_system_template()
         mood_instruction = self.get_mood_prompt_snippet()
-        mood_name = self.current_mood # Используем текущее имя настроения
+        mood_name = self.current_mood
 
-        # Стиль и разговорчивость теперь берутся из _generate_base_instructions
-        # style_and_verbosity = self._generate_base_instructions() # Этот вызов не нужен здесь
-        # Берем текст из карты стилей/разговорчивости для передачи в шаблон
-        style_map = {"neutral": "Нейтральный", "friendly": "Дружелюбный", "sarcastic": "Саркастичный", "formal": "Формальный", "brief": "Краткий"} # <-- Добавлено brief
+        # Получаем текстовые описания стиля и разговорчивости
+        style_map = {"neutral": "Нейтральный", "friendly": "Дружелюбный", "sarcastic": "Саркастичный", "formal": "Формальный", "brief": "Краткий"}
         verbosity_map = {"concise": "Лаконичный", "medium": "Средний", "talkative": "Разговорчивый"}
         style_text = style_map.get(self.communication_style, style_map["neutral"])
         verbosity_text = verbosity_map.get(self.verbosity_level, verbosity_map["medium"])
 
         chat_id_info = str(self.chat_instance.chat_id) if self.chat_instance else "unknown_chat"
 
-        # Подставляем значения в шаблон V8 из db.py
-        # Плейсхолдеры: {persona_name}, {persona_description}, {communication_style}, {verbosity_level},
-        # {mood_name}, {mood_prompt}, {username}, {user_id}, {chat_id}, {last_user_message} (message)
         try:
+            # Ключи в шаблоне V9: persona_name, persona_description, communication_style,
+            # verbosity_level, mood_name, mood_prompt, username, user_id, chat_id, last_user_message
             formatted_prompt = template.format(
                 persona_name=self.name,
                 persona_description=self.description,
-                communication_style=style_text, # Передаем текст стиля
-                verbosity_level=verbosity_text, # Передаем текст разговорчивости
+                communication_style=style_text,
+                verbosity_level=verbosity_text,
                 mood_name=mood_name,
                 mood_prompt=mood_instruction,
                 username=username,
                 user_id=user_id,
                 chat_id=chat_id_info,
-                last_user_message=message # Передаем последнее сообщение сюда
+                last_user_message=message
             )
         except KeyError as e:
             logger.error(f"Missing key in system prompt template: {e}. Template: {template[:100]}...")
