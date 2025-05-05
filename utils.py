@@ -273,6 +273,7 @@ def postprocess_response(response: str, max_messages: int) -> List[str]:
         logger.info(f"Sentence splitting resulted in {len(final_messages)} messages.")
 
     # 4. Финальная проверка длины и очистка (ОБЯЗАТЕЛЬНО)
+    # 4. Финальная проверка длины и очистка (ОБЯЗАТЕЛЬНО)
     processed_messages = []
     for msg in final_messages:
         msg_cleaned = "\n".join(line.strip() for line in msg.strip().splitlines() if line.strip())
@@ -282,24 +283,6 @@ def postprocess_response(response: str, max_messages: int) -> List[str]:
             processed_messages.append(msg_cleaned[:telegram_max_len - 3] + "...")
         else:
             processed_messages.append(msg_cleaned)
-    processed_messages = []
-    for msg in trimmed_messages:
-        msg_cleaned = "\n".join(line.strip() for line in msg.strip().splitlines() if line.strip())
-        if not msg_cleaned: continue
-        if len(msg_cleaned) > telegram_max_len:
-            processed_messages.append(msg_cleaned[:telegram_max_len - 3] + "...")
-        else:
-            processed_messages.append(msg_cleaned)
 
-    logger.info(f"Final processed messages V10 count: {len(processed_messages)}")
-    if len(processed_messages) > max_messages:
-        logger.warning(f"Final message count ({len(processed_messages)}) still exceeds max_messages ({max_messages}). Trimming final list.")
-        processed_messages = processed_messages[:max_messages]
-        # Add ellipsis if trimming happened here
-        if processed_messages and processed_messages[-1] and not processed_messages[-1].endswith("..."):
-             last_p = processed_messages[-1].rstrip('.!?… ')
-             processed_messages[-1] = f"{last_p}..."
-
-
-    logger.info(f"Final processed messages V8 count: {len(processed_messages)}")
+    logger.info(f"Final processed messages V11 count: {len(processed_messages)}")
     return processed_messages
