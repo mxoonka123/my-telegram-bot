@@ -3,6 +3,10 @@ import urllib.parse
 from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Any, Optional, Union, Tuple
 import random
+
+# Константы для Telegram
+TELEGRAM_MAX_LEN = 4096  # Максимальная длина сообщения в Telegram
+MIN_SENSIBLE_LEN = 100   # Минимальная длина для разумного сообщения
 import logging
 import math
 
@@ -180,9 +184,17 @@ def postprocess_response(response: str, max_messages: int) -> List[str]:
                 split_point = part.rfind(' ', avg_len//2, len(part))
                 if split_point == -1:
                     split_point = len(part)//2
+            
+                # Разделяем на две части
+                first_part = part[:split_point].strip()
+                second_part = part[split_point:].strip()
                 
-                parts[i] = part[:split_point].strip()
-                parts.insert(i + 1, part[split_point:].strip())
+                # Добавляем перенос строки между частями для лучшей читаемости
+                if first_part and second_part:
+                    first_part = f"{first_part}\n\n"
+                
+                parts[i] = first_part
+                parts.insert(i + 1, second_part)
     
     # Final check and trim if needed
     if len(parts) > max_messages:
