@@ -897,31 +897,31 @@ async def process_and_send_response(
             logger.error(f"process_and_send_response: Error sending GIF {i+1}: {e}", exc_info=True)
 
     # Затем текст
-    if not split_parts_list:
+    if not text_parts_to_send:
         logger.warning("process_and_send_response: No text parts available to send after splitting and debugging.")
     else:
         chat_type = update.effective_chat.type if update and update.effective_chat else None
 
         # --- Удаление приветствия (без изменений) ---
-        if split_parts_list and not is_first_message:
-            first_part = split_parts_list[0]
+        if text_parts_to_send and not is_first_message:
+            first_part = text_parts_to_send[0]
             greetings_pattern = r"^\s*(?:привет|здравствуй|добр(?:ый|ое|ого)\s+(?:день|утро|вечер)|хай|ку|здорово|салют|о[йи])(?:[,.!\s]|\b)"
             match = re.match(greetings_pattern, first_part, re.IGNORECASE)
             if match:
                 cleaned_part = first_part[match.end():].strip()
                 if cleaned_part: logger.warning(f"Removed greeting. New start: '{cleaned_part[:50]}...")
-                else: logger.warning("Greeting removal empty. Removing part."); split_parts_list.pop(0)
+                else: logger.warning("Greeting removal empty. Removing part."); text_parts_to_send.pop(0)
         # --- Конец удаления приветствия ---
 
         # --- Цикл отправки текста ---
-        logger.info(f"process_and_send_response: Starting loop to send {len(split_parts_list)} text part(s).")
-        for i, part_to_send in enumerate(split_parts_list):
+        logger.info(f"process_and_send_response: Starting loop to send {len(text_parts_to_send)} text part(s).")
+        for i, part_to_send in enumerate(text_parts_to_send):
             part_raw = str(part_to_send).strip() # Приводим к строке на всякий случай
             if not part_raw:
                 logger.warning(f"process_and_send_response: Skipping empty part at index {i}.")
                 continue
 
-            logger.debug(f"process_and_send_response: Preparing to send part {i+1}/{len(split_parts_list)}.")
+            logger.debug(f"process_and_send_response: Preparing to send part {i+1}/{len(text_parts_to_send)}.")
 
             if chat_type in [ChatType.GROUP, ChatType.SUPERGROUP]:
                  try: asyncio.create_task(context.bot.send_chat_action(chat_id=chat_id_str, action=ChatAction.TYPING)); await asyncio.sleep(random.uniform(0.5, 1.0))
@@ -932,7 +932,7 @@ async def process_and_send_response(
             message_sent_successfully = False
 
             try:
-                 logger.info(f"process_and_send_response: Sending part {i+1}/{len(split_parts_list)} (MDv2, ReplyTo: {current_reply_id}) chat={chat_id_str}: '{escaped_part[:50]}...")
+                 logger.info(f"process_and_send_response: Sending part {i+1}/{len(text_parts_to_send)} (MDv2, ReplyTo: {current_reply_id}) chat={chat_id_str}: '{escaped_part[:50]}...")
                  await context.bot.send_message(chat_id=chat_id_str, text=escaped_part, parse_mode=ParseMode.MARKDOWN_V2, reply_to_message_id=current_reply_id, read_timeout=20, write_timeout=20)
                  message_sent_successfully = True
             except BadRequest as e_md:
@@ -953,7 +953,7 @@ async def process_and_send_response(
 
             if message_sent_successfully:
                  first_message_sent = True
-                 logger.info(f"process_and_send_response: Successfully sent part {i+1}/{len(split_parts_list)}.")
+                 logger.info(f"process_and_send_response: Successfully sent part {i+1}/{len(text_parts_to_send)}.")
                  await asyncio.sleep(0.5)
             else:
                  logger.error(f"process_and_send_response: Failed sending part {i+1}. Stopping send loop.")
