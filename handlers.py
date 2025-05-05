@@ -4104,3 +4104,79 @@ async def clear_memory(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 # ... (остальные функции) ...
+
+async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handles the /reset command to clear persona context in the current chat."""
+    if not update.message: return
+    chat_id_str = str(update.effective_chat.id)
+    user_id = update.effective_user.id
+    username = update.effective_user.username or f"id_{user_id}"
+    logger.info(f"CMD /reset V3 < User {user_id} ({username}) in Chat {chat_id_str}") # V3
+
+    # Проверка подписки канала (если нужна)
+    if not await check_channel_subscription(update, context):
+        await send_subscription_required_message(update, context)
+        return
+
+    # Сообщения без Markdown
+    error_no_persona_raw = "🎭 В этом чате нет активной личности для сброса."
+    error_not_owner_raw = "❌ Только владелец личности или админ может сбросить её память."
+    error_no_instance_raw = "❌ Ошибка: не найден экземпляр бота для сброса."
+    error_db_raw = "❌ Ошибка базы данных при сбросе контекста."
+    error_general_raw = "❌ Ошибка при сбросе контекста."
+    success_reset_fmt_raw = "✅ Память личности '{persona_name}' в этом чате очищена ({count} сообщений удалено)."
+
+    with next(get_db()) as db:
+        try:
+            persona_info_tuple = get_persona_and_context_with_owner(chat_id_str, db)
+            if not persona_info_tuple:
+                # Используем parse_mode=None
+                await update.message.reply_text(error_no_persona_raw, reply_markup=ReplyKeyboardRemove(), parse_mode=None)
+                return
+            persona, _, owner_user = persona_info_tuple
+            persona_name_raw = persona.name
+
+            # Проверка прав: владелец или админ бота
+            if owner_user.telegram_id != user_id and not is_admin(user_id):
+                logger.warning(f"User {user_id} attempted to reset persona '{persona_name_raw}' owned by {owner_user.telegram_id} in chat {chat_id_str}.")
+                # Используем parse_mode=None
+                await update.message.reply_text(error_not_owner_raw, reply_markup=ReplyKeyboardRemove(), parse_mode=None)
+                return
+
+            chat_bot_instance = persona.chat_instance
+            if not chat_bot_instance:
+                 logger.error(f"Reset command V3: ChatBotInstance not found for persona {persona_name_raw} in chat {chat_id_str}")
+                 # Используем parse_mode=None
+                 await update.message.reply_text(error_no_instance_raw, parse_mode=None)
+                 return
+
+            chat_bot_instance_id = chat_bot_instance.id
+            logger.warning(f"User {user_id} resetting context for ChatBotInstance {chat_bot_instance_id} (Persona '{persona_name_raw}') in chat {chat_id_str} using explicit delete.")
+
+            # --- ИСПРАВЛЕННЫЙ КОД УДАЛЕНИЯ ---
+            stmt = delete(ChatContext).where(ChatContext.chat_bot_instance_id == chat_bot_instance_id)
+            result = db.execute(stmt)
+            deleted_count = result.rowcount
+            # --- КОНЕЦ ИСПРАВЛЕННОГО КОДА ---
+
+            # Коммитим удаление
+            db.commit()
+            logger.info(f"Deleted {deleted_count} context messages for instance {chat_bot_instance_id} via /reset V3.")
+
+            # Форматируем сообщение об успехе без Markdown
+            final_success_msg_raw = success_reset_fmt_raw.format(persona_name=persona_name_raw, count=deleted_count)
+
+            # Используем parse_mode=None
+            await update.message.reply_text(final_success_msg_raw, reply_markup=ReplyKeyboardRemove(), parse_mode=None)
+
+        except SQLAlchemyError as e:
+            specific_error = repr(e)
+            logger.error(f"Database error during /reset V3 for chat {chat_id_str}: {specific_error}", exc_info=True)
+            # Используем parse_mode=None
+            await update.message.reply_text(f"{error_db_raw} ({type(e).__name__})", parse_mode=None)
+            db.rollback()
+        except Exception as e:
+            logger.error(f"Error in /reset V3 handler for chat {chat_id_str}: {e}", exc_info=True)
+            # Используем parse_mode=None
+            await update.message.reply_text(f"{error_general_raw} ({type(e).__name__})", parse_mode=None)
+            db.rollback()
