@@ -847,10 +847,11 @@ async def process_and_send_response(
     try:
         logger.debug(f"process_and_send_response: Calling postprocess_response (utils.py) with max_messages={max_messages_setting} and text len={len(text_without_gifs)}")
         returned_parts = postprocess_response(text_without_gifs, max_messages_setting)
-        logger.debug(f"process_and_send_response: postprocess_response call finished.")
     except Exception as e:
-        logger.error(f"process_and_send_response: Error calling postprocess_response: {e}", exc_info=True)
-        returned_parts = [text_without_gifs[:TELEGRAM_MAX_LEN]]
+        logger.error(f"process_and_send_response: Error calling postprocess_response: {e}")
+        # Если postprocess_response упал, просто отправим текст без разделения
+        # Используем стандартную длину Telegram вместо константы
+        returned_parts = [text_without_gifs[:4096]]
 
     # --- ПАРАНОИДАЛЬНАЯ ОТЛАДКА ---
     logger.info(f"process_and_send_response: === DEBUG BLOCK START ===")
