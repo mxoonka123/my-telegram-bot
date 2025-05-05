@@ -12,7 +12,6 @@ TELEGRAM_MAX_LEN = 4096
 MIN_PART_LEN = 100 # Минимальная длина части, чтобы не было совсем коротких
 
 def escape_markdown_v2(text: Optional[str]) -> str:
-    """Escapes characters reserved in Telegram MarkdownV2."""
     if text is None: return ""
     if not isinstance(text, str):
         try: text = str(text)
@@ -20,7 +19,6 @@ def escape_markdown_v2(text: Optional[str]) -> str:
     escape_chars = r'_*[]()~`>#+-=|{}.!'; return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text)
 
 def get_time_info() -> str:
-    """Gets formatted time string for different timezones."""
     now_utc = datetime.now(timezone.utc); time_parts = [f"UTC {now_utc.strftime('%H:%M %d.%m.%Y')}"]
     timezones_offsets = {"МСК": timedelta(hours=3), "Берлин": timedelta(hours=1), "Нью-Йорк": timedelta(hours=-5)}
     for name, offset in timezones_offsets.items():
@@ -29,7 +27,6 @@ def get_time_info() -> str:
     return f"сейчас " + ", ".join(time_parts) + "."
 
 def extract_gif_links(text: str) -> List[str]:
-    """Extracts potential GIF links from text."""
     if not isinstance(text, str): return []
     try: decoded_text = urllib.parse.unquote(text)
     except Exception: decoded_text = text
@@ -42,18 +39,12 @@ def extract_gif_links(text: str) -> List[str]:
     return list(dict.fromkeys(valid_links))
 
 def postprocess_response(response: str, max_messages: int) -> List[str]:
-    """
-    Splits the bot's response into suitable message parts.
-    V12: ALWAYS uses aggressive splitting based on length and spaces,
-         as LLM formatting is unreliable. Respects max_messages.
-    """
     if not response or not isinstance(response, str):
         return []
 
     response = response.strip()
     if not response: return []
 
-    # --- Handle max_messages setting ---
     original_max_setting = max_messages
     if max_messages <= 0:
         max_messages = random.randint(1, 3)
@@ -63,11 +54,8 @@ def postprocess_response(response: str, max_messages: int) -> List[str]:
         max_messages = 10
     else:
         logger.info(f"Using max_messages setting: {max_messages}")
-    # --- End max_messages handling ---
 
-    # Если нужно 1 сообщение, или текст короткий - не делим
-    # Увеличим порог "короткого" текста, чтобы не делить его зря
-    if max_messages == 1 or len(response) < 150 : # Не делим, если меньше ~150 символов
+    if max_messages == 1 or len(response) < 150 : 
         logger.info(f"Returning single message (max_messages=1 or text too short: {len(response)} chars)")
         if len(response) > TELEGRAM_MAX_LEN:
             return [response[:TELEGRAM_MAX_LEN - 3] + "..."]
@@ -78,22 +66,17 @@ def postprocess_response(response: str, max_messages: int) -> List[str]:
     final_messages = []
     remaining_text = response
 
-    # Делим текст на max_messages частей
     for i in range(max_messages):
-        # Если текста не осталось, выходим
         if not remaining_text:
             break
 
-        # Если это последняя часть, забираем всё оставшееся
         if i == max_messages - 1:
             logger.debug(f"Taking remaining text for the last part ({len(final_messages) + 1}/{max_messages}).")
             part = remaining_text
-            remaining_text = "" # Текст закончился
+            remaining_text = "" 
         else:
-            # Рассчитываем идеальную длину для оставшихся частей
             parts_left_to_create = max_messages - i
             ideal_len = math.ceil(len(remaining_text) / parts_left_to_create)
-            # Применяем минимальную и максимальную длину
             target_len = max(min_part_len, min(ideal_len, TELEGRAM_MAX_LEN - 10))
             # Определяем точку среза
             cut_pos = min(target_len, len(remaining_text))
@@ -116,7 +99,6 @@ def postprocess_response(response: str, max_messages: int) -> List[str]:
             else:
                  logger.debug("Cut position is at the end of remaining text.")
 
-
             part = remaining_text[:cut_pos]
             remaining_text = remaining_text[cut_pos:]
 
@@ -127,13 +109,12 @@ def postprocess_response(response: str, max_messages: int) -> List[str]:
         else:
             logger.warning("Skipping empty part created during aggressive split.")
 
-
     # Финальная проверка длины (хотя она не должна превышаться)
     processed_messages = []
     for msg in final_messages:
-        if len(msg) > telegram_max_len:
+        if len(msg) > TELEGRAM_MAX_LEN:
              logger.warning(f"Aggressively split part still exceeds limit ({len(msg)}). Truncating.")
-             processed_messages.append(msg[:telegram_max_len-3] + "...")
+             processed_messages.append(msg[:TELEGRAM_MAX_LEN-3] + "...")
         else:
              processed_messages.append(msg)
 
