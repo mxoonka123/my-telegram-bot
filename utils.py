@@ -4,6 +4,7 @@ from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Any, Optional, Union, Tuple
 import random
 import logging
+import math
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +50,6 @@ def get_time_info() -> str:
 
     return f"сейчас " + ", ".join(time_parts) + "."
 
-
 def extract_gif_links(text: str) -> List[str]:
     """Extracts potential GIF links from text."""
     if not isinstance(text, str): return []
@@ -84,16 +84,19 @@ def extract_gif_links(text: str) -> List[str]:
     # Use dict.fromkeys to get unique links while preserving order
     return list(dict.fromkeys(valid_links))
 
-
 def postprocess_response(response: str, max_messages: int) -> List[str]:
     """Splits the bot's response into suitable message parts."""
     if not response or not isinstance(response, str) or max_messages <= 0:
+        logger.warning(f"Invalid input to postprocess_response: response={response!r}, max_messages={max_messages}")
         return [response] if isinstance(response, str) and response.strip() else []
 
     response = response.strip()
-    if not response: return []
+    if not response: 
+        logger.warning("Empty response after stripping")
+        return []
 
-    logger.debug(f"Postprocessing response. Max messages allowed: {max_messages}")
+    logger.debug(f"Postprocessing response. Max messages allowed: {max_messages}. Input length: {len(response)}")
+    logger.debug(f"Response preview: {response[:100]}{'...' if len(response) > 100 else ''}")
 
     parts = []
     processed = False
@@ -192,14 +195,20 @@ def postprocess_response(response: str, max_messages: int) -> List[str]:
 
     # 4. Если вообще не удалось разбить
     if not processed or not parts:
-        logger.info("Could not split response, returning as single part.")
+        logger.warning(f"Could not split response using any method. Response length: {len(response)}")
         if len(response) > 4096:
+            logger.warning(f"Response too long ({len(response)} > 4096), truncating.")
             return [response[:4093] + "..."]
         else:
+            logger.debug("Returning response as single part since it's under 4096 chars")
             return [response]
 
     # 5. Ограничение количества сообщений (если после объединения их все еще > max_messages)
     if len(parts) > max_messages:
+        logger.warning(f"Too many parts after processing ({len(parts)} > {max_messages}). Truncating to {max_messages} parts.")
+        # Объединяем последние части, если их слишком много
+        parts = parts[:max_messages-1] + [" ".join(parts[max_messages-1:])]
+        logger.debug(f"After truncation: {len(parts)} parts")
         logger.warning(f"Trimming final parts from {len(parts)} to {max_messages}.")
         final_messages = parts[:max_messages]
         # Добавляем многоточие к последней части, если она не пустая
