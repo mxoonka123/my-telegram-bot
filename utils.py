@@ -167,7 +167,7 @@ def _find_potential_split_indices(text: str) -> List[Tuple[int, int]]:
 def postprocess_response(response: str, max_messages: int) -> List[str]:
     """
     Splits the bot's response aggressively based on calculated target length
-    to achieve 'max_messages' parts (v8 - Simple Aggressive).
+    to achieve 'max_messages' parts (v9 - Always Split if max_messages > 1).
     Respects max_messages and Telegram length limits.
     """
     if not response or not isinstance(response, str): return []
@@ -183,20 +183,15 @@ def postprocess_response(response: str, max_messages: int) -> List[str]:
 
     total_len = len(response)
 
-    # Если нужно 1 сообщение или текст помещается в 1 сообщение и короче 1.5 * TELEGRAM_MAX_LEN
-    # (чтобы не делить короткие тексты без нужды, даже если max_messages > 1)
-    if max_messages == 1 or total_len <= TELEGRAM_MAX_LEN:
-        # ИЛИ если общая длина не намного больше одного сообщения
-        if total_len < TELEGRAM_MAX_LEN * 1.5 and max_messages > 1 :
-             logger.debug(f"Text length ({total_len}) is relatively short compared to limit, returning as 1 message despite max_messages={max_messages}.")
-             return [response[:TELEGRAM_MAX_LEN-3]+"..." if total_len > TELEGRAM_MAX_LEN else response]
-        elif max_messages == 1:
-            logger.debug("Max_messages is 1, returning original (truncated).")
-            return [response[:TELEGRAM_MAX_LEN-3]+"..." if total_len > TELEGRAM_MAX_LEN else response]
-        # Если текст длиннее лимита, но max_messages=1, все равно обрезаем
+    # --- ИЗМЕНЕННАЯ ЛОГИКА ---
+    # Если нужно ТОЛЬКО 1 сообщение (явно задано или текст слишком короткий для деления)
+    if max_messages == 1 or total_len < MIN_SENSIBLE_LEN * 1.5: # Не делим, если текст меньше ~1.5 минимальных частей
+        logger.debug(f"Returning single message (max_messages=1 or text too short: {total_len} chars)")
+        # Обрезаем, если даже одно сообщение слишком длинное
+        return [response[:TELEGRAM_MAX_LEN-3]+"..." if total_len > TELEGRAM_MAX_LEN else response]
+    # --- КОНЕЦ ИЗМЕНЕННОЙ ЛОГИКИ ---
 
-
-    logger.info(f"--- Postprocessing response (Simple Aggressive Split v8) --- Target messages: {max_messages}")
+    logger.info(f"--- Postprocessing response (Simple Aggressive Split v9 - Always Split) --- Target messages: {max_messages}")
 
     final_messages: List[str] = []
     remaining_text = response
@@ -215,30 +210,24 @@ def postprocess_response(response: str, max_messages: int) -> List[str]:
             parts_left_to_create = max_messages - i
             ideal_len_for_part = math.ceil(remaining_len / parts_left_to_create)
             # Ограничиваем максимальную длину, чтобы не превысить лимит Telegram
-            # Добавляем небольшой запас для поиска пробела
-            target_cut_point = min(TELEGRAM_MAX_LEN, ideal_len_for_part + 50) # Небольшой буфер для поиска пробела
-            # Но не больше, чем осталось текста
-            target_cut_point = min(target_cut_point, len(remaining_text))
+            target_cut_point = min(TELEGRAM_MAX_LEN, ideal_len_for_part + 50) # Буфер для поиска пробела
+            target_cut_point = min(target_cut_point, len(remaining_text)) # Не больше, чем осталось
 
             logger.debug(f"Part {i+1}/{max_messages}: Rem_len={remaining_len}, Parts_left={parts_left_to_create}, Ideal_len={ideal_len_for_part}, Target_cut={target_cut_point}")
 
             cut_pos = target_cut_point
-            # Ищем пробел НАЗАД от точки среза, но не раньше MIN_PART_LEN от начала *оставшегося* текста
-            # (чтобы первая часть была не слишком короткой)
-            if target_cut_point < len(remaining_text): # Ищем только если не режем в самом конце
-                 # Ищем последний пробел в диапазоне [MIN_PART_LEN, target_cut_point]
+            # Ищем пробел НАЗАД
+            if target_cut_point < len(remaining_text):
                  space_pos = remaining_text.rfind(' ', MIN_SENSIBLE_LEN, target_cut_point)
                  if space_pos != -1:
-                     cut_pos = space_pos + 1 # Режем после пробела
+                     cut_pos = space_pos + 1
                      logger.debug(f"Found suitable space break backward at {cut_pos}")
-                 else:
-                     # Если назад не нашли, попробуем найти ПЕРВЫЙ пробел ВПЕРЕД от идеальной длины
+                 else: # Ищем ВПЕРЕД
                      forward_space_pos = remaining_text.find(' ', ideal_len_for_part)
-                     if forward_space_pos != -1 and forward_space_pos < target_cut_point + 100: # Ищем недалеко вперед
+                     if forward_space_pos != -1 and forward_space_pos < target_cut_point + 100:
                           cut_pos = forward_space_pos + 1
                           logger.debug(f"Found suitable space break forward at {cut_pos}")
-                     else:
-                          # Если и вперед не нашли, режем по target_cut_point (это может быть TELEGRAM_MAX_LEN или ideal_len)
+                     else: # Режем по target_cut_point
                           cut_pos = target_cut_point
                           logger.debug(f"No suitable space break found, cutting at calculated position {cut_pos}")
             else:
@@ -247,7 +236,7 @@ def postprocess_response(response: str, max_messages: int) -> List[str]:
             part_to_add = remaining_text[:cut_pos].strip()
             remaining_text = remaining_text[cut_pos:].strip()
 
-        # Добавляем непустую часть, проверяя лимит Telegram на всякий случай
+        # Добавляем непустую часть, проверяя лимит
         if part_to_add:
             if len(part_to_add) > TELEGRAM_MAX_LEN:
                  logger.warning(f"Aggressively split part still exceeds limit ({len(part_to_add)}). Truncating.")
@@ -257,10 +246,10 @@ def postprocess_response(response: str, max_messages: int) -> List[str]:
         else:
              logger.warning("Skipping empty part created during aggressive split.")
 
-        remaining_len = len(remaining_text) # Обновляем оставшуюся длину
+        remaining_len = len(remaining_text) # Обновляем
 
     # --- Финальная проверка и лог ---
-    logger.info(f"Final processed messages (Simple Aggressive v8) count: {len(final_messages)}")
+    logger.info(f"Final processed messages (Simple Aggressive v9) count: {len(final_messages)}")
     for idx, msg_part in enumerate(final_messages):
         logger.debug(f"  Part {idx+1}/{len(final_messages)} (len={len(msg_part)}): '{msg_part[:80]}...'")
 
