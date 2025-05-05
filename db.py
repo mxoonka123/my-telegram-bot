@@ -8,6 +8,7 @@ from sqlalchemy.exc import SQLAlchemyError, IntegrityError, OperationalError, Pr
 from datetime import datetime, timezone, timedelta, date
 from typing import List, Dict, Any, Optional, Union, Tuple
 import psycopg # Direct import for specific error types if needed
+from sqlalchemy.engine.url import make_url # Импорт нужен для логирования
 
 # Import defaults from config
 from config import (
@@ -215,8 +216,6 @@ def initialize_database():
     logger.info(f"Initializing database connection pool for: {db_log_url}")
     # Логируем URL, который БУДЕТ использован (маскируем пароль)
     try:
-        # Попробуем импортировать make_url только для логирования
-        from sqlalchemy.engine.url import make_url
         log_url_display = make_url(db_url_str).render_as_string(hide_password=True)
     except Exception:
         log_url_display = "Could not parse DATABASE_URL for logging."
@@ -229,11 +228,12 @@ def initialize_database():
     elif db_url_str.startswith("postgres"):
         # Базовые настройки пула
         engine_args.update({
-            "pool_size": 10,
-            "max_overflow": 5,
+            "pool_size": 10, # Можно уменьшить для прямого подключения, например 5
+            "max_overflow": 5, # Можно уменьшить, например 2
             "pool_timeout": 30,
             "pool_recycle": 1800,
             "pool_pre_ping": True,
+            # Убираем connect_args и executemany_mode
         })
 
     try:
@@ -245,7 +245,6 @@ def initialize_database():
         logger.info("Attempting to establish initial database connection...")
         with engine.connect() as connection:
              logger.info("Database connection successful.")
-             # Можно убрать проверку prepared_statement_cache_size, т.к. мы задали его в URL
 
     except OperationalError as e:
          err_str = str(e).lower()
