@@ -166,58 +166,56 @@ def _find_potential_split_indices(text: str) -> List[Tuple[int, int]]:
 
 def postprocess_response(response: str, max_messages: int) -> List[str]:
     """
-    Splits the bot's response ensuring each message completes a thought
-    and new messages start with fresh sentences (v10 - Complete Thoughts).
+    Splits response into messages ensuring:
+    - Each message is under Telegram length limit
+    - Thoughts are completed within messages
+    - Respects max_messages parameter
     """
     if not response or not isinstance(response, str): return []
     response = response.strip()
     if not response: return []
 
     # Handle max_messages setting
-    original_max_setting = max_messages
-    if max_messages <= 0: max_messages = random.randint(1, 3)
+    if max_messages <= 0: max_messages = 1
     elif max_messages > 10: max_messages = 10
 
-    # Don't split very short messages
-    if max_messages == 1 or len(response) < MIN_SENSIBLE_LEN * 1.5:
+    # For single message or very short text
+    if max_messages == 1 or len(response) <= TELEGRAM_MAX_LEN:
         return [response[:TELEGRAM_MAX_LEN-3]+"..." if len(response) > TELEGRAM_MAX_LEN else response]
 
-    # First split by paragraphs
-    paragraphs = [p.strip() for p in response.split('\n\n') if p.strip()]
+    # Split into sentences first
+    sentences = re.split(r'(?<=[.!?…])\s+', response)
+    sentences = [s.strip() for s in sentences if s.strip()]
     
     final_messages = []
     current_message = ""
     
-    for para in paragraphs:
-        # Split paragraph into sentences
-        sentences = re.split(r'(?<=[.!?…])\s+', para)
+    for sentence in sentences:
+        # Check if adding this sentence would exceed limit
+        potential_message = f"{current_message}\n\n{sentence}" if current_message else sentence
         
-        for sentence in sentences:
-            # If adding this sentence would exceed length limit
-            if current_message and \
-               len(current_message) + len(sentence) + 2 > TELEGRAM_MAX_LEN:
-                # Finalize current message if it contains complete thoughts
-                if current_message.strip():
-                    final_messages.append(current_message.strip())
-                    current_message = ""
-                    if len(final_messages) >= max_messages:
+        if len(potential_message) > TELEGRAM_MAX_LEN:
+            if current_message:  # Finalize current message if it exists
+                final_messages.append(current_message)
+                current_message = ""
+                if len(final_messages) >= max_messages:
+                    break
+            
+            # If single sentence is too long, split it aggressively
+            if len(sentence) > TELEGRAM_MAX_LEN:
+                parts = [sentence[i:i+TELEGRAM_MAX_LEN] for i in range(0, len(sentence), TELEGRAM_MAX_LEN)]
+                for part in parts:
+                    if len(final_messages) < max_messages:
+                        final_messages.append(part)
+                    else:
                         break
-                
-            # Add sentence to current message
-            if current_message:
-                current_message += "\n\n" + sentence
-            else:
-                current_message = sentence
-        
-        if len(final_messages) >= max_messages:
-            break
+                continue
+            
+        # Add sentence to current message
+        current_message = potential_message
     
-    # Add remaining content
-    if current_message.strip() and len(final_messages) < max_messages:
-        final_messages.append(current_message.strip())
+    # Add the last message if there's content left
+    if current_message and len(final_messages) < max_messages:
+        final_messages.append(current_message)
     
-    # Ensure we don't exceed max_messages
-    if len(final_messages) > max_messages:
-        final_messages = final_messages[:max_messages]
-        
     return final_messages
