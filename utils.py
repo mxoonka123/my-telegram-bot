@@ -139,11 +139,11 @@ def postprocess_response(response: str, max_messages: int) -> List[str]:
 
     logger.debug(f"--- Postprocessing response (Natural Split v11 - Always Split) ---")
     
-    # Split by natural conversation points (sentences, questions, exclamations)
+    # First try to split by natural conversation points (sentences, questions, exclamations)
     parts = [p.strip() for p in re.split(r'(?<=[.!?…])\s+', response) if p.strip()]
     logger.debug(f"Found {len(parts)} natural parts in response.")
     
-    # If we have more parts than max_messages, combine some
+    # If we have more parts than max_messages, combine them
     if len(parts) > max_messages:
         combined_parts = []
         current_part = ""
@@ -156,8 +156,8 @@ def postprocess_response(response: str, max_messages: int) -> List[str]:
                 combined_parts.extend(parts[i:])
                 break
             
-            # If current part is empty or would be too long if combined
-            if not current_part or len(current_part) + len(part) + 2 > TELEGRAM_MAX_LEN:
+            # If current part would be too long if combined
+            if len(current_part) + len(part) + 2 > TELEGRAM_MAX_LEN:
                 if current_part:
                     combined_parts.append(current_part)
                 current_part = part
@@ -170,35 +170,44 @@ def postprocess_response(response: str, max_messages: int) -> List[str]:
         
         parts = combined_parts
     
-    # If we have fewer parts than max_messages, split larger ones
-    if len(parts) < max_messages:
-        for i in range(len(parts) - 1, -1, -1):
-            if len(parts) >= max_messages:
-                break
+    # If we still have fewer parts than max_messages, split larger ones
+    if len(parts) < max_messages and len(parts) > 0:
+        avg_len = len(response) // max_messages  # Use integer division
+        
+        new_parts = []
+        for part in parts:
+            if len(part) <= avg_len:
+                new_parts.append(part)
+                continue
             
-            part = parts[i]
-            # Split only if part is significantly larger than average
-            avg_len = len(response) / max_messages
-            if len(part) > avg_len * 1.5:
-                # Split at natural points (comma, space)
-                split_point = part.rfind(' ', avg_len//2, len(part))
-                if split_point == -1:
-                    split_point = len(part)//2
+            # Split large part into smaller chunks
+            current_chunk = ""
+            words = part.split()
+            for word in words:
+                # If adding this word would exceed average length or Telegram max
+                if (current_chunk and 
+                    (len(current_chunk) + len(word) + 1 > avg_len or 
+                     len(current_chunk) + len(word) + 1 > TELEGRAM_MAX_LEN)):
+                    new_parts.append(current_chunk.strip())
+                    current_chunk = word
+                else:
+                    current_chunk = f"{current_chunk} {word}" if current_chunk else word
             
-                # Разделяем на две части
-                first_part = part[:split_point].strip()
-                second_part = part[split_point:].strip()
-                
-                # Добавляем перенос строки между частями для лучшей читаемости
-                if first_part and second_part:
-                    first_part = f"{first_part}\n\n"
-                
-                parts[i] = first_part
-                parts.insert(i + 1, second_part)
+            if current_chunk:
+                new_parts.append(current_chunk.strip())
+        
+        parts = new_parts[:max_messages]  # Limit to max_messages
     
-    # Final check and trim if needed
+    # Final check to ensure we don't exceed max_messages
     if len(parts) > max_messages:
         parts = parts[:max_messages]
+    
+    # Add a newline between parts for better readability
+    for i in range(len(parts)):
+        if i > 0:
+            parts[i] = f"\n\n{parts[i]}"
+    
+    return parts
     
     # Log final results
     logger.info(f"Final processed messages... count: {len(parts)}")
