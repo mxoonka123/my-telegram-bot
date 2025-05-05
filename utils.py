@@ -87,8 +87,7 @@ def extract_gif_links(text: str) -> List[str]:
 def postprocess_response(response: str, max_messages: int) -> List[str]:
     """
     Splits the bot's response into suitable message parts.
-    V8: Prioritizes LLM newlines, merges intelligently if too many parts,
-        uses aggressive split as fallback. Handles random max_messages.
+    V9: Prioritizes LLM newlines, uses aggressive split with MINIMUM length target.
     """
     telegram_max_len = 4096
     if not response or not isinstance(response, str):
@@ -98,28 +97,20 @@ def postprocess_response(response: str, max_messages: int) -> List[str]:
     if not response: return []
 
     # --- Handle max_messages setting ---
-    original_max_setting = max_messages # Store original setting for logging if needed
+    original_max_setting = max_messages
     if max_messages <= 0:
-        # If setting is 0 or negative, choose randomly between 1, 2, or 3
         max_messages = random.randint(1, 3)
-        logger.info(f"Original max_messages setting was {original_max_setting}. Choosing randomly: {max_messages}")
+        logger.info(f"Max messages set to random (1-3) from setting {original_max_setting}. Chosen: {max_messages}")
     elif max_messages > 10:
-        # Limit the maximum number of messages to 10
         logger.warning(f"Max messages ({original_max_setting}) exceeds limit 10. Setting to 10.")
         max_messages = 10
     else:
-        # Use the valid setting (1-10)
         logger.info(f"Using max_messages setting: {max_messages}")
     # --- End max_messages handling ---
 
-    # If only one message is needed after handling random/limits
     if max_messages == 1:
-        if len(response) > telegram_max_len:
-            logger.warning(f"Single message required, but response too long ({len(response)}). Truncating.")
-            return [response[:telegram_max_len - 3] + "..."]
-        else:
-            logger.info("Single message required and length is acceptable.")
-            return [response]
+        if len(response) > telegram_max_len: return [response[:telegram_max_len - 3] + "..."]
+        else: return [response]
 
     logger.info(f"--- Postprocessing response V8 --- Max messages allowed: {max_messages}")
     initial_parts = []
@@ -193,44 +184,51 @@ def postprocess_response(response: str, max_messages: int) -> List[str]:
 
     # 3. Aggressive split ONLY if NO newlines were found by LLM
     else: # not processed_by_newline
-        logger.warning("No newlines found in LLM response. Using aggressive splitting by length/space.")
+        logger.warning("No newlines found. Using V9 aggressive splitting with min length.")
         aggressive_parts = []
-        # Calculate estimated length per part
-        # Add 1 to prevent division by zero if response is tiny
-        estimated_len = math.ceil(len(response) / max_messages)
-        estimated_len = max(estimated_len, 50) # Ensure parts are not too tiny
-        estimated_len = min(estimated_len, telegram_max_len - 10) # Ensure parts don't exceed limit easily
+        # --- Новая логика агрессивной разбивки V9 ---
+        # Стараемся сделать части не короче этой длины
+        min_desirable_len = 200 # Можно настроить (например, 150 или 250)
+        # Вычисляем максимальную длину, чтобы точно уложиться в лимит сообщений
+        # (Даже если все части будут минимальной длины)
+        max_len_per_part_for_limit = math.floor(len(response) / max_messages) if max_messages > 0 else len(response)
+        # Выбираем целевую длину: между минимальной и максимальной, но не больше лимита ТГ
+        target_len = max(min_desirable_len, min(max_len_per_part_for_limit, telegram_max_len - 10))
 
-        start = 0
-        # Create up to max_messages parts
-        for i in range(max_messages):
-            # Calculate potential end position
-            end = min(start + estimated_len, len(response))
-            # If this is the last allowed part, take everything remaining
-            if i == max_messages - 1:
-                end = len(response)
+        logger.debug(f"Aggressive V9: min_len={min_desirable_len}, max_len_per_part={max_len_per_part_for_limit}, target_len={target_len}")
 
-            # Try to find a better break point (space) before the potential end, if not already at the end of the response
-            if end < len(response):
-                # Look for the last space within the calculated chunk
-                space_pos = response.rfind(' ', start, end)
-                # If a space is found and it's not at the very beginning of the chunk, use it as the end point
-                if space_pos > start:
-                    end = space_pos + 1 # Include the space in the previous part or cut after it
+        current_pos = 0
+        while current_pos < len(response) and len(aggressive_parts) < max_messages:
+            # Определяем конец среза, не короче target_len (если возможно)
+            end_pos = min(current_pos + target_len, len(response))
 
-            # Extract the part
-            part = response[start:end].strip()
-            if part: # Add only non-empty parts
+            # Если это не последняя часть, ищем удобное место для разрыва
+            if end_pos < len(response) and len(aggressive_parts) < max_messages - 1:
+                # Ищем пробел назад от end_pos
+                space_pos = response.rfind(' ', current_pos, end_pos)
+                # Если нашли пробел и он не слишком близко к началу, режем по нему
+                if space_pos > current_pos + 10: # Ищем пробел хотя бы через 10 символов
+                    end_pos = space_pos + 1
+                    logger.debug(f"Aggressive V9: Found space break at {end_pos}")
+                else:
+                    logger.debug(f"Aggressive V9: No good space break found, cutting at {end_pos}")
+            # Если это последняя часть, берем все до конца
+            elif len(aggressive_parts) == max_messages - 1:
+                 end_pos = len(response)
+                 logger.debug("Aggressive V9: Taking remaining text for the last part.")
+
+
+            part = response[current_pos:end_pos].strip()
+            if part:
                 aggressive_parts.append(part)
 
-            # Update the start position for the next iteration
-            start = end
-            # If we've processed the entire response, stop
-            if start >= len(response):
+            current_pos = end_pos
+            if current_pos >= len(response): # Выходим, если текст закончился
                 break
 
         final_messages = aggressive_parts
-        logger.info(f"Aggressive splitting created {len(final_messages)} parts.")
+        logger.info(f"Aggressive splitting V9 created {len(final_messages)} parts.")
+        # --- Конец логики V9 ---
 
 
     # 4. Final length check and cleanup for ALL resulting messages
