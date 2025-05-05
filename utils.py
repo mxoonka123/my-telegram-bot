@@ -106,29 +106,47 @@ def postprocess_response(response: str, max_messages: int) -> List[str]:
             return [response]
 
     logger.info(f"--- Postprocessing response V5 --- Max messages: {max_messages}")
+
+    # --- ОТЛАДКА: Выводим репрезентацию строки ---
+    logger.debug(f"DEBUG V5: Input response repr(): {repr(response)}")
+    # --- КОНЕЦ ОТЛАДКИ ---
+
     parts = []
     processed_by_newline = False
 
-    # --- ИСПРАВЛЕНИЕ V5: Используем re.split для всех типов переносов ---
-    # Сначала пробуем двойные переносы (любого типа)
-    # (\r?\n){2,} - ищет \n\n или \r\n\r\n
-    # \r{2,} - ищет \r\r
-    potential_parts_double = [p.strip() for p in re.split(r'(?:\r?\n){2,}|\r{2,}', response) if p.strip()]
-    if len(potential_parts_double) > 1: # Если нашлось больше одной части
-        logger.info(f"Split by DOUBLE newlines (any type) resulted in {len(potential_parts_double)} parts.")
-        parts = potential_parts_double
-        processed_by_newline = True
-
-    # Если не нашли двойных, пробуем одинарные (любого типа)
-    if not processed_by_newline:
-        # \r?\n - ищет \n или \r\n
-        # \r - ищет \r (отдельно)
-        potential_parts_single = [p.strip() for p in re.split(r'\r?\n|\r', response) if p.strip()]
-        if len(potential_parts_single) > 1: # Если нашлось больше одной части
-            logger.info(f"Split by SINGLE newlines (any type) resulted in {len(potential_parts_single)} parts.")
-            parts = potential_parts_single
+    # Пробуем двойные переносы
+    try:
+        # --- ОТЛАДКА: Выводим результат re.split ДО очистки ---
+        raw_split_double = re.split(r'(?:\r?\n){2,}|\r{2,}', response)
+        logger.debug(f"DEBUG V5: Raw re.split for double newlines: {raw_split_double}")
+        # --- КОНЕЦ ОТЛАДКИ ---
+        potential_parts_double = [p.strip() for p in raw_split_double if p.strip()]
+        if len(potential_parts_double) > 1:
+            logger.info(f"Split by DOUBLE newlines (any type) resulted in {len(potential_parts_double)} parts.")
+            parts = potential_parts_double
             processed_by_newline = True
-    # --- КОНЕЦ ИСПРАВЛЕНИЯ V5 ---
+    except Exception as e_re_double:
+        logger.error(f"Error during re.split for double newlines: {e_re_double}", exc_info=True)
+
+
+    # Пробуем одинарные, если двойные не сработали
+    if not processed_by_newline:
+        try:
+            # --- ОТЛАДКА: Выводим результат re.split ДО очистки ---
+            raw_split_single = re.split(r'\r?\n|\r', response)
+            logger.debug(f"DEBUG V5: Raw re.split for single newlines: {raw_split_single}")
+            # --- КОНЕЦ ОТЛАДКИ ---
+            potential_parts_single = [p.strip() for p in raw_split_single if p.strip()]
+            if len(potential_parts_single) > 1: # Используем > 1, т.к. если split ничего не нашел, вернется список с 1 элементом (вся строка)
+                logger.info(f"Split by SINGLE newlines (any type) resulted in {len(potential_parts_single)} parts.")
+                parts = potential_parts_single
+                processed_by_newline = True
+            else:
+                # Если single split вернул 1 или 0 частей, значит переносов нет
+                logger.info("Split by SINGLE newlines did not find multiple parts.")
+                # parts остается пустым, если был пуст до этого
+        except Exception as e_re_single:
+            logger.error(f"Error during re.split for single newlines: {e_re_single}", exc_info=True)
 
     # 3. Если переносов не было ИЛИ их было мало, И текст достаточно длинный
     needs_aggressive_split = False
