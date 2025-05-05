@@ -87,8 +87,7 @@ def extract_gif_links(text: str) -> List[str]:
 def postprocess_response(response: str, max_messages: int) -> List[str]:
     """
     Splits the bot's response into suitable message parts.
-    V5: Handles different newline types (\n, \r\n, \r) for splitting
-    and uses aggressive splitting if needed.
+    V7: Prioritizes LLM's newlines (\n\n or \n). Aggressive split as last resort.
     """
     telegram_max_len = 4096
     if not response or not isinstance(response, str):
@@ -98,7 +97,11 @@ def postprocess_response(response: str, max_messages: int) -> List[str]:
     if not response: return []
 
     if max_messages <= 0:
-        max_messages = 1
+        max_messages = random.randint(1, 3) # Случайное, если настройка 0 или меньше
+        logger.info(f"Max messages set to random (1-3), chosen: {max_messages}")
+    elif max_messages > 10: # Ограничим сверху 10 сообщениями
+        logger.warning(f"Max messages ({max_messages}) exceeds limit 10. Setting to 10.")
+        max_messages = 10
 
     if max_messages == 1:
         if len(response) > telegram_max_len:
@@ -106,107 +109,71 @@ def postprocess_response(response: str, max_messages: int) -> List[str]:
         else:
             return [response]
 
-    logger.info(f"--- Postprocessing response V5 --- Max messages: {max_messages}")
+    logger.info(f"--- Postprocessing response V7 --- Max messages: {max_messages}")
     parts = []
     processed_by_newline = False
 
-    # 1. Пробуем двойные переносы
+    # 1. Ищем \n\n
     potential_parts_double = [p.strip() for p in re.split(r'(?:\r?\n){2,}|\r{2,}', response) if p.strip()]
     if len(potential_parts_double) > 1:
-        logger.info(f"Split by DOUBLE newlines (any type) resulted in {len(potential_parts_double)} parts.")
+        logger.info(f"Split by DOUBLE newlines resulted in {len(potential_parts_double)} parts.")
         parts = potential_parts_double
         processed_by_newline = True
 
-    # 2. Пробуем одинарные, если двойные не сработали
+    # 2. Ищем \n, если не нашли \n\n
     if not processed_by_newline:
         potential_parts_single = [p.strip() for p in re.split(r'\r?\n|\r', response) if p.strip()]
         if len(potential_parts_single) > 1:
-            logger.info(f"Split by SINGLE newlines (any type) resulted in {len(potential_parts_single)} parts.")
+            logger.info(f"Split by SINGLE newlines resulted in {len(potential_parts_single)} parts.")
             parts = potential_parts_single
             processed_by_newline = True
         else:
-             logger.info("Split by SINGLE newlines did not find multiple parts.")
+            logger.info("Did not find any type of newline splits.")
 
-    # 3. Если переносов не было ИЛИ их мало, И текст достаточно длинный -> Агрессивная разбивка
-    needs_aggressive_split = False
-    text_to_split_aggressively = ""
-    max_aggressive_parts = 0
-    remaining_parts = []
-
+    # 3. Агрессивная разбивка ТОЛЬКО если переносов не было СОВСЕМ
     if not processed_by_newline:
-         needs_aggressive_split = True
-         logger.info("No valid newline splits found. Proceeding to aggressive split.")
-         text_to_split_aggressively = response
-         max_aggressive_parts = max_messages
-    elif len(parts) < max_messages and len(response) > 150 * len(parts):
-         needs_aggressive_split = True
-         logger.info(f"Only {len(parts)} newline parts found ({len(response)} chars). Using aggressive split for the longest part.")
-         parts.sort(key=len, reverse=True)
-         text_to_split_aggressively = parts.pop(0)
-         remaining_parts = parts
-         max_aggressive_parts = max(1, max_messages - len(remaining_parts))
-         parts = [] # Очищаем, будем собирать заново
-
-    if needs_aggressive_split and text_to_split_aggressively:
-        logger.debug(f"Aggressively splitting text block (len={len(text_to_split_aggressively)}). Need {max_aggressive_parts} parts.")
+        logger.warning("No newlines found in LLM response. Using aggressive splitting.")
         aggressive_parts = []
-        estimated_len = math.ceil(len(text_to_split_aggressively) / max_aggressive_parts)
-        estimated_len = max(estimated_len, 50) # Мин. длина
-        estimated_len = min(estimated_len, telegram_max_len - 10) # Макс. длина
-
+        # Используем упрощенную агрессивную разбивку из V5/V4
+        estimated_len = math.ceil(len(response) / max_messages)
+        estimated_len = max(estimated_len, 50)
+        estimated_len = min(estimated_len, telegram_max_len - 10)
         start = 0
-        for i in range(max_aggressive_parts):
-            end = min(start + estimated_len, len(text_to_split_aggressively))
-            if i == max_aggressive_parts - 1: end = len(text_to_split_aggressively)
-
-            # Ищем пробел назад для разрыва (упрощенный вариант V4/V5)
-            if end < len(text_to_split_aggressively):
-                space_pos = text_to_split_aggressively.rfind(' ', start, end)
+        for i in range(max_messages):
+            end = min(start + estimated_len, len(response))
+            if i == max_messages - 1: end = len(response)
+            if end < len(response):
+                space_pos = response.rfind(' ', start, end)
                 if space_pos > start: end = space_pos + 1
-
-            part = text_to_split_aggressively[start:end].strip()
+            part = response[start:end].strip()
             if part: aggressive_parts.append(part)
             start = end
-            if start >= len(text_to_split_aggressively): break
-
+            if start >= len(response): break
         logger.info(f"Aggressive splitting created {len(aggressive_parts)} parts.")
-        parts = aggressive_parts + remaining_parts
-        parts = [p for p in parts if p]
+        parts = aggressive_parts # Результат агрессивной разбивки
 
-    # 4. Если после всех попыток частей нет
+    # 4. Если после всего частей нет
     if not parts:
-        logger.warning("Could not split response using any method V5.")
+        logger.warning("Could not split response using any method V7.")
         if len(response) > telegram_max_len:
              return [response[:telegram_max_len - 3] + "..."]
         else:
-             return [response]
+             return [response] # Возвращаем как есть, если она не пустая
 
-    # 5. Объединяем части, если их БОЛЬШЕ чем max_messages
+    # 5. ОБРЕЗАЕМ (Trimming), если частей БОЛЬШЕ чем max_messages
+    #    (Не объединяем, чтобы сохранить структуру LLM, если она была)
     final_messages = []
     if len(parts) > max_messages:
-        logger.info(f"Merging {len(parts)} parts down to {max_messages}.")
-        parts_per_message_exact = len(parts) / max_messages
-        parts_taken = 0
-        for i in range(max_messages):
-            start_index = round(parts_taken)
-            end_index_exact = round(parts_taken + parts_per_message_exact)
-            end_index = min(end_index_exact, len(parts))
-            if start_index >= end_index: break
-            merged_part = "\n\n".join(parts[start_index:end_index])
-            if len(merged_part) <= telegram_max_len:
-                 final_messages.append(merged_part)
-            else:
-                 first_part_of_group = parts[start_index]
-                 if len(first_part_of_group) > telegram_max_len:
-                     first_part_of_group = first_part_of_group[:telegram_max_len - 3] + "..."
-                 final_messages.append(first_part_of_group)
-                 if len(final_messages) >= max_messages: break
-            parts_taken += (end_index - start_index)
-            if len(final_messages) >= max_messages: break
-        if len(parts) > parts_taken and final_messages:
-             last_msg = final_messages[-1].rstrip('.!?… ')
-             final_messages[-1] = f"{last_msg}..."
+        logger.info(f"Trimming parts from {len(parts)} down to {max_messages}.")
+        final_messages = parts[:max_messages]
+        # Добавляем многоточие к последней части
+        if final_messages and final_messages[-1]:
+             last_part = final_messages[-1].rstrip('.!?… ')
+             # Добавляем многоточие, только если оно там не подразумевается
+             if not last_part.endswith('...'):
+                 final_messages[-1] = f"{last_part}..."
     else:
+        # Если частей меньше или равно, используем все, что есть
         final_messages = parts
 
     # 6. Финальная проверка длины и очистка
@@ -215,9 +182,10 @@ def postprocess_response(response: str, max_messages: int) -> List[str]:
         msg_cleaned = "\n".join(line.strip() for line in msg.strip().splitlines() if line.strip())
         if not msg_cleaned: continue
         if len(msg_cleaned) > telegram_max_len:
+            logger.warning(f"Final message part still exceeds limit ({len(msg_cleaned)} > {telegram_max_len}). Truncating.")
             processed_messages.append(msg_cleaned[:telegram_max_len - 3] + "...")
         else:
             processed_messages.append(msg_cleaned)
 
-    logger.info(f"Final processed messages V5 count: {len(processed_messages)}")
+    logger.info(f"Final processed messages V7 count: {len(processed_messages)}")
     return processed_messages
