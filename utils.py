@@ -120,167 +120,81 @@ def _split_aggressively(text: str, max_len: int) -> List[str]:
         remaining_text = remaining_text[cut_pos:].strip()
     return [p for p in parts if p]
 
-# --- V5: Final Attempt at Response Splitting Function ---
+# --- V9: Simple Aggressive Split (Always Split) ---
 def postprocess_response(response: str, max_messages: int) -> List[str]:
     """
-    Splits the AI response into a specified number of messages,
-    respecting sentence boundaries and Telegram's length limit. V5 Logic.
-
-    Args:
-        response: The full text response from the AI.
-        max_messages: The desired maximum number of messages to split into.
-                      If 0 or less, defaults to a random number between 1 and 3.
-
-    Returns:
-        A list of strings, where each string is a message part.
+    Simple Aggressive Split (Always Split) v9.
+    Always splits text into messages, even if it fits in one.
     """
     if not response or not isinstance(response, str):
         return []
+    
     response = response.strip()
     if not response:
         return []
 
-    # Determine the target number of messages
-    if max_messages <= 0:
-        target_messages = random.randint(1, 3)
-        logger.debug(f"max_messages was {max_messages}, setting target to random {target_messages}")
-    elif max_messages > 10:
-         logger.warning(f"max_messages ({max_messages}) > 10, capping at 10.")
-         target_messages = 10
-    else:
-        target_messages = max_messages
-    logger.info(f"Splitting response (len={len(response)}) into target_messages={target_messages}")
-
-    # If only one message is needed or the text fits, return it (or aggressively split if too long)
-    if target_messages == 1:
-        if len(response) <= TELEGRAM_MAX_LEN:
-            return [response]
+    logger.debug(f"--- Postprocessing response (Simple Aggressive Split v9 - Always Split) ---")
+    
+    # Always split into at least 2 messages
+    target_messages = max(2, min(10, max_messages)) if max_messages > 0 else random.randint(2, 3)
+    
+    # Calculate target length per message
+    target_len = max(MIN_SENSIBLE_LEN, math.ceil(len(response) / target_messages))
+    
+    # Split by sentences first
+    sentences = [s.strip() for s in re.split(r'(?<=[.!?…])\s+', response) if s.strip()]
+    logger.debug(f"Found {len(sentences)} sentences in response.")
+    
+    # Build messages
+    messages = []
+    current_msg = ""
+    
+    for sentence in sentences:
+        if not sentence: continue
+        
+        # If adding this sentence would exceed length, finalize current message
+        if current_msg and len(current_msg) + len(sentence) + 1 > target_len:
+            messages.append(current_msg)
+            current_msg = ""
+            if len(messages) >= target_messages:
+                break
+        
+        # Add sentence to current message
+        current_msg = f"{current_msg}\n{sentence}".strip() if current_msg else sentence
+        
+        # Always finalize message after each sentence if we're still below target
+        if len(messages) < target_messages and current_msg:
+            messages.append(current_msg)
+            current_msg = ""
+    
+    # Add remaining text
+    if current_msg and len(messages) < target_messages:
+        messages.append(current_msg)
+    
+    # If we have too few messages, split the last one
+    while len(messages) < target_messages and messages:
+        last_msg = messages.pop()
+        split_point = len(last_msg) // 2
+        messages.extend([last_msg[:split_point], last_msg[split_point:]])
+    
+    # Final aggressive split if any message is still too long
+    final_messages = []
+    for i, msg in enumerate(messages):
+        if len(msg) > TELEGRAM_MAX_LEN:
+            logger.debug(f"Message {i+1}/{len(messages)} is too long ({len(msg)} chars), splitting...")
+            final_messages.extend(_split_aggressively(msg, TELEGRAM_MAX_LEN))
         else:
-            logger.warning(f"Response (len={len(response)}) too long for single message target. Aggressively splitting.")
-            return _split_aggressively(response, TELEGRAM_MAX_LEN)
-
-    # 1. Split into sentences
-    # Keep delimiters by splitting using a group `(...)` around the delimiter pattern
-    parts = re.split(r'([.!?…]+)\s*', response)
-    sentences = []
-    # Reconstruct sentences with their delimiters
-    for i in range(0, len(parts) - 1, 2):
-        sentence_text = parts[i]
-        delimiter = parts[i+1] if (i+1) < len(parts) else ''
-        if sentence_text or delimiter: # Avoid adding empty strings if split results in them
-            sentences.append(f"{sentence_text}{delimiter}".strip())
-    # Add the last part if it exists (might not have a delimiter)
-    if len(parts) % 2 != 0 and parts[-1].strip():
-        sentences.append(parts[-1].strip())
-
-    sentences = [s for s in sentences if s] # Final cleanup
-
-    if not sentences:
-        logger.warning("Response splitting resulted in no sentences (V5).")
-        if len(response) <= TELEGRAM_MAX_LEN: return [response]
-        else: return _split_aggressively(response, TELEGRAM_MAX_LEN)
-
-    # 2. Build messages respecting limits
-    final_messages: List[str] = []
-    current_message_parts: List[str] = []
-    current_length = 0
-    sentence_index = 0
-
-    while sentence_index < len(sentences):
-        # Check if we need to start the last message bucket
-        is_last_message_bucket = (len(final_messages) == target_messages - 1)
-
-        sentence = sentences[sentence_index]
-        sentence_len = len(sentence)
-        # Use a single newline as separator within a message for better readability
-        separator = "\n" if current_message_parts else ""
-        separator_len = len(separator)
-
-        # --- Handle sentence longer than the limit ---
-        if sentence_len > TELEGRAM_MAX_LEN:
-            logger.warning(f"Single sentence (len={sentence_len}) starting with '{sentence[:30]}...' exceeds limit. Aggressively splitting.")
-            # Finalize the previous message if any
-            if current_message_parts:
-                final_messages.append(separator.join(current_message_parts))
-                current_message_parts = []
-                current_length = 0
-                if len(final_messages) >= target_messages: break
-
-            # Split the long sentence and add parts
-            split_long_sentence = _split_aggressively(sentence, TELEGRAM_MAX_LEN)
-            for part in split_long_sentence:
-                if len(final_messages) < target_messages:
-                    final_messages.append(part)
-                else: break
-            sentence_index += 1
-            if len(final_messages) >= target_messages: break
-            continue
-
-        # --- Logic for adding to current message or starting a new one ---
-        add_to_current = False
-        if not is_last_message_bucket:
-            # If not the last bucket, add if it fits the length limit
-            if current_length + separator_len + sentence_len <= TELEGRAM_MAX_LEN:
-                add_to_current = True
-            else:
-                # Doesn't fit, finalize current and start new (if possible)
-                if current_message_parts:
-                    final_messages.append(separator.join(current_message_parts))
-                    logger.debug(f"Finalized message {len(final_messages)}/{target_messages} (len={current_length}). Starting new one.")
-                # Check if adding the previous message already hit the limit
-                if len(final_messages) >= target_messages:
-                     logger.warning(f"Reached target messages ({target_messages}) before processing sentence '{sentence[:30]}...'")
-                     break # Stop processing
-                # Start new message with current sentence
-                current_message_parts = [sentence]
-                current_length = sentence_len
-                sentence_index += 1
-                continue # Skip adding logic below, already started new message
-
-        else: # --- Logic for the LAST message bucket ---
-            # Try to add all remaining sentences to the last bucket
-            potential_last_message_parts = current_message_parts + sentences[sentence_index:]
-            potential_last_message = separator.join(potential_last_message_parts)
-
-            if len(potential_last_message) <= TELEGRAM_MAX_LEN:
-                # All remaining fit! Add them all.
-                current_message_parts.extend(sentences[sentence_index:])
-                current_length = len(separator.join(current_message_parts))
-                sentence_index = len(sentences) # Mark all as processed
-                add_to_current = False # We added everything, will finalize below
-                logger.debug(f"Added all remaining {len(sentences[sentence_index:])} sentences to the last bucket.")
-            else:
-                # Remaining sentences don't fit in the last bucket.
-                # Add the current sentence if it fits *individually*.
-                if current_length + separator_len + sentence_len <= TELEGRAM_MAX_LEN:
-                     add_to_current = True
-                else:
-                    # Current sentence doesn't even fit. Finalize previous parts.
-                    if current_message_parts:
-                         final_messages.append(separator.join(current_message_parts))
-                    logger.warning(f"Could not fit sentence '{sentence[:30]}...' and subsequent sentences into the last message bucket (len={len(potential_last_message)}). Message {len(final_messages)+1} might be shorter or sentences lost.")
-                    # We stop here, the current sentence and potentially others won't be added
-                    sentence_index = len(sentences) # Mark as finished
-                    current_message_parts = [] # Clear current parts
-                    current_length = 0
-                    add_to_current = False
-
-        # --- Add sentence to current parts if decided ---
-        if add_to_current:
-            current_message_parts.append(sentence)
-            current_length += separator_len + sentence_len
-            sentence_index += 1
-
-    # Add the final collected message if it exists
-    if current_message_parts:
-         # Ensure we don't exceed target_messages, unless it's the *only* message
-         if len(final_messages) < target_messages or not final_messages:
-            final_messages.append("\n".join(current_message_parts)) # Use single newline for final join
-            logger.debug(f"Finalized last message {len(final_messages)}/{target_messages} (len={current_length}).")
-         else:
-             logger.warning(f"Discarding final message parts as target_messages ({target_messages}) already reached.")
-
-
-    logger.info(f"Splitting finished. Generated {len(final_messages)} messages (target was {target_messages}).")
-    # Return exactly target_messages if possible, otherwise fewer.
+            final_messages.append(msg)
+        
+        # Log message lengths
+        logger.debug(f"Final message {i+1}/{len(final_messages)} length: {len(final_messages[i])} chars")
+    
+    # Ensure we don't exceed target number of messages
+    final_messages = final_messages[:target_messages]
+    
+    # Log final results
+    logger.info(f"Final processed messages... count: {len(final_messages)}")
+    for i, msg in enumerate(final_messages):
+        logger.debug(f"Finalized message {i+1}/{len(final_messages)} (len={len(msg)}): {msg[:50]}...")
+    
     return final_messages
