@@ -3,6 +3,7 @@ import re
 from typing import Dict, Any, List, Optional, Union, Tuple
 from datetime import datetime, timezone, timedelta
 import logging
+import urllib.parse
 
 from config import (
     DEFAULT_MOOD_PROMPTS, BASE_PROMPT_SUFFIX, INTERNET_INFO_PROMPT,
@@ -10,7 +11,7 @@ from config import (
 )
 from utils import get_time_info
 # Make sure db types are imported if needed, but typically they are passed in
-from db import PersonaConfig, ChatBotInstance
+from db import PersonaConfig, ChatBotInstance, User, DEFAULT_SHOULD_RESPOND_TEMPLATE
 
 logger = logging.getLogger(__name__)
 
@@ -108,20 +109,24 @@ class Persona:
         instructions = []
         # Style
         style_map = {
+            "neutral": "общайся спокойно, нейтрально.",
             "friendly": "общайся дружелюбно, позитивно.",
             "sarcastic": "общайся с сарказмом, немного язвительно.",
             "formal": "общайся формально, вежливо, избегай сленга.",
             "brief": "отвечай кратко и по делу.",
         }
-        if self.communication_style in style_map:
-             instructions.append(style_map[self.communication_style])
+        style_instruction = style_map.get(self.communication_style, style_map["neutral"])
+        if style_instruction: instructions.append(style_instruction)
+
         # Verbosity
         verbosity_map = {
             "concise": "старайся быть лаконичным.",
+            "medium": "отвечай со средней подробностью.",
             "talkative": "будь разговорчивым, можешь добавлять детали.",
         }
-        if self.verbosity_level in verbosity_map:
-            instructions.append(verbosity_map[self.verbosity_level])
+        verbosity_instruction = verbosity_map.get(self.verbosity_level, verbosity_map["medium"])
+        if verbosity_instruction: instructions.append(verbosity_instruction)
+
         return instructions
 
     def _get_system_template(self) -> str:
@@ -132,59 +137,94 @@ class Persona:
     def format_system_prompt(self, user_id: int, username: str, message: str) -> str:
         """Formats the main system prompt using template and dynamic info."""
         template = self._get_system_template()
-        base_instructions = self._generate_base_instructions()
         mood_instruction = self.get_mood_prompt_snippet()
+        mood_name = self.current_mood # Используем текущее имя настроения
 
-        # --- Build the full system message content ---
-        # Start with description and name
-        system_content_parts = [
-            f"описание твоей личности: {self.description}.",
-            f"твое имя: {self.name}.",
-        ]
-        # Add mood if available
-        if mood_instruction:
-            system_content_parts.append(f"твое текущее настроение: {mood_instruction}.")
-        # Add generated base instructions (style, verbosity)
-        if base_instructions:
-            system_content_parts.extend(base_instructions)
+        # Стиль и разговорчивость теперь берутся из _generate_base_instructions
+        # style_and_verbosity = self._generate_base_instructions() # Этот вызов не нужен здесь
+        # Берем текст из карты стилей/разговорчивости для передачи в шаблон
+        style_map = {"neutral": "Нейтральный", "friendly": "Дружелюбный", "sarcastic": "Саркастичный", "formal": "Формальный", "brief": "Краткий"} # <-- Добавлено brief
+        verbosity_map = {"concise": "Лаконичный", "medium": "Средний", "talkative": "Разговорчивый"}
+        style_text = style_map.get(self.communication_style, style_map["neutral"])
+        verbosity_text = verbosity_map.get(self.verbosity_level, verbosity_map["medium"])
 
-        # Add general instructions (internet, time, user info, message)
-        system_content_parts.append(INTERNET_INFO_PROMPT)
-        system_content_parts.append(get_time_info())
-        chat_id_info = str(self.chat_instance.chat_id) if self.chat_instance else "unknown"
-        system_content_parts.append(f"сообщение от {username} (id: {user_id}) в чате {chat_id_info}: {message}")
+        chat_id_info = str(self.chat_instance.chat_id) if self.chat_instance else "unknown_chat"
 
-        # Combine all parts into the final system message
-        system_prompt = " ".join(system_content_parts)
+        # Подставляем значения в шаблон V8 из db.py
+        # Плейсхолдеры: {persona_name}, {persona_description}, {communication_style}, {verbosity_level},
+        # {mood_name}, {mood_prompt}, {username}, {user_id}, {chat_id}, {last_user_message} (message)
+        try:
+            formatted_prompt = template.format(
+                persona_name=self.name,
+                persona_description=self.description,
+                communication_style=style_text, # Передаем текст стиля
+                verbosity_level=verbosity_text, # Передаем текст разговорчивости
+                mood_name=mood_name,
+                mood_prompt=mood_instruction,
+                username=username,
+                user_id=user_id,
+                chat_id=chat_id_info,
+                last_user_message=message # Передаем последнее сообщение сюда
+            )
+        except KeyError as e:
+            logger.error(f"Missing key in system prompt template: {e}. Template: {template[:100]}...")
+            # Fallback to simpler format if template fails
+            fallback_parts = [
+                f"Ты {self.name}. {self.description}.",
+                f"Стиль: {style_text}. Разговорчивость: {verbosity_text}.",
+                f"Настроение: {mood_name} ({mood_instruction}).",
+                f"Ответь на сообщение от {username} (id: {user_id}) в чате {chat_id_info}: {message}"
+            ]
+            formatted_prompt = " ".join(fallback_parts)
 
-        # Add suffix instructions (lowercase, no refusal, etc.)
-        system_prompt += BASE_PROMPT_SUFFIX
-        system_prompt += LANGDOCK_RESPONSE_INSTRUCTIONS
+        # Можно добавить общие инструкции, если они не включены в шаблон
+        # formatted_prompt += " " + BASE_PROMPT_SUFFIX
+        # formatted_prompt += " " + LANGDOCK_RESPONSE_INSTRUCTIONS
 
-        return system_prompt
+        return formatted_prompt.strip()
 
+    def format_should_respond_prompt(self, message_text: str, bot_username: str, history: List[Dict[str, str]]) -> Optional[str]:
+        """Formats the prompt to decide if the bot should respond in a group based on context."""
+        if self.group_reply_preference != "mentioned_or_contextual":
+            # Этот метод вызывается только для contextual
+            logger.error("format_should_respond_prompt called for non-contextual preference.")
+            return None
 
-    def format_should_respond_prompt(self, message_text: str) -> Optional[str]:
-        """Formats the prompt to decide if the bot should respond in a group."""
-        # This prompt should be very simple for the LLM
-        base = f"ты {self.get_persona_description_short()} ({self.name}) в чате. ответь только 'да' или 'нет'."
-        prompt = ""
+        # Получаем шаблон из объекта конфига PersonaConfig
+        template = self.should_respond_prompt_template
+        if not template:
+            logger.warning(f"should_respond_prompt_template is empty for persona {self.id}. Cannot generate contextual check prompt. Using default.")
+            template = DEFAULT_SHOULD_RESPOND_TEMPLATE # Используем дефолтный из db.py как fallback
 
-        if self.group_reply_preference == "always":
-            # No need to ask LLM if it should always respond
-            return None # Handler should interpret None as "respond"
-        elif self.group_reply_preference == "never":
-            # No need to ask LLM if it should never respond
-             return None # Handler should interpret None as "don't respond"
-        elif self.group_reply_preference == "mentioned_only":
-            prompt = f"{base} если сообщение адресовано тебе (упомянуто твое имя {self.name}) - ответь 'да'. иначе - 'нет'. сообщение: {message_text}"
-        elif self.group_reply_preference == "mentioned_or_contextual":
-            prompt = f"{base} если сообщение адресовано тебе (имя {self.name}), касается твоей роли ({self.description}), или ты можешь добавить что-то важное/интересное - ответь 'да'. иначе - 'нет'. если сомневаешься, лучше 'да'. сообщение: {message_text}"
-        else: # Fallback for unknown preference - act like contextual
-             prompt = f"{base} если сообщение адресовано тебе ({self.name}), касается твоей роли ({self.description}), или ты можешь добавить что-то важное/интересное - ответь 'да'. иначе - 'нет'. сообщение: {message_text}"
+        # --- Создание краткого саммари истории ---
+        history_limit = 5
+        relevant_history = history[-history_limit:]
+        context_lines = []
+        for msg in relevant_history:
+            role = "Ты" if msg.get("role") == "assistant" else "User"
+            content_preview = str(msg.get("content", ""))[:80]
+            if len(str(msg.get("content", ""))) > 80: content_preview += "..."
+            context_lines.append(f"{role}: {content_preview}")
+        context_summary = "\n".join(context_lines) if context_lines else "Нет истории."
+        # --- Конец саммари ---
 
-        # No suffixes needed for this simple decision prompt
-        return prompt
+        # Подставляем значения в шаблон V5 из db.py
+        # Плейсхолдеры: {persona_name}, {bot_username}, {last_user_message}, {context_summary}
+        try:
+            formatted_prompt = template.format(
+                persona_name=self.name,
+                bot_username=bot_username,
+                last_user_message=message_text,
+                context_summary=context_summary
+            )
+            logger.debug(f"Generated should_respond prompt for persona {self.id}:\n---\n{formatted_prompt}\n---")
+            return formatted_prompt
+        except KeyError as e:
+            logger.error(f"Missing key in should_respond prompt template: {e}. Template: {template[:100]}...")
+            return None
+        except Exception as e:
+             logger.error(f"Error formatting should_respond prompt: {e}", exc_info=True)
+             return None
 
     def _format_media_prompt(self, media_type_text: str) -> Optional[str]:
          """Helper to format prompts for photo/voice reactions."""
