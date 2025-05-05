@@ -8,80 +8,37 @@ import math
 
 logger = logging.getLogger(__name__)
 
+TELEGRAM_MAX_LEN = 4096
+MIN_PART_LEN = 100 # Минимальная длина части, чтобы не было совсем коротких
+
 def escape_markdown_v2(text: Optional[str]) -> str:
     """Escapes characters reserved in Telegram MarkdownV2."""
-    if text is None:
-        return ""
+    if text is None: return ""
     if not isinstance(text, str):
-        try:
-            text = str(text)
-        except Exception:
-            logger.warning(f"Could not convert non-string value to string for Markdown escaping: {type(text)}")
-            return ""
-    # _ * [ ] ( ) ~ ` > # + - = | { } . !
-    escape_chars = r'_*[]()~`>#+-=|{}.!'
-    # Use a lambda function to handle escaping
-    return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text)
+        try: text = str(text)
+        except Exception: logger.warning(f"Could not convert non-string value to string for Markdown escaping: {type(text)}"); return ""
+    escape_chars = r'_*[]()~`>#+-=|{}.!'; return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text)
 
 def get_time_info() -> str:
     """Gets formatted time string for different timezones."""
-    now_utc = datetime.now(timezone.utc)
-    time_parts = [f"UTC {now_utc.strftime('%H:%M %d.%m.%Y')}"]
-
-    # Define timezones with their offsets from UTC
-    # Note: These are fixed offsets and don't account for DST changes.
-    # For production, consider using a library like `pytz` or `zoneinfo` (Python 3.9+)
-    # if accurate DST handling is crucial.
-    timezones_offsets = {
-        "МСК": timedelta(hours=3),       # Moscow Time (fixed UTC+3)
-        "Берлин": timedelta(hours=1),   # Central European Time (UTC+1, without DST)
-        "Нью-Йорк": timedelta(hours=-5) # Eastern Standard Time (UTC-5, without DST)
-    }
-
+    now_utc = datetime.now(timezone.utc); time_parts = [f"UTC {now_utc.strftime('%H:%M %d.%m.%Y')}"]
+    timezones_offsets = {"МСК": timedelta(hours=3), "Берлин": timedelta(hours=1), "Нью-Йорк": timedelta(hours=-5)}
     for name, offset in timezones_offsets.items():
-        try:
-            # Create a fixed offset timezone object
-            tz = timezone(offset)
-            local_time = now_utc.astimezone(tz)
-            time_parts.append(f"{name} {local_time.strftime('%H:%M %d.%m')}")
-        except Exception as e:
-             logger.warning(f"Could not calculate time for tz '{name}' with offset {offset}: {e}")
-             time_parts.append(f"{name} N/A")
-
+        try: tz = timezone(offset); local_time = now_utc.astimezone(tz); time_parts.append(f"{name} {local_time.strftime('%H:%M %d.%m')}")
+        except Exception as e: logger.warning(f"Could not calculate time for tz '{name}' with offset {offset}: {e}"); time_parts.append(f"{name} N/A")
     return f"сейчас " + ", ".join(time_parts) + "."
 
 def extract_gif_links(text: str) -> List[str]:
     """Extracts potential GIF links from text."""
     if not isinstance(text, str): return []
-    try:
-        decoded_text = urllib.parse.unquote(text)
-    except Exception:
-        decoded_text = text # Fallback
-
-    # Updated patterns
-    gif_patterns = [
-        r'(https?://media[0-9]?\.giphy\.com/media/[a-zA-Z0-9]+/giphy\.gif)', # Giphy direct media links
-        r'(https?://i\.giphy\.com/[a-zA-Z0-9]+\.gif)',                      # Giphy i.giphy links
-        r'(https?://c\.tenor\.com/[a-zA-Z0-9]+/[a-zA-Z0-9]+\.gif)',        # Tenor direct c.tenor links
-        r'(https?://media\.tenor\.com/[a-zA-Z0-9]+/[a-zA-Z0-9]+/AAA[AC]\.gif)', # Tenor media.tenor links
-        r'(https?://(?:i\.)?imgur\.com/[a-zA-Z0-9]+\.gif)',                # Imgur direct links
-        r'(https?://[^\s<>"\']+\.gif(?:[?#][^\s<>"\']*)?)'                   # Generic direct .gif (must be last)
-    ]
-
+    try: decoded_text = urllib.parse.unquote(text)
+    except Exception: decoded_text = text
+    gif_patterns = [ r'(https?://media[0-9]?.giphy.com/media/[a-zA-Z0-9]+/giphy.gif)', r'(https?://i.giphy.com/[a-zA-Z0-9]+.gif)', r'(https?://c.tenor.com/[a-zA-Z0-9]+/[a-zA-Z0-9]+.gif)', r'(https?://media.tenor.com/[a-zA-Z0-9]+/[a-zA-Z0-9]+/AAA[AC].gif)', r'(https?://(?:i.)?imgur.com/[a-zA-Z0-9]+.gif)', r'(https?://[^\s<>"]+\.gif(?:[?#][^\s<>"]*)?)' ]
     gif_links = set()
     for pattern in gif_patterns:
-         try:
-             found = re.findall(pattern, decoded_text, re.IGNORECASE)
-             for item in found:
-                 # Only add strings, ignore potential tuples from older patterns if any
-                 if isinstance(item, str):
-                     gif_links.add(item)
-         except Exception as e:
-              logger.error(f"Regex error in extract_gif_links for pattern '{pattern}': {e}")
-
-    # Basic validation and return unique links (preserving order found somewhat)
+        try: found = re.findall(pattern, decoded_text, re.IGNORECASE); gif_links.update(item for item in found if isinstance(item, str))
+        except Exception as e: logger.error(f"Regex error in extract_gif_links for pattern '{pattern}': {e}")
     valid_links = [link for link in gif_links if link.startswith(('http://', 'https://')) and ' ' not in link]
-    # Use dict.fromkeys to get unique links while preserving order
     return list(dict.fromkeys(valid_links))
 
 def postprocess_response(response: str, max_messages: int) -> List[str]:
@@ -90,7 +47,6 @@ def postprocess_response(response: str, max_messages: int) -> List[str]:
     V12: ALWAYS uses aggressive splitting based on length and spaces,
          as LLM formatting is unreliable. Respects max_messages.
     """
-    telegram_max_len = 4096
     if not response or not isinstance(response, str):
         return []
 
@@ -113,15 +69,14 @@ def postprocess_response(response: str, max_messages: int) -> List[str]:
     # Увеличим порог "короткого" текста, чтобы не делить его зря
     if max_messages == 1 or len(response) < 150 : # Не делим, если меньше ~150 символов
         logger.info(f"Returning single message (max_messages=1 or text too short: {len(response)} chars)")
-        if len(response) > telegram_max_len:
-            return [response[:telegram_max_len - 3] + "..."]
+        if len(response) > TELEGRAM_MAX_LEN:
+            return [response[:TELEGRAM_MAX_LEN - 3] + "..."]
         else:
             return [response]
 
     logger.info(f"--- Postprocessing response V12 (Aggressive Split) --- Max messages allowed: {max_messages}")
     final_messages = []
     remaining_text = response
-    min_part_len = 100 # Минимальная длина части, чтобы не было совсем коротких
 
     # Делим текст на max_messages частей
     for i in range(max_messages):
@@ -139,7 +94,7 @@ def postprocess_response(response: str, max_messages: int) -> List[str]:
             parts_left_to_create = max_messages - i
             ideal_len = math.ceil(len(remaining_text) / parts_left_to_create)
             # Применяем минимальную и максимальную длину
-            target_len = max(min_part_len, min(ideal_len, telegram_max_len - 10))
+            target_len = max(min_part_len, min(ideal_len, TELEGRAM_MAX_LEN - 10))
             # Определяем точку среза
             cut_pos = min(target_len, len(remaining_text))
 
