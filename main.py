@@ -216,6 +216,7 @@ logging.getLogger("werkzeug").setLevel(logging.WARNING)
 logging.getLogger("telegraph_api").setLevel(logging.INFO)
 logging.getLogger("aiohttp").setLevel(logging.WARNING)
 logging.getLogger('waitress').setLevel(logging.INFO)
+logging.getLogger("utils").setLevel(logging.DEBUG) # Устанавливаем DEBUG для utils.py
 
 logger = logging.getLogger(__name__) # Logger for this module
 
