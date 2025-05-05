@@ -173,7 +173,8 @@ def postprocess_response(response: str, max_messages: int) -> List[str]:
              for i, sentence in enumerate(potential_parts):
                   if not current_part:
                       current_part = sentence
-                  # Если добавление следующего предложения не превысит лимит И не достигли макс. сообщений
+                  # Если добавление следующего предложения не превысит лимит И
+                  # количество уже собранных частей < max_messages - 1 (чтобы последняя часть могла быть длинной)
                   elif len(current_part) + len(sentence) + 1 <= telegram_max_len and len(merged_parts) < max_messages - 1 :
                       current_part += " " + sentence
                   else:
@@ -192,7 +193,10 @@ def postprocess_response(response: str, max_messages: int) -> List[str]:
     # 4. Если вообще не удалось разбить
     if not processed or not parts:
         logger.info("Could not split response, returning as single part.")
-        return [response]
+        if len(response) > 4096:
+            return [response[:4093] + "..."]
+        else:
+            return [response]
 
     # 5. Ограничение количества сообщений (если после объединения их все еще > max_messages)
     if len(parts) > max_messages:
@@ -206,12 +210,11 @@ def postprocess_response(response: str, max_messages: int) -> List[str]:
         final_messages = parts
 
     # 6. Дополнительная проверка длины каждой части (на всякий случай)
-    telegram_max_len = 4096
     processed_messages = []
     for msg in final_messages:
-        if len(msg) > telegram_max_len:
-            logger.warning(f"Message part still exceeds Telegram limit ({len(msg)} > {telegram_max_len}). Truncating.")
-            processed_messages.append(msg[:telegram_max_len - 3] + "...")
+        if len(msg) > 4096:
+            logger.warning(f"Message part still exceeds Telegram limit ({len(msg)} > 4096). Truncating.")
+            processed_messages.append(msg[:4093] + "...")
         else:
             processed_messages.append(msg)
 
