@@ -747,9 +747,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 return
 
             # --- ОБНОВЛЕННАЯ ЛОГИКА ОТВЕТА В ГРУППЕ ---
-            should_ai_respond = True # По умолчанию отвечаем (для ЛС)
-            ai_decision_message_dict = None # <--- Инициализируем здесь
-            context_ai_decision_added = False # <--- Инициализируем здесь
+            should_ai_respond = True
+            # Убираем определение ai_decision_message_dict и context_ai_decision_added отсюда
 
             if update.effective_chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
                 reply_pref = persona.group_reply_preference
@@ -773,92 +772,28 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     # Отвечаем только на явные триггеры
                     should_ai_respond = is_mentioned or is_reply_to_bot or contains_persona_name
                 elif reply_pref == "mentioned_or_contextual":
-                    # Сначала проверяем явные триггеры
-                    if is_mentioned or is_reply_to_bot or contains_persona_name:
-                        should_ai_respond = True
-                    else:
-                        logger.info("No direct trigger in group chat (contextual pref). Asking LLM...")
-                        should_ai_respond = False
-                        ai_decision_response = None
-                        # ai_decision_message_dict = None # Уже определен выше
-                        # context_ai_decision_added = False # Уже определен выше
+                    # --- ВРЕМЕННО: Убираем LLM проверку ---
+                    # Отвечаем только по явным триггерам
+                    should_ai_respond = is_mentioned or is_reply_to_bot or contains_persona_name
+                    if not should_ai_respond:
+                         logger.info("No direct trigger in group chat (contextual pref). LLM check disabled. Not responding.")
+                    # --- КОНЕЦ ВРЕМЕННОГО УДАЛЕНИЯ ---
 
-                        persona_config = persona.config
-                        # --- ИЗМЕНЕНИЕ ЗДЕСЬ: Убираем group_reply_preference из format() ---
-                        try:
-                            # Загружаем шаблон из БД или используем дефолтный
-                            should_respond_template = persona_config.should_respond_prompt_template or DEFAULT_SHOULD_RESPOND_TEMPLATE
-                            if not should_respond_template:
-                                logger.error("Should respond template is missing!")
-                                raise ValueError("Missing should_respond_template")
-
-                            context_summary = "\n".join([f"- {msg['role']}: {msg['content'][:80]}..." for msg in initial_context_from_db[-5:]])
-
-                            should_respond_prompt = should_respond_template.format(
-                                bot_username=bot_username,
-                                persona_name=persona.name,
-                                last_user_message=message_text,
-                                # group_reply_preference=reply_pref, # <-- УБИРАЕМ ЭТУ СТРОКУ
-                                context_summary=context_summary
-                            )
-                        except KeyError as fmt_err:
-                             logger.error(f"KeyError formatting should_respond_prompt: {fmt_err}. Template: '{should_respond_template}'")
-                             raise # Передаем ошибку выше, чтобы обработать как ошибку LLM
-                        except Exception as prep_err:
-                             logger.error(f"Error preparing should_respond_prompt: {prep_err}")
-                             raise
-                        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
-
-                        try:
-                            # Контекст для should_respond включает текущее сообщение
-                            context_for_should_respond = initial_context_from_db + [current_user_message_dict]
-
-                            ai_decision_response = await send_to_langdock(
-                                system_prompt=should_respond_prompt, # Используем как system prompt
-                                messages=[] # Основной контекст не передаем сюда, он в system
-                            )
-                            answer = ai_decision_response.strip().lower()
-                            logger.debug(f"LLM should_respond decision for '{message_text[:50]}...': '{answer}'")
-
-                            if answer == "да": # Строгая проверка
-                                should_ai_respond = True
-                            elif answer == "нет":
-                                should_ai_respond = False
-                            else:
-                                logger.warning(f"Unclear should_respond answer '{answer}'. Defaulting to NOT respond.")
-                                should_ai_respond = False # Не отвечаем, если ответ нечеткий
-
-                            # Сохраняем решение в контекст (даже если "Нет")
-                            ai_decision_content = f"[LLM Decision: {answer}]"
-                            ai_decision_message_dict = {"role": "assistant", "content": ai_decision_content}
-                            if persona.chat_instance:
-                                try:
-                                    add_message_to_context(db, persona.chat_instance.id, "assistant", ai_decision_content)
-                                    context_ai_decision_added = True
-                                    logger.debug("Added LLM decision to context DB (pending commit).")
-                                except Exception as e_ctx_dec:
-                                    logger.error(f"Failed to add LLM decision to context DB: {e_ctx_dec}")
-                                    # Не фатально, продолжаем без этого в контексте
-
-                        except Exception as e:
-                            logger.error(f"Error in LLM should_respond logic: {e}", exc_info=True)
-                            should_ai_respond = False # Не отвечаем при ошибке LLM
-                        # --- Конец вызова LLM ---
-                # Если should_ai_respond остался False после всех проверок
                 if not should_ai_respond:
                     logger.debug(f"Final decision: Not responding in group chat.")
-                    if limit_state_updated or context_user_msg_added or context_ai_decision_added:
-                        logger.debug(f"Committing state: limit_updated={limit_state_updated}, user_msg_added={context_user_msg_added}, ai_decision_added={context_ai_decision_added}")
-                        db.commit() # Сохраняем лимиты, сообщение юзера и решение LLM (если было)
-                    return # Выходим
-            # --- КОНЕЦ ОБНОВЛЕННОЙ ЛОГИКИ ---
+                    # Коммитим только лимиты и сообщение юзера, т.к. решения LLM не было
+                    if limit_state_updated or context_user_msg_added:
+                        try:
+                            db.commit()
+                        except Exception as commit_err:
+                             logger.error(f"Commit failed when exiting group logic: {commit_err}")
+                             db.rollback()
+                    return
+            # --- КОНЕЦ ЛОГИКИ ОТВЕТА В ГРУППЕ ---
 
-            # --- Отправка основного запроса к LLM (если should_ai_respond == True) ---
+            # --- Отправка основного запроса к LLM ---
             context_for_ai = initial_context_from_db + [current_user_message_dict]
-            # Добавляем решение LLM в контекст основного запроса, если оно было
-            if ai_decision_message_dict:
-                 logger.debug(f"Appending AI decision message to main LLM context: {ai_decision_message_dict}")
-                 context_for_ai.append(ai_decision_message_dict)
+            # ai_decision_message_dict больше не существует, убираем его добавление
 
             system_prompt = persona.format_system_prompt(user_id, username, message_text)
             if not system_prompt:
@@ -895,9 +830,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
             # Финальный коммит
             try:
-                # Проверяем, есть ли вообще что коммитить (лимиты, контекст юзера, контекст ответа, решение LLM)
-                if limit_state_updated or context_user_msg_added or context_response_prepared or context_ai_decision_added:
-                    logger.debug(f"Final commit state: limit={limit_state_updated}, user_ctx={context_user_msg_added}, resp_ctx={context_response_prepared}, ai_decision_ctx={context_ai_decision_added}")
+                # Проверяем, есть ли вообще что коммитить (лимиты, контекст юзера, контекст ответа)
+                if limit_state_updated or context_user_msg_added or context_response_prepared:
+                    logger.debug(f"Final commit state: limit={limit_state_updated}, user_ctx={context_user_msg_added}, resp_ctx={context_response_prepared}")
                     db.commit()
                     logger.debug(f"Committed DB changes for handle_message chat {chat_id_str}")
                 else:
