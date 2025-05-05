@@ -87,7 +87,7 @@ def extract_gif_links(text: str) -> List[str]:
 def postprocess_response(response: str, max_messages: int) -> List[str]:
     """
     Splits the bot's response into suitable message parts.
-    V4: Corrected \n check and simplified aggressive splitting.
+    V5: Handles different newline types (\n, \r\n, \r) for splitting.
     """
     telegram_max_len = 4096
     if not response or not isinstance(response, str):
@@ -105,26 +105,30 @@ def postprocess_response(response: str, max_messages: int) -> List[str]:
         else:
             return [response]
 
-    logger.info(f"--- Postprocessing response V4 --- Max messages: {max_messages}")
+    logger.info(f"--- Postprocessing response V5 --- Max messages: {max_messages}")
     parts = []
     processed_by_newline = False
 
-    # 1. Пробуем \n\n
-    potential_parts_nn = [p.strip() for p in response.split('\n\n') if p.strip()]
-    if len(potential_parts_nn) >= 1: # Если есть хотя бы одна часть после \n\n
-        logger.info(f"Split by '\n\n' resulted in {len(potential_parts_nn)} parts.")
-        parts = potential_parts_nn
-        processed_by_newline = True # Считаем обработанным, если нашли \n\n
+    # --- ИСПРАВЛЕНИЕ V5: Используем re.split для всех типов переносов ---
+    # Сначала пробуем двойные переносы (любого типа)
+    # (\r?\n){2,} - ищет \n\n или \r\n\r\n
+    # \r{2,} - ищет \r\r
+    potential_parts_double = [p.strip() for p in re.split(r'(?:\r?\n){2,}|\r{2,}', response) if p.strip()]
+    if len(potential_parts_double) > 1: # Если нашлось больше одной части
+        logger.info(f"Split by DOUBLE newlines (any type) resulted in {len(potential_parts_double)} parts.")
+        parts = potential_parts_double
+        processed_by_newline = True
 
-    # 2. Если не нашли \n\n, пробуем \n
+    # Если не нашли двойных, пробуем одинарные (любого типа)
     if not processed_by_newline:
-        potential_parts_n = [p.strip() for p in response.split('\n') if p.strip()]
-        # --- ИСПРАВЛЕНИЕ V4: Проверяем >= 1 ---
-        if len(potential_parts_n) >= 1: # Если есть хотя бы одна часть после \n
-            logger.info(f"Split by '\n' resulted in {len(potential_parts_n)} parts.")
-            parts = potential_parts_n
-            processed_by_newline = True # Считаем обработанным, если нашли \n
-        # --- КОНЕЦ ИСПРАВЛЕНИЯ V4 ---
+        # \r?\n - ищет \n или \r\n
+        # \r - ищет \r (отдельно)
+        potential_parts_single = [p.strip() for p in re.split(r'\r?\n|\r', response) if p.strip()]
+        if len(potential_parts_single) > 1: # Если нашлось больше одной части
+            logger.info(f"Split by SINGLE newlines (any type) resulted in {len(potential_parts_single)} parts.")
+            parts = potential_parts_single
+            processed_by_newline = True
+    # --- КОНЕЦ ИСПРАВЛЕНИЯ V5 ---
 
     # 3. Если переносов не было ИЛИ их было мало, И текст достаточно длинный
     needs_aggressive_split = False
@@ -228,5 +232,5 @@ def postprocess_response(response: str, max_messages: int) -> List[str]:
         else:
             processed_messages.append(msg)
 
-    logger.info(f"Final processed messages V4 count: {len(processed_messages)}")
+    logger.info(f"Final processed messages V5 count: {len(processed_messages)}")
     return processed_messages
