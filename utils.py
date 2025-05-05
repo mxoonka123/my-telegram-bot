@@ -25,7 +25,7 @@ TRANSITION_WORDS = [
     "с другой стороны", "напротив",
     "если говорить о", "что касается",
     "прежде всего", "главное",
-    "поэтому", "потому", # Хотя "потому" часто внутри, но иногда начинает ответ
+    "потому что", "потому", # Хотя "потому" часто внутри, но иногда начинает ответ
     "далее", "затем",
     "но ", # "но" с пробелом, чтобы не ловить "ноутбук"
     "а ", # "а" с пробелом
@@ -166,91 +166,58 @@ def _find_potential_split_indices(text: str) -> List[Tuple[int, int]]:
 
 def postprocess_response(response: str, max_messages: int) -> List[str]:
     """
-    Splits the bot's response aggressively based on calculated target length
-    to achieve 'max_messages' parts (v9 - Always Split if max_messages > 1).
-    Respects max_messages and Telegram length limits.
+    Splits the bot's response ensuring each message completes a thought
+    and new messages start with fresh sentences (v10 - Complete Thoughts).
     """
     if not response or not isinstance(response, str): return []
     response = response.strip()
     if not response: return []
 
-    # --- Handle max_messages setting ---
+    # Handle max_messages setting
     original_max_setting = max_messages
-    if max_messages <= 0: max_messages = random.randint(1, 3); logger.debug(f"Max messages set random to {max_messages}")
-    elif max_messages > 10: logger.warning(f"Max messages ({original_max_setting}) > 10. Setting to 10."); max_messages = 10
-    else: logger.debug(f"Using max_messages: {max_messages} (Original: {original_max_setting})")
-    # --- End max_messages handling ---
+    if max_messages <= 0: max_messages = random.randint(1, 3)
+    elif max_messages > 10: max_messages = 10
 
-    total_len = len(response)
+    # Don't split very short messages
+    if max_messages == 1 or len(response) < MIN_SENSIBLE_LEN * 1.5:
+        return [response[:TELEGRAM_MAX_LEN-3]+"..." if len(response) > TELEGRAM_MAX_LEN else response]
 
-    # --- ИЗМЕНЕННАЯ ЛОГИКА ---
-    # Если нужно ТОЛЬКО 1 сообщение (явно задано или текст слишком короткий для деления)
-    if max_messages == 1 or total_len < MIN_SENSIBLE_LEN * 1.5: # Не делим, если текст меньше ~1.5 минимальных частей
-        logger.debug(f"Returning single message (max_messages=1 or text too short: {total_len} chars)")
-        # Обрезаем, если даже одно сообщение слишком длинное
-        return [response[:TELEGRAM_MAX_LEN-3]+"..." if total_len > TELEGRAM_MAX_LEN else response]
-    # --- КОНЕЦ ИЗМЕНЕННОЙ ЛОГИКИ ---
-
-    logger.info(f"--- Postprocessing response (Simple Aggressive Split v9 - Always Split) --- Target messages: {max_messages}")
-
-    final_messages: List[str] = []
-    remaining_text = response
-    remaining_len = total_len
-
-    for i in range(max_messages):
-        if not remaining_text: break # Выходим, если текст закончился
-
-        # Если это последняя часть, забираем всё
-        if i == max_messages - 1:
-            logger.debug(f"Part {i+1}/{max_messages}: Taking all remaining text ({len(remaining_text)} chars).")
-            part_to_add = remaining_text
-            remaining_text = ""
-        else:
-            # Рассчитываем идеальную длину для этой части
-            parts_left_to_create = max_messages - i
-            ideal_len_for_part = math.ceil(remaining_len / parts_left_to_create)
-            # Ограничиваем максимальную длину, чтобы не превысить лимит Telegram
-            target_cut_point = min(TELEGRAM_MAX_LEN, ideal_len_for_part + 50) # Буфер для поиска пробела
-            target_cut_point = min(target_cut_point, len(remaining_text)) # Не больше, чем осталось
-
-            logger.debug(f"Part {i+1}/{max_messages}: Rem_len={remaining_len}, Parts_left={parts_left_to_create}, Ideal_len={ideal_len_for_part}, Target_cut={target_cut_point}")
-
-            cut_pos = target_cut_point
-            # Ищем пробел НАЗАД
-            if target_cut_point < len(remaining_text):
-                 space_pos = remaining_text.rfind(' ', MIN_SENSIBLE_LEN, target_cut_point)
-                 if space_pos != -1:
-                     cut_pos = space_pos + 1
-                     logger.debug(f"Found suitable space break backward at {cut_pos}")
-                 else: # Ищем ВПЕРЕД
-                     forward_space_pos = remaining_text.find(' ', ideal_len_for_part)
-                     if forward_space_pos != -1 and forward_space_pos < target_cut_point + 100:
-                          cut_pos = forward_space_pos + 1
-                          logger.debug(f"Found suitable space break forward at {cut_pos}")
-                     else: # Режем по target_cut_point
-                          cut_pos = target_cut_point
-                          logger.debug(f"No suitable space break found, cutting at calculated position {cut_pos}")
+    # First split by paragraphs
+    paragraphs = [p.strip() for p in response.split('\n\n') if p.strip()]
+    
+    final_messages = []
+    current_message = ""
+    
+    for para in paragraphs:
+        # Split paragraph into sentences
+        sentences = re.split(r'(?<=[.!?…])\s+', para)
+        
+        for sentence in sentences:
+            # If adding this sentence would exceed length limit
+            if current_message and \
+               len(current_message) + len(sentence) + 2 > TELEGRAM_MAX_LEN:
+                # Finalize current message if it contains complete thoughts
+                if current_message.strip():
+                    final_messages.append(current_message.strip())
+                    current_message = ""
+                    if len(final_messages) >= max_messages:
+                        break
+                
+            # Add sentence to current message
+            if current_message:
+                current_message += "\n\n" + sentence
             else:
-                logger.debug("Cut position is at the end of remaining text.")
-
-            part_to_add = remaining_text[:cut_pos].strip()
-            remaining_text = remaining_text[cut_pos:].strip()
-
-        # Добавляем непустую часть, проверяя лимит
-        if part_to_add:
-            if len(part_to_add) > TELEGRAM_MAX_LEN:
-                 logger.warning(f"Aggressively split part still exceeds limit ({len(part_to_add)}). Truncating.")
-                 final_messages.append(part_to_add[:TELEGRAM_MAX_LEN-3] + "...")
-            else:
-                 final_messages.append(part_to_add)
-        else:
-             logger.warning("Skipping empty part created during aggressive split.")
-
-        remaining_len = len(remaining_text) # Обновляем
-
-    # --- Финальная проверка и лог ---
-    logger.info(f"Final processed messages (Simple Aggressive v9) count: {len(final_messages)}")
-    for idx, msg_part in enumerate(final_messages):
-        logger.debug(f"  Part {idx+1}/{len(final_messages)} (len={len(msg_part)}): '{msg_part[:80]}...'")
-
+                current_message = sentence
+        
+        if len(final_messages) >= max_messages:
+            break
+    
+    # Add remaining content
+    if current_message.strip() and len(final_messages) < max_messages:
+        final_messages.append(current_message.strip())
+    
+    # Ensure we don't exceed max_messages
+    if len(final_messages) > max_messages:
+        final_messages = final_messages[:max_messages]
+        
     return final_messages
