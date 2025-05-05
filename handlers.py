@@ -793,7 +793,7 @@ async def process_and_send_response(
     # Возвращаем флаг, удалось ли подготовить контекст ответа (для коммита)
     return context_response_prepared
 
-# --- START OF REVISED handlers.py (process_and_send_response v11 - Debugging Send Loop) ---
+# --- START OF REVISED handlers.py (process_and_send_response v12 - Paranoid Debugging) ---
 
 async def process_and_send_response(
     update: Optional[Update],
@@ -807,28 +807,28 @@ async def process_and_send_response(
 ) -> bool:
     """
     Processes AI response, adds context, extracts GIFs, splits text (using utils.py v9),
-    and sends messages sequentially with enhanced debugging. (v11)
+    and sends messages sequentially with PARANOID debugging. (v12)
     """
     if not full_bot_response_text or not full_bot_response_text.strip():
         logger.warning(f"process_and_send_response: Received empty response. chat={chat_id}, persona={persona.name}.")
-        return False # Возвращаем False, контекст не подготовлен
+        return False
 
-    logger.debug(f"process_and_send_response: Processing AI response. chat={chat_id}, persona={persona.name}, len={len(full_bot_response_text)}, reply_to={reply_to_message_id}, is_first={is_first_message}")
+    logger.debug(f"process_and_send_response: START. chat={chat_id}, persona={persona.name}, len={len(full_bot_response_text)}, reply_to={reply_to_message_id}, is_first={is_first_message}")
 
     chat_id_str = str(chat_id)
-    context_response_prepared = False # Флаг для коммита контекста ответа
+    context_response_prepared = False
 
-    # 1. Сохранение полного ответа в контекст (до разделения)
+    # 1. Сохранение полного ответа в контекст
     if persona.chat_instance:
         try:
             add_message_to_context(db, persona.chat_instance.id, "assistant", full_bot_response_text.strip())
             context_response_prepared = True
-            logger.debug(f"process_and_send_response: AI response prepared for context DB. chat_instance_id={persona.chat_instance.id}")
+            logger.debug(f"process_and_send_response: Context prepared. cbi_id={persona.chat_instance.id}")
         except Exception as e:
-            logger.error(f"process_and_send_response: Error preparing assistant context. chat_instance_id={persona.chat_instance.id}: {e}", exc_info=True)
+            logger.error(f"process_and_send_response: Error preparing context. cbi_id={persona.chat_instance.id}: {e}", exc_info=True)
             context_response_prepared = False
     else:
-        logger.error("process_and_send_response: Cannot add AI response to context, chat_instance is None.")
+        logger.error("process_and_send_response: chat_instance is None for context.")
         context_response_prepared = False
 
     # 2. Извлечение GIF и очистка текста
@@ -836,33 +836,51 @@ async def process_and_send_response(
     gif_links = extract_gif_links(all_text_content)
     text_without_gifs = all_text_content
     if gif_links:
+        logger.debug(f"process_and_send_response: Found {len(gif_links)} GIF(s).")
         for gif in gif_links:
             text_without_gifs = re.sub(r'\s*' + re.escape(gif) + r'\s*', ' ', text_without_gifs, flags=re.IGNORECASE)
         text_without_gifs = re.sub(r'\s{2,}', ' ', text_without_gifs).strip()
-        logger.debug(f"process_and_send_response: Extracted {len(gif_links)} GIF(s). Remaining text len: {len(text_without_gifs)}")
 
     # 3. Получение разделенных частей текста из utils.py
     max_messages_setting = persona.config.max_response_messages if persona.config else 0
+    returned_parts = None # Инициализируем явно
     try:
-        # Вызываем функцию из utils.py
-        split_parts_list = postprocess_response(text_without_gifs, max_messages_setting)
+        logger.debug(f"process_and_send_response: Calling postprocess_response (utils.py) with max_messages={max_messages_setting} and text len={len(text_without_gifs)}")
+        returned_parts = postprocess_response(text_without_gifs, max_messages_setting)
+        logger.debug(f"process_and_send_response: postprocess_response call finished.")
     except Exception as e:
         logger.error(f"process_and_send_response: Error calling postprocess_response: {e}", exc_info=True)
-        split_parts_list = [text_without_gifs[:TELEGRAM_MAX_LEN]] # Fallback: отправляем начало исходного текста
+        returned_parts = [text_without_gifs[:TELEGRAM_MAX_LEN]]
 
-    # --- ОТЛАДКА ПЕРЕД ОТПРАВКОЙ ---
-    logger.info(f"process_and_send_response: postprocess_response returned a list with {len(split_parts_list)} part(s).")
-    if not isinstance(split_parts_list, list):
-        logger.error(f"CRITICAL ERROR: postprocess_response did NOT return a list! Type: {type(split_parts_list)}. Value: {str(split_parts_list)[:200]}")
-        # Пытаемся исправить или возвращаем ошибку
-        if isinstance(split_parts_list, str):
-            split_parts_list = [split_parts_list[:TELEGRAM_MAX_LEN]]
+    # --- ПАРАНОИДАЛЬНАЯ ОТЛАДКА ---
+    logger.info(f"process_and_send_response: === DEBUG BLOCK START ===")
+    if returned_parts is None:
+        logger.error(f"CRITICAL ERROR: returned_parts is None after calling postprocess_response!")
+        text_parts_to_send = [] # Устанавливаем пустой список
+    elif not isinstance(returned_parts, list):
+        logger.error(f"CRITICAL ERROR: postprocess_response did NOT return a list! Type: {type(returned_parts)}. Value: {str(returned_parts)[:200]}")
+        if isinstance(returned_parts, str):
+            text_parts_to_send = [returned_parts[:TELEGRAM_MAX_LEN]]
         else:
-            split_parts_list = [] # Не можем отправить
-    # Логируем начало каждой части для проверки
-    for idx, p in enumerate(split_parts_list):
-         logger.debug(f"  Part {idx+1} content (start): '{str(p)[:80]}...")
-    # --- КОНЕЦ ОТЛАДКИ ---
+            text_parts_to_send = []
+    else:
+        # Явно копируем список на всякий случай
+        text_parts_to_send = list(returned_parts)
+        logger.info(f"process_and_send_response: Received list with {len(text_parts_to_send)} part(s) from postprocess_response.")
+        for idx, p in enumerate(text_parts_to_send):
+            part_type = type(p).__name__
+            part_content_preview = str(p)[:80] + ('...' if len(str(p)) > 80 else '')
+            logger.debug(f"  Received Part {idx+1} (type={part_type}, len={len(str(p))}): '{part_content_preview}'")
+            if not isinstance(p, str):
+                 logger.warning(f"  Part {idx+1} IS NOT A STRING! Attempting conversion.")
+                 try: text_parts_to_send[idx] = str(p)
+                 except Exception as str_e: logger.error(f"Failed to convert part {idx+1} to string: {str_e}"); text_parts_to_send[idx] = "" # Заменяем на пустую строку
+
+    # Удаляем пустые строки ПОСЛЕ всех проверок и преобразований
+    text_parts_to_send = [p for p in text_parts_to_send if str(p).strip()]
+    logger.info(f"process_and_send_response: After type/empty checks, {len(text_parts_to_send)} parts remain for sending.")
+    logger.info(f"process_and_send_response: === DEBUG BLOCK END ===")
+    # --- КОНЕЦ ПАРАНОИДАЛЬНОЙ ОТЛАДКИ ---
 
     # 4. Последовательная отправка сообщений
     first_message_sent = False
