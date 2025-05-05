@@ -777,28 +777,37 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     if is_mentioned or is_reply_to_bot or contains_persona_name:
                         should_ai_respond = True
                     else:
-                        # Если явных триггеров нет, обращаемся к LLM для проверки контекста
                         logger.info("No direct trigger in group chat (contextual pref). Asking LLM...")
-                        should_ai_respond = False # По умолчанию не отвечаем, если LLM не скажет "Да"
+                        should_ai_respond = False
                         ai_decision_response = None
-                        # ai_decision_message_dict = None # <- Перенесено выше
-                        # context_ai_decision_added = False # <- Перенесено выше
+                        # ai_decision_message_dict = None # Уже определен выше
+                        # context_ai_decision_added = False # Уже определен выше
 
-                        # --- Вызов LLM для should_respond ---
-                        # Используем PersonaConfig для получения шаблона
-                        persona_config = persona.config # У нас уже есть persona с config
-                        should_respond_template = persona_config.should_respond_prompt_template or DEFAULT_SHOULD_RESPOND_TEMPLATE # Берем из БД или дефолтный
+                        persona_config = persona.config
+                        # --- ИЗМЕНЕНИЕ ЗДЕСЬ: Убираем group_reply_preference из format() ---
+                        try:
+                            # Загружаем шаблон из БД или используем дефолтный
+                            should_respond_template = persona_config.should_respond_prompt_template or DEFAULT_SHOULD_RESPOND_TEMPLATE
+                            if not should_respond_template:
+                                logger.error("Should respond template is missing!")
+                                raise ValueError("Missing should_respond_template")
 
-                        # Формируем краткое содержание контекста
-                        context_summary = "\n".join([f"- {msg['role']}: {msg['content'][:80]}..." for msg in initial_context_from_db[-5:]]) # Последние 5 сообщений
+                            context_summary = "\n".join([f"- {msg['role']}: {msg['content'][:80]}..." for msg in initial_context_from_db[-5:]])
 
-                        should_respond_prompt = should_respond_template.format(
-                            bot_username=bot_username,
-                            persona_name=persona.name,
-                            last_user_message=message_text,
-                            # group_reply_preference=reply_pref, # Удалено из шаблона
-                            context_summary=context_summary
-                        )
+                            should_respond_prompt = should_respond_template.format(
+                                bot_username=bot_username,
+                                persona_name=persona.name,
+                                last_user_message=message_text,
+                                # group_reply_preference=reply_pref, # <-- УБИРАЕМ ЭТУ СТРОКУ
+                                context_summary=context_summary
+                            )
+                        except KeyError as fmt_err:
+                             logger.error(f"KeyError formatting should_respond_prompt: {fmt_err}. Template: '{should_respond_template}'")
+                             raise # Передаем ошибку выше, чтобы обработать как ошибку LLM
+                        except Exception as prep_err:
+                             logger.error(f"Error preparing should_respond_prompt: {prep_err}")
+                             raise
+                        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
                         try:
                             # Контекст для should_respond включает текущее сообщение
