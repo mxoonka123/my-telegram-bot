@@ -675,6 +675,8 @@ async def send_limit_exceeded_message(update: Update, context: ContextTypes.DEFA
                 except Exception as plain_e:
                     logger.error(f"Plain text send failed: {plain_e}")
                     logger.debug(f"Text (Plain): {text_raw[:100]}...")
+                except:  # Добавляем пустой except для вложенного блока
+                    pass
             except Exception as send_e:
                 logger.error(f"Unexpected error during message send: {send_e}")
         except ValueError as ve:
