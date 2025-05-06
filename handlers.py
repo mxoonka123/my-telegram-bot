@@ -633,45 +633,112 @@ async def process_and_send_response(
     is_first_message: bool = False
 ) -> bool:
     """
-    Processes LLM response by splitting based on '<<<>>>' separator (v14 - LLM Splitting).
+    Processes LLM response expecting JSON array of strings (v15 - JSON Attempt).
+    Falls back to simple sentence splitting if JSON fails.
     Sends parts sequentially. Adds original FULL response to context.
     """
-    logger.info(f"process_and_send_response [LLM Split]: --- ENTER --- ChatID: {chat_id}, Persona: '{persona.name}'")
+    logger.info(f"process_and_send_response [JSON]: --- ENTER --- ChatID: {chat_id}, Persona: '{persona.name}'")
     if not full_bot_response_text or not full_bot_response_text.strip():
-        logger.warning(f"process_and_send_response [LLM Split]: Received empty or whitespace-only response. Not processing.")
-        return False # Нечего добавлять в контекст и отправлять
+        logger.warning(f"process_and_send_response [JSON]: Received empty response. Not processing.")
+        return False
 
     context_response_prepared = False
-    full_response_clean = full_bot_response_text.strip()
+    raw_llm_response = full_bot_response_text.strip() # Сохраняем "сырой" ответ
 
     try:
-        # 1. Сохранение ПОЛНОГО (до разделения) ответа в контекст
-        logger.debug("process_and_send_response [LLM Split]: Step 1 - Adding full response to context.")
+        # 1. Сохранение СЫРОГО ответа LLM (может быть JSON) в контекст
+        logger.debug("process_and_send_response [JSON]: Step 1 - Adding raw LLM response to context.")
         if persona.chat_instance:
             try:
-                add_message_to_context(db, persona.chat_instance.id, "assistant", full_response_clean)
+                # Добавляем как есть, даже если это JSON
+                add_message_to_context(db, persona.chat_instance.id, "assistant", raw_llm_response)
                 context_response_prepared = True
-                logger.debug(f"process_and_send_response [LLM Split]: Full response added to context for CBI {persona.chat_instance.id}.")
+                logger.debug(f"process_and_send_response [JSON]: Raw response added to context for CBI {persona.chat_instance.id}.")
             except Exception as e_ctx:
-                logger.error(f"process_and_send_response [LLM Split]: Error adding full response context for CBI {persona.chat_instance.id}: {e_ctx}", exc_info=True)
+                logger.error(f"process_and_send_response [JSON]: Error adding raw response context: {e_ctx}", exc_info=True)
                 context_response_prepared = False
         else:
-            logger.error("process_and_send_response [LLM Split]: Cannot add full response context, persona.chat_instance is None.")
+            logger.error("process_and_send_response [JSON]: Cannot add raw response context, persona.chat_instance is None.")
             context_response_prepared = False
 
-        # 2. Разделение ответа LLM по разделителю
-        logger.debug(f"process_and_send_response [LLM Split]: Step 2 - Splitting raw response by '<<<>>>'. Raw len: {len(full_response_clean)}")
-        raw_parts = full_response_clean.split('<<<>>>')
-        text_parts_to_send = [part.strip() for part in raw_parts if part and part.strip()] # Очищаем и убираем пустые
+        # 2. Попытка распарсить JSON
+        text_parts_to_send = []
+        is_json_parsed = False
+        logger.debug(f"process_and_send_response [JSON]: Step 2 - Attempting to parse response as JSON. Raw response sample: '{raw_llm_response[:200]}...'")
+        try:
+            # Ищем начало '[' и конец ']' для более надежного парсинга
+            json_start = raw_llm_response.find('[')
+            json_end = raw_llm_response.rfind(']')
+            if json_start != -1 and json_end != -1 and json_start < json_end:
+                json_string_to_parse = raw_llm_response[json_start : json_end + 1]
+                logger.debug(f"process_and_send_response [JSON]: Extracted potential JSON: '{json_string_to_parse[:200]}...'")
+                parsed_data = json.loads(json_string_to_parse)
+                if isinstance(parsed_data, list) and all(isinstance(item, str) for item in parsed_data):
+                    text_parts_to_send = [part.strip() for part in parsed_data if part.strip()]
+                    if text_parts_to_send:
+                         is_json_parsed = True
+                         logger.info(f"process_and_send_response [JSON]: Successfully parsed JSON response into {len(text_parts_to_send)} part(s).")
+                    else:
+                         logger.warning("process_and_send_response [JSON]: Parsed JSON but result is empty list or list of empty strings.")
+                else:
+                    logger.warning(f"process_and_send_response [JSON]: Parsed JSON, but it's not a list of strings. Type: {type(parsed_data)}")
+            else:
+                 logger.warning("process_and_send_response [JSON]: Could not find valid JSON array structure '[...]' in the response.")
 
-        logger.info(f"process_and_send_response [LLM Split]: Split into {len(text_parts_to_send)} non-empty part(s).")
-        if not text_parts_to_send:
-            logger.warning("process_and_send_response [LLM Split]: Splitting resulted in zero parts. Nothing to send.")
-            # Если LLM вернула только разделители или пустой ответ
-            # Мы все равно могли добавить пустой ответ в контекст, поэтому возвращаем статус
+        except json.JSONDecodeError as json_err:
+            logger.warning(f"process_and_send_response [JSON]: Failed to parse LLM response as JSON: {json_err}. Falling back to sentence splitting.")
+            is_json_parsed = False
+        except Exception as parse_err:
+            logger.error(f"process_and_send_response [JSON]: Unexpected error during JSON parsing: {parse_err}", exc_info=True)
+            is_json_parsed = False
+
+        # 3. Fallback: Если JSON не сработал - простое деление по предложениям
+        if not is_json_parsed:
+            logger.info("process_and_send_response [JSON]: Fallback - Splitting by sentences.")
+            # Используем текст *без* потенциальных GIF-ссылок для деления
+            gif_links = extract_gif_links(raw_llm_response) # Ищем GIF в сыром ответе
+            text_without_gifs = raw_llm_response
+            if gif_links:
+                 for gif_url in gif_links:
+                     text_without_gifs = re.sub(r'\s*' + re.escape(gif_url) + r'\s*', ' ', text_without_gifs, flags=re.IGNORECASE)
+                 text_without_gifs = re.sub(r'\s{2,}', ' ', text_without_gifs).strip()
+            
+            if not text_without_gifs:
+                 logger.warning("process_and_send_response [JSON Fallback]: No text content left after removing GIFs. Cannot split.")
+                 # Если были только гифки, они отправятся ниже
+                 text_parts_to_send = [] 
+            else:
+                # Делим по предложениям, потом агрессивно, если нужно
+                sentences = re.split(r'(?<=[.!?…])\s+', text_without_gifs)
+                temp_parts = []
+                for sentence in sentences:
+                    s = sentence.strip()
+                    if not s: continue
+                    if len(s) > TELEGRAM_MAX_LEN:
+                        logger.warning(f"process_and_send_response [JSON Fallback]: Sentence exceeds max length ({len(s)}), using aggressive split.")
+                        # Нужна функция _split_aggressively из utils.py
+                        try:
+                             temp_parts.extend(_split_aggressively(s, TELEGRAM_MAX_LEN))
+                        except NameError:
+                             logger.error("Fallback failed: _split_aggressively not defined/imported!")
+                             temp_parts.append(s[:TELEGRAM_MAX_LEN-3]+"...") # Простой fallback обрезки
+                    else:
+                        temp_parts.append(s)
+                
+                text_parts_to_send = temp_parts
+                logger.info(f"process_and_send_response [JSON Fallback]: Split into {len(text_parts_to_send)} part(s) using sentence/aggressive fallback.")
+
+        # 4. Извлечение GIF (из СЫРОГО ответа, т.к. они могли быть вне JSON)
+        gif_links_to_send = extract_gif_links(raw_llm_response)
+        if gif_links_to_send:
+             logger.info(f"process_and_send_response [JSON]: Found {len(gif_links_to_send)} GIF(s) to send: {gif_links_to_send}")
+
+        # Проверка, есть ли что отправлять
+        if not gif_links_to_send and not text_parts_to_send:
+            logger.warning("process_and_send_response [JSON]: No GIFs and no text parts after processing. Nothing to send.")
             return context_response_prepared
 
-        # --- Удаление приветствия из ПЕРВОЙ части (если нужно) ---
+        # 5. Удаление приветствия из ПЕРВОЙ текстовой части (если есть)
         if text_parts_to_send and not is_first_message:
             first_part = text_parts_to_send[0]
             greetings_pattern = r"^\s*(?:привет|здравствуй|добр(?:ый|ое|ого)\s+(?:день|утро|вечер)|хай|ку|здорово|салют|о[йи])(?:[,.!?;:]|\b)"
@@ -679,84 +746,99 @@ async def process_and_send_response(
             if match:
                 cleaned_part = first_part[match.end():].lstrip()
                 if cleaned_part:
-                    logger.info(f"process_and_send_response [LLM Split]: Removed greeting. New start of part 1: '{cleaned_part[:50]}...'")
+                    logger.info(f"process_and_send_response [JSON]: Removed greeting. New start of part 1: '{cleaned_part[:50]}...'")
                     text_parts_to_send[0] = cleaned_part
                 else:
-                    logger.warning(f"process_and_send_response [LLM Split]: Greeting removal left part 1 empty. Removing part 1.")
+                    logger.warning(f"process_and_send_response [JSON]: Greeting removal left part 1 empty. Removing part.")
                     text_parts_to_send.pop(0)
-                    if not text_parts_to_send: # Если это была единственная часть
-                         logger.warning("process_and_send_response [LLM Split]: No parts left after removing greeting.")
-                         return context_response_prepared
 
-        # 3. Последовательная отправка сообщений
-        logger.debug(f"process_and_send_response [LLM Split]: Step 3 - Sequentially sending {len(text_parts_to_send)} part(s).")
+        # 6. Последовательная отправка
+        logger.debug(f"process_and_send_response [JSON]: Step 4 - Sequentially sending. GIFs: {len(gif_links_to_send)}, Text Parts: {len(text_parts_to_send)}")
         first_message_sent = False
         chat_id_str = str(chat_id)
         chat_type = update.effective_chat.type if update and update.effective_chat else None
 
-        for i, part_raw_send in enumerate(text_parts_to_send):
-            # Проверка длины части (на случай, если LLM сделала слишком длинную часть)
-            if len(part_raw_send) > TELEGRAM_MAX_LEN:
-                logger.warning(f"process_and_send_response [LLM Split]: Part {i+1} from LLM exceeds max length ({len(part_raw_send)} > {TELEGRAM_MAX_LEN}). Truncating.")
-                part_raw_send = part_raw_send[:TELEGRAM_MAX_LEN - 3] + "..." # Обрезаем
+        # Сначала GIF
+        if gif_links_to_send:
+            for i, gif_url_send in enumerate(gif_links_to_send):
+                try:
+                    current_reply_id_gif = reply_to_message_id if not first_message_sent else None
+                    logger.info(f"process_and_send_response [JSON]: Attempting to send GIF {i+1}/{len(gif_links_to_send)}: {gif_url_send} (ReplyTo: {current_reply_id_gif})")
+                    await context.bot.send_animation(
+                        chat_id=chat_id_str, animation=gif_url_send, reply_to_message_id=current_reply_id_gif,
+                        read_timeout=30, write_timeout=30
+                    )
+                    first_message_sent = True
+                    logger.info(f"process_and_send_response [JSON]: Successfully sent GIF {i+1}.")
+                    await asyncio.sleep(random.uniform(0.5, 1.2))
+                except Exception as e_gif:
+                    logger.error(f"process_and_send_response [JSON]: Error sending GIF {gif_url_send}: {e_gif}", exc_info=True)
 
-            # --- Отправка части ---
-            if chat_type in [ChatType.GROUP, ChatType.SUPERGROUP]:
-                try: asyncio.create_task(context.bot.send_chat_action(chat_id=chat_id_str, action=ChatAction.TYPING))
-                except Exception: pass
+        # Затем Текст
+        if text_parts_to_send:
+            for i, part_raw_send in enumerate(text_parts_to_send):
+                 # Проверка на пустую строку (на всякий случай)
+                 if not part_raw_send: continue
+                 # Обрезка, если часть все еще слишком длинная (актуально для fallback)
+                 if len(part_raw_send) > TELEGRAM_MAX_LEN:
+                      logger.warning(f"process_and_send_response [JSON]: Fallback Part {i+1} exceeds max length ({len(part_raw_send)}). Truncating.")
+                      part_raw_send = part_raw_send[:TELEGRAM_MAX_LEN - 3] + "..."
+                 
+                 # --- Отправка ---
+                 if chat_type in [ChatType.GROUP, ChatType.SUPERGROUP]:
+                    try: asyncio.create_task(context.bot.send_chat_action(chat_id=chat_id_str, action=ChatAction.TYPING))
+                    except Exception: pass
+                 
+                 await asyncio.sleep(random.uniform(0.8, 2.0)) # Пауза
 
-            # Пауза перед отправкой
-            await asyncio.sleep(random.uniform(0.8, 2.0)) # Вариативная пауза
+                 current_reply_id_text = reply_to_message_id if not first_message_sent else None
+                 escaped_part_send = escape_markdown_v2(part_raw_send)
+                 message_sent_successfully = False
+                 
+                 logger.info(f"process_and_send_response [JSON]: Attempting send part {i+1}/{len(text_parts_to_send)} (MDv2, ReplyTo: {current_reply_id_text}) to {chat_id_str}: '{escaped_part_send[:80]}...'")
+                 try:
+                     await context.bot.send_message(
+                         chat_id=chat_id_str, text=escaped_part_send, parse_mode=ParseMode.MARKDOWN_V2,
+                         reply_to_message_id=current_reply_id_text, read_timeout=30, write_timeout=30
+                     )
+                     message_sent_successfully = True
+                 except BadRequest as e_md_send:
+                    if "can't parse entities" in str(e_md_send).lower():
+                        logger.error(f"process_and_send_response [JSON]: MDv2 parse failed part {i+1}. Retrying plain. Error: {e_md_send}")
+                        try:
+                            await context.bot.send_message(
+                                chat_id=chat_id_str, text=part_raw_send, parse_mode=None,
+                                reply_to_message_id=current_reply_id_text, read_timeout=30, write_timeout=30
+                            )
+                            message_sent_successfully = True
+                        except Exception as e_plain_send:
+                            logger.error(f"process_and_send_response [JSON]: Failed plain send part {i+1}: {e_plain_send}", exc_info=True)
+                            break
+                    elif "reply message not found" in str(e_md_send).lower():
+                        logger.warning(f"process_and_send_response [JSON]: Reply message {reply_to_message_id} not found part {i+1}. Sending without reply.")
+                        try:
+                            await context.bot.send_message(chat_id=chat_id_str, text=escaped_part_send, parse_mode=ParseMode.MARKDOWN_V2, reply_to_message_id=None, read_timeout=30, write_timeout=30)
+                            message_sent_successfully = True
+                        except Exception as e_no_reply_send: logger.error(f"process_and_send_response [JSON]: Failed send part {i+1} w/o reply: {e_no_reply_send}", exc_info=True); break
+                    else:
+                        logger.error(f"process_and_send_response [JSON]: Unhandled BadRequest sending part {i+1}: {e_md_send}", exc_info=True)
+                        break
+                 except Exception as e_other_send:
+                     logger.error(f"process_and_send_response [JSON]: Unexpected error sending part {i+1}: {e_other_send}", exc_info=True)
+                     break
 
-            current_reply_id_text = reply_to_message_id if not first_message_sent else None
-            escaped_part_send = escape_markdown_v2(part_raw_send)
-            message_sent_successfully = False
+                 if message_sent_successfully:
+                    first_message_sent = True
+                    logger.info(f"process_and_send_response [JSON]: Successfully sent part {i+1}/{len(text_parts_to_send)}.")
+                 else:
+                    logger.error(f"process_and_send_response [JSON]: Failed to send part {i+1}, stopping.")
+                    break # Прерываем, если отправка не удалась
 
-            logger.info(f"process_and_send_response [LLM Split]: Attempting send part {i+1}/{len(text_parts_to_send)} (MDv2, ReplyTo: {current_reply_id_text}) to {chat_id_str}: '{escaped_part_send[:80]}...'")
-            try:
-                await context.bot.send_message(
-                    chat_id=chat_id_str, text=escaped_part_send, parse_mode=ParseMode.MARKDOWN_V2,
-                    reply_to_message_id=current_reply_id_text, read_timeout=30, write_timeout=30
-                )
-                message_sent_successfully = True
-            except BadRequest as e_md_send:
-                if "can't parse entities" in str(e_md_send).lower():
-                    logger.error(f"process_and_send_response [LLM Split]: MDv2 parse failed part {i+1}. Retrying plain. Error: {e_md_send}")
-                    try:
-                        await context.bot.send_message(
-                            chat_id=chat_id_str, text=part_raw_send, parse_mode=None, # Отправляем НЕэкранированную часть
-                            reply_to_message_id=current_reply_id_text, read_timeout=30, write_timeout=30
-                        )
-                        message_sent_successfully = True
-                    except Exception as e_plain_send:
-                        logger.error(f"process_and_send_response [LLM Split]: Failed plain send part {i+1}: {e_plain_send}", exc_info=True)
-                        break # Прерываем отправку остальных
-                elif "reply message not found" in str(e_md_send).lower():
-                    logger.warning(f"process_and_send_response [LLM Split]: Reply message {reply_to_message_id} not found part {i+1}. Sending without reply.")
-                    try:
-                        await context.bot.send_message(chat_id=chat_id_str, text=escaped_part_send, parse_mode=ParseMode.MARKDOWN_V2, reply_to_message_id=None, read_timeout=30, write_timeout=30)
-                        message_sent_successfully = True
-                    except Exception as e_no_reply_send: logger.error(f"process_and_send_response [LLM Split]: Failed send part {i+1} w/o reply: {e_no_reply_send}", exc_info=True); break
-                else:
-                    logger.error(f"process_and_send_response [LLM Split]: Unhandled BadRequest sending part {i+1}: {e_md_send}", exc_info=True)
-                    break
-            except Exception as e_other_send:
-                logger.error(f"process_and_send_response [LLM Split]: Unexpected error sending part {i+1}: {e_other_send}", exc_info=True)
-                break
-
-            if message_sent_successfully:
-                first_message_sent = True
-                logger.info(f"process_and_send_response [LLM Split]: Successfully sent part {i+1}/{len(text_parts_to_send)}.")
-            else:
-                logger.error(f"process_and_send_response [LLM Split]: Failed to send part {i+1}, stopping further message sending.")
-                break
-
-        logger.info("process_and_send_response [LLM Split]: --- EXIT --- Returning context_prepared_status: " + str(context_response_prepared))
+        logger.info("process_and_send_response [JSON]: --- EXIT --- Returning context_prepared_status: " + str(context_response_prepared))
         return context_response_prepared
 
     except Exception as e_main_process:
-        # Ловим любые другие ошибки при обработке здесь
-        logger.error(f"process_and_send_response [LLM Split]: CRITICAL UNEXPECTED ERROR in main block: {e_main_process}", exc_info=True)
+        logger.error(f"process_and_send_response [JSON]: CRITICAL UNEXPECTED ERROR in main block: {e_main_process}", exc_info=True)
         return context_response_prepared # Возвращаем статус контекста
 
 async def send_limit_exceeded_message(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User):
