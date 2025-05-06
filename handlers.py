@@ -614,7 +614,42 @@ async def send_to_langdock(system_prompt: str, messages: List[Dict[str, str]]) -
     # Возвращаем флаг, удалось ли подготовить контекст ответа (для коммита)
     return context_response_prepared
 
-# --- END OF REVISED handlers.py (process_and_send_response v10) ---
+# --- Core Logic Helpers ---
+
+async def process_and_send_response(
+    update: Optional[Update],
+    context: ContextTypes.DEFAULT_TYPE,
+    chat_id: Union[str, int],
+    persona: Persona,
+    full_bot_response_text: str,
+    db: Session,
+    reply_to_message_id: Optional[int] = None,
+    is_first_message: bool = False
+) -> bool:
+    """Processes the AI response and sends it to the user."""
+    try:
+        # 1. Извлечение GIF ссылок из текста
+        gif_links = extract_gif_links(full_bot_response_text)
+        text_without_gifs = full_bot_response_text
+        for gif in gif_links:
+            text_without_gifs = text_without_gifs.replace(gif, '')
+        text_without_gifs = text_without_gifs.strip()
+
+        # 2. Добавление ответа бота в контекст
+        if persona.chat_instance:
+            try:
+                add_message_to_context(db, persona.chat_instance.id, "assistant", text_without_gifs)
+                logger.debug(f"process_and_send_response: Bot message for CBI {persona.chat_instance.id} prepared for context (pending commit).")
+            except (SQLAlchemyError, Exception) as e_ctx:
+                logger.error(f"process_and_send_response: Error preparing bot message context for CBI {persona.chat_instance.id}: {e_ctx}", exc_info=True)
+                return False
+
+        # Остальная логика отправки сообщений...
+        
+        return True
+    except Exception as e:
+        logger.error(f"process_and_send_response: Unexpected error: {e}", exc_info=True)
+        return False
 
 async def send_limit_exceeded_message(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User):
     """Sends the 'limit exceeded' message with a subscribe prompt."""
