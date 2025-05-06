@@ -687,7 +687,6 @@ async def send_limit_exceeded_message(update: Update, context: ContextTypes.DEFA
         logger.error(f"Critical error in send_limit_exceeded_message: {e}")
     f"✅ полная настройка поведения и настроений\n\n" # Обновлен текст
     f"👇 жми /subscribe или кнопку ниже!"
-)
 text_to_send = escape_markdown_v2(text_raw)
 
 keyboard = [[InlineKeyboardButton("🚀 получить подписку!", callback_data="subscribe_info")]]
