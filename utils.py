@@ -127,91 +127,127 @@ def _split_aggressively(text: str, max_len: int) -> List[str]:
 # --- V9: Simple Aggressive Split (Always Split) ---
 def postprocess_response(response: str, max_messages: int) -> List[str]:
     """
-    Natural Split (Always Split) v11.
-    Splits text into separate messages, preserving natural conversation flow.
+    Splits text into separate messages aiming for natural breaks (v12).
+    Prioritizes paragraphs, then sentences, then uses fallback.
+    Avoids splitting further just to reach max_messages.
     """
     if not response or not isinstance(response, str):
         return []
-    
+
     response = response.strip()
     if not response:
         return []
 
-    logger.debug(f"--- Postprocessing response (Natural Split v11 - Always Split) ---")
-    
-    # First try to split by natural conversation points (sentences, questions, exclamations)
-    parts = [p.strip() for p in re.split(r'(?<=[.!?…])\s+', response) if p.strip()]
-    logger.debug(f"Found {len(parts)} natural parts in response.")
-    
-    # If we have more parts than max_messages, combine them
-    if len(parts) > max_messages:
-        combined_parts = []
-        current_part = ""
-        
-        for i, part in enumerate(parts):
-            # If adding this part would exceed max_messages, finalize current part
-            if len(combined_parts) + 1 >= max_messages:
-                if current_part:
-                    combined_parts.append(current_part)
-                combined_parts.extend(parts[i:])
-                break
-            
-            # If current part would be too long if combined
-            if len(current_part) + len(part) + 2 > TELEGRAM_MAX_LEN:
-                if current_part:
-                    combined_parts.append(current_part)
-                current_part = part
-            else:
-                # Combine with previous part using double newline
-                current_part = f"{current_part}\n\n{part}"
-        
-        if current_part:
-            combined_parts.append(current_part)
-        
-        parts = combined_parts
-    
-    # If we still have fewer parts than max_messages, split larger ones
-    if len(parts) < max_messages and len(parts) > 0:
-        avg_len = len(response) // max_messages  # Use integer division
-        
-        new_parts = []
-        for part in parts:
-            if len(part) <= avg_len:
-                new_parts.append(part)
-                continue
-            
-            # Split large part into smaller chunks
-            current_chunk = ""
-            words = part.split()
-            for word in words:
-                # If adding this word would exceed average length or Telegram max
-                if (current_chunk and 
-                    (len(current_chunk) + len(word) + 1 > avg_len or 
-                     len(current_chunk) + len(word) + 1 > TELEGRAM_MAX_LEN)):
-                    new_parts.append(current_chunk.strip())
-                    current_chunk = word
-                else:
-                    current_chunk = f"{current_chunk} {word}" if current_chunk else word
-            
-            if current_chunk:
-                new_parts.append(current_chunk.strip())
-        
-        parts = new_parts[:max_messages]  # Limit to max_messages
-    
-    # Final check to ensure we don't exceed max_messages
-    if len(parts) > max_messages:
-        parts = parts[:max_messages]
-    
-    # Add a newline between parts for better readability
-    for i in range(len(parts)):
-        if i > 0:
-            parts[i] = f"\n\n{parts[i]}"
-    
-    return parts
-    
-    # Log final results
-    logger.info(f"Final processed messages... count: {len(parts)}")
+    logger.debug(f"--- Postprocessing response (Natural Split v12) ---")
+    logger.debug(f"Input text length: {len(response)}, max_messages: {max_messages}")
+
+    # Ensure max_messages is reasonable
+    if not isinstance(max_messages, int) or max_messages <= 0:
+        max_messages = 3 # Default fallback if invalid
+        logger.warning(f"Invalid max_messages value, defaulting to {max_messages}")
+    # Telegram has a limit of messages per second, avoid too many splits
+    # Let's cap it reasonably, e.g., 10, even if user sets more
+    hard_max_messages = 10
+    if max_messages > hard_max_messages:
+        logger.warning(f"User requested max_messages={max_messages}, capping at {hard_max_messages} for stability.")
+        max_messages = hard_max_messages
+
+    processed_parts = []
+    current_chunk = response
+
+    # 1. Split by Double Newlines (Paragraphs) first
+    initial_split = re.split(r'\n\s*\n', current_chunk)
+    parts = [p.strip() for p in initial_split if p.strip()]
+    logger.debug(f"Split by paragraphs resulted in {len(parts)} parts.")
+
+    # 2. Refine: Split parts longer than TELEGRAM_MAX_LEN by sentence endings
+    refined_parts = []
+    for part in parts:
+        if len(part) <= TELEGRAM_MAX_LEN:
+            refined_parts.append(part)
+        else:
+            logger.debug(f"Part exceeds max length ({len(part)} > {TELEGRAM_MAX_LEN}), splitting by sentence.")
+            # Split by sentence-ending punctuation followed by space/newline
+            # Keep the punctuation with the sentence.
+            sentences = re.split(r'(?<=[.!?…])\s+', part)
+            refined_parts.extend([s.strip() for s in sentences if s.strip()])
+
+    parts = refined_parts
+    logger.debug(f"After sentence splitting long parts, total parts: {len(parts)}")
+
+    # 3. Combine parts if needed, but prioritize keeping natural breaks
+    final_parts = []
+    current_combined = ""
     for i, part in enumerate(parts):
-        logger.debug(f"Finalized message {i+1}/{len(parts)} (len={len(part)}): {part[:50]}...")
-    
+        # Check length *before* adding potential separator
+        if not current_combined:
+            # If the first part itself is too long, split it aggressively
+            if len(part) > TELEGRAM_MAX_LEN:
+                logger.warning(f"Single part after natural splits still too long ({len(part)} chars). Applying aggressive split.")
+                final_parts.extend(_split_aggressively(part, TELEGRAM_MAX_LEN))
+                current_combined = "" # Reset combination
+            else:
+                current_combined = part
+        # Check if adding the *next* part (plus separator) exceeds limit
+        elif len(current_combined) + len(part) + 2 <= TELEGRAM_MAX_LEN:
+            # Combine with double newline
+            current_combined += "\n\n" + part
+        else:
+            # Current combined part is full or adding next part makes it too long
+            # Add the completed combined part to final list
+            final_parts.append(current_combined)
+            # Start the new combined part with the current part
+            # Aggressively split the new part if it's too long on its own
+            if len(part) > TELEGRAM_MAX_LEN:
+                 logger.warning(f"Part starting new combination is too long ({len(part)} chars). Applying aggressive split.")
+                 final_parts.extend(_split_aggressively(part, TELEGRAM_MAX_LEN))
+                 current_combined = "" # Reset combination
+            else:
+                current_combined = part
+
+    # Add the last combined part if it exists
+    if current_combined:
+        final_parts.append(current_combined)
+
+    # 4. Enforce max_messages limit AFTER natural splitting/combining
+    if len(final_parts) > max_messages:
+        logger.warning(f"Natural splitting resulted in {len(final_parts)} parts, exceeding limit of {max_messages}. Combining further.")
+        # Combine the earliest parts first until the limit is met
+        while len(final_parts) > max_messages:
+            # Combine part 0 and 1
+            combined = final_parts[0] + "\n\n" + final_parts[1]
+            # Aggressively split if the combination is too long
+            if len(combined) > TELEGRAM_MAX_LEN:
+                 logger.warning(f"Forced combination exceeds length ({len(combined)} chars). Splitting aggressively.")
+                 split_combined = _split_aggressively(combined, TELEGRAM_MAX_LEN)
+                 # Replace the first two parts with the aggressively split parts
+                 final_parts = split_combined + final_parts[2:]
+                 # Re-check length immediately in next iteration
+            else:
+                # Replace first two parts with the combined one
+                final_parts[0] = combined
+                del final_parts[1]
+
+        logger.debug(f"After enforcing max_messages, final parts count: {len(final_parts)}")
+
+    # 5. Final length check (aggressive split as last resort)
+    result_parts = []
+    for part in final_parts:
+        if len(part) > TELEGRAM_MAX_LEN:
+            logger.error(f"CRITICAL: Part still exceeds max length ({len(part)}) after all processing! Applying final aggressive split.")
+            result_parts.extend(_split_aggressively(part, TELEGRAM_MAX_LEN))
+        elif part: # Add non-empty parts
+            result_parts.append(part)
+
+    # Ensure we don't exceed max_messages due to aggressive splitting in the last step
+    if len(result_parts) > max_messages:
+         logger.warning(f"Aggressive splitting during final check increased parts beyond limit ({len(result_parts)} > {max_messages}). Truncating.")
+         result_parts = result_parts[:max_messages]
+
+    # Log final results
+    logger.info(f"Final processed messages count: {len(result_parts)}")
+    for i, part in enumerate(result_parts):
+        logger.debug(f"Finalized message {i+1}/{len(result_parts)} (len={len(part)}): {part[:80]}...")
+
+    return result_parts
     return parts
