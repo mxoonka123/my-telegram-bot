@@ -627,29 +627,173 @@ async def process_and_send_response(
     is_first_message: bool = False
 ) -> bool:
     """Processes the AI response and sends it to the user."""
-    try:
-        # 1. Извлечение GIF ссылок из текста
-        gif_links = extract_gif_links(full_bot_response_text)
-        text_without_gifs = full_bot_response_text
-        for gif in gif_links:
-            text_without_gifs = text_without_gifs.replace(gif, '')
-        text_without_gifs = text_without_gifs.strip()
+    logger.info(f"process_and_send_response: --- ENTER --- ChatID: {chat_id}, Persona: '{persona.name}'")
+    if not full_bot_response_text or not full_bot_response_text.strip():
+        logger.warning(f"process_and_send_response: Received empty or whitespace-only response from AI. Persona: '{persona.name}'. Not sending.")
+        return False
 
-        # 2. Добавление ответа бота в контекст
+    context_response_prepared = False
+
+    try:
+        # 1. Сохранение полного ответа в контекст
+        logger.debug("process_and_send_response: Step 1 - Adding full response to context.")
         if persona.chat_instance:
             try:
-                add_message_to_context(db, persona.chat_instance.id, "assistant", text_without_gifs)
-                logger.debug(f"process_and_send_response: Bot message for CBI {persona.chat_instance.id} prepared for context (pending commit).")
-            except (SQLAlchemyError, Exception) as e_ctx:
-                logger.error(f"process_and_send_response: Error preparing bot message context for CBI {persona.chat_instance.id}: {e_ctx}", exc_info=True)
-                return False
+                add_message_to_context(db, persona.chat_instance.id, "assistant", full_bot_response_text.strip())
+                context_response_prepared = True
+                logger.debug(f"process_and_send_response: Full response added to context for CBI {persona.chat_instance.id}.")
+            except Exception as e_ctx:
+                logger.error(f"process_and_send_response: Error adding full response to context for CBI {persona.chat_instance.id}: {e_ctx}", exc_info=True)
+                context_response_prepared = False
+        else:
+            logger.error("process_and_send_response: Cannot add full response to context, persona.chat_instance is None.")
+            context_response_prepared = False
 
-        # Остальная логика отправки сообщений...
+        # 2. Извлечение GIF и очистка текста
+        logger.debug("process_and_send_response: Step 2 - Extracting GIFs and cleaning text.")
+        all_text_content = full_bot_response_text.strip()
+        gif_links = extract_gif_links(all_text_content)
+        text_without_gifs = all_text_content
         
-        return True
-    except Exception as e:
-        logger.error(f"process_and_send_response: Unexpected error: {e}", exc_info=True)
-        return False
+        if gif_links:
+            logger.info(f"process_and_send_response: Found {len(gif_links)} GIF(s): {gif_links}")
+            for gif_url in gif_links:
+                text_without_gifs = re.sub(r'\s*' + re.escape(gif_url) + r'\s*', ' ', text_without_gifs, flags=re.IGNORECASE)
+            text_without_gifs = re.sub(r'\s{2,}', ' ', text_without_gifs).strip()
+            logger.debug(f"process_and_send_response: Text after GIF removal (len={len(text_without_gifs)}): '{text_without_gifs[:100]}...'")
+        else:
+            logger.debug("process_and_send_response: No GIFs found in response.")
+
+        # 3. Получение разделенных частей текста из utils.py
+        logger.debug("process_and_send_response: Step 3 - Calling utils.postprocess_response.")
+        max_messages_setting = persona.config.max_response_messages if persona.config else 3
+        if max_messages_setting <= 0: max_messages_setting = 3
+        
+        text_parts_to_send = []
+        if text_without_gifs:
+            try:
+                text_parts_to_send = postprocess_response(text_without_gifs, max_messages_setting)
+                logger.info(f"process_and_send_response: utils.postprocess_response returned {len(text_parts_to_send)} part(s).")
+                for i, part_debug in enumerate(text_parts_to_send):
+                    logger.debug(f"  Part {i+1} (len={len(part_debug)}): '{part_debug[:80]}...'")
+            except Exception as e_split:
+                logger.error(f"process_and_send_response: Error calling utils.postprocess_response: {e_split}", exc_info=True)
+                text_parts_to_send = [text_without_gifs[:4096]] # Fallback: одна часть
+        else:
+            logger.info("process_and_send_response: No text content after GIF removal, only GIFs will be sent.")
+
+        # 4. Последовательная отправка сообщений
+        logger.debug("process_and_send_response: Step 4 - Sequentially sending messages.")
+        first_message_sent = False
+        chat_id_str = str(chat_id)
+
+        # Сначала отправляем GIF, если есть
+        if gif_links:
+            logger.debug(f"process_and_send_response: Sending {len(gif_links)} GIF(s).")
+            for i, gif_url in enumerate(gif_links):
+                try:
+                    current_reply_id = reply_to_message_id if not first_message_sent else None
+                    logger.info(f"process_and_send_response: Attempting to send GIF {i+1}/{len(gif_links)}: {gif_url} (ReplyTo: {current_reply_id})")
+                    await context.bot.send_animation(
+                        chat_id=chat_id_str,
+                        animation=gif_url,
+                        reply_to_message_id=current_reply_id,
+                        read_timeout=30,
+                        write_timeout=30
+                    )
+                    first_message_sent = True
+                    logger.info(f"process_and_send_response: Successfully sent GIF {i+1}.")
+                    await asyncio.sleep(random.uniform(0.5, 1.2))
+                except Exception as e_gif:
+                    logger.error(f"process_and_send_response: Error sending GIF {gif_url}: {e_gif}", exc_info=True)
+
+        # Затем отправляем текстовые части
+        if text_parts_to_send:
+            logger.debug(f"process_and_send_response: Sending {len(text_parts_to_send)} text part(s).")
+            chat_type = update.effective_chat.type if update and update.effective_chat else None
+
+            # Удаление приветствия (если нужно)
+            if text_parts_to_send and not is_first_message:
+                first_part = text_parts_to_send[0]
+                greetings_pattern = r"^\s*(?:привет|здравствуй|добр(?:ый|ое|ого)\s+(?:день|утро|вечер)|хай|ку|здорово|салют|о[йи])(?:[,.!?;:]|\b)"
+                match = re.match(greetings_pattern, first_part, re.IGNORECASE)
+                if match:
+                    cleaned_part = first_part[match.end():].strip()
+                    if cleaned_part:
+                        logger.info(f"process_and_send_response: Removed greeting. New start: '{cleaned_part[:50]}...'")
+                        text_parts_to_send[0] = cleaned_part
+                    else:
+                        logger.warning(f"process_and_send_response: Greeting removal left first part empty. Removing part.")
+                        text_parts_to_send.pop(0)
+
+            # Отправка текстовых частей
+            for i, part in enumerate(text_parts_to_send):
+                part_raw = part.strip()
+                if not part_raw: continue
+
+                if chat_type in [ChatType.GROUP, ChatType.SUPERGROUP]:
+                    try: asyncio.create_task(context.bot.send_chat_action(chat_id=chat_id_str, action=ChatAction.TYPING))
+                    except Exception: pass
+
+                current_reply_id = reply_to_message_id if not first_message_sent else None
+                escaped_part = escape_markdown_v2(part_raw)
+                message_sent_successfully = False
+
+                try:
+                    logger.info(f"process_and_send_response: Attempting send part {i+1}/{len(text_parts_to_send)} (MDv2, ReplyTo: {current_reply_id}) to {chat_id_str}: '{escaped_part[:80]}...'")
+                    await context.bot.send_message(
+                        chat_id=chat_id_str,
+                        text=escaped_part,
+                        parse_mode=ParseMode.MARKDOWN_V2,
+                        reply_to_message_id=current_reply_id,
+                        read_timeout=30,
+                        write_timeout=30
+                    )
+                    message_sent_successfully = True
+                except BadRequest as e_md:
+                    if "can't parse entities" in str(e_md).lower():
+                        logger.error(f"process_and_send_response: MDv2 parse failed part {i+1}. Retrying plain. Error: {e_md}")
+                        try:
+                            await context.bot.send_message(
+                                chat_id=chat_id_str,
+                                text=part_raw,
+                                parse_mode=None,
+                                reply_to_message_id=current_reply_id,
+                                read_timeout=30,
+                                write_timeout=30
+                            )
+                            message_sent_successfully = True
+                        except Exception as e_plain:
+                            logger.error(f"process_and_send_response: Failed plain send part {i+1}: {e_plain}", exc_info=True)
+                            break
+                    elif "reply message not found" in str(e_md).lower():
+                        logger.warning(f"process_and_send_response: Reply message {reply_to_message_id} not found part {i+1}. Sending without reply.")
+                        try:
+                            await context.bot.send_message(chat_id=chat_id_str, text=escaped_part, parse_mode=ParseMode.MARKDOWN_V2, reply_to_message_id=None, read_timeout=30, write_timeout=30)
+                            message_sent_successfully = True
+                        except Exception as e_no_reply:
+                            logger.error(f"process_and_send_response: Failed send part {i+1} w/o reply: {e_no_reply}", exc_info=True)
+                            break
+                    else:
+                        logger.error(f"process_and_send_response: Unhandled BadRequest sending part {i+1}: {e_md}", exc_info=True)
+                        break
+                except Exception as e_other:
+                    logger.error(f"process_and_send_response: Unexpected error sending part {i+1}: {e_other}", exc_info=True)
+                    break
+
+                if message_sent_successfully:
+                    first_message_sent = True
+                    logger.info(f"process_and_send_response: Successfully sent part {i+1}/{len(text_parts_to_send)}.")
+                else:
+                    logger.error(f"process_and_send_response: Failed to send part {i+1}, stopping further message sending.")
+                    break
+
+        logger.info(f"process_and_send_response: --- EXIT --- Returning context_prepared_status: {context_response_prepared}")
+        return context_response_prepared
+
+    except Exception as e_main:
+        logger.error(f"process_and_send_response: CRITICAL ERROR in main processing block: {e_main}", exc_info=True)
+        return context_response_prepared
 
 async def send_limit_exceeded_message(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User):
     """Sends the 'limit exceeded' message with a subscribe prompt."""
