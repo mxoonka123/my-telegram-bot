@@ -687,20 +687,17 @@ async def send_limit_exceeded_message(update: Update, context: ContextTypes.DEFA
         logger.error(f"Critical error in send_limit_exceeded_message: {e}")
     f"✅ полная настройка поведения и настроений\n\n" # Обновлен текст
     f"👇 жми /subscribe или кнопку ниже!"
-text_to_send = escape_markdown_v2(text_raw)
+    text_to_send = escape_markdown_v2(text_raw)
 
-keyboard = [[InlineKeyboardButton("🚀 получить подписку!", callback_data="subscribe_info")]]
-reply_markup = InlineKeyboardMarkup(keyboard)
+    keyboard = [[InlineKeyboardButton("🚀 получить подписку!", callback_data="subscribe_info")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
 
-target_chat_id = None
-try:
-
-
-# --- Message Handlers ---
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handles incoming text messages."""
+    target_chat_id = None
     try:
+        # --- Message Handlers ---
+        async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+            """Handles incoming text messages."""
+            try:
         if not update.message or not (update.message.text or update.message.caption):
             logger.debug("handle_message: Exiting - No message or text/caption.")
             return
