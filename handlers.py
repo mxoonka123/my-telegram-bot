@@ -720,9 +720,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             if not limit_ok:
                 logger.info(f"Owner {owner_user.telegram_id} exceeded daily message limit ({owner_user.daily_message_count}/{owner_user.message_limit}).")
                 await send_limit_exceeded_message(update, context, owner_user)
-                if limit_state_updated: db.commit()
-                return
-            # --- Конец проверки лимитов ---
+                # Коммитим, ТОЛЬКО если были изменения (например, сброс счетчика)
+                if limit_state_updated:
+                    try:
+                        db.commit()
+                        logger.debug("Committed user limit state update after limit exceeded.")
+                    except Exception as commit_err:
+                        logger.error(f"Commit failed after limit check failure: {commit_err}")
+                        db.rollback() # Откатываем, если коммит не удался
+                return # Возвращаемся после проверки лимитов
 
             # --- Добавление сообщения пользователя в контекст (как раньше) ---
             current_user_message_content = f"{username}: {message_text}"
