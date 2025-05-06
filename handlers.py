@@ -701,194 +701,207 @@ try:
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handles incoming text messages."""
-    if not update.message or not (update.message.text or update.message.caption):
-        return
-    chat_id_str = str(update.effective_chat.id)
-    user_id = update.effective_user.id
-    username = update.effective_user.username or f"user_{user_id}"
-    message_text = (update.message.text or update.message.caption or "").strip()
-    message_id = update.message.message_id
-    if not message_text:
-        return
+    try:
+        if not update.message or not (update.message.text or update.message.caption):
+            logger.debug("handle_message: Exiting - No message or text/caption.")
+            return
+        
+        chat_id_str = str(update.effective_chat.id)
+        user_id = update.effective_user.id
+        username = update.effective_user.username or f"user_{user_id}"
+        message_text = (update.message.text or update.message.caption or "").strip()
+        message_id = update.message.message_id
+        
+        if not message_text:
+            logger.debug(f"handle_message: Exiting - Empty message text from user {user_id} in chat {chat_id_str}.")
+            return
 
-    logger.info(f"MSG < User {user_id} ({username}) in Chat {chat_id_str} (MsgID: {message_id}): {message_text[:100]}")
+        logger.info(f"MSG < User {user_id} ({username}) in Chat {chat_id_str} (MsgID: {message_id}): '{message_text[:100]}'")
 
-    if not await check_channel_subscription(update, context):
-        await send_subscription_required_message(update, context)
-        return
+        # --- Проверка подписки ---
+        if not await check_channel_subscription(update, context):
+            logger.info(f"handle_message: User {user_id} failed channel subscription check.")
+            await send_subscription_required_message(update, context)
+            return
 
-    with next(get_db()) as db:
+        # --- Основной блок с БД ---
+        db_session = None
         try:
-            persona_context_owner_tuple = get_persona_and_context_with_owner(chat_id_str, db)
+            with next(get_db()) as db:
+                db_session = db
+                logger.debug("handle_message: DB session acquired.")
 
-            if not persona_context_owner_tuple:
-                logger.warning(f"handle_message: get_persona_and_context_with_owner returned None for chat {chat_id_str}. No active persona found?")
-                return
-            persona, initial_context_from_db, owner_user = persona_context_owner_tuple
-            logger.info(f"handle_message: Found active persona '{persona.name}' for chat {chat_id_str}.")
-
-            # --- Проверка лимитов (как раньше) ---
-            limit_ok = check_and_update_user_limits(db, owner_user)
-            limit_state_updated = db.is_modified(owner_user)
-            if not limit_ok:
-                logger.info(f"Owner {owner_user.telegram_id} exceeded daily message limit ({owner_user.daily_message_count}/{owner_user.message_limit}).")
-                await send_limit_exceeded_message(update, context, owner_user)
-                # Коммитим, ТОЛЬКО если были изменения (например, сброс счетчика)
-                if limit_state_updated:
-                    try:
-                        db.commit()
-                        logger.debug("Committed user limit state update after limit exceeded.")
-                    except Exception as commit_err:
-                        logger.error(f"Commit failed after limit check failure: {commit_err}")
-                        db.rollback() # Откатываем, если коммит не удался
-                return # Возвращаемся после проверки лимитов
-
-            # --- Добавление сообщения пользователя в контекст (как раньше) ---
-            current_user_message_content = f"{username}: {message_text}"
-            current_user_message_dict = {"role": "user", "content": current_user_message_content}
-            context_user_msg_added = False
-            if persona.chat_instance:
-                try:
-                    add_message_to_context(db, persona.chat_instance.id, "user", current_user_message_content)
-                    context_user_msg_added = True
-                    logger.debug("User message prepared for context DB (pending commit).")
-                except (SQLAlchemyError, Exception) as e_ctx:
-                    logger.error(f"Error preparing user message for context DB: {e_ctx}", exc_info=True)
-                    await update.message.reply_text(escape_markdown_v2("❌ ошибка при сохранении вашего сообщения."), parse_mode=ParseMode.MARKDOWN_V2)
-                    db.rollback()
+                # --- Получение персоны и владельца ---
+                persona_context_owner_tuple = get_persona_and_context_with_owner(chat_id_str, db_session)
+                if not persona_context_owner_tuple:
+                    logger.warning(f"handle_message: No active persona found for chat {chat_id_str}.")
                     return
-            else:
-                logger.error("Cannot add user message to context DB, chat_instance is None unexpectedly.")
-                await update.message.reply_text(escape_markdown_v2("❌ системная ошибка: не удалось связать сообщение с личностью."), parse_mode=ParseMode.MARKDOWN_V2)
-                db.rollback()
-                return
-            # --- Конец добавления ---
+                
+                persona, initial_context_from_db, owner_user = persona_context_owner_tuple
+                logger.info(f"handle_message: Found active persona '{persona.name}' (ID: {persona.id}) owned by User ID {owner_user.id} (TG: {owner_user.telegram_id}).")
 
-            if persona.chat_instance and persona.chat_instance.is_muted:
-                logger.debug(f"Persona '{persona.name}' is muted. Saving context and exiting.")
-                if limit_state_updated or context_user_msg_added: db.commit()
-                return
+                # --- Проверка лимитов владельца ---
+                limit_ok = check_and_update_user_limits(db_session, owner_user)
+                limit_state_updated = db_session.is_modified(owner_user)
+                
+                if not limit_ok:
+                    logger.info(f"handle_message: Owner {owner_user.telegram_id} exceeded daily message limit ({owner_user.daily_message_count}/{owner_user.message_limit}).")
+                    await send_limit_exceeded_message(update, context, owner_user)
+                    if limit_state_updated:
+                        try:
+                            db_session.commit()
+                            logger.debug("handle_message: Committed owner limit state update (limit exceeded).")
+                        except Exception as commit_err:
+                            logger.error(f"handle_message: Commit failed after limit exceeded: {commit_err}", exc_info=True)
+                            db_session.rollback()
+                    return
 
-            # --- ОБНОВЛЕННАЯ ЛОГИКА ОТВЕТА В ГРУППЕ ---
-            should_ai_respond = True
-            # Убираем определение ai_decision_message_dict и context_ai_decision_added отсюда
+                # --- Добавление сообщения пользователя в контекст ---
+                current_user_message_content = f"{username}: {message_text}"
+                current_user_message_dict = {"role": "user", "content": current_user_message_content}
+                context_user_msg_added = False
+                
+                if persona.chat_instance:
+                    try:
+                        add_message_to_context(db_session, persona.chat_instance.id, "user", current_user_message_content)
+                        context_user_msg_added = True
+                        logger.debug(f"handle_message: User message for CBI {persona.chat_instance.id} prepared for context (pending commit).")
+                    except (SQLAlchemyError, Exception) as e_ctx:
+                        logger.error(f"handle_message: Error preparing user message context for CBI {persona.chat_instance.id}: {e_ctx}", exc_info=True)
+                        await update.message.reply_text(escape_markdown_v2("❌ ошибка при сохранении вашего сообщения."), parse_mode=ParseMode.MARKDOWN_V2)
+                        db_session.rollback()
+                        return
+                else:
+                    logger.error("handle_message: Cannot add user message context, persona.chat_instance is None unexpectedly.")
+                    await update.message.reply_text(escape_markdown_v2("❌ системная ошибка: не удалось связать сообщение с личностью."), parse_mode=ParseMode.MARKDOWN_V2)
+                    db_session.rollback()
+                    return
 
-            if update.effective_chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
-                reply_pref = persona.group_reply_preference
-                bot_username = context.bot_data.get('bot_username', "YOUR_BOT_USERNAME")
-                persona_name_lower = persona.name.lower()
-
-                # 1. Проверка упоминания
-                is_mentioned = f"@{bot_username}".lower() in message_text.lower()
-                # 2. Проверка реплая боту
-                is_reply_to_bot = update.message.reply_to_message and update.message.reply_to_message.from_user.id == context.bot.id
-                # 3. Проверка наличия имени личности (как отдельное слово)
-                contains_persona_name = bool(re.search(rf'\b{re.escape(persona_name_lower)}\b', message_text.lower()))
-
-                logger.debug(f"Group chat. Pref: {reply_pref}, Mentioned: {is_mentioned}, ReplyToBot: {is_reply_to_bot}, ContainsName: {contains_persona_name}")
-
-                if reply_pref == "never":
-                    should_ai_respond = False
-                elif reply_pref == "always":
-                    should_ai_respond = True
-                elif reply_pref == "mentioned_only":
-                    # Отвечаем только на явные триггеры
-                    should_ai_respond = is_mentioned or is_reply_to_bot or contains_persona_name
-                elif reply_pref == "mentioned_or_contextual":
-                    # --- ВРЕМЕННО: Убираем LLM проверку ---
-                    # Отвечаем только по явным триггерам
-                    should_ai_respond = is_mentioned or is_reply_to_bot or contains_persona_name
-                    if not should_ai_respond:
-                         logger.info("No direct trigger in group chat (contextual pref). LLM check disabled. Not responding.")
-                    # --- КОНЕЦ ВРЕМЕННОГО УДАЛЕНИЯ ---
-
-                if not should_ai_respond:
-                    logger.debug(f"Final decision: Not responding in group chat.")
-                    # Коммитим только лимиты и сообщение юзера, т.к. решения LLM не было
+                # --- Проверка Mute ---
+                if persona.chat_instance.is_muted:
+                    logger.info(f"handle_message: Persona '{persona.name}' is muted in chat {chat_id_str}. Saving context and exiting.")
                     if limit_state_updated or context_user_msg_added:
                         try:
-                            db.commit()
+                            db_session.commit()
+                            logger.debug("handle_message: Committed DB changes for muted bot (limits/user context).")
                         except Exception as commit_err:
-                             logger.error(f"Commit failed when exiting group logic: {commit_err}")
-                             db.rollback()
+                            logger.error(f"handle_message: Commit failed for muted bot context save: {commit_err}", exc_info=True)
+                            db_session.rollback()
                     return
-            # --- КОНЕЦ ЛОГИКИ ОТВЕТА В ГРУППЕ ---
 
-            # --- Отправка основного запроса к LLM ---
-            context_for_ai = initial_context_from_db + [current_user_message_dict]
-            # ai_decision_message_dict больше не существует, убираем его добавление
+                # --- Логика ответа в группе ---
+                should_ai_respond = True
+                if update.effective_chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
+                    reply_pref = persona.group_reply_preference
+                    bot_username = context.bot_data.get('bot_username')
+                    if not bot_username:
+                        logger.error("handle_message: bot_username not found in context.bot_data for group check!")
+                        bot_username = "YourBotUsername"
 
-            system_prompt = persona.format_system_prompt(user_id, username, message_text)
-            if not system_prompt:
-                logger.error(f"System prompt formatting failed for persona {persona.name}.")
-                await update.message.reply_text(escape_markdown_v2("❌ ошибка при подготовке ответа."), parse_mode=ParseMode.MARKDOWN_V2)
-                db.rollback()
-                return
-            # --- Конец формирования ---
+                    persona_name_lower = persona.name.lower()
+                    is_mentioned = f"@{bot_username}".lower() in message_text.lower()
+                    is_reply_to_bot = update.message.reply_to_message and update.message.reply_to_message.from_user.id == context.bot.id
+                    contains_persona_name = bool(re.search(rf'(?i)\b{re.escape(persona_name_lower)}\b', message_text))
 
-            logger.debug(f"--- Sending to Langdock --- Chat: {chat_id_str}, Persona: {persona.name}")
-            logger.debug(f"System Prompt:\n---\n{system_prompt}\n---")
-            context_log_str = "\n".join([f"  {msg.get('role')}: {str(msg.get('content', ''))[:150]}{'...' if len(str(msg.get('content', ''))) > 150 else ''}" for msg in context_for_ai])
-            logger.debug(f"Context ({len(context_for_ai)} messages):\n---\n{context_log_str}\n---")
+                    logger.debug(f"handle_message: Group chat check. Pref: '{reply_pref}', Mentioned: {is_mentioned}, ReplyToBot: {is_reply_to_bot}, ContainsName: {contains_persona_name}")
 
-            response_text = await send_to_langdock(system_prompt, context_for_ai)
+                    if reply_pref == "never":
+                        should_ai_respond = False
+                    elif reply_pref == "always":
+                        should_ai_respond = True
+                    elif reply_pref == "mentioned_only":
+                        should_ai_respond = is_mentioned or is_reply_to_bot or contains_persona_name
+                    elif reply_pref == "mentioned_or_contextual":
+                        should_ai_respond = is_mentioned or is_reply_to_bot or contains_persona_name
+                        if not should_ai_respond:
+                            logger.info("handle_message: No direct trigger in group (contextual pref, LLM check disabled). Not responding.")
 
-            logger.debug(f"Raw Response from Langdock:\n---\n{response_text}\n---")
+                    if not should_ai_respond:
+                        logger.info(f"handle_message: Decision - Not responding in group chat '{update.effective_chat.title}'.")
+                        if limit_state_updated or context_user_msg_added:
+                            try:
+                                db_session.commit()
+                                logger.debug("handle_message: Committed DB changes (limits/user context) before exiting group logic (no response).")
+                            except Exception as commit_err:
+                                logger.error(f"handle_message: Commit failed when exiting group logic (no response): {commit_err}", exc_info=True)
+                                db_session.rollback()
+                        return
 
-            if response_text.startswith("ai вернул пустой ответ") or \
-               response_text.startswith("ошибка:") or \
-               response_text.startswith("ой, ошибка связи с ai"):
-                logger.error(f"Langdock returned an error/empty message: {response_text}")
-                # Отправляем сообщение об ошибке/пустом ответе пользователю
-                await update.message.reply_text(response_text, parse_mode=ParseMode.MARKDOWN_V2 if response_text.startswith("ai вернул") else None)
-                # Коммитим изменения лимитов и контекста пользователя
-                if limit_state_updated or context_user_msg_added: db.commit()
-                return
+                # --- Отправка запроса к LLM ---
+                if should_ai_respond:
+                    logger.debug("handle_message: Proceeding to generate AI response.")
+                    context_for_ai = initial_context_from_db + [current_user_message_dict]
 
-            logger.info(f"RAW LLM RESPONSE before postprocessing (len={len(response_text)}):\n'''\n{response_text}\n'''")
+                    system_prompt = persona.format_system_prompt(user_id, username, message_text)
+                    if not system_prompt:
+                        logger.error(f"handle_message: System prompt formatting failed for persona {persona.name} (ID: {persona.id}).")
+                        await update.message.reply_text(escape_markdown_v2("❌ ошибка при подготовке системного сообщения."), parse_mode=ParseMode.MARKDOWN_V2)
+                        db_session.rollback()
+                        return
 
-            # --- ОБРАБОТКА ОТВЕТА ---
-            # 1. Удаляем лишние пробелы и переносы строк в начале и конце
-            response_text = response_text.strip()
-            # 2. Заменяем множественные пробелы на один
-            response_text = re.sub(r'\s+', ' ', response_text)
-            # 3. Убираем лишние переносы строк
-            response_text = re.sub(r'\n\s*\n', '\n\n', response_text)
-            # 4. Добавляем пробелы после точек, если их нет
-            response_text = re.sub(r'([.!?])([A-ZА-Я])', r'\1 \2', response_text)
-            # --- КОНЕЦ ПРЕДВАРИТЕЛЬНОЙ ОБРАБОТКИ ---
+                    logger.info(f"handle_message: Sending request to Langdock for persona '{persona.name}' in chat {chat_id_str}.")
+                    response_text = await send_to_langdock(system_prompt, context_for_ai)
 
-            context_response_prepared = await process_and_send_response(
-                update, context, chat_id_str, persona, response_text, db,
-                reply_to_message_id=message_id,
-                is_first_message=(len(initial_context_from_db) == 0)
-            )
+                    if response_text.startswith(("ошибка:", "ой, ошибка связи с ai", "⏳ хм, кажется", "ai вернул пустой ответ")):
+                        logger.error(f"handle_message: Langdock returned error/empty: '{response_text}'")
+                        try:
+                            await update.message.reply_text(response_text, parse_mode=ParseMode.MARKDOWN_V2 if response_text.startswith("ai вернул") else None)
+                        except Exception as send_err:
+                            logger.error(f"handle_message: Failed to send Langdock error message to user: {send_err}", exc_info=True)
+                        if limit_state_updated or context_user_msg_added:
+                            try:
+                                db_session.commit()
+                                logger.debug("handle_message: Committed user context/limits after Langdock error.")
+                            except Exception as commit_err:
+                                logger.error(f"handle_message: Commit failed after Langdock error: {commit_err}", exc_info=True)
+                                db_session.rollback()
+                        return
 
-            # Финальный коммит
-            try:
-                # Проверяем, есть ли вообще что коммитить (лимиты, контекст юзера, контекст ответа)
-                if limit_state_updated or context_user_msg_added or context_response_prepared:
-                    logger.debug(f"Final commit state: limit={limit_state_updated}, user_ctx={context_user_msg_added}, resp_ctx={context_response_prepared}")
-                    db.commit()
-                    logger.debug(f"Committed DB changes for handle_message chat {chat_id_str}")
-                else:
-                    logger.debug(f"No DB changes detected for final commit in handle_message chat {chat_id_str}")
-            except SQLAlchemyError as final_commit_err:
-                 logger.error(f"FINAL COMMIT FAILED in handle_message: {final_commit_err}", exc_info=True)
-                 db.rollback()
+                    response_text = response_text.strip()
+                    logger.info(f"handle_message: Received LLM response (len={len(response_text)}): '{response_text[:100]}'")
+
+                    context_response_prepared = await process_and_send_response(
+                        update,
+                        context,
+                        chat_id_str,
+                        persona,
+                        response_text,
+                        db_session,
+                        reply_to_message_id=message_id,
+                        is_first_message=(len(initial_context_from_db) == 0)
+                    )
+
+                    if limit_state_updated or context_user_msg_added or context_response_prepared:
+                        try:
+                            logger.debug(f"handle_message: Final commit. Limit: {limit_state_updated}, UserCtx: {context_user_msg_added}, RespCtx: {context_response_prepared}")
+                            db_session.commit()
+                            logger.info(f"handle_message: Successfully processed message and committed changes for chat {chat_id_str}.")
+                        except SQLAlchemyError as final_commit_err:
+                            logger.error(f"handle_message: FINAL COMMIT FAILED: {final_commit_err}", exc_info=True)
+                            db_session.rollback()
+                    else:
+                        logger.debug("handle_message: No DB changes detected for final commit.")
 
         except SQLAlchemyError as e:
-             logger.error(f"Database error during handle_message for chat {chat_id_str}: {e}", exc_info=True)
-             try: await update.message.reply_text("❌ ошибка базы данных, попробуйте позже.", parse_mode=None)
-             except Exception: pass
-             db.rollback() # Ensure rollback on SQLAlchemyError
+            logger.error(f"handle_message: SQLAlchemyError: {e}", exc_info=True)
+            if update.effective_message:
+                try: await update.effective_message.reply_text("❌ Ошибка базы данных. Попробуйте позже.", parse_mode=None)
+                except Exception: pass
+            if db_session: db_session.rollback()
         except TelegramError as e:
-             logger.error(f"Telegram API error during handle_message for chat {chat_id_str}: {e}", exc_info=True)
+            logger.error(f"handle_message: TelegramError: {e}", exc_info=True)
         except Exception as e:
-            logger.error(f"General error processing message in chat {chat_id_str}: {e}", exc_info=True)
-            try: await update.message.reply_text("❌ произошла непредвиденная ошибка.", parse_mode=None)
-            except Exception: pass
-            db.rollback() # Ensure rollback on general exceptions that might involve DB state
+            logger.error(f"handle_message: Unexpected Exception: {e}", exc_info=True)
+            if update.effective_message:
+                try: await update.effective_message.reply_text("❌ Произошла непредвиденная ошибка.", parse_mode=None)
+                except Exception: pass
+            if db_session: db_session.rollback()
+
+    except Exception as outer_e:
+        logger.error(f"handle_message: Critical error in outer try block: {outer_e}", exc_info=True)
+        if update.effective_message:
+            try: await update.effective_message.reply_text("❌ Произошла критическая ошибка.", parse_mode=None)
+            except Exception: pass # Ensure rollback on general exceptions that might involve DB state
 
 
 async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media_type: str) -> None:
