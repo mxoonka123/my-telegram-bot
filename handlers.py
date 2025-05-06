@@ -616,72 +616,83 @@ async def send_to_langdock(system_prompt: str, messages: List[Dict[str, str]]) -
 
 # --- END OF REVISED handlers.py (process_and_send_response v10) ---
 
-# Остальная часть кода с лимитами и сообщениями о подписке
-paid_limit_raw = str(PAID_DAILY_MESSAGE_LIMIT)
-paid_persona_raw = str(PAID_PERSONA_LIMIT)
+async def send_limit_exceeded_message(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User):
+    """Sends the 'limit exceeded' message with a subscribe prompt."""
+    try:
+        count_raw = str(user.daily_message_count)
+        limit_raw = str(user.message_limit)
+        price_raw = f"{SUBSCRIPTION_PRICE_RUB:.0f}"
+        currency_raw = SUBSCRIPTION_CURRENCY
+        paid_limit_raw = str(PAID_DAILY_MESSAGE_LIMIT)
+        paid_persona_raw = str(PAID_PERSONA_LIMIT)
 
-text_raw = (
-    f"упс! 😕 лимит сообщений ({count_raw}) на сегодня достигнут.\n\n"
-    f"✨ хочешь большего? ✨\n"
-    f"подписка за {price_raw} {currency_raw}/мес дает:\n"
-    f"✅ до {paid_limit_raw} сообщений в день\n"
-    f"✅ до {paid_persona_raw} личностей\n"
-    f"✅ полная настройка поведения и настроений\n\n" # Обновлен текст
-    f"👇 жми /subscribe или кнопку ниже!"
-)
-text_to_send = escape_markdown_v2(text_raw)
+        text_raw = (
+            f"упс! 😕 лимит сообщений ({count_raw}) на сегодня достигнут.\n\n"
+            f"✨ хочешь большего? ✨\n"
+            f"подписка за {price_raw} {currency_raw}/мес дает:\n"
+            f"✅ до {paid_limit_raw} сообщений в день\n"
+            f"✅ до {paid_persona_raw} личностей\n"
+            f"✅ полная настройка поведения и настроений\n\n" # Обновлен текст
+            f"👇 жми /subscribe или кнопку ниже!"
+        )
+        text_to_send = escape_markdown_v2(text_raw)
 
-keyboard = [[InlineKeyboardButton("🚀 получить подписку!", callback_data="subscribe_info")]]
-reply_markup = InlineKeyboardMarkup(keyboard)
+        keyboard = [[InlineKeyboardButton("🚀 получить подписку!", callback_data="subscribe_info")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
 
-target_chat_id = None
-try:
-    target_chat_id = update.effective_chat.id if update.effective_chat else user.telegram_id
-    if target_chat_id:
-         await context.bot.send_message(target_chat_id, text=text_to_send, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
-    else:
-         logger.warning(f"Could not send limit exceeded message to user {user.telegram_id}: no effective chat.")
-except BadRequest as e:
-     logger.error(f"Failed sending limit message (BadRequest): {e} - Text Raw: '{text_raw[:100]}...' Escaped: '{text_to_send[:100]}...'")
-     try:
-          if target_chat_id:
-              await context.bot.send_message(target_chat_id, text_raw, reply_markup=reply_markup, parse_mode=None)
+        target_chat_id = None
+        try:
+            target_chat_id = update.effective_chat.id if update.effective_chat else user.telegram_id
+            if not target_chat_id:
+                raise ValueError(f"No valid chat ID found for user {user.telegram_id}")
 
-
-# Остальная часть кода с лимитами и сообщениями о подписке
-paid_limit_raw = str(PAID_DAILY_MESSAGE_LIMIT)
-paid_persona_raw = str(PAID_PERSONA_LIMIT)
-
-text_raw = (
-    f"упс! 😕 лимит сообщений ({count_raw}) на сегодня достигнут.\n\n"
-    f"✨ хочешь большего? ✨\n"
-    f"подписка за {price_raw} {currency_raw}/мес дает:\n"
-    f"✅ до {paid_limit_raw} сообщений в день\n"
-    f"✅ до {paid_persona_raw} личностей\n"
-    f"✅ полная настройка поведения и настроений\n\n" # Обновлен текст
-    f"👇 жми /subscribe или кнопку ниже!"
-)
-text_to_send = escape_markdown_v2(text_raw)
-
-keyboard = [[InlineKeyboardButton("🚀 получить подписку!", callback_data="subscribe_info")]]
-reply_markup = InlineKeyboardMarkup(keyboard)
-
-target_chat_id = None
-try:
-    target_chat_id = update.effective_chat.id if update.effective_chat else user.telegram_id
-    if target_chat_id:
-         await context.bot.send_message(target_chat_id, text=text_to_send, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
-    else:
-         logger.warning(f"Could not send limit exceeded message to user {user.telegram_id}: no effective chat.")
-except BadRequest as e:
-     logger.error(f"Failed sending limit message (BadRequest): {e} - Text Raw: '{text_raw[:100]}...' Escaped: '{text_to_send[:100]}...'")
-     try:
-          if target_chat_id:
-              await context.bot.send_message(target_chat_id, text_raw, reply_markup=reply_markup, parse_mode=None)
-         except Exception as final_e:
-              logger.error(f"Failed sending limit message even plain: {final_e}")
+            logger.debug(f"Attempting to send limit message to chat {target_chat_id}")
+            
+            # Попытка отправить сначала с Markdown
+            try:
+                logger.debug(f"Attempting to send limit message (MD) to {target_chat_id}")
+                await context.bot.send_message(
+                    target_chat_id,
+                    text=text_to_send,
+                    reply_markup=reply_markup,
+                    parse_mode=ParseMode.MARKDOWN_V2
+                )
+                logger.info(f"Successfully sent limit message (MD) to {target_chat_id}")
+            except BadRequest as md_e:
+                logger.error(f"Markdown send failed: {md_e}")
+                logger.debug(f"Text (MD): {text_to_send[:100]}...")
+                
+                # Если Markdown не прошел, пробуем без него
+                try:
+                    logger.debug(f"Attempting to send limit message (Plain) to {target_chat_id}")
+                    await context.bot.send_message(
+                        target_chat_id,
+                        text=text_raw,
+                        reply_markup=reply_markup,
+                        parse_mode=None
+                    )
+                    logger.info(f"Successfully sent limit message (Plain) to {target_chat_id}")
+                except Exception as plain_e:
+                    logger.error(f"Plain text send failed: {plain_e}")
+                    logger.debug(f"Text (Plain): {text_raw[:100]}...")
+            except Exception as send_e:
+                logger.error(f"Unexpected error during message send: {send_e}")
+        except ValueError as ve:
+            logger.error(f"Value error: {ve}")
+        except Exception as outer_e:
+            logger.error(f"Failed to send limit exceeded message to user {user.telegram_id}: {outer_e}")
     except Exception as e:
-        logger.error(f"Failed to send limit exceeded message to user {user.telegram_id}: {e}")
+        logger.error(f"Critical error in send_limit_exceeded_message: {e}")
+    f"✅ полная настройка поведения и настроений\n\n" # Обновлен текст
+    f"👇 жми /subscribe или кнопку ниже!"
+)
+text_to_send = escape_markdown_v2(text_raw)
+
+keyboard = [[InlineKeyboardButton("🚀 получить подписку!", callback_data="subscribe_info")]]
+reply_markup = InlineKeyboardMarkup(keyboard)
+
+target_chat_id = None
+try:
 
 
 # --- Message Handlers ---
