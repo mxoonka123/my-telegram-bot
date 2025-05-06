@@ -47,7 +47,13 @@ from db import (
     User, PersonaConfig, BotInstance, ChatBotInstance, ChatContext
 )
 from persona import Persona
-from utils import postprocess_response, extract_gif_links, get_time_info, escape_markdown_v2
+from utils import (
+    postprocess_response, 
+    extract_gif_links,
+    get_time_info,
+    escape_markdown_v2,
+    TELEGRAM_MAX_LEN
+)
 
 logger = logging.getLogger(__name__)
 
