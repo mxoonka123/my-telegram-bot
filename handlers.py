@@ -686,22 +686,15 @@ async def send_limit_exceeded_message(update: Update, context: ContextTypes.DEFA
     except Exception as e:
         logger.error(f"Critical error in send_limit_exceeded_message: {e}")
     f"✅ полная настройка поведения и настроений\n\n" # Обновлен текст
-    f"👇 жми /subscribe или кнопку ниже!"
-    text_to_send = escape_markdown_v2(text_raw)
 
-    keyboard = [[InlineKeyboardButton("🚀 получить подписку!", callback_data="subscribe_info")]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
-    target_chat_id = None
+# --- Message Handlers ---
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handles incoming text messages."""
     try:
-        # --- Message Handlers ---
-        async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-            """Handles incoming text messages."""
-            try:
         if not update.message or not (update.message.text or update.message.caption):
             logger.debug("handle_message: Exiting - No message or text/caption.")
             return
-        
+
         chat_id_str = str(update.effective_chat.id)
         user_id = update.effective_user.id
         username = update.effective_user.username or f"user_{user_id}"
@@ -711,6 +704,8 @@ async def send_limit_exceeded_message(update: Update, context: ContextTypes.DEFA
         if not message_text:
             logger.debug(f"handle_message: Exiting - Empty message text from user {user_id} in chat {chat_id_str}.")
             return
+
+        # Остальная логика функции здесь...
 
         logger.info(f"MSG < User {user_id} ({username}) in Chat {chat_id_str} (MsgID: {message_id}): '{message_text[:100]}'")
 
