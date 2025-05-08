@@ -1,11 +1,13 @@
 import logging
-import httpx
-import random
-import asyncio
-import re
-import uuid
 import json
+import logging
+import os
+import random
+import re
+import time
+import traceback
 import urllib.parse
+import uuid
 from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Any, Optional, Union, Tuple
 
@@ -501,8 +503,20 @@ async def send_to_langdock(system_prompt: str, messages: List[Dict[str, str]]) -
     # 3. Получение разделенных частей текста из utils.py
     # Получаем настройку max_messages из конфига персоны
     max_messages_setting = persona.config.max_response_messages if persona.config else 0
+    
+    # Преобразуем числовые значения в фактическое количество сообщений
+    actual_max_messages = 3  # значение по умолчанию
+    if max_messages_setting == 2:  # few
+        actual_max_messages = 2
+    elif max_messages_setting == 3:  # normal
+        actual_max_messages = 3
+    elif max_messages_setting == 6:  # many
+        actual_max_messages = 6
+    elif max_messages_setting == 0:  # random
+        actual_max_messages = random.randint(2, 6)
+    
     # postprocess_response сам обработает 0 и >10
-    text_parts_to_send = postprocess_response(text_without_gifs, max_messages_setting)
+    text_parts_to_send = postprocess_response(text_without_gifs, actual_max_messages)
     logger.info(f"postprocess_response returned {len(text_parts_to_send)} parts to send.")
 
 
