@@ -798,6 +798,20 @@ async def process_and_send_response(
                     logger.warning(f"process_and_send_response [JSON]: Greeting removal left part 1 empty. Removing part.")
                     text_parts_to_send.pop(0)
 
+        # 6. ЖЕСТКОЕ ОГРАНИЧЕНИЕ для режима "поменьше сообщений" (few)
+        # Проверяем настройки персоны
+        max_messages_setting = 0
+        if persona and persona.config:
+            max_messages_setting = persona.config.max_response_messages
+            
+        logger.info(f"ЖЕСТКОЕ ОГРАНИЧЕНИЕ: max_messages_setting = {max_messages_setting}")
+        
+        # Если установлен режим "поменьше сообщений" (few), оставляем только первое сообщение
+        if max_messages_setting == 1 and len(text_parts_to_send) > 1:
+            logger.info(f"ЖЕСТКОЕ ОГРАНИЧЕНИЕ: Ограничиваем количество сообщений с {len(text_parts_to_send)} до 1 для режима 'few'")
+            text_parts_to_send = text_parts_to_send[:1]
+            logger.info(f"ЖЕСТКОЕ ОГРАНИЧЕНИЕ: После ограничения text_parts_to_send = {text_parts_to_send}")
+        
         # 6. Последовательная отправка
         logger.debug(f"process_and_send_response [JSON]: Step 4 - Sequentially sending. GIFs: {len(gif_links_to_send)}, Text Parts: {len(text_parts_to_send)}")
         first_message_sent = False
@@ -969,6 +983,7 @@ async def send_limit_exceeded_message(update: Update, context: ContextTypes.DEFA
 # --- Message Handlers ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handles incoming text messages."""
+    logger.info("!!! VERSION CHECK: Running with FORCED message limit for 'few' mode (2025-05-08) !!!")
     try:
         if not update.message or not (update.message.text or update.message.caption):
             logger.debug("handle_message: Exiting - No message or text/caption.")
