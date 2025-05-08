@@ -507,8 +507,8 @@ async def send_to_langdock(system_prompt: str, messages: List[Dict[str, str]]) -
     
     # Преобразуем числовые значения в фактическое количество сообщений
     actual_max_messages = 3  # значение по умолчанию
-    if max_messages_setting == 2:  # few
-        actual_max_messages = 2
+    if max_messages_setting == 1:  # few
+        actual_max_messages = 1
     elif max_messages_setting == 3:  # normal
         actual_max_messages = 3
     elif max_messages_setting == 6:  # many
@@ -520,10 +520,10 @@ async def send_to_langdock(system_prompt: str, messages: List[Dict[str, str]]) -
     text_parts_to_send = postprocess_response(text_without_gifs, actual_max_messages)
     
     # Дополнительное ограничение для режима "Поменьше сообщений"
-    if max_messages_setting == 2 and len(text_parts_to_send) > 2:  # few
-        logger.info(f"Limiting messages from {len(text_parts_to_send)} to 2 for 'few' mode")
-        # Если больше 2 сообщений, оставляем только первые 2
-        text_parts_to_send = text_parts_to_send[:2]
+    if max_messages_setting == 1 and len(text_parts_to_send) > 1:  # few
+        logger.info(f"Limiting messages from {len(text_parts_to_send)} to 1 for 'few' mode")
+        # Если больше 1 сообщения, оставляем только первое
+        text_parts_to_send = text_parts_to_send[:1]
     
     logger.info(f"postprocess_response returned {len(text_parts_to_send)} parts to send.")
 
