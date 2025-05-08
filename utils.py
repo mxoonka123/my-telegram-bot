@@ -6,16 +6,15 @@ import random
 
 # Константы для Telegram
 TELEGRAM_MAX_LEN = 4096  # Максимальная длина сообщения в Telegram
-MIN_SENSIBLE_LEN = 100   # Минимальная длина для разумного сообщения
+MIN_SENSIBLE_LEN = 50   # Минимальная длина для разумного сообщения
 import logging
 import math
 
 logger = logging.getLogger(__name__)
 
 # Constants for easier configuration
-TELEGRAM_MAX_LEN = 4096
-# Minimum sensible length for a chunk when doing aggressive fallback splitting
-MIN_SENSIBLE_LEN = 50
+# TELEGRAM_MAX_LEN = 4096
+# MIN_SENSIBLE_LEN = 50
 # Transition words (lowercase) indicating potential topic shifts
 TRANSITION_WORDS = [
     "однако", "тем не менее", "зато", "впрочем",
@@ -107,150 +106,139 @@ def extract_gif_links(text: str) -> List[str]:
 def _split_aggressively(text: str, max_len: int) -> List[str]:
     """Fallback: Aggressively splits text by words if necessary."""
     logger.debug(f"-> Applying AGGRESSIVE fallback splitting to text (len={len(text)}).")
-    parts = []
-    remaining_text = text.strip()
-    while remaining_text:
-        if len(remaining_text) <= max_len:
-            parts.append(remaining_text)
-            break
-        # Find the last space within the limit
-        cut_pos = remaining_text.rfind(' ', 0, max_len)
-        # If no space found or space is too early, force cut at max_len
-        if cut_pos <= MIN_SENSIBLE_LEN:
-            cut_pos = max_len
-        part_to_add = remaining_text[:cut_pos].strip()
-        if part_to_add:
-            parts.append(part_to_add)
-        remaining_text = remaining_text[cut_pos:].strip()
-    return [p for p in parts if p]
+    # Новый алгоритм: разбиваем по словам без разрыва слова
+    words = text.strip().split()
+    parts: List[str] = []
+    current: List[str] = []
+
+    for w in words:
+        # Если текущее слово само длиннее max_len, вынужденно делим его по символам
+        if len(w) > max_len:
+            if current:
+                parts.append(' '.join(current))
+                current = []
+            # Делим длинное слово кусками
+            for i in range(0, len(w), max_len):
+                parts.append(w[i : i + max_len])
+            continue
+
+        tentative_len = len(' '.join(current + [w])) if current else len(w)
+        if tentative_len <= max_len:
+            current.append(w)
+        else:
+            # Сбрасываем текущий буфер
+            parts.append(' '.join(current))
+            current = [w]
+
+    if current:
+        parts.append(' '.join(current))
+
+    return parts
+
+# Expose _split_aggressively globally so that other modules can call it without explicit import
+import builtins as _builtins_module  # Local alias
+_builtins_module._split_aggressively = _split_aggressively
 
 # --- V13: Improved Splitting ---
-def postprocess_response(response: str, max_messages: int) -> List[str]:
+def postprocess_response(response: str, max_messages: int, message_volume: str = 'normal') -> List[str]:
     """
     Splits text aiming for approx. max_messages (v13).
     Prioritizes natural breaks, then splits longer parts further.
+    Adjusts split based on message_volume: 'short', 'normal', 'long', or 'random'.
     """
-    if not response or not isinstance(response, str):
-        return []
-
-    response = response.strip()
     if not response:
         return []
 
-    logger.debug(f"--- Postprocessing response (Natural Split v13) ---")
-    logger.debug(f"Input text length: {len(response)}, Target max_messages: {max_messages}")
+    # Adjust max_messages based on volume if random is selected
+    if message_volume == 'random':
+        message_volume = random.choice(['short', 'normal', 'long'])
+    if message_volume == 'short':
+        max_len = TELEGRAM_MAX_LEN // 2
+    elif message_volume == 'long':
+        max_len = TELEGRAM_MAX_LEN
+    else:  # normal
+        max_len = TELEGRAM_MAX_LEN * 3 // 4
 
-    # --- Sanitize max_messages ---
-    if not isinstance(max_messages, int) or max_messages <= 0:
-        max_messages = 3 # Default fallback
-        logger.warning(f"Invalid max_messages value, defaulting to {max_messages}")
-    hard_max_messages = 10
-    if max_messages > hard_max_messages:
-        logger.warning(f"User requested max_messages={max_messages}, capping at {hard_max_messages} for stability.")
-        max_messages = hard_max_messages
-    # --- End Sanitize ---
+    logger.info(f"Processing response for max_messages={max_messages}, volume={message_volume}, max_len={max_len}")
+    response = response.strip()
+    if len(response) <= max_len:
+        logger.info(f"Response fits in one message (len={len(response)}).")
+        return [response]
 
-    # 1. Initial Natural Split (Paragraphs then Sentences)
-    parts = [p.strip() for p in re.split(r'\n\s*\n', response) if p.strip()]
-    logger.debug(f"Split by paragraphs resulted in {len(parts)} parts.")
+    # 1. Initial split on natural boundaries (paragraphs, transitions)
+    parts = []
+    current_part = ""
+    for line in response.splitlines():
+        line = line.strip()
+        if not line:  # Empty line = paragraph break
+            if current_part:
+                parts.append(current_part.strip())
+                current_part = ""
+            continue
+        current_part += line + " "
+    if current_part:
+        parts.append(current_part.strip())
 
-    refined_parts = []
-    for part in parts:
-        if len(part) <= TELEGRAM_MAX_LEN:
-            refined_parts.append(part)
-        else:
-            logger.debug(f"Part exceeds max length ({len(part)} > {TELEGRAM_MAX_LEN}), splitting by sentence.")
-            sentences = re.split(r'(?<=[.!?…])\s+', part)
-            refined_parts.extend([s.strip() for s in sentences if s.strip()])
-    parts = refined_parts
-    logger.debug(f"After sentence splitting long parts, total parts: {len(parts)}")
+    # If still one big part, try splitting by transition words or sentence ends
+    if len(parts) == 1 and len(parts[0]) > max_len:
+        text = parts[0]
+        parts = []
+        current_part = ""
+        last_break = 0
+        matches = list(re.finditer(TRANSITION_PATTERN, text))
+        if not matches and ". " in text:
+            matches = list(re.finditer(r"\.\s+", text))
+        if not matches and "! " in text:
+            matches = list(re.finditer(r"!\s+", text))
+        if not matches and "? " in text:
+            matches = list(re.finditer(r"\?\s+", text))
+        if not matches and "… " in text:
+            matches = list(re.finditer(r"…\s+", text))
+        for m in matches:
+            pos = m.start()
+            if pos - last_break >= MIN_SENSIBLE_LEN and len(current_part) <= max_len:
+                if current_part:
+                    parts.append(current_part.strip())
+                current_part = text[last_break:pos].strip()
+                last_break = pos
+        if current_part or last_break < len(text):
+            current_part += " " + text[last_break:]
+            if len(current_part) > max_len:
+                subparts = _split_aggressively(current_part, max_len)
+                parts.extend(subparts)
+            elif current_part.strip():
+                parts.append(current_part.strip())
 
-    # 2. Iteratively split longest parts if count < max_messages
-    min_len_for_further_split = 150 # Не делим слишком короткие куски
-
+    # 2. Split long parts further if under max_messages
     while len(parts) < max_messages:
-        # Find the longest part eligible for splitting
         longest_part_idx = -1
-        max_len_found = min_len_for_further_split
+        max_part_len = 0
         for i, part in enumerate(parts):
-            if len(part) > max_len_found:
-                max_len_found = len(part)
+            if len(part) > max_len and len(part) > max_part_len:
                 longest_part_idx = i
-
+                max_part_len = len(part)
         if longest_part_idx == -1:
-            # No more parts long enough to split further
-            logger.debug(f"No more parts longer than {min_len_for_further_split} found to split towards max_messages ({len(parts)}/{max_messages}).")
-            break
-
-        part_to_split = parts[longest_part_idx]
-        logger.debug(f"Attempting to split longest part (idx {longest_part_idx}, len {len(part_to_split)}) to increase part count ({len(parts)} < {max_messages}).")
-
-        # Attempt to split the part naturally (e.g., near the middle)
-        split_point = -1
-        target_split_len = len(part_to_split) // 2 # Aim for middle
-
-        # Try splitting by sentence near the middle
-        best_sentence_split = -1
-        min_sentence_diff = float('inf')
-        for match in re.finditer(r'(?<=[.!?…])\s+', part_to_split):
-            pos = match.start()
-            diff = abs(pos - target_split_len)
-            if diff < min_sentence_diff and pos > MIN_SENSIBLE_LEN and len(part_to_split) - pos > MIN_SENSIBLE_LEN:
-                 min_sentence_diff = diff
-                 best_sentence_split = match.end() # Split *after* the space
-
-        if best_sentence_split != -1:
-            split_point = best_sentence_split
-            logger.debug(f"Found sentence split point at {split_point}.")
-        else:
-            # Try splitting by transition word near the middle
-            best_transition_split = -1
-            min_transition_diff = float('inf')
-            for match in TRANSITION_PATTERN.finditer(part_to_split):
-                 # Split before the transition word
-                 pos = match.start(2) # Start of the transition word itself
-                 diff = abs(pos - target_split_len)
-                 # Ensure split doesn't create tiny parts
-                 if diff < min_transition_diff and pos > MIN_SENSIBLE_LEN and len(part_to_split) - pos > MIN_SENSIBLE_LEN:
-                      # Find the start of the line/sentence containing the match for clean split
-                      start_of_context = part_to_split.rfind('\n', 0, pos) + 1
-                      if start_of_context > 0 or pos < 10: # Avoid splitting right at the beginning if no newline
-                          min_transition_diff = diff
-                          best_transition_split = pos
-            
-            if best_transition_split != -1:
-                split_point = best_transition_split
-                logger.debug(f"Found transition word split point at {split_point}.")
-            else:
-                # Fallback: Split by last space before the midpoint (or slightly after if needed)
-                split_area_end = min(target_split_len + 50, len(part_to_split) - MIN_SENSIBLE_LEN) # Look slightly past midpoint
-                fallback_split = part_to_split.rfind(' ', MIN_SENSIBLE_LEN, split_area_end)
-                if fallback_split != -1:
-                     split_point = fallback_split + 1 # Split after the space
-                     logger.debug(f"Using fallback space split point at {split_point}.")
-
-        if split_point != -1:
-            part1 = part_to_split[:split_point].strip()
-            part2 = part_to_split[split_point:].strip()
-            if part1 and part2: # Ensure both parts are non-empty
-                parts = parts[:longest_part_idx] + [part1, part2] + parts[longest_part_idx+1:]
-                logger.debug(f"Split successful. New part count: {len(parts)}.")
-            else:
-                 logger.warning(f"Splitting part resulted in empty part(s). Aborting split for this part.")
-                 # Mark this part as unsplittable for this iteration by making it short temp.
-                 parts[longest_part_idx] = " " * (MIN_SENSIBLE_LEN -1) 
+            break  # No more long parts to split
+        long_part = parts[longest_part_idx]
+        split_point = len(long_part) // 2
+        space_pos = long_part.rfind(" ", 0, split_point + 50)
+        if space_pos == -1 or space_pos < MIN_SENSIBLE_LEN or len(long_part) - space_pos < MIN_SENSIBLE_LEN:
+            space_pos = long_part.find(" ", split_point - 50)
+        if space_pos != -1 and space_pos >= MIN_SENSIBLE_LEN and len(long_part) - space_pos >= MIN_SENSIBLE_LEN:
+            part1 = long_part[:space_pos].strip()
+            part2 = long_part[space_pos:].strip()
+            parts[longest_part_idx] = part1
+            parts.insert(longest_part_idx + 1, part2)
         else:
             logger.warning(f"Could not find a suitable split point for part idx {longest_part_idx}.")
-            # Mark as unsplittable for this iteration
+            # Mark this part as unsplittable for this iteration by making it short temp.
             parts[longest_part_idx] = " " * (MIN_SENSIBLE_LEN -1) 
-
-    # 3. Combine parts ONLY if OVER max_messages limit (less likely now)
-    if len(parts) > max_messages:
+    else:
         logger.warning(f"Splitting resulted in {len(parts)} parts, exceeding limit {max_messages}. Combining first parts.")
         while len(parts) > max_messages:
             # Combine part 0 and 1
             combined = parts[0] + "\n\n" + parts[1] # Use double newline when combining
-            if len(combined) <= TELEGRAM_MAX_LEN:
+            if len(combined) <= max_len:
                 parts[0] = combined
                 del parts[1]
             else:
@@ -261,9 +249,9 @@ def postprocess_response(response: str, max_messages: int) -> List[str]:
     # 4. Final length check and aggressive split if necessary
     final_parts = []
     for part in parts:
-        if len(part) > TELEGRAM_MAX_LEN:
+        if len(part) > max_len:
             logger.error(f"Part still exceeds max length ({len(part)}) after all processing! Applying final aggressive split.")
-            final_parts.extend(_split_aggressively(part, TELEGRAM_MAX_LEN))
+            final_parts.extend(_split_aggressively(part, max_len))
         elif part.strip(): # Add non-empty parts
             final_parts.append(part.strip()) # Ensure parts are stripped
 
@@ -271,6 +259,39 @@ def postprocess_response(response: str, max_messages: int) -> List[str]:
     if len(final_parts) > max_messages:
         logger.warning(f"Aggressive splitting during final check increased parts ({len(final_parts)}) beyond limit ({max_messages}). Truncating.")
         final_parts = final_parts[:max_messages]
+    elif len(final_parts) < max_messages:
+        logger.info(f"Final parts count ({len(final_parts)}) is less than requested ({max_messages}). Attempting additional splits.")
+        max_attempts = 20  # Prevent potential infinite loops
+        attempts = 0
+        while len(final_parts) < max_messages and attempts < max_attempts:
+            # Pick the longest current part
+            idx_longest = max(range(len(final_parts)), key=lambda i: len(final_parts[i]))
+            longest_part = final_parts[idx_longest]
+
+            # Stop if the part is too short to split sensibly
+            if len(longest_part) <= MIN_SENSIBLE_LEN * 2:
+                logger.debug("Longest remaining part too short to split further. Stopping split loop.")
+                break
+
+            # Try to split roughly in half using aggressive splitter
+            candidate_splits = _split_aggressively(longest_part, max(len(longest_part) // 2, MIN_SENSIBLE_LEN))
+            if len(candidate_splits) < 2:
+                logger.debug("Aggressive split produced fewer than 2 parts. Stopping split loop.")
+                break
+
+            new_part1 = candidate_splits[0].strip()
+            new_part2 = " ".join(candidate_splits[1:]).strip()
+
+            if not new_part1 or not new_part2:
+                logger.debug("Split produced empty segment(s). Stopping split loop.")
+                break
+
+            # Replace the longest part with its two new segments
+            final_parts = final_parts[:idx_longest] + [new_part1, new_part2] + final_parts[idx_longest + 1:]
+            attempts += 1
+
+        if len(final_parts) < max_messages:
+            logger.info(f"Unable to reach requested max_messages after extra splits. Final count: {len(final_parts)}.")
 
     # Log final results
     logger.info(f"Final processed messages count: {len(final_parts)} (Target: {max_messages})")

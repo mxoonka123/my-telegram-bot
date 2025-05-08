@@ -21,13 +21,14 @@ from telegram.ext import (
 from telegram.constants import ParseMode, ChatMemberStatus
 from telegram.error import TelegramError, Forbidden, BadRequest
 
-from telegraph_api import Telegraph, exceptions as telegraph_exceptions
+from telegraph import Telegraph, exceptions as telegraph_exceptions
 
 import config
 import db # db.py should be fixed now (no circular import)
 import handlers # handlers.py теперь содержит новые состояния
 import tasks
 from utils import escape_markdown_v2
+# Patch for max_response_messages has been integrated into handlers
 
 flask_app = Flask(__name__)
 flask_logger = logging.getLogger('flask_webhook')
@@ -488,6 +489,10 @@ def main() -> None:
             handlers.EDIT_MAX_MESSAGES: [
                 CallbackQueryHandler(handlers.edit_max_messages_received, pattern='^set_max_msgs_'), # Обработка выбора
                 CallbackQueryHandler(handlers.edit_wizard_menu_handler, pattern='^back_to_wizard_menu$') # Кнопка Назад
+            ],
+            # Add the state for handling message volume selection
+            handlers.EDIT_MESSAGE_VOLUME: [
+                CallbackQueryHandler(handlers.edit_message_volume_received, pattern='^set_volume_|^back_to_wizard_menu$') # Handle volume selection and back button
             ]
         },
         fallbacks=[ # Общие точки выхода из диалога

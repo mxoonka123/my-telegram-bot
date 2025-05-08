@@ -33,6 +33,7 @@ class Persona:
         self.group_reply_preference = self.config.group_reply_preference or "mentioned_or_contextual"
         self.media_reaction = self.config.media_reaction or "text_only"
         self.max_response_messages = self.config.max_response_messages or 3
+        self.message_volume = self.config.message_volume or "normal"
 
         # Load moods safely
         loaded_moods = {}
