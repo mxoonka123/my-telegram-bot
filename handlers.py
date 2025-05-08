@@ -704,7 +704,13 @@ async def process_and_send_response(
                     text_parts_to_send = [part.strip() for part in parsed_data if part.strip()]
                     if text_parts_to_send:
                          is_json_parsed = True
-                         logger.info(f"process_and_send_response [JSON]: Successfully parsed JSON response into {len(text_parts_to_send)} part(s).")
+                         # Применяем ограничение max_response_messages к JSON-ответу
+                         max_messages_setting = persona.config.max_response_messages if persona.config else 0
+                         if max_messages_setting == 1:  # few
+                             if len(text_parts_to_send) > 1:
+                                 logger.info(f"Limiting JSON response from {len(text_parts_to_send)} to 1 message for 'few' mode")
+                                 text_parts_to_send = text_parts_to_send[:1]
+                         logger.info(f"process_and_send_response [JSON]: Successfully parsed JSON response into {len(text_parts_to_send)} part(s) after applying limits.")
                     else:
                          logger.warning("process_and_send_response [JSON]: Parsed JSON but result is empty list or list of empty strings.")
                 else:
