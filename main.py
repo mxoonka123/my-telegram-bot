@@ -26,6 +26,7 @@ from telegraph import Telegraph, exceptions as telegraph_exceptions
 import config
 import db # db.py should be fixed now (no circular import)
 import handlers # handlers.py теперь содержит новые состояния
+import message_limit_patch  # enforce strict message count limits
 import tasks
 from utils import escape_markdown_v2
 # Patch for max_response_messages has been integrated into handlers
