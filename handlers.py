@@ -528,6 +528,13 @@ async def send_to_langdock(system_prompt: str, messages: List[Dict[str, str]]) -
     logger.info(f"postprocess_response returned {len(text_parts_to_send)} parts to send.")
 
 
+    # --- ФИНАЛЬНОЕ ОГРАНИЧЕНИЕ ДЛЯ 'few' ---
+    logger.info(f"max_messages_setting for persona {persona.name}: {max_messages_setting}")
+    logger.info(f"text_parts_to_send BEFORE FINAL LIMIT: {text_parts_to_send}")
+    if max_messages_setting == 1 and len(text_parts_to_send) > 1:
+        logger.info(f"FINAL LIMIT: Limiting to 1 message for 'few' mode")
+        text_parts_to_send = text_parts_to_send[:1]
+    logger.info(f"text_parts_to_send AFTER FINAL LIMIT: {text_parts_to_send}")
     # 4. Последовательная отправка сообщений
     first_message_sent = False # Отвечаем только на первое сообщение (текст или гиф)
 
