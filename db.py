@@ -149,7 +149,8 @@ class PersonaConfig(Base):
 
     mood_prompts_json = Column(Text, default=lambda: json.dumps(DEFAULT_MOOD_PROMPTS, ensure_ascii=False, sort_keys=True))
     max_response_messages = Column(String(20), default="normal", nullable=False)
-    message_volume = Column(String(20), default="normal", nullable=False)  # short, normal, long, random
+    # Временно закомментировано, пока миграция не применена
+    # message_volume = Column(String(20), default="normal", nullable=False)  # short, normal, long, random
 
     system_prompt_template = Column(Text, nullable=False, default=DEFAULT_SYSTEM_PROMPT_TEMPLATE)
     should_respond_prompt_template = Column(Text, nullable=True, default=DEFAULT_SHOULD_RESPOND_TEMPLATE)

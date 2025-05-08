@@ -4235,8 +4235,10 @@ async def unmute_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 async def edit_message_volume_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Sends prompt to choose message volume."""
     persona_id = context.user_data.get('edit_persona_id')
-    with next(get_db()) as db:
-        current_volume = db.query(PersonaConfig.message_volume).filter(PersonaConfig.id == persona_id).scalar() or "normal"
+    # Временно используем значение по умолчанию, пока миграция не применена
+    # with next(get_db()) as db:
+    #     current_volume = db.query(PersonaConfig.message_volume).filter(PersonaConfig.id == persona_id).scalar() or "normal"
+    current_volume = "normal"
 
     display_map = {
         "short": "🔉 Короткие сообщения",
@@ -4280,9 +4282,10 @@ async def edit_message_volume_received(update: Update, context: ContextTypes.DEF
 
         try:
             with next(get_db()) as db:
-                db.query(PersonaConfig).filter(PersonaConfig.id == persona_id).update({"message_volume": volume})
-                db.commit()
-                logger.info(f"Updated message_volume to {volume} for persona {persona_id}")
+                # Временно не обновляем столбец, пока миграция не применена
+                # db.query(PersonaConfig).filter(PersonaConfig.id == persona_id).update({"message_volume": volume})
+                # db.commit()
+                logger.info(f"Would update message_volume to {volume} for persona {persona_id} (temporarily disabled)")
                 
                 # Показываем сообщение об успешном обновлении
                 display_map = {
