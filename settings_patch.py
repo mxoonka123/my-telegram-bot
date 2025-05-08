@@ -76,7 +76,50 @@ async def _patched_edit_max_messages_received(update: Update, context: ContextTy
             return await _h._show_edit_wizard_menu(update, context, persona)  # type: ignore[attr-defined]
     return EDIT_MAX_MESSAGES
 
+# Patch show_edit_wizard_menu to display qualitative max-messages labels
+_orig_show_wizard = _h._show_edit_wizard_menu  # type: ignore[attr-defined]
+
+async def _patched_show_edit_wizard_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, persona_config):  # type: ignore[override]
+    # First call original to build menu
+    result_state = await _orig_show_wizard(update, context, persona_config)
+
+    try:
+        # Determine desired label according to persona setting
+        val = persona_config.max_response_messages
+        if val == 1:
+            label = _display_map["few"]
+        elif val == 3:
+            label = _display_map["normal"]
+        elif val == 6:
+            label = _display_map["many"]
+        else:
+            label = _display_map["random"]
+
+        # Fetch last sent wizard menu message
+        msg = update.callback_query.message if update.callback_query else update.effective_message
+        if msg:
+            km = msg.reply_markup
+            if km and km.inline_keyboard:
+                new_kb = []
+                for row in km.inline_keyboard:
+                    new_row = []
+                    for btn in row:
+                        if btn.callback_data == "edit_wizard_max_msgs":
+                            # Replace text keeping prefix
+                            prefix = "🗨️ " if btn.text.startswith("🗨️") else ""
+                            new_text = f"{prefix}Макс. сообщ. ({label})"
+                            new_row.append(InlineKeyboardButton(new_text, callback_data=btn.callback_data))
+                        else:
+                            new_row.append(btn)
+                    new_kb.append(new_row)
+                await msg.edit_reply_markup(reply_markup=InlineKeyboardMarkup(new_kb))
+    except Exception as e:
+        _logger.warning("settings_patch: failed to patch wizard menu display: %s", e)
+
+    return result_state
+
 # Apply monkey patches
 _h.edit_max_messages_prompt = _patched_edit_max_messages_prompt  # type: ignore[attr-defined]
 _h.edit_max_messages_received = _patched_edit_max_messages_received  # type: ignore[attr-defined]
+_h._show_edit_wizard_menu = _patched_show_edit_wizard_menu  # type: ignore[attr-defined]
 _logger.info("settings_patch: patched max message settings UI and handler.")
