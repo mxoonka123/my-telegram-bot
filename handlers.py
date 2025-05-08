@@ -1,3 +1,4 @@
+import asyncio
 import httpx
 import json
 import logging
@@ -796,26 +797,38 @@ async def process_and_send_response(
         # Затем Текст
         if text_parts_to_send:
             for i, part_raw_send in enumerate(text_parts_to_send):
-                 # Проверка на пустую строку (на всякий случай)
-                 if not part_raw_send: continue
-                 # Обрезка, если часть все еще слишком длинная (актуально для fallback)
-                 if len(part_raw_send) > TELEGRAM_MAX_LEN:
-                      logger.warning(f"process_and_send_response [JSON]: Fallback Part {i+1} exceeds max length ({len(part_raw_send)}). Truncating.")
-                      part_raw_send = part_raw_send[:TELEGRAM_MAX_LEN - 3] + "..."
-                 
-                 # --- Отправка ---
-                 if chat_type in [ChatType.GROUP, ChatType.SUPERGROUP]:
-                    try: asyncio.create_task(context.bot.send_chat_action(chat_id=chat_id_str, action=ChatAction.TYPING))
-                    except Exception: pass
-                 
-                 await asyncio.sleep(random.uniform(0.8, 2.0)) # Пауза
+                # Проверка на пустую строку (на всякий случай)
+                if not part_raw_send:
+                    continue
+                # Обрезка, если часть все еще слишком длинная (актуально для fallback)
+                if len(part_raw_send) > TELEGRAM_MAX_LEN:
+                    logger.warning(f"process_and_send_response [JSON]: Fallback Part {i+1} exceeds max length ({len(part_raw_send)}). Truncating.")
+                    part_raw_send = part_raw_send[:TELEGRAM_MAX_LEN - 3] + "..."
 
-                 current_reply_id_text = reply_to_message_id if not first_message_sent else None
-                 escaped_part_send = escape_markdown_v2(part_raw_send)
-                 message_sent_successfully = False
-                 
-                 logger.info(f"process_and_send_response [JSON]: Attempting send part {i+1}/{len(text_parts_to_send)} (MDv2, ReplyTo: {current_reply_id_text}) to {chat_id_str}: '{escaped_part_send[:80]}...'")
-                 try:
+                # --- Отправка ---
+                if chat_type in [ChatType.GROUP, ChatType.SUPERGROUP]:
+                    try:
+                        asyncio.create_task(context.bot.send_chat_action(chat_id=chat_id_str, action=ChatAction.TYPING))
+                    except Exception as e:
+                        logger.warning(f"Failed to send chat action: {e}")
+
+                try:
+                    await asyncio.sleep(random.uniform(0.8, 2.0))  # Пауза
+                except Exception as e:
+                    logger.warning(f"Failed to sleep: {e}")
+
+                current_reply_id_text = reply_to_message_id if not first_message_sent else None
+                escaped_part_send = escape_markdown_v2(part_raw_send)
+                message_sent_successfully = False
+
+                logger.info(f"process_and_send_response [JSON]: Attempting send part {i+1}/{len(text_parts_to_send)} (MDv2, ReplyTo: {current_reply_id_text}) to {chat_id_str}: '{escaped_part_send[:80]}...'")
+                try:
+                    await context.bot.send_message(
+                        chat_id=chat_id_str, text=escaped_part_send, parse_mode=ParseMode.MARKDOWN_V2,
+                        reply_to_message_id=current_reply_id_text, read_timeout=30, write_timeout=30
+                    )
+                    message_sent_successfully = True
+                except BadRequest as e_md_send:
                      await context.bot.send_message(
                          chat_id=chat_id_str, text=escaped_part_send, parse_mode=ParseMode.MARKDOWN_V2,
                          reply_to_message_id=current_reply_id_text, read_timeout=30, write_timeout=30
