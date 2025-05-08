@@ -1082,7 +1082,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                         await update.message.reply_text(escape_markdown_v2("❌ ошибка при подготовке системного сообщения."), parse_mode=ParseMode.MARKDOWN_V2)
                         db_session.rollback()
                         return
-
+                    
+                    # Добавляем инструкцию о количестве сообщений в зависимости от настройки
+                    max_messages_setting = persona.max_response_messages
+                    if max_messages_setting == 6:  # many
+                        system_prompt += "\n\nВажно: Разбей свой ответ на 5-6 отдельных сообщений в формате JSON-массива. Каждое сообщение должно быть отдельной мыслью или частью ответа."
+                    elif max_messages_setting == 2:  # few
+                        system_prompt += "\n\nВажно: Разбей свой ответ на 1-2 отдельных сообщения в формате JSON-массива."
+                    elif max_messages_setting == 0:  # random
+                        system_prompt += "\n\nВажно: Разбей свой ответ на 3-5 отдельных сообщений в формате JSON-массива."
+                    
                     logger.info(f"handle_message: Sending request to Langdock for persona '{persona.name}' in chat {chat_id_str}.")
                     response_text = await send_to_langdock(system_prompt, context_for_ai)
 
