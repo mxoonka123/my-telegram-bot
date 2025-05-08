@@ -516,14 +516,20 @@ async def send_to_langdock(system_prompt: str, messages: List[Dict[str, str]]) -
     elif max_messages_setting == 0:  # random
         actual_max_messages = random.randint(2, 6)
     
+    logger.info(f"DEBUG: max_messages_setting = {max_messages_setting}, actual_max_messages = {actual_max_messages}")
+    
     # postprocess_response сам обработает 0 и >10
     text_parts_to_send = postprocess_response(text_without_gifs, actual_max_messages)
+    
+    logger.info(f"DEBUG: After postprocess_response, text_parts_to_send = {text_parts_to_send}, len = {len(text_parts_to_send)}")
     
     # Дополнительное ограничение для режима "Поменьше сообщений"
     if max_messages_setting == 1 and len(text_parts_to_send) > 1:  # few
         logger.info(f"Limiting messages from {len(text_parts_to_send)} to 1 for 'few' mode")
         # Если больше 1 сообщения, оставляем только первое
         text_parts_to_send = text_parts_to_send[:1]
+    
+    logger.info(f"DEBUG: Final text_parts_to_send = {text_parts_to_send}, len = {len(text_parts_to_send)}")
     
     logger.info(f"postprocess_response returned {len(text_parts_to_send)} parts to send.")
 
