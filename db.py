@@ -148,7 +148,8 @@ class PersonaConfig(Base):
     media_reaction = Column(Text, default="text_only", nullable=False)
 
     mood_prompts_json = Column(Text, default=lambda: json.dumps(DEFAULT_MOOD_PROMPTS, ensure_ascii=False, sort_keys=True))
-    max_response_messages = Column(Integer, default=3, nullable=False)
+    max_response_messages = Column(String(20), default="normal", nullable=False)
+    message_volume = Column(String(20), default="normal", nullable=False)  # short, normal, long, random
 
     system_prompt_template = Column(Text, nullable=False, default=DEFAULT_SYSTEM_PROMPT_TEMPLATE)
     should_respond_prompt_template = Column(Text, nullable=True, default=DEFAULT_SHOULD_RESPOND_TEMPLATE)
@@ -467,7 +468,8 @@ def create_persona_config(db: Session, owner_id: int, name: str, description: st
             group_reply_preference="mentioned_or_contextual",
             media_reaction="text_only",
             mood_prompts_json=default_moods,
-            max_response_messages=3,
+            max_response_messages="normal",
+            message_volume="normal",
             system_prompt_template=DEFAULT_SYSTEM_PROMPT_TEMPLATE,
             should_respond_prompt_template=DEFAULT_SHOULD_RESPOND_TEMPLATE
         )
