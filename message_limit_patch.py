@@ -7,6 +7,7 @@ once at application start-up (e.g. from main.py).
 from __future__ import annotations
 
 import logging
+import re as _re
 from typing import List
 
 import handlers as _handlers
@@ -48,18 +49,31 @@ async def _patched_process_and_send_response(update, context, chat_id, persona, 
 
         stripped = full_bot_response_text.lstrip() if isinstance(full_bot_response_text, str) else ""
         if stripped.startswith("["):
+            parsed_ok = False
             try:
                 data = _json.loads(stripped)
-                if isinstance(data, list) and all(isinstance(i, str) for i in data):
-                    if len(data) > allowed:
-                        _logger.info(
-                            "message_limit_patch: Truncating JSON array from %d to %d elements for persona %s.",
-                            len(data), allowed, getattr(persona, "name", "<unknown>"),
-                        )
-                        data = data[:allowed]
-                        full_bot_response_text = _json.dumps(data, ensure_ascii=False)
-            except Exception as e:
-                _logger.warning("message_limit_patch: failed JSON pre-trim: %s", e)
+                parsed_ok = True
+            except Exception:
+                # Try find first standalone JSON list in text
+                for m in _re.finditer(r"\[[\s\S]*?\]", stripped):
+                    candidate = m.group(0)
+                    try:
+                        data = _json.loads(candidate)
+                        stripped = candidate  # keep only first array
+                        parsed_ok = True
+                        break
+                    except Exception:
+                        continue
+            if parsed_ok and isinstance(data, list) and all(isinstance(i, str) for i in data):
+                if len(data) > allowed:
+                    _logger.info(
+                        "message_limit_patch: Truncating JSON array from %d to %d elements for persona %s.",
+                        len(data), allowed, getattr(persona, "name", "<unknown>"),
+                    )
+                    data = data[:allowed]
+                full_bot_response_text = _json.dumps(data, ensure_ascii=False)
+            else:
+                _logger.debug("message_limit_patch: no valid JSON array found for pre-trim.")
     except Exception as outer_e:
         _logger.error("message_limit_patch: unexpected error computing allowed count: %s", outer_e)
 
