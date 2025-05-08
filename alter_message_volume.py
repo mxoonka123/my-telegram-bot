@@ -2,7 +2,7 @@ import logging
 from sqlalchemy import create_engine, Column, String
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.exc import SQLAlchemyError
-
+import psycopg
 from config import DATABASE_URL
 from db import Base, PersonaConfig, engine
 
