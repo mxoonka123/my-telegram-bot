@@ -1087,7 +1087,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     if not system_prompt:
                         logger.error(f"handle_message: System prompt formatting failed for persona {persona.name} (ID: {persona.id}).")
                         await update.message.reply_text(escape_markdown_v2("❌ ошибка при подготовке системного сообщения."), parse_mode=ParseMode.MARKDOWN_V2)
-                        db_session.rollback()
+                        try:
+                            db_session.rollback()
+                            db_session.close()
+                        except Exception as rollback_err:
+                            logger.error(f"handle_message: ROLLBACK FAILED: {rollback_err}", exc_info=True)
                         return
                     
                     # Добавляем инструкцию о количестве сообщений в зависимости от настройки
@@ -1138,7 +1142,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                             logger.info(f"handle_message: Successfully processed message and committed changes for chat {chat_id_str}.")
                         except SQLAlchemyError as final_commit_err:
                             logger.error(f"handle_message: FINAL COMMIT FAILED: {final_commit_err}", exc_info=True)
-                            db_session.rollback()
+                            try:
+                                db_session.rollback()
+                                # Попытка очистить сессию после ошибки
+                                db_session.close()
+                            except Exception as rollback_err:
+                                logger.error(f"handle_message: ROLLBACK FAILED: {rollback_err}", exc_info=True)
                     else:
                         logger.debug("handle_message: No DB changes detected for final commit.")
 
@@ -1147,7 +1156,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             if update.effective_message:
                 try: await update.effective_message.reply_text("❌ Ошибка базы данных. Попробуйте позже.", parse_mode=None)
                 except Exception: pass
-            if db_session: db_session.rollback()
+            if db_session: 
+                try:
+                    db_session.rollback()
+                    # Попытка очистить сессию после ошибки
+                    db_session.close()
+                except Exception as rollback_err:
+                    logger.error(f"handle_message: ROLLBACK FAILED: {rollback_err}", exc_info=True)
         except TelegramError as e:
             logger.error(f"handle_message: TelegramError: {e}", exc_info=True)
         except Exception as e:
