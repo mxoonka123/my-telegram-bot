@@ -845,18 +845,20 @@ async def process_and_send_response(
                         try:
                             await context.bot.send_message(chat_id=chat_id_str, text=escaped_part_send, parse_mode=ParseMode.MARKDOWN_V2, reply_to_message_id=None, read_timeout=30, write_timeout=30)
                             message_sent_successfully = True
-                        except Exception as e_no_reply_send: logger.error(f"process_and_send_response [JSON]: Failed send part {i+1} w/o reply: {e_no_reply_send}", exc_info=True); break
+                        except Exception as e_no_reply_send:
+                            logger.error(f"process_and_send_response [JSON]: Failed send part {i+1} w/o reply: {e_no_reply_send}", exc_info=True)
+                            break
                     else:
                         logger.error(f"process_and_send_response [JSON]: Unhandled BadRequest sending part {i+1}: {e_md_send}", exc_info=True)
                         break
-                 except Exception as e_other_send:
-                     logger.error(f"process_and_send_response [JSON]: Unexpected error sending part {i+1}: {e_other_send}", exc_info=True)
-                     break
+                except Exception as e_other_send:
+                    logger.error(f"process_and_send_response [JSON]: Unexpected error sending part {i+1}: {e_other_send}", exc_info=True)
+                    break
 
-                 if message_sent_successfully:
+                if message_sent_successfully:
                     first_message_sent = True
                     logger.info(f"process_and_send_response [JSON]: Successfully sent part {i+1}/{len(text_parts_to_send)}.")
-                 else:
+                else:
                     logger.error(f"process_and_send_response [JSON]: Failed to send part {i+1}, stopping.")
                     break # Прерываем, если отправка не удалась
 
