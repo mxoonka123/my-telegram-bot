@@ -829,12 +829,6 @@ async def process_and_send_response(
                     )
                     message_sent_successfully = True
                 except BadRequest as e_md_send:
-                     await context.bot.send_message(
-                         chat_id=chat_id_str, text=escaped_part_send, parse_mode=ParseMode.MARKDOWN_V2,
-                         reply_to_message_id=current_reply_id_text, read_timeout=30, write_timeout=30
-                     )
-                     message_sent_successfully = True
-                 except BadRequest as e_md_send:
                     if "can't parse entities" in str(e_md_send).lower():
                         logger.error(f"process_and_send_response [JSON]: MDv2 parse failed part {i+1}. Retrying plain. Error: {e_md_send}")
                         try:
