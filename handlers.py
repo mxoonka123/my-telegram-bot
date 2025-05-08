@@ -4469,7 +4469,7 @@ async def edit_max_messages_received(update: Update, context: ContextTypes.DEFAU
                     logger.info(f"User {query.from_user.id} set max_response_messages for persona {persona_id} to '{new_value_str}'.")
                     # Преобразуем строковые значения в числовые
                     if new_value_str == "few":
-                        persona.max_response_messages = 2
+                        persona.max_response_messages = 1
                     elif new_value_str == "normal":
                         persona.max_response_messages = 3
                     elif new_value_str == "many":
