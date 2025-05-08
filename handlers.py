@@ -207,8 +207,8 @@ def is_admin(user_id: int) -> bool:
  EDIT_MOOD_CHOICE, EDIT_MOOD_NAME, EDIT_MOOD_PROMPT, DELETE_MOOD_CONFIRM,
  # Delete Persona Conversation State
  DELETE_PERSONA_CONFIRM,
- EDIT_MAX_MESSAGES # <-- Новый стейт
- ) = range(14) # Total 14 states
+ EDIT_MAX_MESSAGES, EDIT_MESSAGE_VOLUME # <-- New states
+ ) = range(15) # Total 15 states
 
 # --- Terms of Service Text ---
 # (Assuming TOS_TEXT_RAW and TOS_TEXT are defined as before)
@@ -297,7 +297,7 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
                 try:
                     await update.effective_message.reply_text("❌ произошла ошибка при форматировании ответа. пожалуйста, сообщите администратору.", parse_mode=None)
                 except Exception as send_err:
-                    logger.error(f"Failed to send plain text formatting error message: {send_err}")
+                    logger.error(f"Failed to send 'Markdown parse error' message: {send_err}")
             return
         elif "chat member status is required" in error_text:
              logger.warning(f"Error handler caught BadRequest likely related to missing channel membership check: {context.error}")
@@ -654,12 +654,17 @@ async def process_and_send_response(
                 add_message_to_context(db, persona.chat_instance.id, "assistant", raw_llm_response)
                 context_response_prepared = True
                 logger.debug(f"process_and_send_response [JSON]: Raw response added to context for CBI {persona.chat_instance.id}.")
-            except Exception as e_ctx:
-                logger.error(f"process_and_send_response [JSON]: Error adding raw response context: {e_ctx}", exc_info=True)
+            except SQLAlchemyError as e:
+                logger.error(f"DB Error preparing assistant response for context chat_instance {persona.chat_instance.id}: {e}", exc_info=True)
+                # Не прерываем отправку из-за ошибки контекста, но и не коммитим его
+                context_response_prepared = False
+            except Exception as e:
+                logger.error(f"Unexpected Error preparing assistant response for context chat_instance {persona.chat_instance.id}: {e}", exc_info=True)
                 context_response_prepared = False
         else:
-            logger.error("process_and_send_response [JSON]: Cannot add raw response context, persona.chat_instance is None.")
+            logger.error("Cannot add raw response context, chat_instance is None.")
             context_response_prepared = False
+
 
         # 2. Попытка распарсить JSON
         text_parts_to_send = []
@@ -961,7 +966,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 limit_state_updated = db_session.is_modified(owner_user)
                 
                 if not limit_ok:
-                    logger.info(f"handle_message: Owner {owner_user.telegram_id} exceeded daily message limit ({owner_user.daily_message_count}/{owner_user.message_limit}).")
+                    logger.info(f"Owner {owner_user.telegram_id} exceeded daily message limit ({owner_user.daily_message_count}/{owner_user.message_limit}).")
                     await send_limit_exceeded_message(update, context, owner_user)
                     if limit_state_updated:
                         try:
@@ -1184,7 +1189,7 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
                  db.rollback()
                  return
 
-            if persona.chat_instance and persona.chat_instance.is_muted:
+            if persona.chat_instance.is_muted:
                 logger.debug(f"Persona '{persona.name}' is muted in chat {chat_id_str}. Media saved to context, but ignoring response.")
                 db.commit()
                 return
@@ -1259,7 +1264,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await check_channel_subscription(update, context):
         await send_subscription_required_message(update, context)
         return
-    logger.debug(f"/start: Channel subscription check passed for user {user_id}.")
 
     await context.bot.send_chat_action(chat_id=chat_id_str, action=ChatAction.TYPING)
     reply_text_final = ""
@@ -1524,7 +1528,7 @@ async def mood(update: Update, context: ContextTypes.DEFAULT_TYPE, db: Optional[
     chat_id_str = str(message_or_callback_msg.chat.id)
     user = update.effective_user
     user_id = user.id
-    username = user.username or f"id_{user_id}"
+    username = user.username or f"user_{user_id}"
     logger.info(f"CMD /mood or Mood Action < User {user_id} ({username}) in Chat {chat_id_str}")
 
     if not is_callback:
@@ -1557,10 +1561,8 @@ async def mood(update: Update, context: ContextTypes.DEFAULT_TYPE, db: Optional[
             persona_info_tuple = get_persona_and_context_with_owner(chat_id_str, db_session)
             if not persona_info_tuple:
                 reply_target = update.callback_query.message if is_callback else message_or_callback_msg
-                try:
-                    if is_callback: await update.callback_query.answer("Нет активной личности", show_alert=True)
-                    await reply_target.reply_text(error_no_persona, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
-                except Exception as send_err: logger.error(f"Error sending 'no active persona' msg: {send_err}")
+                if is_callback: await update.callback_query.answer("Нет активной личности", show_alert=True)
+                await reply_target.reply_text(error_no_persona, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
                 logger.debug(f"No active persona for chat {chat_id_str}. Cannot set mood.")
                 if close_db_later: db_session.close()
                 return
@@ -1673,6 +1675,7 @@ async def mood(update: Update, context: ContextTypes.DEFAULT_TYPE, db: Optional[
                      logger.error(f"Error encoding mood name '{mood_name}' for callback: {encode_err}")
 
              reply_markup = InlineKeyboardMarkup(keyboard)
+
              current_mood_text = get_mood_for_chat_bot(db_session, chat_bot_instance.id)
              reply_text = ""
              reply_text_raw = ""
@@ -1894,10 +1897,6 @@ async def my_personas(update: Union[Update, CallbackQuery], context: ContextType
         message_target = message
     else:
         logger.error("my_personas handler called with invalid update type.")
-        return
-
-    if not user or not message_target:
-        logger.error("my_personas handler could not determine user or message target.")
         return
 
     user_id = user.id
@@ -2921,7 +2920,8 @@ async def _show_edit_wizard_menu(update: Update, context: ContextTypes.DEFAULT_T
         [InlineKeyboardButton(f"👥 Ответы в группе ({group_reply_map.get(group_reply, '?')})", callback_data="edit_wizard_group_reply")],
         [InlineKeyboardButton(f"🖼️ Реакция на медиа ({media_react_map.get(media_react, '?')})", callback_data="edit_wizard_media_reaction")],
         # End of full words change
-        [InlineKeyboardButton(f"🗨️ Макс. сообщ. ({max_msgs_display})", callback_data="edit_wizard_max_msgs")], # <-- Новая кнопка
+        [InlineKeyboardButton(f"🗨️ Макс. сообщ. ({max_msgs_display})", callback_data="edit_wizard_max_msgs")],
+        [InlineKeyboardButton(f"🔊 Объем сообщений", callback_data="edit_wizard_message_volume")],
         [InlineKeyboardButton(f"🎭 Настроения{star if not is_premium else ''}", callback_data="edit_wizard_moods")],
         [InlineKeyboardButton("✅ Завершить", callback_data="finish_edit")]
     ]
@@ -2983,6 +2983,8 @@ async def edit_wizard_menu_handler(update: Update, context: ContextTypes.DEFAULT
         return await edit_media_reaction_prompt(update, context)
     elif data == "edit_wizard_max_msgs":
         return await edit_max_messages_prompt(update, context)
+    elif data == "edit_wizard_message_volume":
+        return await edit_message_volume_prompt(update, context)
     elif data == "edit_wizard_moods":
         with next(get_db()) as db:
             owner = db.query(User).join(PersonaConfig).filter(PersonaConfig.id == persona_id).first()
@@ -4229,7 +4231,114 @@ async def unmute_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 # --- Новые функции для настройки макс. сообщений ---
 
+# --- Функции для настройки объема сообщений ---
+async def edit_message_volume_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Sends prompt to choose message volume."""
+    persona_id = context.user_data.get('edit_persona_id')
+    with next(get_db()) as db:
+        current_volume = db.query(PersonaConfig.message_volume).filter(PersonaConfig.id == persona_id).scalar() or "normal"
+
+    display_map = {
+        "short": "🔉 Короткие сообщения",
+        "normal": "🔊 Стандартный объем",
+        "long": "📝 Подробные сообщения",
+        "random": "🎲 Случайный объем"
+    }
+    current_display = display_map.get(current_volume, current_volume)
+
+    prompt_text = escape_markdown_v2(f"🔊 Выберите объем сообщений (текущий: {current_display}):")
+
+    keyboard = [
+        [InlineKeyboardButton(f"{'✅ ' if current_volume == 'short' else ''}{display_map['short']}", callback_data="set_volume_short")],
+        [InlineKeyboardButton(f"{'✅ ' if current_volume == 'normal' else ''}{display_map['normal']}", callback_data="set_volume_normal")],
+        [InlineKeyboardButton(f"{'✅ ' if current_volume == 'long' else ''}{display_map['long']}", callback_data="set_volume_long")],
+        [InlineKeyboardButton(f"{'✅ ' if current_volume == 'random' else ''}{display_map['random']}", callback_data="set_volume_random")],
+        [InlineKeyboardButton("⬅️ Назад", callback_data="back_to_wizard_menu")]
+    ]
+
+    await _send_prompt(update, context, prompt_text, InlineKeyboardMarkup(keyboard))
+    return EDIT_MESSAGE_VOLUME
+
+async def edit_message_volume_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Handles receiving the choice for message volume."""
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    persona_id = context.user_data.get('edit_persona_id')
+
+    if data == "back_to_wizard_menu":
+        with next(get_db()) as db:
+            persona = db.query(PersonaConfig).filter(PersonaConfig.id == persona_id).first()
+            return await _show_edit_wizard_menu(update, context, persona)
+
+    if data.startswith("set_volume_"):
+        volume = data.replace("set_volume_", "")
+        valid_volumes = ["short", "normal", "long", "random"]
+        if volume not in valid_volumes:
+            logger.warning(f"Invalid volume setting: {volume}")
+            return EDIT_MESSAGE_VOLUME
+
+        try:
+            with next(get_db()) as db:
+                db.query(PersonaConfig).filter(PersonaConfig.id == persona_id).update({"message_volume": volume})
+                db.commit()
+                logger.info(f"Updated message_volume to {volume} for persona {persona_id}")
+                
+                # Показываем сообщение об успешном обновлении
+                display_map = {
+                    "short": "🔉 Короткие сообщения",
+                    "normal": "🔊 Стандартный объем",
+                    "long": "📝 Подробные сообщения",
+                    "random": "🎲 Случайный объем"
+                }
+                display_value = display_map.get(volume, volume)
+                await query.edit_message_text(escape_markdown_v2(f"✅ Объем сообщений установлен: {display_value}"))
+                
+                # Return to wizard menu
+                persona = db.query(PersonaConfig).filter(PersonaConfig.id == persona_id).first()
+                return await _show_edit_wizard_menu(update, context, persona)
+        except Exception as e:
+            logger.error(f"Error setting message_volume for {persona_id}: {e}")
+            await query.edit_message_text(escape_markdown_v2("❌ Ошибка при сохранении настройки объема сообщений."))
+            return await _try_return_to_wizard_menu(update, context, query.from_user.id, persona_id)
+    else:
+        logger.warning(f"Unknown callback in edit_message_volume_received: {data}")
+        return EDIT_MESSAGE_VOLUME
+
+
 async def edit_max_messages_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    persona_id = context.user_data.get('edit_persona_id')
+    current_value = "normal" # Default
+    if persona_id:
+        with next(get_db()) as db:
+            config_value = db.query(PersonaConfig.max_response_messages).filter(PersonaConfig.id == persona_id).scalar()
+            if config_value:
+                current_value = config_value
+
+    display_map = {
+        "few": "🤏 Поменьше сообщений",
+        "normal": "💬 Стандартное количество",
+        "many": "📚 Побольше сообщений",
+        "random": "🎲 Случайное количество"
+    }
+    current_display = display_map.get(current_value, current_value)
+
+    prompt_text = escape_markdown_v2(f"🗨️ Выберите желаемое количество сообщений в ответе бота (текущее: {current_display}):")
+
+    keyboard = [
+        [
+            InlineKeyboardButton(f"{'✅ ' if current_value == 'few' else ''}{display_map['few']}", callback_data="set_max_msgs_few"),
+            InlineKeyboardButton(f"{'✅ ' if current_value == 'normal' else ''}{display_map['normal']}", callback_data="set_max_msgs_normal"),
+        ],
+        [
+            InlineKeyboardButton(f"{'✅ ' if current_value == 'many' else ''}{display_map['many']}", callback_data="set_max_msgs_many"),
+            InlineKeyboardButton(f"{'✅ ' if current_value == 'random' else ''}{display_map['random']}", callback_data="set_max_msgs_random"),
+        ],
+        [InlineKeyboardButton("⬅️ Назад", callback_data="back_to_wizard_menu")]
+    ]
+
+    await _send_prompt(update, context, prompt_text, InlineKeyboardMarkup(keyboard))
+    return EDIT_MAX_MESSAGES
     """Sends prompt to choose max messages."""
     persona_id = context.user_data.get('edit_persona_id')
     with next(get_db()) as db:
@@ -4259,6 +4368,51 @@ async def edit_max_messages_prompt(update: Update, context: ContextTypes.DEFAULT
     return EDIT_MAX_MESSAGES
 
 async def edit_max_messages_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    persona_id = context.user_data.get('edit_persona_id')
+
+    if data == "back_to_wizard_menu":
+        with next(get_db()) as db:
+            persona = db.query(PersonaConfig).filter(PersonaConfig.id == persona_id).first()
+            return await _show_edit_wizard_menu(update, context, persona)
+
+    if data.startswith("set_max_msgs_"):
+        new_value_str = data.replace("set_max_msgs_", "")
+        
+        allowed_values = ["few", "normal", "many", "random"]
+        if new_value_str not in allowed_values:
+            logger.error(f"Invalid value for max_response_messages: {new_value_str} from data '{data}'")
+            await query.edit_message_text(escape_markdown_v2("❌ Ошибка: Некорректное значение."))
+            return await _try_return_to_wizard_menu(update, context, query.from_user.id, persona_id)
+
+        try:
+            with next(get_db()) as db:
+                persona = db.query(PersonaConfig).filter(PersonaConfig.id == persona_id).first()
+                if persona:
+                    logger.info(f"User {query.from_user.id} set max_response_messages for persona {persona_id} to '{new_value_str}'.")
+                    persona.max_response_messages = new_value_str
+                    db.commit()
+                    
+                    display_map = {
+                        "few": "🤏 Поменьше сообщений", "normal": "💬 Стандартное количество",
+                        "many": "📚 Побольше сообщений", "random": "🎲 Случайное количество"
+                    }
+                    display_value = display_map.get(new_value_str, new_value_str)
+                    await query.edit_message_text(escape_markdown_v2(f"✅ Макс. кол-во сообщений установлено на: {display_value}"))
+                    return await _show_edit_wizard_menu(update, context, persona)
+                else:
+                    await query.edit_message_text(escape_markdown_v2("❌ Ошибка: Личность не найдена."))
+                    context.user_data.clear()
+                    return ConversationHandler.END
+        except Exception as e:
+            logger.error(f"Error setting max_response_messages for {persona_id} from data '{data}' to '{new_value_str}': {e}", exc_info=True)
+            await query.edit_message_text(escape_markdown_v2("❌ Ошибка при сохранении настройки."))
+            return await _try_return_to_wizard_menu(update, context, query.from_user.id, persona_id)
+    else:
+        logger.warning(f"Unknown callback in edit_max_messages_received: {data}")
+        return EDIT_MAX_MESSAGES
     """Handles receiving the choice for max messages."""
     query = update.callback_query
     await query.answer()
