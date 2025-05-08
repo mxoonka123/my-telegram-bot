@@ -518,6 +518,13 @@ async def send_to_langdock(system_prompt: str, messages: List[Dict[str, str]]) -
     
     # postprocess_response сам обработает 0 и >10
     text_parts_to_send = postprocess_response(text_without_gifs, actual_max_messages)
+    
+    # Дополнительное ограничение для режима "Поменьше сообщений"
+    if max_messages_setting == 2 and len(text_parts_to_send) > 2:  # few
+        logger.info(f"Limiting messages from {len(text_parts_to_send)} to 2 for 'few' mode")
+        # Если больше 2 сообщений, оставляем только первые 2
+        text_parts_to_send = text_parts_to_send[:2]
+    
     logger.info(f"postprocess_response returned {len(text_parts_to_send)} parts to send.")
 
 
@@ -1086,11 +1093,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     # Добавляем инструкцию о количестве сообщений в зависимости от настройки
                     max_messages_setting = persona.max_response_messages
                     if max_messages_setting == 6:  # many
-                        system_prompt += "\n\nВажно: Разбей свой ответ на 5-6 отдельных сообщений в формате JSON-массива. Каждое сообщение должно быть отдельной мыслью или частью ответа."
+                        system_prompt += "\n\nВАЖНО: Разбей свой ответ на 5-6 отдельных сообщений в формате JSON-массива. Каждое сообщение должно быть отдельной мыслью или частью ответа."
                     elif max_messages_setting == 2:  # few
-                        system_prompt += "\n\nВажно: Разбей свой ответ на 1-2 отдельных сообщения в формате JSON-массива."
+                        system_prompt += "\n\nВАЖНО: Дай ОЧЕНЬ КРАТКИЙ ответ в формате JSON-массива. Максимум 1-2 коротких сообщения. Будь предельно лаконичным. Не разбивай ответ на много сообщений."
                     elif max_messages_setting == 0:  # random
-                        system_prompt += "\n\nВажно: Разбей свой ответ на 3-5 отдельных сообщений в формате JSON-массива."
+                        system_prompt += "\n\nВАЖНО: Разбей свой ответ на 3-5 отдельных сообщений в формате JSON-массива."
                     
                     logger.info(f"handle_message: Sending request to Langdock for persona '{persona.name}' in chat {chat_id_str}.")
                     response_text = await send_to_langdock(system_prompt, context_for_ai)
