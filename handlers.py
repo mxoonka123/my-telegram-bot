@@ -2984,7 +2984,10 @@ async def edit_wizard_menu_handler(update: Update, context: ContextTypes.DEFAULT
     elif data == "edit_wizard_max_msgs":
         return await edit_max_messages_prompt(update, context)
     elif data == "edit_wizard_message_volume":
-        return await edit_message_volume_prompt(update, context)
+        # Временно отключено, пока миграция не применена
+        await query.answer("Эта функция временно недоступна")
+        return EDIT_WIZARD_MENU
+        # return await edit_message_volume_prompt(update, context)
     elif data == "edit_wizard_moods":
         with next(get_db()) as db:
             owner = db.query(User).join(PersonaConfig).filter(PersonaConfig.id == persona_id).first()
