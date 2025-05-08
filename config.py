@@ -32,6 +32,16 @@ PAID_DAILY_MESSAGE_LIMIT = 1000
 MAX_CONTEXT_MESSAGES_SENT_TO_LLM = 40 # Сколько последних сообщений отправлять в LLM
 # DEFAULT_MAX_RESPONSE_MESSAGES = 3 # Это значение теперь в db.py как default для колонки
 
+# Messaging settings configuration automatically added per user request
+MESSAGE_SENDING_SETTINGS = {
+    "message_options": {
+        "few": {"max_messages": 1, "message_volume": "short"},
+        "more": {"max_messages": 5, "message_volume": "voluminous"},
+        "default": {"max_messages": 3, "message_volume": "normal"}
+    },
+    "random_choice_enabled": False,
+}
+
 # --- Промпты ---
 
 # <<< СТИЛЬ: Сделано более нейтральным и последовательным >>>
