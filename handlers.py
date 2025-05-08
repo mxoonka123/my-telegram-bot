@@ -4373,6 +4373,21 @@ async def edit_max_messages_prompt(update: Update, context: ContextTypes.DEFAULT
     await _send_prompt(update, context, prompt_text, InlineKeyboardMarkup(keyboard))
     return EDIT_MAX_MESSAGES
 
+async def _try_return_to_wizard_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int, persona_id: int) -> int:
+    """Attempts to return to the wizard menu after an error."""
+    try:
+        with next(get_db()) as db:
+            persona = db.query(PersonaConfig).filter(PersonaConfig.id == persona_id).first()
+            if persona:
+                return await _show_edit_wizard_menu(update, context, persona)
+            else:
+                context.user_data.clear()
+                return ConversationHandler.END
+    except Exception as e:
+        logger.error(f"Error returning to wizard menu: {e}")
+        context.user_data.clear()
+        return ConversationHandler.END
+
 async def edit_max_messages_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
@@ -4398,7 +4413,18 @@ async def edit_max_messages_received(update: Update, context: ContextTypes.DEFAU
                 persona = db.query(PersonaConfig).filter(PersonaConfig.id == persona_id).first()
                 if persona:
                     logger.info(f"User {query.from_user.id} set max_response_messages for persona {persona_id} to '{new_value_str}'.")
-                    persona.max_response_messages = new_value_str
+                    # Преобразуем строковые значения в числовые
+                    if new_value_str == "few":
+                        persona.max_response_messages = 2
+                    elif new_value_str == "normal":
+                        persona.max_response_messages = 3
+                    elif new_value_str == "many":
+                        persona.max_response_messages = 6
+                    elif new_value_str == "random":
+                        persona.max_response_messages = 0
+                    else:
+                        # На случай неизвестного значения
+                        persona.max_response_messages = 3
                     db.commit()
                     
                     display_map = {

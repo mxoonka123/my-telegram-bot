@@ -148,7 +148,7 @@ class PersonaConfig(Base):
     media_reaction = Column(Text, default="text_only", nullable=False)
 
     mood_prompts_json = Column(Text, default=lambda: json.dumps(DEFAULT_MOOD_PROMPTS, ensure_ascii=False, sort_keys=True))
-    max_response_messages = Column(String(20), default="normal", nullable=False)
+    max_response_messages = Column(Integer, default=3, nullable=False)
     # Временно закомментировано, пока миграция не применена
     # message_volume = Column(String(20), default="normal", nullable=False)  # short, normal, long, random
 
