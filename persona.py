@@ -33,6 +33,12 @@ class Persona:
         self.group_reply_preference = self.config.group_reply_preference or "mentioned_or_contextual"
         self.media_reaction = self.config.media_reaction or "text_only"
         self.max_response_messages = self.config.max_response_messages or 3
+        # --- Normalization for legacy value 2 ---
+        if isinstance(self.config.max_response_messages, int) and self.config.max_response_messages == 2:
+            logger.warning(f"Persona {self.id}: converting legacy max_response_messages 2 -> 1 ('few').")
+            self.config.max_response_messages = 1
+            self.max_response_messages = 1
+        # ------------------------------------------------
         # Временно используем значение по умолчанию, пока миграция не применена
         # self.message_volume = self.config.message_volume or "normal"
         self.message_volume = "normal"
