@@ -57,12 +57,19 @@ async def fixed_show_edit_wizard_menu(update: Update, context: ContextTypes.DEFA
     msg_text = f"⚙️ *Настройка личности: {_h.escape_markdown_v2(persona_config.name)}* \\(ID: `{persona_id}`\\)\n\nВыберите, что изменить:"
 
     try:
-        # Если есть колбэк, редактируем текущее сообщение
-        if query:
-            await query.edit_message_text(msg_text, reply_markup=reply_markup, parse_mode=_h.ParseMode.MARKDOWN_V2)
-            context.user_data['edit_message_id'] = query.message.message_id
-            context.user_data['edit_chat_id'] = chat_id
-        else:
+        # Обработка с более надежными проверками на ошибки
+        try:
+            if query and query.message:
+                # Попытка отредактировать существующее сообщение
+                try:
+                    await query.edit_message_text(msg_text, reply_markup=reply_markup, parse_mode=_h.ParseMode.MARKDOWN_V2)
+                    context.user_data['edit_message_id'] = query.message.message_id
+                    context.user_data['edit_chat_id'] = chat_id
+                    return _h.EDIT_WIZARD_MENU
+                except Exception as edit_err:
+                    _logger.warning(f"Не удалось отредактировать сообщение: {edit_err}. Отправляем новое сообщение.")
+                    # Если редактирование не удалось, отправляем новое сообщение
+            
             # Удаляем предыдущее сообщение с подсказкой, если оно есть
             if context.user_data.get('last_prompt_message_id'):
                 try:
@@ -78,6 +85,13 @@ async def fixed_show_edit_wizard_menu(update: Update, context: ContextTypes.DEFA
             context.user_data['edit_message_id'] = sent_message.message_id
             context.user_data['edit_chat_id'] = chat_id
             context.user_data['wizard_menu_message_id'] = sent_message.message_id
+        except Exception as menu_e:
+            _logger.error(f"Ошибка при создании меню настройки для персоны {persona_id}: {menu_e}")
+            try:
+                await context.bot.send_message(chat_id, _h.escape_markdown_v2("❌ Ошибка отображения меню. Попробуйте снова."), parse_mode=_h.ParseMode.MARKDOWN_V2)
+            except Exception:
+                await context.bot.send_message(chat_id, "❌ Ошибка отображения меню. Попробуйте снова.")
+            return ConversationHandler.END
     except Exception as e:
         _logger.error(f"Error showing wizard menu for persona {persona_id}: {e}")
         await context.bot.send_message(chat_id, _h.escape_markdown_v2("❌ Ошибка отображения меню."), parse_mode=_h.ParseMode.MARKDOWN_V2)
