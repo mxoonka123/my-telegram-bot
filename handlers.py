@@ -3047,10 +3047,10 @@ async def _handle_back_to_wizard_menu(update: Update, context: ContextTypes.DEFA
             [InlineKeyboardButton(f"🖼️ Реакция на медиа ({media_react_map.get(media_react, '?')})", callback_data="edit_wizard_media_reaction")],
             
             # Добавляем галочки для макс. сообщений
-            [InlineKeyboardButton(f"{'\u2705 ' if max_msgs_value == 'few' else ''}🤋 Поменьше сообщений", callback_data="edit_wizard_max_msgs")],
-            [InlineKeyboardButton(f"{'\u2705 ' if max_msgs_value == 'normal' else ''}💬 Стандартное количество", callback_data="edit_wizard_max_msgs")],
-            [InlineKeyboardButton(f"{'\u2705 ' if max_msgs_value == 'many' else ''}📚 Побольше сообщений", callback_data="edit_wizard_max_msgs")],
-            [InlineKeyboardButton(f"{'\u2705 ' if max_msgs_value == 'random' else ''}🎲 Случайное количество", callback_data="edit_wizard_max_msgs")],
+            [InlineKeyboardButton(f"{'\u2705 ' if max_msgs_value == 'few' else ''}🤋 Поменьше сообщений", callback_data="set_max_msgs_few")],
+            [InlineKeyboardButton(f"{'\u2705 ' if max_msgs_value == 'normal' else ''}💬 Стандартное количество", callback_data="set_max_msgs_normal")],
+            [InlineKeyboardButton(f"{'\u2705 ' if max_msgs_value == 'many' else ''}📚 Побольше сообщений", callback_data="set_max_msgs_many")],
+            [InlineKeyboardButton(f"{'\u2705 ' if max_msgs_value == 'random' else ''}🎲 Случайное количество", callback_data="set_max_msgs_random")],
             
             [InlineKeyboardButton(f"🔊 Объем сообщений", callback_data="edit_wizard_message_volume")],
             [InlineKeyboardButton(f"🎭 Настроения", callback_data="edit_wizard_moods")],
@@ -3209,6 +3209,45 @@ async def edit_wizard_menu_handler(update: Update, context: ContextTypes.DEFAULT
     elif data == "back_to_wizard_menu":
         # Обработка кнопки "Назад"
         return await _handle_back_to_wizard_menu(update, context, persona_id)
+    elif data.startswith("set_max_msgs_"):
+        # Прямая установка максимального количества сообщений из главного меню
+        query = update.callback_query
+        new_value_str = data.replace("set_max_msgs_", "")
+        try:
+            with next(get_db()) as db:
+                persona = db.query(PersonaConfig).filter(PersonaConfig.id == persona_id).first()
+                if persona:
+                    # Устанавливаем новое значение
+                    if new_value_str == "few":
+                        persona.max_response_messages = 1
+                    elif new_value_str == "many":
+                        persona.max_response_messages = 6
+                    elif new_value_str == "random":
+                        persona.max_response_messages = 0
+                    else:  # normal
+                        persona.max_response_messages = 3
+                    db.commit()
+                    
+                    # Отправляем подтверждение
+                    display_map = {
+                        "few": "🤋 Поменьше сообщений",
+                        "normal": "💬 Стандартное количество",
+                        "many": "📚 Побольше сообщений",
+                        "random": "🎲 Случайное количество"
+                    }
+                    
+                    # Отправляем подтверждение установки нового значения
+                    await query.answer(f"✅ Установлено: {display_map[new_value_str]}", show_alert=True)
+                    
+                    # Обновляем главное меню с новыми галочками
+                    return await _handle_back_to_wizard_menu(update, context, persona_id)
+                else:
+                    await query.answer("❌ Ошибка: Личность не найдена", show_alert=True)
+                    return EDIT_WIZARD_MENU
+        except Exception as e:
+            logger.error(f"Error setting max_response_messages for {persona_id} from main menu: {e}", exc_info=True)
+            await query.answer("❌ Ошибка при сохранении настройки", show_alert=True)
+            return EDIT_WIZARD_MENU
     else:
         logger.warning(f"Unhandled wizard menu callback: {data}")
         return EDIT_WIZARD_MENU
