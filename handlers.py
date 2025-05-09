@@ -2069,9 +2069,6 @@ async def my_personas(update: Union[Update, CallbackQuery], context: ContextType
                      InlineKeyboardButton("🗑️ Удалить", callback_data=delete_cb),
                      InlineKeyboardButton("➕ В чат", callback_data=add_cb)
                  ])
-                 keyboard.append([
-                     InlineKeyboardButton("⚒️ Настройки", callback_data="show_settings")
-                 ])
 
             text_to_send = "\n".join(message_lines)
             fallback_text_plain = "\n".join(fallback_lines)
