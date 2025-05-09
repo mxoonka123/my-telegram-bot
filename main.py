@@ -31,6 +31,8 @@ import settings_patch  # update UI for qualitative max message settings
 import menu_fix  # fix menu structure for persona settings
 import moods_fix  # fix mood editing functionality
 import moods_escape_fix  # fix Markdown escaping in mood prompts
+import markdown_safe_fix  # global Markdown escaping fix for all prompts
+import menu_navigation_fix  # fix menu navigation issues (duplicate items)
 from utils import escape_markdown_v2
 # Patch for max_response_messages has been integrated into handlers
 
