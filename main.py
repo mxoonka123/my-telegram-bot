@@ -29,6 +29,7 @@ import handlers # handlers.py теперь содержит новые сост�
 import message_limit_patch  # enforce strict message count limits
 import settings_patch  # update UI for qualitative max message settings
 import tasks
+import menu_fix  # fix menu structure for persona settings
 from utils import escape_markdown_v2
 # Patch for max_response_messages has been integrated into handlers
 
