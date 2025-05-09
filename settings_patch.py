@@ -87,13 +87,13 @@ async def _patched_show_edit_wizard_menu(update: Update, context: ContextTypes.D
         # Determine desired label according to persona setting
         val = persona_config.max_response_messages
         if val == 1:
-            label = _display_map["few"]
+            label = "Поменьше"
         elif val == 3:
-            label = _display_map["normal"]
+            label = "Стандарт"
         elif val == 6:
-            label = _display_map["many"]
+            label = "Побольше"
         else:
-            label = _display_map["random"]
+            label = "Случайно"
 
         # Fetch last sent wizard menu message
         msg = update.callback_query.message if update.callback_query else update.effective_message
@@ -107,6 +107,7 @@ async def _patched_show_edit_wizard_menu(update: Update, context: ContextTypes.D
                         if btn.callback_data == "edit_wizard_max_msgs":
                             # Replace text keeping prefix
                             prefix = "🗨️ " if btn.text.startswith("🗨️") else ""
+                            # Показываем короткий текст в основном меню
                             new_text = f"{prefix}Макс. сообщ. ({label})"
                             new_row.append(InlineKeyboardButton(new_text, callback_data=btn.callback_data))
                         else:
