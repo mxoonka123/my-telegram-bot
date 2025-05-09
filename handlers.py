@@ -3023,10 +3023,9 @@ async def _show_edit_wizard_menu(update: Update, context: ContextTypes.DEFAULT_T
 
     try:
         if query:
-            if message.text != msg_text or message.reply_markup != reply_markup:
-                await query.edit_message_text(msg_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
-            else:
-                await query.answer()
+            # Всегда редактируем существующее сообщение, даже если текст не изменился
+            # Это предотвратит создание дубликатов меню
+            await query.edit_message_text(msg_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
         else:
             # Delete previous message if it was a prompt (e.g., "Enter name:")
             if context.user_data.get('last_prompt_message_id'):
