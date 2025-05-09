@@ -3268,45 +3268,8 @@ async def edit_wizard_menu_handler(update: Update, context: ContextTypes.DEFAULT
     elif data == "back_to_wizard_menu":
         # Обработка кнопки "Назад"
         return await _handle_back_to_wizard_menu(update, context, persona_id)
-    elif data.startswith("set_max_msgs_"):
-        # Прямая установка максимального количества сообщений из главного меню
-        query = update.callback_query
-        new_value_str = data.replace("set_max_msgs_", "")
-        try:
-            with next(get_db()) as db:
-                persona = db.query(PersonaConfig).filter(PersonaConfig.id == persona_id).first()
-                if persona:
-                    # Устанавливаем новое значение
-                    if new_value_str == "few":
-                        persona.max_response_messages = 1
-                    elif new_value_str == "many":
-                        persona.max_response_messages = 6
-                    elif new_value_str == "random":
-                        persona.max_response_messages = 0
-                    else:  # normal
-                        persona.max_response_messages = 3
-                    db.commit()
-                    
-                    # Отправляем подтверждение
-                    display_map = {
-                        "few": "🤋 Поменьше сообщений",
-                        "normal": "💬 Стандартное количество",
-                        "many": "📚 Побольше сообщений",
-                        "random": "🎲 Случайное количество"
-                    }
-                    
-                    # Отправляем подтверждение установки нового значения
-                    await query.answer(f"✅ Установлено: {display_map[new_value_str]}", show_alert=True)
-                    
-                    # Обновляем главное меню с новыми галочками
-                    return await _handle_back_to_wizard_menu(update, context, persona_id)
-                else:
-                    await query.answer("❌ Ошибка: Личность не найдена", show_alert=True)
-                    return EDIT_WIZARD_MENU
-        except Exception as e:
-            logger.error(f"Error setting max_response_messages for {persona_id} from main menu: {e}", exc_info=True)
-            await query.answer("❌ Ошибка при сохранении настройки", show_alert=True)
-            return EDIT_WIZARD_MENU
+    # Обработка опций количества сообщений перенесена в settings_patch.py
+    # и должна производиться в подменю, а не в основном меню
     else:
         logger.warning(f"Unhandled wizard menu callback: {data}")
         return EDIT_WIZARD_MENU
