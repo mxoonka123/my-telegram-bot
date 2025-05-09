@@ -4508,8 +4508,19 @@ async def edit_max_messages_prompt(update: Update, context: ContextTypes.DEFAULT
     if persona_id:
         with next(get_db()) as db:
             config_value = db.query(PersonaConfig.max_response_messages).filter(PersonaConfig.id == persona_id).scalar()
-            if config_value:
-                current_value = config_value
+            if config_value is not None:
+                # Преобразуем числовое значение в строковое
+                if config_value == 0:
+                    current_value = "random"
+                elif config_value == 1:
+                    current_value = "few"
+                elif config_value == 3:
+                    current_value = "normal"
+                elif config_value == 6:
+                    current_value = "many"
+                else:
+                    # Если значение не соответствует ни одному из предопределенных
+                    current_value = "normal"
 
     display_map = {
         "few": "🤏 Поменьше сообщений",
