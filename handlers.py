@@ -3027,15 +3027,19 @@ async def _show_edit_wizard_menu(update: Update, context: ContextTypes.DEFAULT_T
     msg_text = f"⚙️ *Настройка личности: {escape_markdown_v2(persona_config.name)}* \\(ID: `{persona_id}`\\)\n\nВыберите, что изменить:"
 
     try:
-        # Радикальный подход: всегда удаляем старые сообщения и создаем новое
+        # Возвращаемся к подходу с редактированием сообщений
         
-        # Удаляем старое сообщение с меню, если оно есть
+        # Если есть колбэк, редактируем текущее сообщение
         if query:
             try:
-                # Пытаемся удалить текущее сообщение
-                await context.bot.delete_message(chat_id=chat_id, message_id=query.message.message_id)
+                await query.edit_message_text(msg_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
+                # Сохраняем ID сообщения для будущих редактирований
+                context.user_data['edit_message_id'] = query.message.message_id
+                context.user_data['edit_chat_id'] = chat_id
+                return EDIT_WIZARD_MENU
             except Exception as e:
-                logger.warning(f"Could not delete message: {e}")
+                logger.warning(f"Could not edit message: {e}")
+                # Если не удалось отредактировать, продолжаем и создаем новое сообщение
         
         # Удаляем предыдущее сообщение с подсказкой, если оно есть
         if context.user_data.get('last_prompt_message_id'):
@@ -3044,15 +3048,6 @@ async def _show_edit_wizard_menu(update: Update, context: ContextTypes.DEFAULT_T
             except Exception as del_err:
                 logger.warning(f"Could not delete previous prompt message: {del_err}")
             context.user_data.pop('last_prompt_message_id', None)
-        
-        # Удаляем сохраненное сообщение с меню, если оно есть
-        edit_message_id = context.user_data.get('edit_message_id')
-        edit_chat_id = context.user_data.get('edit_chat_id')
-        if edit_message_id and edit_chat_id:
-            try:
-                await context.bot.delete_message(chat_id=edit_chat_id, message_id=edit_message_id)
-            except Exception as e:
-                logger.warning(f"Could not delete saved message: {e}")
         
         # Создаем новое сообщение с меню
         sent_message = await context.bot.send_message(chat_id, msg_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
@@ -3112,6 +3107,15 @@ async def edit_wizard_menu_handler(update: Update, context: ContextTypes.DEFAULT
                 return EDIT_WIZARD_MENU
     elif data == "finish_edit":
         return await edit_persona_finish(update, context)
+    elif data == "back_to_wizard_menu":
+        # Обработка кнопки "Назад"
+        with next(get_db()) as db:
+            persona = db.query(PersonaConfig).filter(PersonaConfig.id == persona_id).first()
+            if persona:
+                return await _show_edit_wizard_menu(update, context, persona)
+            else:
+                await query.answer("Ошибка: личность не найдена")
+                return ConversationHandler.END
     else:
         logger.warning(f"Unhandled wizard menu callback: {data}")
         return EDIT_WIZARD_MENU
