@@ -2988,6 +2988,69 @@ async def edit_persona_button_callback(update: Update, context: ContextTypes.DEF
             logger.error(f"Failed to edit message with invalid ID error: {e}")
         return ConversationHandler.END
 
+async def _handle_back_to_wizard_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, persona_id: int) -> int:
+    """Общая функция для обработки кнопки "Назад" в меню настроек"""
+    query = update.callback_query
+    
+    with next(get_db()) as db:
+        persona = db.query(PersonaConfig).filter(PersonaConfig.id == persona_id).first()
+        if not persona:
+            await query.answer("Ошибка: личность не найдена")
+            return ConversationHandler.END
+        
+        # Удаляем текущее сообщение с подменю
+        try:
+            await context.bot.delete_message(chat_id=query.message.chat.id, message_id=query.message.message_id)
+        except Exception as e:
+            logger.warning(f"Could not delete submenu message: {e}")
+        
+        # Отправляем новое сообщение с главным меню
+        chat_id = query.message.chat.id
+        msg_text = f"⚙️ *Настройка личности: {escape_markdown_v2(persona.name)}* \\(ID: `{persona_id}`\\)\n\nВыберите, что изменить:"
+        
+        # Создаем клавиатуру с кнопками главного меню
+        style = persona.communication_style or "neutral"
+        verbosity = persona.verbosity_level or "medium"
+        group_reply = persona.group_reply_preference or "mentioned_or_contextual"
+        media_react = persona.media_reaction or "text_only"
+        
+        # Карты для отображения
+        style_map = {"neutral": "Нейтральный", "friendly": "Дружелюбный", "sarcastic": "Саркастичный", "formal": "Формальный", "brief": "Краткий"}
+        verbosity_map = {"concise": "Лаконичный", "medium": "Средний", "talkative": "Разговорчивый"}
+        group_reply_map = {"always": "Всегда", "mentioned_only": "По @", "mentioned_or_contextual": "По @ / Контексту", "never": "Никогда"}
+        media_react_map = {"all": "Текст+GIF", "text_only": "Только текст", "none": "Никак", "photo_only": "Только фото", "voice_only": "Только голос"}
+        
+        # Получаем текущее значение макс. сообщений
+        max_msgs_setting = persona.max_response_messages
+        max_msgs_display = "Случайно (1-3)" if max_msgs_setting <= 0 else str(max_msgs_setting)
+        
+        # Создаем клавиатуру
+        keyboard = [
+            [
+                InlineKeyboardButton("✏️ Имя", callback_data="edit_wizard_name"),
+                InlineKeyboardButton("📜 Описание", callback_data="edit_wizard_description")
+            ],
+            [InlineKeyboardButton(f"💬 Стиль ({style_map.get(style, '?')})", callback_data="edit_wizard_comm_style")],
+            [InlineKeyboardButton(f"🗣️ Разговорчивость ({verbosity_map.get(verbosity, '?')})", callback_data="edit_wizard_verbosity")],
+            [InlineKeyboardButton(f"👥 Ответы в группе ({group_reply_map.get(group_reply, '?')})", callback_data="edit_wizard_group_reply")],
+            [InlineKeyboardButton(f"🖼️ Реакция на медиа ({media_react_map.get(media_react, '?')})", callback_data="edit_wizard_media_reaction")],
+            [InlineKeyboardButton(f"💬 Макс. сообщ. ({max_msgs_display})", callback_data="edit_wizard_max_msgs")],
+            [InlineKeyboardButton(f"🔊 Объем сообщений", callback_data="edit_wizard_message_volume")],
+            [InlineKeyboardButton(f"🎭 Настроения", callback_data="edit_wizard_moods")],
+            [InlineKeyboardButton("✅ Завершить", callback_data="finish_edit")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        # Отправляем новое сообщение с главным меню
+        sent_message = await context.bot.send_message(chat_id=chat_id, text=msg_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
+        
+        # Сохраняем ID нового сообщения
+        context.user_data['edit_message_id'] = sent_message.message_id
+        context.user_data['edit_chat_id'] = chat_id
+        context.user_data['wizard_menu_message_id'] = sent_message.message_id
+        
+        return EDIT_WIZARD_MENU
+
 async def _show_edit_wizard_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, persona_config: PersonaConfig) -> int:
     """Displays the main wizard menu."""
     query = update.callback_query
@@ -3128,13 +3191,7 @@ async def edit_wizard_menu_handler(update: Update, context: ContextTypes.DEFAULT
         return await edit_persona_finish(update, context)
     elif data == "back_to_wizard_menu":
         # Обработка кнопки "Назад"
-        with next(get_db()) as db:
-            persona = db.query(PersonaConfig).filter(PersonaConfig.id == persona_id).first()
-            if persona:
-                return await _show_edit_wizard_menu(update, context, persona)
-            else:
-                await query.answer("Ошибка: личность не найдена")
-                return ConversationHandler.END
+        return await _handle_back_to_wizard_menu(update, context, persona_id)
     else:
         logger.warning(f"Unhandled wizard menu callback: {data}")
         return EDIT_WIZARD_MENU
@@ -3293,9 +3350,7 @@ async def edit_comm_style_received(update: Update, context: ContextTypes.DEFAULT
     persona_id = context.user_data.get('edit_persona_id')
 
     if data == "back_to_wizard_menu":
-        with next(get_db()) as db:
-            persona = db.query(PersonaConfig).filter(PersonaConfig.id == persona_id).first()
-            return await _show_edit_wizard_menu(update, context, persona)
+        return await _handle_back_to_wizard_menu(update, context, persona_id)
 
     if data.startswith("set_comm_style_"):
         new_style = data.replace("set_comm_style_", "")
@@ -3306,7 +3361,7 @@ async def edit_comm_style_received(update: Update, context: ContextTypes.DEFAULT
                     persona.communication_style = new_style
                     db.commit()
                     logger.info(f"Set communication_style to {new_style} for persona {persona_id}")
-                    return await _show_edit_wizard_menu(update, context, persona)
+                    return await _handle_back_to_wizard_menu(update, context, persona_id)
                 else:
                     await query.edit_message_text(escape_markdown_v2("❌ Ошибка: личность не найдена."))
                     return ConversationHandler.END
@@ -3353,7 +3408,7 @@ async def edit_verbosity_received(update: Update, context: ContextTypes.DEFAULT_
                     persona.verbosity_level = new_value
                     db.commit()
                     logger.info(f"Set verbosity_level to {new_value} for persona {persona_id}")
-                    return await _show_edit_wizard_menu(update, context, persona)
+                    return await _handle_back_to_wizard_menu(update, context, persona_id)
                 else:
                     await query.edit_message_text(escape_markdown_v2("❌ Ошибка: личность не найдена."))
                     return ConversationHandler.END
@@ -3401,7 +3456,7 @@ async def edit_group_reply_received(update: Update, context: ContextTypes.DEFAUL
                     persona.group_reply_preference = new_value
                     db.commit()
                     logger.info(f"Set group_reply_preference to {new_value} for persona {persona_id}")
-                    return await _show_edit_wizard_menu(update, context, persona)
+                    return await _handle_back_to_wizard_menu(update, context, persona_id)
                 else:
                     await query.edit_message_text(escape_markdown_v2("❌ Ошибка: личность не найдена."))
                     return ConversationHandler.END
@@ -3450,7 +3505,7 @@ async def edit_media_reaction_received(update: Update, context: ContextTypes.DEF
                     persona.media_reaction = new_value
                     db.commit()
                     logger.info(f"Set media_reaction to {new_value} for persona {persona_id}")
-                    return await _show_edit_wizard_menu(update, context, persona)
+                    return await _handle_back_to_wizard_menu(update, context, persona_id)
                 else:
                     await query.edit_message_text(escape_markdown_v2("❌ Ошибка: личность не найдена."))
                     return ConversationHandler.END
@@ -4409,9 +4464,7 @@ async def edit_message_volume_received(update: Update, context: ContextTypes.DEF
     persona_id = context.user_data.get('edit_persona_id')
 
     if data == "back_to_wizard_menu":
-        with next(get_db()) as db:
-            persona = db.query(PersonaConfig).filter(PersonaConfig.id == persona_id).first()
-            return await _show_edit_wizard_menu(update, context, persona)
+        return await _handle_back_to_wizard_menu(update, context, persona_id)
 
     if data.startswith("set_volume_"):
         volume = data.replace("set_volume_", "")
@@ -4510,21 +4563,6 @@ async def edit_max_messages_prompt(update: Update, context: ContextTypes.DEFAULT
     await _send_prompt(update, context, prompt_text, InlineKeyboardMarkup(keyboard))
     return EDIT_MAX_MESSAGES
 
-async def _try_return_to_wizard_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int, persona_id: int) -> int:
-    """Attempts to return to the wizard menu after an error."""
-    try:
-        with next(get_db()) as db:
-            persona = db.query(PersonaConfig).filter(PersonaConfig.id == persona_id).first()
-            if persona:
-                return await _show_edit_wizard_menu(update, context, persona)
-            else:
-                context.user_data.clear()
-                return ConversationHandler.END
-    except Exception as e:
-        logger.error(f"Error returning to wizard menu: {e}")
-        context.user_data.clear()
-        return ConversationHandler.END
-
 async def edit_max_messages_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
@@ -4532,9 +4570,7 @@ async def edit_max_messages_received(update: Update, context: ContextTypes.DEFAU
     persona_id = context.user_data.get('edit_persona_id')
 
     if data == "back_to_wizard_menu":
-        with next(get_db()) as db:
-            persona = db.query(PersonaConfig).filter(PersonaConfig.id == persona_id).first()
-            return await _show_edit_wizard_menu(update, context, persona)
+        return await _handle_back_to_wizard_menu(update, context, persona_id)
 
     if data.startswith("set_max_msgs_"):
         new_value_str = data.replace("set_max_msgs_", "")
@@ -4570,7 +4606,7 @@ async def edit_max_messages_received(update: Update, context: ContextTypes.DEFAU
                     }
                     display_value = display_map.get(new_value_str, new_value_str)
                     await query.edit_message_text(escape_markdown_v2(f"✅ Макс. кол-во сообщений установлено на: {display_value}"))
-                    return await _show_edit_wizard_menu(update, context, persona)
+                    return await _handle_back_to_wizard_menu(update, context, persona_id)
                 else:
                     await query.edit_message_text(escape_markdown_v2("❌ Ошибка: Личность не найдена."))
                     context.user_data.clear()
@@ -4589,9 +4625,7 @@ async def edit_max_messages_received(update: Update, context: ContextTypes.DEFAU
     persona_id = context.user_data.get('edit_persona_id')
 
     if data == "back_to_wizard_menu":
-        with next(get_db()) as db:
-            persona = db.query(PersonaConfig).filter(PersonaConfig.id == persona_id).first()
-            return await _show_edit_wizard_menu(update, context, persona)
+        return await _handle_back_to_wizard_menu(update, context, persona_id)
 
     if data.startswith("set_max_msgs_"):
         try:
@@ -4606,7 +4640,7 @@ async def edit_max_messages_received(update: Update, context: ContextTypes.DEFAU
                     db.commit()
                     display_val = 'Случайно (1-3)' if new_value <= 0 else str(new_value)
                     logger.info(f"Set max_response_messages to {display_val} ({new_value}) for persona {persona_id}")
-                    return await _show_edit_wizard_menu(update, context, persona)
+                    return await _handle_back_to_wizard_menu(update, context, persona_id)
                 else:
                     await query.edit_message_text(escape_markdown_v2("❌ Ошибка: личность не найдена."))
                     return ConversationHandler.END
