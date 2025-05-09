@@ -1574,6 +1574,9 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         [
             InlineKeyboardButton("⭐ Подписка", callback_data="subscribe_info"),
             InlineKeyboardButton("❓ Помощь", callback_data="show_help")
+        ],
+        [
+            InlineKeyboardButton("⚙️ Настройки", callback_data="show_settings")
         ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -2310,7 +2313,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     # Callbacks that DON'T require subscription check
     no_check_callbacks = (
         "view_tos", "subscribe_info", "dummy_", "confirm_pay", "subscribe_pay",
-        "show_help", "show_menu", "show_profile", "show_mypersonas"
+        "show_help", "show_menu", "show_profile", "show_mypersonas", "show_settings"
         # Note: Conversation handler callbacks are handled by their respective handlers
     )
     if data.startswith(no_check_callbacks):
@@ -2353,6 +2356,9 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     elif data == "show_mypersonas":
         await query.answer()
         await my_personas(query, context)
+    elif data == "show_settings":
+        await query.answer()
+        await _start_edit_convo(query, context, persona_id=None)  # Use the edit persona wizard
     elif data.startswith("dummy_"):
         await query.answer()
     else:
