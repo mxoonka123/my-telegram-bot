@@ -3027,36 +3027,40 @@ async def _show_edit_wizard_menu(update: Update, context: ContextTypes.DEFAULT_T
     msg_text = f"⚙️ *Настройка личности: {escape_markdown_v2(persona_config.name)}* \\(ID: `{persona_id}`\\)\n\nВыберите, что изменить:"
 
     try:
-        # Проверяем, есть ли сохраненный ID сообщения для редактирования
+        # Радикальный подход: всегда удаляем старые сообщения и создаем новое
+        
+        # Удаляем старое сообщение с меню, если оно есть
+        if query:
+            try:
+                # Пытаемся удалить текущее сообщение
+                await context.bot.delete_message(chat_id=chat_id, message_id=query.message.message_id)
+            except Exception as e:
+                logger.warning(f"Could not delete message: {e}")
+        
+        # Удаляем предыдущее сообщение с подсказкой, если оно есть
+        if context.user_data.get('last_prompt_message_id'):
+            try:
+                await context.bot.delete_message(chat_id=chat_id, message_id=context.user_data['last_prompt_message_id'])
+            except Exception as del_err:
+                logger.warning(f"Could not delete previous prompt message: {del_err}")
+            context.user_data.pop('last_prompt_message_id', None)
+        
+        # Удаляем сохраненное сообщение с меню, если оно есть
         edit_message_id = context.user_data.get('edit_message_id')
         edit_chat_id = context.user_data.get('edit_chat_id')
+        if edit_message_id and edit_chat_id:
+            try:
+                await context.bot.delete_message(chat_id=edit_chat_id, message_id=edit_message_id)
+            except Exception as e:
+                logger.warning(f"Could not delete saved message: {e}")
         
-        if query and not (edit_message_id and edit_chat_id):
-            # Если это колбэк, но нет сохраненного ID, редактируем текущее сообщение
-            await query.edit_message_text(msg_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
-        elif edit_message_id and edit_chat_id:
-            # Если есть сохраненный ID, редактируем это сообщение
-            await context.bot.edit_message_text(
-                text=msg_text,
-                chat_id=edit_chat_id,
-                message_id=edit_message_id,
-                reply_markup=reply_markup,
-                parse_mode=ParseMode.MARKDOWN_V2
-            )
-            # Сохраняем эти значения для будущих редактирований
-            context.user_data['wizard_menu_message_id'] = edit_message_id
-        else:
-            # Если это не колбэк и нет сохраненного ID, создаем новое сообщение
-            # Delete previous message if it was a prompt (e.g., "Enter name:")
-            if context.user_data.get('last_prompt_message_id'):
-                try:
-                    await context.bot.delete_message(chat_id=chat_id, message_id=context.user_data['last_prompt_message_id'])
-                except Exception as del_err:
-                    logger.warning(f"Could not delete previous prompt message: {del_err}")
-                context.user_data.pop('last_prompt_message_id', None)
-            # Send new menu message
-            sent_message = await context.bot.send_message(chat_id, msg_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
-            context.user_data['wizard_menu_message_id'] = sent_message.message_id # Store menu message ID if needed
+        # Создаем новое сообщение с меню
+        sent_message = await context.bot.send_message(chat_id, msg_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
+        
+        # Сохраняем ID нового сообщения
+        context.user_data['edit_message_id'] = sent_message.message_id
+        context.user_data['edit_chat_id'] = chat_id
+        context.user_data['wizard_menu_message_id'] = sent_message.message_id
     except Exception as e:
         logger.error(f"Error showing wizard menu for persona {persona_id}: {e}")
         await context.bot.send_message(chat_id, escape_markdown_v2("❌ Ошибка отображения меню."), parse_mode=ParseMode.MARKDOWN_V2)
