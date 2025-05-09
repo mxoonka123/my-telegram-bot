@@ -4546,35 +4546,9 @@ async def edit_max_messages_prompt(update: Update, context: ContextTypes.DEFAULT
 
     await _send_prompt(update, context, prompt_text, InlineKeyboardMarkup(keyboard))
     return EDIT_MAX_MESSAGES
-    """Sends prompt to choose max messages."""
-    persona_id = context.user_data.get('edit_persona_id')
-    with next(get_db()) as db:
-        current_value = db.query(PersonaConfig.max_response_messages).filter(PersonaConfig.id == persona_id).scalar() or 0
-
-    prompt_text = escape_markdown_v2(f"🗨️ Выберите макс. кол-во сообщений в одном ответе бота (текущее: {'Случайно (1-3)' if current_value <= 0 else current_value}):")
-
-    keyboard = [
-        # Ряд 1: 1-5
-        [InlineKeyboardButton(f"{'✅ ' if current_value == 1 else ''}1", callback_data="set_max_msgs_1"),
-         InlineKeyboardButton(f"{'✅ ' if current_value == 2 else ''}2", callback_data="set_max_msgs_2"),
-         InlineKeyboardButton(f"{'✅ ' if current_value == 3 else ''}3", callback_data="set_max_msgs_3"),
-         InlineKeyboardButton(f"{'✅ ' if current_value == 4 else ''}4", callback_data="set_max_msgs_4"),
-         InlineKeyboardButton(f"{'✅ ' if current_value == 5 else ''}5", callback_data="set_max_msgs_5")],
-        # Ряд 2: 6-10
-        [InlineKeyboardButton(f"{'✅ ' if current_value == 6 else ''}6", callback_data="set_max_msgs_6"),
-         InlineKeyboardButton(f"{'✅ ' if current_value == 7 else ''}7", callback_data="set_max_msgs_7"),
-         InlineKeyboardButton(f"{'✅ ' if current_value == 8 else ''}8", callback_data="set_max_msgs_8"),
-         InlineKeyboardButton(f"{'✅ ' if current_value == 9 else ''}9", callback_data="set_max_msgs_9"),
-         InlineKeyboardButton(f"{'✅ ' if current_value == 10 else ''}10", callback_data="set_max_msgs_10")],
-        # Ряд 3: Случайно и Назад
-        [InlineKeyboardButton(f"{'✅ ' if current_value <= 0 else ''}🎲 Случайно (1-3)", callback_data="set_max_msgs_0")],
-        [InlineKeyboardButton("⬅️ Назад", callback_data="back_to_wizard_menu")]
-    ]
-
-    await _send_prompt(update, context, prompt_text, InlineKeyboardMarkup(keyboard))
-    return EDIT_MAX_MESSAGES
 
 async def edit_max_messages_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Handles the selection of max messages count."""
     query = update.callback_query
     await query.answer()
     data = query.data
@@ -4590,13 +4564,13 @@ async def edit_max_messages_received(update: Update, context: ContextTypes.DEFAU
         if new_value_str not in allowed_values:
             logger.error(f"Invalid value for max_response_messages: {new_value_str} from data '{data}'")
             await query.edit_message_text(escape_markdown_v2("❌ Ошибка: Некорректное значение."))
-            return await _try_return_to_wizard_menu(update, context, query.from_user.id, persona_id)
+            return EDIT_MAX_MESSAGES
 
         try:
             with next(get_db()) as db:
                 persona = db.query(PersonaConfig).filter(PersonaConfig.id == persona_id).first()
                 if persona:
-                    logger.info(f"User {query.from_user.id} set max_response_messages for persona {persona_id} to '{new_value_str}'.")
+                    logger.info(f"User {query.from_user.id} set max_response_messages for persona {persona_id} to '{new_value_str}'.")                    
                     # Преобразуем строковые значения в числовые
                     if new_value_str == "few":
                         persona.max_response_messages = 1
@@ -4611,20 +4585,23 @@ async def edit_max_messages_received(update: Update, context: ContextTypes.DEFAU
                         persona.max_response_messages = 3
                     db.commit()
                     
+                    # Определяем текст для кнопок
                     display_map = {
-                        "few": "🤏 Поменьше сообщений", "normal": "💬 Стандартное количество",
-                        "many": "📚 Побольше сообщений", "random": "🎲 Случайное количество"
+                        "few": "🤋 Поменьше сообщений",
+                        "normal": "💬 Стандартное количество",
+                        "many": "📚 Побольше сообщений",
+                        "random": "🎲 Случайное количество"
                     }
                     
                     # Обновляем меню с галочками
                     keyboard = [
                         [
-                            InlineKeyboardButton(f"{'✅ ' if new_value_str == 'few' else ''}{display_map['few']}", callback_data="set_max_msgs_few"),
-                            InlineKeyboardButton(f"{'✅ ' if new_value_str == 'normal' else ''}{display_map['normal']}", callback_data="set_max_msgs_normal"),
+                            InlineKeyboardButton(f"{'\u2705 ' if new_value_str == 'few' else ''}{display_map['few']}", callback_data="set_max_msgs_few"),
+                            InlineKeyboardButton(f"{'\u2705 ' if new_value_str == 'normal' else ''}{display_map['normal']}", callback_data="set_max_msgs_normal"),
                         ],
                         [
-                            InlineKeyboardButton(f"{'✅ ' if new_value_str == 'many' else ''}{display_map['many']}", callback_data="set_max_msgs_many"),
-                            InlineKeyboardButton(f"{'✅ ' if new_value_str == 'random' else ''}{display_map['random']}", callback_data="set_max_msgs_random"),
+                            InlineKeyboardButton(f"{'\u2705 ' if new_value_str == 'many' else ''}{display_map['many']}", callback_data="set_max_msgs_many"),
+                            InlineKeyboardButton(f"{'\u2705 ' if new_value_str == 'random' else ''}{display_map['random']}", callback_data="set_max_msgs_random"),
                         ],
                         [InlineKeyboardButton("⬅️ Назад", callback_data="back_to_wizard_menu")]
                     ]
@@ -4634,6 +4611,7 @@ async def edit_max_messages_received(update: Update, context: ContextTypes.DEFAU
                     prompt_text = escape_markdown_v2(f"🗨️ Выберите желаемое количество сообщений в ответе бота:")
                     await query.edit_message_text(text=prompt_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
                     
+                    # Возвращаем состояние разговора, чтобы остаться в этом меню
                     return EDIT_MAX_MESSAGES
                 else:
                     await query.edit_message_text(escape_markdown_v2("❌ Ошибка: Личность не найдена."))
