@@ -55,7 +55,8 @@ from utils import (
     extract_gif_links,
     get_time_info,
     escape_markdown_v2,
-    TELEGRAM_MAX_LEN
+    TELEGRAM_MAX_LEN,
+    _split_aggressively
 )
 
 logger = logging.getLogger(__name__)

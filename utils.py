@@ -12,9 +12,7 @@ import math
 
 logger = logging.getLogger(__name__)
 
-# Constants for easier configuration
-# TELEGRAM_MAX_LEN = 4096
-# MIN_SENSIBLE_LEN = 50
+# Constants are defined above
 # Transition words (lowercase) indicating potential topic shifts
 TRANSITION_WORDS = [
     "однако", "тем не менее", "зато", "впрочем",
@@ -135,9 +133,7 @@ def _split_aggressively(text: str, max_len: int) -> List[str]:
 
     return parts
 
-# Expose _split_aggressively globally so that other modules can call it without explicit import
-import builtins as _builtins_module  # Local alias
-_builtins_module._split_aggressively = _split_aggressively
+# Функция _split_aggressively должна импортироваться обычным способом в других модулях
 
 # --- V13: Improved Splitting ---
 def postprocess_response(response: str, max_messages: int, message_volume: str = 'normal') -> List[str]:
