@@ -4615,9 +4615,26 @@ async def edit_max_messages_received(update: Update, context: ContextTypes.DEFAU
                         "few": "🤏 Поменьше сообщений", "normal": "💬 Стандартное количество",
                         "many": "📚 Побольше сообщений", "random": "🎲 Случайное количество"
                     }
-                    display_value = display_map.get(new_value_str, new_value_str)
-                    await query.edit_message_text(escape_markdown_v2(f"✅ Макс. кол-во сообщений установлено на: {display_value}"))
-                    return await _handle_back_to_wizard_menu(update, context, persona_id)
+                    
+                    # Обновляем меню с галочками
+                    keyboard = [
+                        [
+                            InlineKeyboardButton(f"{'✅ ' if new_value_str == 'few' else ''}{display_map['few']}", callback_data="set_max_msgs_few"),
+                            InlineKeyboardButton(f"{'✅ ' if new_value_str == 'normal' else ''}{display_map['normal']}", callback_data="set_max_msgs_normal"),
+                        ],
+                        [
+                            InlineKeyboardButton(f"{'✅ ' if new_value_str == 'many' else ''}{display_map['many']}", callback_data="set_max_msgs_many"),
+                            InlineKeyboardButton(f"{'✅ ' if new_value_str == 'random' else ''}{display_map['random']}", callback_data="set_max_msgs_random"),
+                        ],
+                        [InlineKeyboardButton("⬅️ Назад", callback_data="back_to_wizard_menu")]
+                    ]
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+                    
+                    # Обновляем сообщение с новыми галочками
+                    prompt_text = escape_markdown_v2(f"🗨️ Выберите желаемое количество сообщений в ответе бота:")
+                    await query.edit_message_text(text=prompt_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
+                    
+                    return EDIT_MAX_MESSAGES
                 else:
                     await query.edit_message_text(escape_markdown_v2("❌ Ошибка: Личность не найдена."))
                     context.user_data.clear()
@@ -4625,36 +4642,7 @@ async def edit_max_messages_received(update: Update, context: ContextTypes.DEFAU
         except Exception as e:
             logger.error(f"Error setting max_response_messages for {persona_id} from data '{data}' to '{new_value_str}': {e}", exc_info=True)
             await query.edit_message_text(escape_markdown_v2("❌ Ошибка при сохранении настройки."))
-            return await _try_return_to_wizard_menu(update, context, query.from_user.id, persona_id)
-    else:
-        logger.warning(f"Unknown callback in edit_max_messages_received: {data}")
-        return EDIT_MAX_MESSAGES
-    """Handles receiving the choice for max messages."""
-    query = update.callback_query
-    await query.answer()
-    data = query.data
-    persona_id = context.user_data.get('edit_persona_id')
-
-    if data == "back_to_wizard_menu":
-        return await _handle_back_to_wizard_menu(update, context, persona_id)
-
-    if data.startswith("set_max_msgs_"):
-        try:
-            new_value = int(data.replace("set_max_msgs_", "")) # 0 для Случайно
-            if not (0 <= new_value <= 10):
-                raise ValueError("Value out of range")
-
-            with next(get_db()) as db:
-                persona = db.query(PersonaConfig).filter(PersonaConfig.id == persona_id).with_for_update().first()
-                if persona:
-                    persona.max_response_messages = new_value
-                    db.commit()
-                    display_val = 'Случайно (1-3)' if new_value <= 0 else str(new_value)
-                    logger.info(f"Set max_response_messages to {display_val} ({new_value}) for persona {persona_id}")
-                    return await _handle_back_to_wizard_menu(update, context, persona_id)
-                else:
-                    await query.edit_message_text(escape_markdown_v2("❌ Ошибка: личность не найдена."))
-                    return ConversationHandler.END
+            return EDIT_MAX_MESSAGES
         except (ValueError, Exception) as e:
             logger.error(f"Error setting max_response_messages for {persona_id} from data '{data}': {e}")
             await query.edit_message_text(escape_markdown_v2("❌ Ошибка при сохранении настройки."))
