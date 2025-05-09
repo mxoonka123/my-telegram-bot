@@ -1574,9 +1574,6 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         [
             InlineKeyboardButton("⭐ Подписка", callback_data="subscribe_info"),
             InlineKeyboardButton("❓ Помощь", callback_data="show_help")
-        ],
-        [
-            InlineKeyboardButton("⚙️ Настройки", callback_data="show_settings")
         ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -2071,6 +2068,9 @@ async def my_personas(update: Union[Update, CallbackQuery], context: ContextType
                      InlineKeyboardButton("⚙️ Настроить", callback_data=edit_cb), # Changed text
                      InlineKeyboardButton("🗑️ Удалить", callback_data=delete_cb),
                      InlineKeyboardButton("➕ В чат", callback_data=add_cb)
+                 ])
+                 keyboard.append([
+                     InlineKeyboardButton("⚒️ Настройки", callback_data="show_settings")
                  ])
 
             text_to_send = "\n".join(message_lines)
