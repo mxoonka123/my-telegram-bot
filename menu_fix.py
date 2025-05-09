@@ -36,16 +36,49 @@ async def fixed_show_edit_wizard_menu(update: Update, context: ContextTypes.DEFA
     else:
         label = "Случайно"
 
-    # Строим клавиатуру с корректной структурой
+    # Словари перевода с английского на русский
+    style_map = {
+        "neutral": "Нейтральный", 
+        "friendly": "Дружелюбный", 
+        "sarcastic": "Саркастичный", 
+        "formal": "Формальный", 
+        "brief": "Краткий"
+    }
+    verbosity_map = {
+        "concise": "Лаконичный", 
+        "medium": "Средний", 
+        "talkative": "Разговорчивый"
+    }
+    group_reply_map = {
+        "always": "Всегда", 
+        "mentioned_only": "По @", 
+        "mentioned_or_contextual": "По @ / Контексту", 
+        "never": "Никогда"
+    }
+    media_react_map = {
+        "all": "Текст+GIF", 
+        "text_only": "Только текст", 
+        "none": "Никак", 
+        "photo_only": "Только фото", 
+        "voice_only": "Только голос"
+    }
+    
+    # Получаем локализованные значения параметров
+    style_value = style_map.get(persona_config.communication_style, "Нейтральный")
+    verbosity_value = verbosity_map.get(persona_config.verbosity_level, "Средний")
+    group_reply_value = group_reply_map.get(persona_config.group_reply_preference, "По @ / Контексту")
+    media_reaction_value = media_react_map.get(persona_config.media_reaction, "Только текст")
+
+    # Строим клавиатуру с корректной структурой и локализованными значениями
     keyboard = [
         [
             InlineKeyboardButton("✏️ Имя", callback_data="edit_wizard_name"),
             InlineKeyboardButton("📜 Описание", callback_data="edit_wizard_description")
         ],
-        [InlineKeyboardButton(f"💬 Стиль ({persona_config.communication_style or 'Нейтральный'})", callback_data="edit_wizard_comm_style")],
-        [InlineKeyboardButton(f"🗣️ Разговорчивость ({persona_config.verbosity_level or 'Средний'})", callback_data="edit_wizard_verbosity")],
-        [InlineKeyboardButton(f"👥 Ответы в группе ({persona_config.group_reply_preference or 'По @ / Контексту'})", callback_data="edit_wizard_group_reply")],
-        [InlineKeyboardButton(f"🖼️ Реакция на медиа ({persona_config.media_reaction or 'Только текст'})", callback_data="edit_wizard_media_reaction")],
+        [InlineKeyboardButton(f"💬 Стиль ({style_value})", callback_data="edit_wizard_comm_style")],
+        [InlineKeyboardButton(f"🗣️ Разговорчивость ({verbosity_value})", callback_data="edit_wizard_verbosity")],
+        [InlineKeyboardButton(f"👥 Ответы в группе ({group_reply_value})", callback_data="edit_wizard_group_reply")],
+        [InlineKeyboardButton(f"🖼️ Реакция на медиа ({media_reaction_value})", callback_data="edit_wizard_media_reaction")],
         [InlineKeyboardButton(f"🗨️ Макс. сообщ. ({label})", callback_data="edit_wizard_max_msgs")],
         [InlineKeyboardButton(f"🔊 Объем сообщений", callback_data="edit_wizard_message_volume")],
         [InlineKeyboardButton(f"🎭 Настроения", callback_data="edit_wizard_moods")],
