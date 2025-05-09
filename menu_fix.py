@@ -47,7 +47,7 @@ async def fixed_show_edit_wizard_menu(update: Update, context: ContextTypes.DEFA
     verbosity_map = {
         "concise": "Лаконичный", 
         "medium": "Средний", 
-        "talkative": "Разговорчивый"
+        "talkative": "Многословный"
     }
     group_reply_map = {
         "always": "Всегда", 
@@ -80,7 +80,6 @@ async def fixed_show_edit_wizard_menu(update: Update, context: ContextTypes.DEFA
         [InlineKeyboardButton(f"👥 Ответы в группе ({group_reply_value})", callback_data="edit_wizard_group_reply")],
         [InlineKeyboardButton(f"🖼️ Реакция на медиа ({media_reaction_value})", callback_data="edit_wizard_media_reaction")],
         [InlineKeyboardButton(f"🗨️ Макс. сообщ. ({label})", callback_data="edit_wizard_max_msgs")],
-        [InlineKeyboardButton(f"🔊 Объем сообщений", callback_data="edit_wizard_message_volume")],
         [InlineKeyboardButton(f"🎭 Настроения", callback_data="edit_wizard_moods")],
         [InlineKeyboardButton("✅ Завершить", callback_data="finish_edit")]
     ]
