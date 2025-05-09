@@ -2079,10 +2079,23 @@ async def my_personas(update: Union[Update, CallbackQuery], context: ContextType
             reply_markup = InlineKeyboardMarkup(keyboard)
 
             if is_callback:
-                 if message_target.text != text_to_send or message_target.reply_markup != reply_markup:
-                     # Отправляем как простой текст
-                     await query.edit_message_text(fallback_text_plain, reply_markup=reply_markup, parse_mode=None)
-                 else: await query.answer()
+                # Удаляем старое сообщение и отправляем новое
+                try:
+                    # Сначала отвечаем на колбэк, чтобы избежать ошибки
+                    await query.answer()
+                    
+                    # Удаляем старое сообщение
+                    await context.bot.delete_message(chat_id=chat_id, message_id=message_target.message_id)
+                    
+                    # Отправляем новое сообщение
+                    await context.bot.send_message(chat_id=chat_id, text=fallback_text_plain, reply_markup=reply_markup, parse_mode=None)
+                except Exception as e:
+                    logger.warning(f"Error in my_personas when handling callback: {e}")
+                    # Если не удалось удалить, пробуем отредактировать
+                    try:
+                        await query.edit_message_text(fallback_text_plain, reply_markup=reply_markup, parse_mode=None)
+                    except Exception as edit_err:
+                        logger.warning(f"Failed to edit message in my_personas: {edit_err}")
             # Отправляем как простой текст
             else: await message_target.reply_text(fallback_text_plain, reply_markup=reply_markup, parse_mode=None)
 
@@ -2957,8 +2970,14 @@ async def edit_persona_button_callback(update: Update, context: ContextTypes.DEF
         logger.info(f"CALLBACK edit_persona < User {query.from_user.id} for persona_id: {persona_id}")
         
         # Сохраняем ID сообщения, которое нужно редактировать
-        context.user_data['edit_message_id'] = query.message.message_id
-        context.user_data['edit_chat_id'] = query.message.chat.id
+        message_id = query.message.message_id
+        chat_id = query.message.chat.id
+        
+        # Удаляем сообщение с кнопками "Настроить", "Удалить" и "В чат"
+        try:
+            await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+        except Exception as e:
+            logger.warning(f"Could not delete message with buttons: {e}")
         
         return await _start_edit_convo(update, context, persona_id)
     except (IndexError, ValueError):
