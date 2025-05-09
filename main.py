@@ -468,7 +468,7 @@ def main() -> None:
             CallbackQueryHandler(handlers.edit_persona_button_callback, pattern='^edit_persona_')
         ],
         states={
-            handlers.EDIT_WIZARD_MENU: [CallbackQueryHandler(handlers.edit_wizard_menu_handler, pattern='^edit_wizard_|^finish_edit$|^back_to_wizard_menu$')],
+            handlers.EDIT_WIZARD_MENU: [CallbackQueryHandler(handlers.edit_wizard_menu_handler, pattern='^edit_wizard_|^finish_edit$|^back_to_wizard_menu$|^set_max_msgs_')],
             handlers.EDIT_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.edit_name_received)],
             handlers.EDIT_DESCRIPTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.edit_description_received)],
             handlers.EDIT_COMM_STYLE: [CallbackQueryHandler(handlers.edit_comm_style_received, pattern='^set_comm_style_|^back_to_wizard_menu$')],
