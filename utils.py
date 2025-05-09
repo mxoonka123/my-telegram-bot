@@ -133,7 +133,9 @@ def _split_aggressively(text: str, max_len: int) -> List[str]:
 
     return parts
 
-# Функция _split_aggressively должна импортироваться обычным способом в других модулях
+# Expose _split_aggressively globally so that other modules can call it without explicit import
+import builtins as _builtins_module  # Local alias
+_builtins_module._split_aggressively = _split_aggressively
 
 # --- V13: Improved Splitting ---
 def postprocess_response(response: str, max_messages: int, message_volume: str = 'normal') -> List[str]:
