@@ -45,19 +45,19 @@ async def patched_show_edit_wizard_menu(update: Update, context: ContextTypes.DE
 # Применяем патч
 _h._show_edit_wizard_menu = patched_show_edit_wizard_menu
 
-# Создаем обертку для _try_return_to_wizard_menu
-original_try_return_to_wizard_menu = _h._try_return_to_wizard_menu
+# Создаем обертку для _try_return_to_mood_menu
+original_try_return_to_mood_menu = _h._try_return_to_mood_menu
 
-async def patched_try_return_to_wizard_menu(update, context, user_id, persona_id):
-    """Обертка для _try_return_to_wizard_menu с очисткой состояния для предотвращения проблем с меню"""
+async def patched_try_return_to_mood_menu(update, context, user_id, persona_id):
+    """Обертка для _try_return_to_mood_menu с очисткой состояния для предотвращения проблем с меню"""
     # Очищаем все временные состояния
     context.user_data.pop('edit_mood_name', None)
     context.user_data.pop('delete_mood_name', None)
     context.user_data.pop('temp_submenu_state', None)
     
-    return await original_try_return_to_wizard_menu(update, context, user_id, persona_id)
+    return await original_try_return_to_mood_menu(update, context, user_id, persona_id)
 
 # Применяем патч
-_h._try_return_to_wizard_menu = patched_try_return_to_wizard_menu
+_h._try_return_to_mood_menu = patched_try_return_to_mood_menu
 
 _logger.info("menu_navigation_fix: Исправлены проблемы с навигацией в меню (избегаем дублирования пунктов)")
