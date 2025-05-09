@@ -2371,6 +2371,65 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         await _start_edit_convo(query, context, persona_id=None)  # Use the edit persona wizard
     elif data.startswith("dummy_"):
         await query.answer()
+    elif data.startswith("set_max_msgs_"):
+        # Обработка кнопок выбора максимального количества сообщений
+        try:
+            # Извлекаем ID личности из текста сообщения
+            # Формат: "Настройка личности: имя (ID: XX)"
+            message_text = query.message.text
+            persona_id_match = re.search(r"ID: (\d+)", message_text)
+            if not persona_id_match:
+                await query.answer("❌ Не удалось определить ID личности", show_alert=True)
+                return
+                
+            persona_id = int(persona_id_match.group(1))
+            new_value_str = data.replace("set_max_msgs_", "")
+            
+            with next(get_db()) as db:
+                persona = db.query(PersonaConfig).filter(PersonaConfig.id == persona_id).first()
+                if persona:
+                    # Устанавливаем новое значение
+                    if new_value_str == "few":
+                        persona.max_response_messages = 1
+                    elif new_value_str == "many":
+                        persona.max_response_messages = 6
+                    elif new_value_str == "random":
+                        persona.max_response_messages = 0
+                    else:  # normal
+                        persona.max_response_messages = 3
+                    db.commit()
+                    
+                    # Отправляем подтверждение
+                    display_map = {
+                        "few": "🤋 Поменьше сообщений",
+                        "normal": "💬 Стандартное количество",
+                        "many": "📚 Побольше сообщений",
+                        "random": "🎲 Случайное количество"
+                    }
+                    
+                    # Отправляем подтверждение установки нового значения
+                    await query.answer(f"✅ Установлено: {display_map[new_value_str]}", show_alert=True)
+                    
+                    # Обновляем кнопки с новыми галочками
+                    # Создаем клавиатуру с обновленными галочками
+                    max_msgs_value = new_value_str
+                    keyboard = [
+                        [InlineKeyboardButton(f"{'\u2705 ' if max_msgs_value == 'few' else ''}🤋 Поменьше сообщений", callback_data="set_max_msgs_few")],
+                        [InlineKeyboardButton(f"{'\u2705 ' if max_msgs_value == 'normal' else ''}💬 Стандартное количество", callback_data="set_max_msgs_normal")],
+                        [InlineKeyboardButton(f"{'\u2705 ' if max_msgs_value == 'many' else ''}📚 Побольше сообщений", callback_data="set_max_msgs_many")],
+                        [InlineKeyboardButton(f"{'\u2705 ' if max_msgs_value == 'random' else ''}🎲 Случайное количество", callback_data="set_max_msgs_random")],
+                        [InlineKeyboardButton(f"↩️ Назад", callback_data="back_to_wizard_menu")]
+                    ]
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+                    
+                    # Обновляем сообщение с кнопками
+                    msg_text = f"💬 Выберите, что изменить:"
+                    await query.message.edit_text(msg_text, reply_markup=reply_markup)
+                else:
+                    await query.answer("❌ Ошибка: Личность не найдена", show_alert=True)
+        except Exception as e:
+            logger.error(f"Error processing set_max_msgs callback: {e}", exc_info=True)
+            await query.answer("❌ Ошибка при сохранении настройки", show_alert=True)
     else:
         # Log unhandled non-conversation callbacks
         logger.warning(f"Unhandled non-conversation callback query data: {data} from user {user_id}")
