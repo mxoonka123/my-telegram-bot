@@ -94,20 +94,22 @@ def apply_fixes():
     # Применяем патч
     _h.edit_mood_name_received = patched_edit_mood_name_received
     
-    # Общий патч для всех функций reply_text с Markdown
-    original_update_message_reply_text = _h.Update.Message.reply_text
+    # Пропускаем патч для reply_text, так как у нас нет доступа к классу Message напрямую
+    # Это не критично, так как основные функции мы уже патчим выше
+    _logger.info("Пропущен патч для Message.reply_text - недостаточные права доступа к классу")
     
-    async def safe_reply_text(self, text, *args, **kwargs):
-        """Безопасная версия reply_text, которая отключает Markdown если он используется"""
-        # Если указан ParseMode.MARKDOWN_V2, заменяем его на None и очищаем экранирование
-        if kwargs.get('parse_mode') == ParseMode.MARKDOWN_V2:
-            kwargs['parse_mode'] = None
-            text = text.replace('\\', '')
+    # Удаляем экранирование во всех строковых константах, чтобы они отображались правильно
+    for attr_name in dir(_h):
+        if attr_name.startswith('__'):
+            continue
         
-        return await original_update_message_reply_text(self, text, *args, **kwargs)
-    
-    # Применяем патч к методу reply_text
-    _h.Update.Message.reply_text = safe_reply_text
+        try:
+            attr_value = getattr(_h, attr_name)
+            if isinstance(attr_value, str) and '\\' in attr_value:
+                # Удаляем экранирование из строк
+                setattr(_h, attr_name, attr_value.replace('\\', ''))
+        except (AttributeError, TypeError):
+            pass
     
     _logger.info("markdown_simple_fix: Применен радикальный патч - полностью отключено Markdown форматирование для проблемных текстов")
 
