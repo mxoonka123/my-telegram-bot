@@ -2955,6 +2955,11 @@ async def edit_persona_button_callback(update: Update, context: ContextTypes.DEF
     try:
         persona_id = int(query.data.split('_')[-1])
         logger.info(f"CALLBACK edit_persona < User {query.from_user.id} for persona_id: {persona_id}")
+        
+        # Сохраняем ID сообщения, которое нужно редактировать
+        context.user_data['edit_message_id'] = query.message.message_id
+        context.user_data['edit_chat_id'] = query.message.chat.id
+        
         return await _start_edit_convo(update, context, persona_id)
     except (IndexError, ValueError):
         logger.error(f"Could not parse persona_id from edit_persona callback data: {query.data}")
@@ -3022,11 +3027,26 @@ async def _show_edit_wizard_menu(update: Update, context: ContextTypes.DEFAULT_T
     msg_text = f"⚙️ *Настройка личности: {escape_markdown_v2(persona_config.name)}* \\(ID: `{persona_id}`\\)\n\nВыберите, что изменить:"
 
     try:
-        if query:
-            # Всегда редактируем существующее сообщение, даже если текст не изменился
-            # Это предотвратит создание дубликатов меню
+        # Проверяем, есть ли сохраненный ID сообщения для редактирования
+        edit_message_id = context.user_data.get('edit_message_id')
+        edit_chat_id = context.user_data.get('edit_chat_id')
+        
+        if query and not (edit_message_id and edit_chat_id):
+            # Если это колбэк, но нет сохраненного ID, редактируем текущее сообщение
             await query.edit_message_text(msg_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
+        elif edit_message_id and edit_chat_id:
+            # Если есть сохраненный ID, редактируем это сообщение
+            await context.bot.edit_message_text(
+                text=msg_text,
+                chat_id=edit_chat_id,
+                message_id=edit_message_id,
+                reply_markup=reply_markup,
+                parse_mode=ParseMode.MARKDOWN_V2
+            )
+            # Сохраняем эти значения для будущих редактирований
+            context.user_data['wizard_menu_message_id'] = edit_message_id
         else:
+            # Если это не колбэк и нет сохраненного ID, создаем новое сообщение
             # Delete previous message if it was a prompt (e.g., "Enter name:")
             if context.user_data.get('last_prompt_message_id'):
                 try:
