@@ -3024,7 +3024,18 @@ async def _handle_back_to_wizard_menu(update: Update, context: ContextTypes.DEFA
         max_msgs_setting = persona.max_response_messages
         max_msgs_display = "Случайно (1-3)" if max_msgs_setting <= 0 else str(max_msgs_setting)
         
-        # Создаем клавиатуру
+        # Определяем текущие выбранные значения для макс. сообщений
+        max_msgs_value = ""
+        if max_msgs_setting == 0:
+            max_msgs_value = "random"
+        elif max_msgs_setting == 1:
+            max_msgs_value = "few"
+        elif max_msgs_setting == 3:
+            max_msgs_value = "normal"
+        elif max_msgs_setting == 6:
+            max_msgs_value = "many"
+        
+        # Создаем клавиатуру с галочками
         keyboard = [
             [
                 InlineKeyboardButton("✏️ Имя", callback_data="edit_wizard_name"),
@@ -3034,7 +3045,13 @@ async def _handle_back_to_wizard_menu(update: Update, context: ContextTypes.DEFA
             [InlineKeyboardButton(f"🗣️ Разговорчивость ({verbosity_map.get(verbosity, '?')})", callback_data="edit_wizard_verbosity")],
             [InlineKeyboardButton(f"👥 Ответы в группе ({group_reply_map.get(group_reply, '?')})", callback_data="edit_wizard_group_reply")],
             [InlineKeyboardButton(f"🖼️ Реакция на медиа ({media_react_map.get(media_react, '?')})", callback_data="edit_wizard_media_reaction")],
-            [InlineKeyboardButton(f"💬 Макс. сообщ. ({max_msgs_display})", callback_data="edit_wizard_max_msgs")],
+            
+            # Добавляем галочки для макс. сообщений
+            [InlineKeyboardButton(f"{'\u2705 ' if max_msgs_value == 'few' else ''}🤋 Поменьше сообщений", callback_data="edit_wizard_max_msgs")],
+            [InlineKeyboardButton(f"{'\u2705 ' if max_msgs_value == 'normal' else ''}💬 Стандартное количество", callback_data="edit_wizard_max_msgs")],
+            [InlineKeyboardButton(f"{'\u2705 ' if max_msgs_value == 'many' else ''}📚 Побольше сообщений", callback_data="edit_wizard_max_msgs")],
+            [InlineKeyboardButton(f"{'\u2705 ' if max_msgs_value == 'random' else ''}🎲 Случайное количество", callback_data="edit_wizard_max_msgs")],
+            
             [InlineKeyboardButton(f"🔊 Объем сообщений", callback_data="edit_wizard_message_volume")],
             [InlineKeyboardButton(f"🎭 Настроения", callback_data="edit_wizard_moods")],
             [InlineKeyboardButton("✅ Завершить", callback_data="finish_edit")]
