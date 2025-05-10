@@ -3153,25 +3153,19 @@ async def fixed_show_edit_wizard_menu(update: Update, context: ContextTypes.DEFA
         group_reply_map = {"always": "Всегда", "mentioned_only": "По @", "mentioned_or_contextual": "По @ / Контексту", "never": "Никогда"}
         media_react_map = {"all": "Текст+GIF", "text_only": "Только текст", "none": "Никак", "photo_only": "Только фото", "voice_only": "Только голос"}
 
-        # Получаем текущее значение макс. сообщений
-        max_msgs_setting = persona_config.max_response_messages
-        max_msgs_display = str(max_msgs_setting) if max_msgs_setting > 0 else "Случайно (1-3)"
-        if max_msgs_setting == 0: # Используем 0 для "Случайно"
-            max_msgs_display = "Случайно (1-3)"
-        elif max_msgs_setting < 0: # Если вдруг старое значение, тоже считаем случайным
-            max_msgs_display = "Случайно (1-3)"
-        else:
-            max_msgs_display = str(max_msgs_setting)
-            
-        # Определяем текущие выбранные значения для макс. сообщений
-        max_msgs_display_text = "Стандартно" # Значение по умолчанию для отображения
-        if max_msgs_setting == 0: max_msgs_display_text = "Случайно"
-        elif max_msgs_setting == 1: max_msgs_display_text = "Поменьше"
-        elif max_msgs_setting == 3: max_msgs_display_text = "Стандартно"
-        elif max_msgs_setting == 6: max_msgs_display_text = "Побольше"
-        else:
-            logger.warning(f"Persona {persona_id} has unexpected max_response_messages: {max_msgs_setting}. Displaying as 'Стандартно'.")
+        # Получаем текущее значение для отображения на кнопке "Макс. сообщ."
+        current_max_msgs_setting = persona_config.max_response_messages
+        button_max_msgs_text = "Стандартно" # Текст по умолчанию
+        if current_max_msgs_setting == 0: button_max_msgs_text = "Случайно"
+        elif current_max_msgs_setting == 1: button_max_msgs_text = "Поменьше"
+        elif current_max_msgs_setting == 3: button_max_msgs_text = "Стандартно"
+        elif current_max_msgs_setting == 6: button_max_msgs_text = "Побольше"
+        # Если значение неожиданное, оставляем "Стандартно" или можно добавить лог
+        if current_max_msgs_setting not in [0, 1, 3, 6]:
+            logger.warning(f"Persona {persona_id} has unexpected max_response_messages: {current_max_msgs_setting}. Displaying as 'Стандартно'.")
         
+        # Логируем значение для отладки
+        logger.debug(f"fixed_show_edit_wizard_menu: Persona {persona_id} max_msgs button text: '{button_max_msgs_text}', raw value: {current_max_msgs_setting}")
 
         # Build keyboard with full text
         keyboard = [
@@ -3184,7 +3178,7 @@ async def fixed_show_edit_wizard_menu(update: Update, context: ContextTypes.DEFA
             [InlineKeyboardButton(f"👥 Ответы в группе ({group_reply_map.get(group_reply, '?')})", callback_data="edit_wizard_group_reply")],
             [InlineKeyboardButton(f"🖼️ Реакция на медиа ({media_react_map.get(media_react, '?')})", callback_data="edit_wizard_media_reaction")],
             
-            [InlineKeyboardButton(f"🗨️ Макс. сообщ. ({max_msgs_display_text})", callback_data="edit_wizard_max_msgs")],
+            [InlineKeyboardButton(f"🗨️ Макс. сообщ. ({button_max_msgs_text})", callback_data="edit_wizard_max_msgs")],
             
             [InlineKeyboardButton(f"🎭 Настроения{star if not is_premium else ''}", callback_data="edit_wizard_moods")],
             [InlineKeyboardButton("✅ Завершить", callback_data="finish_edit")]
