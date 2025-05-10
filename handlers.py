@@ -3622,11 +3622,9 @@ async def edit_moods_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 # --- Markdown Safety Fixes ---
 def fix_markdown_prompt_strings():
     """Исправляет все строки с подсказками для корректного экранирования в Markdown V2"""
-    global (
-        prompt_new_name, prompt_new_prompt_fmt_raw, prompt_confirm_delete_fmt_raw,
-        error_validation, error_name_exists_fmt_raw, error_no_session,
-        error_not_found, error_db, error_general, prompt_for_prompt_fmt_raw
-    )
+    global prompt_new_name, prompt_new_prompt_fmt_raw, prompt_confirm_delete_fmt_raw
+    global error_validation, error_name_exists_fmt_raw, error_no_session
+    global error_not_found, error_db, error_general, prompt_for_prompt_fmt_raw
     
     # Список всех строк, которые нуждаются в экранировании
     markdown_strings = [
