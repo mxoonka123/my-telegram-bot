@@ -3020,7 +3020,8 @@ async def edit_persona_button_callback(update: Update, context: ContextTypes.DEF
     """Entry point for edit persona button press."""
     query = update.callback_query
     if not query or not query.data: return ConversationHandler.END
-    await query.answer("Начинаем редактирование...")
+    
+    # Не отвечаем сразу на коллбэк, если будем удалять сообщение
 
     error_invalid_id_callback = escape_markdown_v2("❌ ошибка: неверный ID личности в кнопке.")
 
@@ -3028,54 +3029,52 @@ async def edit_persona_button_callback(update: Update, context: ContextTypes.DEF
         persona_id = int(query.data.split('_')[-1])
         logger.info(f"CALLBACK edit_persona < User {query.from_user.id} for persona_id: {persona_id}")
         
-        # Сохраняем ID сообщения, которое нужно редактировать
-        message_id = query.message.message_id
-        chat_id = query.message.chat.id
-        
         # Удаляем сообщение с кнопками "Настроить", "Удалить" и "В чат"
-        try:
-            await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
-        except Exception as e:
-            logger.warning(f"Could not delete message with buttons: {e}")
+        if query.message: # Убедимся, что query.message существует
+            try:
+                # Отвечаем на коллбэк до того, как сообщение будет удалено
+                try:
+                    await query.answer("Начинаем редактирование...")
+                except Exception as e_ans:
+                    logger.debug(f"Could not answer query in edit_persona_button_callback: {e_ans}")
+                
+                # Удаляем сообщение
+                chat_id = query.message.chat.id
+                message_id = query.message.message_id
+                await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+                logger.debug(f"Deleted message {message_id} before showing edit wizard.")
+            except Exception as e:
+                logger.warning(f"Could not delete message with buttons: {e}. Continuing...")
         
+        # `_start_edit_convo` вызовет `fixed_show_edit_wizard_menu`, который отправит новое сообщение.
         return await _start_edit_convo(update, context, persona_id)
     except (IndexError, ValueError):
         logger.error(f"Could not parse persona_id from edit_persona callback data: {query.data}")
-        try:
-            await query.edit_message_text(error_invalid_id_callback, parse_mode=ParseMode.MARKDOWN_V2)
-        except Exception as e:
-            logger.error(f"Failed to edit message with invalid ID error: {e}")
+        # Если предыдущее сообщение не удалось удалить или его не было,
+        # пытаемся отредактировать текущее сообщение с ошибкой, если оно есть.
+        if query.message:
+            try:
+                await query.edit_message_text(error_invalid_id_callback, parse_mode=ParseMode.MARKDOWN_V2)
+            except Exception as e_edit:
+                logger.error(f"Failed to edit message with invalid ID error (original message might be gone): {e_edit}")
+                # Если редактирование не удалось, просто отправим новое сообщение об ошибке
+                try:
+                    await context.bot.send_message(query.message.chat.id, error_invalid_id_callback, parse_mode=ParseMode.MARKDOWN_V2)
+                except Exception as e_send:
+                    logger.error(f"Failed to send error message: {e_send}")
+        elif update.effective_chat: # Если query.message нет, но есть чат
+            try:
+                await context.bot.send_message(update.effective_chat.id, error_invalid_id_callback, parse_mode=ParseMode.MARKDOWN_V2)
+            except Exception as e_send:
+                logger.error(f"Failed to send error message to effective_chat: {e_send}")
         return ConversationHandler.END
-
-async def edit_persona_button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Entry point for edit persona button press."""
-    query = update.callback_query
-    if not query or not query.data: return ConversationHandler.END
-    await query.answer("Начинаем редактирование...")
-
-    error_invalid_id_callback = escape_markdown_v2("❌ ошибка: неверный ID личности в кнопке.")
-
-    try:
-        persona_id = int(query.data.split('_')[-1])
-        logger.info(f"CALLBACK edit_persona < User {query.from_user.id} for persona_id: {persona_id}")
-        
-        # Сохраняем ID сообщения, которое нужно редактировать
-        message_id = query.message.message_id
-        chat_id = query.message.chat.id
-        
-        # Удаляем сообщение с кнопками "Настроить", "Удалить" и "В чат"
-        try:
-            await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
-        except Exception as e:
-            logger.warning(f"Could not delete message with buttons: {e}")
-        
-        return await _start_edit_convo(update, context, persona_id)
-    except (IndexError, ValueError):
-        logger.error(f"Could not parse persona_id from edit_persona callback data: {query.data}")
-        try:
-            await query.edit_message_text(error_invalid_id_callback, parse_mode=ParseMode.MARKDOWN_V2)
-        except Exception as e:
-            logger.error(f"Failed to edit message with invalid ID error: {e}")
+    except Exception as e: # Общий обработчик ошибок на случай непредвиденных ситуаций
+        logger.error(f"Unexpected error in edit_persona_button_callback for persona_id from {query.data if query else 'N/A'}: {e}", exc_info=True)
+        if query and query.message:
+            try: 
+                await query.answer("Произошла ошибка.", show_alert=True)
+            except: 
+                pass
         return ConversationHandler.END
 
 async def _handle_back_to_wizard_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, persona_id: int) -> int:
@@ -3178,8 +3177,11 @@ async def fixed_show_edit_wizard_menu(update: Update, context: ContextTypes.DEFA
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
-        # Исправляю экранирование скобок (снова)
-        msg_text = f"⚙️ *Настройка личности: {escape_markdown_v2(persona_config.name)}* \(ID: `{persona_id}`\)\n\nВыберите, что изменить:"
+        # Исправляю экранирование скобок с помощью raw-строки и escape_markdown_v2
+        msg_text_raw = f"⚙️ *Настройка личности: {persona_config.name}* (ID: `{persona_id}`)
+
+Выберите, что изменить:"
+        msg_text = escape_markdown_v2(msg_text_raw)
         
         # Если есть старое сообщение меню, попробуем его удалить
         if 'wizard_menu_message_id' in context.user_data and 'edit_chat_id' in context.user_data:
