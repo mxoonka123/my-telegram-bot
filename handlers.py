@@ -2948,6 +2948,31 @@ async def yookassa_webhook_placeholder(update: Update, context: ContextTypes.DEF
 
 # --- Edit Persona Wizard ---
 
+async def _clean_previous_edit_session(context: ContextTypes.DEFAULT_TYPE, chat_id: Optional[int]):
+    """Helper to clean up user_data from a previous edit session."""
+    if context.user_data.get('edit_persona_id') or \
+       context.user_data.get('wizard_menu_message_id') or \
+       context.user_data.get('delete_persona_id'): # Добавим и для диалога удаления
+        logger.info(f"Cleaning previous edit/delete session data for user {context.user_data.get('_user_id_for_logging', 'N/A')}")
+        
+        # Попытка удалить старое сообщение меню, если оно есть
+        old_wizard_menu_id = context.user_data.get('wizard_menu_message_id')
+        old_edit_chat_id = context.user_data.get('edit_chat_id')
+        if old_wizard_menu_id and old_edit_chat_id:
+            try:
+                await context.bot.delete_message(chat_id=old_edit_chat_id, message_id=old_wizard_menu_id)
+                logger.debug(f"Deleted old wizard menu message {old_wizard_menu_id} from previous session.")
+            except Exception as e:
+                logger.warning(f"Could not delete old wizard menu message {old_wizard_menu_id}: {e}")
+        
+        context.user_data.clear()
+        if chat_id: # Отправляем уведомление, если есть куда
+            try:
+                # await context.bot.send_message(chat_id, "Предыдущая сессия настройки была завершена.", parse_mode=None)
+                pass # Можно раскомментировать, если нужно явное уведомление
+            except Exception as e:
+                logger.warning(f"Could not send previous session cleanup message: {e}")
+
 async def _start_edit_convo(update: Update, context: ContextTypes.DEFAULT_TYPE, persona_id: int) -> int:
     """Starts the persona editing wizard."""
     user_id = update.effective_user.id
@@ -3015,8 +3040,12 @@ async def edit_persona_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
     """Entry point for /editpersona command."""
     if not update.message: return ConversationHandler.END
     user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
     args = context.args
     logger.info(f"CMD /editpersona < User {user_id} with args: {args}")
+    context.user_data['_user_id_for_logging'] = user_id # Для логгирования в _clean_previous_edit_session
+
+    await _clean_previous_edit_session(context, chat_id) # Очищаем предыдущую сессию
 
     usage_text = escape_markdown_v2("укажи id личности: `/editpersona <id>`\nили используй кнопку из `/mypersonas`")
     error_invalid_id = escape_markdown_v2("❌ id должен быть числом.")
@@ -3037,37 +3066,34 @@ async def edit_persona_button_callback(update: Update, context: ContextTypes.DEF
     query = update.callback_query
     if not query or not query.data: return ConversationHandler.END
     
-    # НЕ отвечаем здесь сразу, если будем удалять сообщение
-    # await query.answer("Начинаем редактирование...")
+    user_id = query.from_user.id
+    original_chat_id = query.message.chat.id if query.message else (update.effective_chat.id if update.effective_chat else None)
+    logger.info(f"CALLBACK edit_persona BUTTON < User {user_id} for data {query.data} in chat {original_chat_id}")
+    context.user_data['_user_id_for_logging'] = user_id
+
+    await _clean_previous_edit_session(context, original_chat_id) # Очищаем предыдущую сессию
+
+    # Важно! Отвечаем на коллбэк ПОСЛЕ потенциальной очистки и ДО удаления сообщения,
+    # чтобы пользователь не видел "часики" слишком долго.
+    try:
+        await query.answer() # Быстрый ответ, что кнопка принята
+    except Exception as e_ans:
+        logger.debug(f"edit_persona_button_callback: Could not answer query: {e_ans}")
+
 
     error_invalid_id_callback = escape_markdown_v2("❌ ошибка: неверный ID личности в кнопке.")
     
-    original_chat_id = None
-    if query.message: # Сохраняем chat_id ПЕРЕД удалением сообщения
-        original_chat_id = query.message.chat.id
-    elif update.effective_chat:
-        original_chat_id = update.effective_chat.id
-    else:
-        logger.error("edit_persona_button_callback: Could not determine chat_id to send error message.")
-        if query:
-            try: await query.answer("Критическая ошибка: чат не найден.", show_alert=True)
-            except: pass
-        return ConversationHandler.END
-
-
     try:
         persona_id = int(query.data.split('_')[-1])
-        logger.info(f"CALLBACK edit_persona < User {query.from_user.id} for persona_id: {persona_id} in chat {original_chat_id}")
+        logger.info(f"Parsed persona_id: {persona_id} for user {user_id}")
         
-        if query.message: # Удаляем сообщение с кнопками, если оно существует
+        if query.message: 
             try:
                 await context.bot.delete_message(chat_id=query.message.chat.id, message_id=query.message.message_id)
-                logger.debug(f"Deleted message {query.message.message_id} before showing edit wizard.")
+                logger.debug(f"Deleted message {query.message.message_id} that contained the 'Настроить' button.")
             except Exception as e:
-                logger.warning(f"Could not delete message ({query.message.message_id}) with buttons: {e}. Continuing...")
+                logger.warning(f"Could not delete message ({query.message.message_id}) with 'Настроить' button: {e}. Continuing...")
         
-        # `_start_edit_convo` теперь должен сам корректно определить chat_id из `update.effective_chat`
-        # `update` объект передается целиком.
         return await _start_edit_convo(update, context, persona_id)
     except (IndexError, ValueError):
         logger.error(f"Could not parse persona_id from edit_persona callback data: {query.data}")
@@ -4554,17 +4580,16 @@ async def _start_delete_convo(update: Update, context: ContextTypes.DEFAULT_TYPE
          logger.error(f"Database error starting delete persona {persona_id}: {e}", exc_info=True)
          await context.bot.send_message(chat_id, error_db, parse_mode=ParseMode.MARKDOWN_V2)
          return ConversationHandler.END
-    except Exception as e:
-         logger.error(f"Unexpected error starting delete persona {persona_id}: {e}", exc_info=True)
-         await context.bot.send_message(chat_id, error_general, parse_mode=ParseMode.MARKDOWN_V2)
-         return ConversationHandler.END
-
 async def delete_persona_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Entry point for /deletepersona command."""
     if not update.message: return ConversationHandler.END
     user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
     args = context.args
     logger.info(f"CMD /deletepersona < User {user_id} with args: {args}")
+    context.user_data['_user_id_for_logging'] = user_id
+
+    await _clean_previous_edit_session(context, chat_id) # Очищаем предыдущую сессию НАСТРОЙКИ
 
     usage_text = escape_markdown_v2("укажи id личности: `/deletepersona <id>`\nили используй кнопку из `/mypersonas`")
     error_invalid_id = escape_markdown_v2("❌ id должен быть числом.")
@@ -4584,13 +4609,22 @@ async def delete_persona_button_callback(update: Update, context: ContextTypes.D
     """Entry point for delete persona button press."""
     query = update.callback_query
     if not query or not query.data: return ConversationHandler.END
+    
+    user_id = query.from_user.id
+    chat_id = query.message.chat.id if query.message else (update.effective_chat.id if update.effective_chat else None)
+    logger.info(f"CALLBACK delete_persona < User {user_id} button press, data: {query.data}")
+    context.user_data['_user_id_for_logging'] = user_id
+    
+    await _clean_previous_edit_session(context, chat_id) # Очищаем предыдущую сессию НАСТРОЙКИ
+    
+    # Отвечаем на коллбэк только после очистки предыдущих сессий
     await query.answer("Начинаем удаление...")
 
     error_invalid_id_callback = escape_markdown_v2("❌ ошибка: неверный ID личности в кнопке.")
 
     try:
         persona_id = int(query.data.split('_')[-1])
-        logger.info(f"CALLBACK delete_persona < User {query.from_user.id} for persona_id: {persona_id}")
+        logger.info(f"Parsed persona_id for deletion: {persona_id} for user {user_id}")
         return await _start_delete_convo(update, context, persona_id)
     except (IndexError, ValueError):
         logger.error(f"Could not parse persona_id from delete_persona callback data: {query.data}")
