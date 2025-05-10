@@ -3142,6 +3142,20 @@ async def fixed_show_edit_wizard_menu(update: Update, context: ContextTypes.DEFA
             max_msgs_display = "Случайно (1-3)"
         else:
             max_msgs_display = str(max_msgs_setting)
+            
+        # Определяем текущие выбранные значения для макс. сообщений
+        max_msgs_value = ""
+        if max_msgs_setting == 0:
+            max_msgs_value = "random"
+        elif max_msgs_setting == 1:
+            max_msgs_value = "few"
+        elif max_msgs_setting == 3:
+            max_msgs_value = "normal"
+        elif max_msgs_setting == 6:
+            max_msgs_value = "many"
+        else: # Фоллбэк для неожиданных или старых значений (например, 2)
+            logger.warning(f"Persona {persona_id} has unexpected max_response_messages: {max_msgs_setting}. Defaulting display to normal.")
+            max_msgs_value = "normal" 
 
         # Build keyboard with full text
         keyboard = [
@@ -3151,100 +3165,62 @@ async def fixed_show_edit_wizard_menu(update: Update, context: ContextTypes.DEFA
             ],
             [InlineKeyboardButton(f"💬 Стиль ({style_map.get(style, '?')})", callback_data="edit_wizard_comm_style")],
             [InlineKeyboardButton(f"🗣️ Разговорчивость ({verbosity_map.get(verbosity, '?')})", callback_data="edit_wizard_verbosity")],
-            # Use full words below
             [InlineKeyboardButton(f"👥 Ответы в группе ({group_reply_map.get(group_reply, '?')})", callback_data="edit_wizard_group_reply")],
             [InlineKeyboardButton(f"🖼️ Реакция на медиа ({media_react_map.get(media_react, '?')})", callback_data="edit_wizard_media_reaction")],
-            # End of full words change
-            [InlineKeyboardButton(f"🗨️ Макс. сообщ. ({max_msgs_display})", callback_data="edit_wizard_max_msgs")],
-            [InlineKeyboardButton(f"🔊 Объем сообщений", callback_data="edit_wizard_message_volume")],
+            
+            [InlineKeyboardButton(f"{'✅ ' if max_msgs_value == 'few' else ''}🤋 Поменьше сообщ.", callback_data="set_max_msgs_few")],
+            [InlineKeyboardButton(f"{'✅ ' if max_msgs_value == 'normal' else ''}💬 Стандартно", callback_data="set_max_msgs_normal")],
+            [InlineKeyboardButton(f"{'✅ ' if max_msgs_value == 'many' else ''}📚 Побольше сообщ.", callback_data="set_max_msgs_many")],
+            [InlineKeyboardButton(f"{'✅ ' if max_msgs_value == 'random' else ''}🎲 Случайно", callback_data="set_max_msgs_random")],
+            
             [InlineKeyboardButton(f"🎭 Настроения{star if not is_premium else ''}", callback_data="edit_wizard_moods")],
             [InlineKeyboardButton("✅ Завершить", callback_data="finish_edit")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
         # Исправляю экранирование скобок (снова)
-        msg_text = f"⚙️ *Настройка личности: {escape_markdown_v2(persona_config.name)}* \\(ID: `{persona_id}`\\)\n\nВыберите, что изменить:"
-
-        try:
-            # Возвращаемся к подходу с редактированием сообщений
-    verbosity = persona_config.verbosity_level or "medium"
-    group_reply = persona_config.group_reply_preference or "mentioned_or_contextual"
-    media_react = persona_config.media_reaction or "text_only"
-
-    # Map internal keys to user-friendly text (ПОЛНЫЕ СЛОВА)
-    style_map = {"neutral": "Нейтральный", "friendly": "Дружелюбный", "sarcastic": "Саркастичный", "formal": "Формальный", "brief": "Краткий"}
-    verbosity_map = {"concise": "Лаконичный", "medium": "Средний", "talkative": "Разговорчивый"}
-    group_reply_map = {"always": "Всегда", "mentioned_only": "По @", "mentioned_or_contextual": "По @ / Контексту", "never": "Никогда"}
-    media_react_map = {"all": "Текст+GIF", "text_only": "Только текст", "none": "Никак", "photo_only": "Только фото", "voice_only": "Только голос"}
-
-    # Получаем текущее значение макс. сообщений
-    max_msgs_setting = persona_config.max_response_messages
-    max_msgs_display = str(max_msgs_setting) if max_msgs_setting > 0 else "Случайно (1-3)"
-    if max_msgs_setting == 0: # Используем 0 для "Случайно"
-        max_msgs_display = "Случайно (1-3)"
-    elif max_msgs_setting < 0: # Если вдруг старое значение, тоже считаем случайным
-        max_msgs_display = "Случайно (1-3)"
-    else:
-        max_msgs_display = str(max_msgs_setting)
-
-    # Build keyboard with full text
-    keyboard = [
-        [
-            InlineKeyboardButton("✏️ Имя", callback_data="edit_wizard_name"),
-            InlineKeyboardButton("📜 Описание", callback_data="edit_wizard_description")
-        ],
-        [InlineKeyboardButton(f"💬 Стиль ({style_map.get(style, '?')})", callback_data="edit_wizard_comm_style")],
-        [InlineKeyboardButton(f"🗣️ Разговорчивость ({verbosity_map.get(verbosity, '?')})", callback_data="edit_wizard_verbosity")],
-        # Use full words below
-        [InlineKeyboardButton(f"👥 Ответы в группе ({group_reply_map.get(group_reply, '?')})", callback_data="edit_wizard_group_reply")],
-        [InlineKeyboardButton(f"🖼️ Реакция на медиа ({media_react_map.get(media_react, '?')})", callback_data="edit_wizard_media_reaction")],
-        # End of full words change
-        [InlineKeyboardButton(f"🗨️ Макс. сообщ. ({max_msgs_display})", callback_data="edit_wizard_max_msgs")],
-        [InlineKeyboardButton(f"🔊 Объем сообщений", callback_data="edit_wizard_message_volume")],
-        [InlineKeyboardButton(f"🎭 Настроения{star if not is_premium else ''}", callback_data="edit_wizard_moods")],
-        [InlineKeyboardButton("✅ Завершить", callback_data="finish_edit")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
-    # Исправляю экранирование скобок (снова)
-    msg_text = f"⚙️ *Настройка личности: {escape_markdown_v2(persona_config.name)}* \\(ID: `{persona_id}`\\)\n\nВыберите, что изменить:"
-
-    try:
-        # Возвращаемся к подходу с редактированием сообщений
+        msg_text = f"⚙️ *Настройка личности: {escape_markdown_v2(persona_config.name)}* \(ID: `{persona_id}`\)\n\nВыберите, что изменить:"
         
-        # Если есть колбэк, редактируем текущее сообщение
-        if query:
+        # Если есть старое сообщение меню, попробуем его удалить
+        if 'wizard_menu_message_id' in context.user_data and 'edit_chat_id' in context.user_data:
             try:
-                await query.edit_message_text(msg_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
-                # Сохраняем ID сообщения для будущих редактирований
-                context.user_data['edit_message_id'] = query.message.message_id
-                context.user_data['edit_chat_id'] = chat_id
-                return EDIT_WIZARD_MENU
-            except Exception as e:
-                logger.warning(f"Could not edit message: {e}")
-                # Если не удалось отредактировать, продолжаем и создаем новое сообщение
-        
-        # Удаляем предыдущее сообщение с подсказкой, если оно есть
-        if context.user_data.get('last_prompt_message_id'):
-            try:
-                await context.bot.delete_message(chat_id=chat_id, message_id=context.user_data['last_prompt_message_id'])
+                await context.bot.delete_message(
+                    chat_id=context.user_data['edit_chat_id'], 
+                    message_id=context.user_data['wizard_menu_message_id']
+                )
             except Exception as del_err:
-                logger.warning(f"Could not delete previous prompt message: {del_err}")
-            context.user_data.pop('last_prompt_message_id', None)
+                logger.warning(f"Could not delete old wizard menu message: {del_err}")
         
-        # Создаем новое сообщение с меню
-        sent_message = await context.bot.send_message(chat_id, msg_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
+        # Send a NEW message for the wizard menu
+        sent_message = await context.bot.send_message(
+            chat_id=chat_id,
+            text=msg_text, 
+            reply_markup=reply_markup, 
+            parse_mode=ParseMode.MARKDOWN_V2
+        )
         
-        # Сохраняем ID нового сообщения
-        context.user_data['edit_message_id'] = sent_message.message_id
-        context.user_data['edit_chat_id'] = chat_id
+        # Store its ID for potential future edits by submenus or for cleanup
         context.user_data['wizard_menu_message_id'] = sent_message.message_id
-    except Exception as e:
-        logger.error(f"Error showing wizard menu for persona {persona_id}: {e}")
-        await context.bot.send_message(chat_id, escape_markdown_v2("❌ Ошибка отображения меню."), parse_mode=ParseMode.MARKDOWN_V2)
-        return ConversationHandler.END
+        context.user_data['edit_message_id'] = sent_message.message_id # For _send_prompt helper
+        context.user_data['edit_chat_id'] = chat_id
+        
+        if query: # Answer the original callback that led here (e.g., "Настроить")
+            try:
+                await query.answer()
+            except Exception: # If the original callback's message was deleted, answer might fail.
+                pass
 
-    return EDIT_WIZARD_MENU
+        return EDIT_WIZARD_MENU # Return to the main wizard menu state
+        
+    except Exception as e:
+        logger.error(f"Error in fixed_show_edit_wizard_menu: {e}", exc_info=True)
+        try:
+            chat_id_fallback = update.effective_chat.id if update.effective_chat else None
+            if chat_id_fallback:
+                await context.bot.send_message(chat_id_fallback, "Произошла ошибка при отображении меню настроек.")
+        except Exception as fallback_e:
+            logger.error(f"Failed to send error message in fixed_show_edit_wizard_menu: {fallback_e}")
+        return ConversationHandler.END
 
 # --- Wizard Menu Handler ---
 async def edit_wizard_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
