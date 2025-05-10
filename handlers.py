@@ -3620,40 +3620,46 @@ async def edit_moods_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             return await _try_return_to_wizard_menu(update, context, user_id, persona_id)
 
 # --- Markdown Safety Fixes ---
-def fix_markdown_prompt_strings():
+def fix_markdown_prompt_strings(markdown_strings=None):
     """Исправляет все строки с подсказками для корректного экранирования в Markdown V2"""
     global prompt_new_name, prompt_new_prompt_fmt_raw, prompt_confirm_delete_fmt_raw
     global error_validation, error_name_exists_fmt_raw, error_no_session
     global error_not_found, error_db, error_general, prompt_for_prompt_fmt_raw
     
-    # Список всех строк, которые нуждаются в экранировании
-    markdown_strings = [
-        prompt_new_name, prompt_new_prompt_fmt_raw, prompt_confirm_delete_fmt_raw,
-        error_validation, error_name_exists_fmt_raw, error_no_session,
-        error_not_found, error_db, error_general, prompt_for_prompt_fmt_raw
-    ]
+    # Если список не предоставлен, создаем его
+    if markdown_strings is None:
+        markdown_strings = [
+            prompt_new_name, prompt_new_prompt_fmt_raw, prompt_confirm_delete_fmt_raw,
+            error_validation, error_name_exists_fmt_raw, error_no_session,
+            error_not_found, error_db, error_general, prompt_for_prompt_fmt_raw
+        ]
     
-    for i, string in enumerate(markdown_strings):
-        markdown_strings[i] = escape_markdown_v2(string)
+    # Экранируем строки
+    escaped_strings = [escape_markdown_v2(s) for s in markdown_strings]
     
+    # Обновляем глобальные переменные
     (
         prompt_new_name, prompt_new_prompt_fmt_raw, prompt_confirm_delete_fmt_raw,
         error_validation, error_name_exists_fmt_raw, error_no_session,
         error_not_found, error_db, error_general, prompt_for_prompt_fmt_raw
-    ) = markdown_strings
+    ) = escaped_strings
 
+# Инициализация переменных перед вызовом
+prompt_new_name = "введи название нового настроения (1-30 символов, буквы/цифры/дефис/подчерк., без пробелов):"
+prompt_new_prompt_fmt_raw = "введи описание для настроения {mood_name}:"
+prompt_confirm_delete_fmt_raw = "Вы уверены, что хотите удалить настроение {mood_name}?"
+
+error_validation = "Ошибка: некорректный ввод. Пожалуйста, проверьте формат."
+error_name_exists_fmt_raw = "Настроение {mood_name} уже существует."
+error_no_session = "Сессия не найдена. Пожалуйста, начните заново."
+
+error_not_found = "Ресурс не найден."
+error_db = "Ошибка базы данных."
+error_general = "Произошла неизвестная ошибка."
+prompt_for_prompt_fmt_raw = "Введите описание для {mood_name}:"
+
+# Вызов функции экранирования
 fix_markdown_prompt_strings()
-
-# --- Mood Escape Fixes ---
-def escape_mood_names(mood_prompts_json):
-    """Безопасное экранирование названий настроений"""
-    try:
-        moods = json.loads(mood_prompts_json or '{}')
-        escaped_moods = {escape_markdown_v2(k): escape_markdown_v2(v) for k, v in moods.items()}
-        return json.dumps(escaped_moods, ensure_ascii=False)
-    except Exception as e:
-        logger.error(f"Error escaping mood names: {e}")
-        return mood_prompts_json
 
 # --- Menu Structure and Navigation Improvements ---
 def apply_menu_structure_fixes():
