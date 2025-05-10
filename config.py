@@ -1,7 +1,11 @@
 import os
+import logging
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# Настройка логгера
+logger = logging.getLogger(__name__)
 
 ADMIN_USER_ID = 1324596928 # Замените на ваш реальный ID администратора, если нужно
 CHANNEL_ID = "@NuNuAiChannel" # ID или юзернейм вашего канала
