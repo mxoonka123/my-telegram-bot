@@ -26,15 +26,12 @@ from telegraph import Telegraph, exceptions as telegraph_exceptions
 import config
 import db # db.py should be fixed now (no circular import)
 import handlers # handlers.py теперь содержит новые состояния
-import message_limit_patch  # enforce strict message count limits
+# Объединенные модули патчей - замена для множества мелких исправлений
+import patches  # объединенные патчи для лимитов сообщений и Markdown
+import menu_improvements  # все улучшения интерфейса и структуры меню
+
+# Настройки UI также оставляем, т.к. они содержат базовый функционал
 import settings_patch  # update UI for qualitative max message settings
-import menu_fix  # fix menu structure for persona settings
-import moods_fix  # fix mood editing functionality
-import markdown_simple_fix  # радикальное решение: полное отключение Markdown
-# Отключенные патчи, которые заменены более радикальным решением:
-# import moods_escape_fix  # fix Markdown escaping in mood prompts
-# import markdown_safe_fix  # global Markdown escaping fix for all prompts
-import menu_navigation_fix  # fix menu navigation issues (duplicate items)
 from utils import escape_markdown_v2
 # Patch for max_response_messages has been integrated into handlers
 
