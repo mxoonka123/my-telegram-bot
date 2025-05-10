@@ -26,12 +26,8 @@ from telegraph import Telegraph, exceptions as telegraph_exceptions
 import config
 import db # db.py should be fixed now (no circular import)
 import handlers # handlers.py теперь содержит новые состояния
-# Объединенные модули патчей - замена для множества мелких исправлений
-import patches  # объединенные патчи для лимитов сообщений и Markdown
-import menu_improvements  # все улучшения интерфейса и структуры меню
 
 # Настройки UI также оставляем, т.к. они содержат базовый функционал
-import settings_patch  # update UI for qualitative max message settings
 from utils import escape_markdown_v2
 # Patch for max_response_messages has been integrated into handlers
 
