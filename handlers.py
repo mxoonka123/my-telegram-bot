@@ -3318,6 +3318,39 @@ async def edit_wizard_menu_handler(update: Update, context: ContextTypes.DEFAULT
         logger.warning(f"edit_wizard_menu_handler: persona_id missing for user {user_id}")
         return ConversationHandler.END
 
+    # Обработка прямых коллбэков для настройки максимального количества сообщений
+    if data in ["set_max_msgs_few", "set_max_msgs_normal", "set_max_msgs_many", "set_max_msgs_random"]:
+        max_msgs_value = None
+        if data == "set_max_msgs_few":
+            max_msgs_value = 1
+        elif data == "set_max_msgs_normal":
+            max_msgs_value = 3
+        elif data == "set_max_msgs_many":
+            max_msgs_value = 6
+        elif data == "set_max_msgs_random":
+            max_msgs_value = 0
+        
+        if max_msgs_value is not None:
+            try:
+                with next(get_db()) as db:
+                    persona = db.query(PersonaConfig).filter(PersonaConfig.id == persona_id).first()
+                    if not persona:
+                        logger.error(f"Persona {persona_id} not found when setting max_msgs to {max_msgs_value}")
+                        await query.answer("Ошибка: личность не найдена", show_alert=True)
+                        return EDIT_WIZARD_MENU
+                    
+                    # Обновляем значение в БД
+                    persona.max_response_messages = max_msgs_value
+                    db.commit()
+                    logger.info(f"Updated max_response_messages for persona {persona_id} to {max_msgs_value}")
+                    
+                    # Показываем обновленное меню
+                    return await fixed_show_edit_wizard_menu(update, context, persona)
+            except Exception as e:
+                logger.error(f"Error updating max_response_messages: {e}", exc_info=True)
+                await query.answer("Произошла ошибка при обновлении настроек", show_alert=True)
+                return EDIT_WIZARD_MENU
+    
     # Route to the appropriate prompt function or action
     if data == "edit_wizard_name":
         return await edit_name_prompt(update, context)
@@ -3351,8 +3384,6 @@ async def edit_wizard_menu_handler(update: Update, context: ContextTypes.DEFAULT
     elif data == "back_to_wizard_menu":
         # Обработка кнопки "Назад"
         return await _handle_back_to_wizard_menu(update, context, persona_id)
-    # Обработка опций количества сообщений перенесена в settings_patch.py
-    # и должна производиться в подменю, а не в основном меню
     else:
         logger.warning(f"Unhandled wizard menu callback: {data}")
         return EDIT_WIZARD_MENU
