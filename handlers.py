@@ -2951,19 +2951,32 @@ async def yookassa_webhook_placeholder(update: Update, context: ContextTypes.DEF
 async def _start_edit_convo(update: Update, context: ContextTypes.DEFAULT_TYPE, persona_id: int) -> int:
     """Starts the persona editing wizard."""
     user_id = update.effective_user.id
-    effective_target = update.effective_message or (update.callback_query.message if update.callback_query else None)
-    if not effective_target: return ConversationHandler.END
-    chat_id = effective_target.chat.id
-    is_callback = update.callback_query is not None
+    
+    # Определяем chat_id из update.effective_chat, так как query.message может быть удалено
+    chat_id = None
+    if update.effective_chat:
+        chat_id = update.effective_chat.id
+    else:
+        logger.error("_start_edit_convo: update.effective_chat is None. Cannot determine chat_id.")
+        # Попытка ответить, если это коллбэк
+        if update.callback_query:
+            try: await update.callback_query.answer("Ошибка: чат не определен.", show_alert=True)
+            except Exception: pass
+        return ConversationHandler.END
 
-    if not is_callback:
+    is_callback = update.callback_query is not None # Это для логирования или условной логики, не для chat_id
+
+    logger.info(f"_start_edit_convo: User {user_id}, PersonaID {persona_id}, ChatID {chat_id}, IsCallback {is_callback}")
+
+
+    if not is_callback: # Проверка подписки только для команд, не для коллбэков (они обычно идут после команды)
         if not await check_channel_subscription(update, context):
             await send_subscription_required_message(update, context)
             return ConversationHandler.END
 
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
-    context.user_data.clear()
-    context.user_data['edit_persona_id'] = persona_id # Store ID
+    context.user_data.clear() # Очищаем старые данные
+    context.user_data['edit_persona_id'] = persona_id # Сохраняем ID
 
     error_not_found_fmt_raw = "❌ личность с id `{id}` не найдена или не твоя."
     error_db = escape_markdown_v2("❌ ошибка базы данных при начале редактирования.")
@@ -2973,25 +2986,28 @@ async def _start_edit_convo(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         with next(get_db()) as db:
             persona_config = db.query(PersonaConfig).options(selectinload(PersonaConfig.owner)).filter(
                 PersonaConfig.id == persona_id,
-                PersonaConfig.owner.has(User.telegram_id == user_id)
+                PersonaConfig.owner.has(User.telegram_id == user_id) # Проверка владения
             ).first()
 
             if not persona_config:
-                 final_error_msg = error_not_found_fmt_raw.format(id=persona_id)
-                 reply_target = update.callback_query.message if is_callback else update.effective_message
-                 if is_callback: await update.callback_query.answer("Личность не найдена", show_alert=True)
-                 await reply_target.reply_text(final_error_msg, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
+                 final_error_msg = escape_markdown_v2(error_not_found_fmt_raw.format(id=persona_id))
+                 logger.warning(f"Persona {persona_id} not found or not owned by user {user_id} in _start_edit_convo.")
+                 if is_callback and update.callback_query: # Отвечаем на коллбэк, если он был
+                     try: await update.callback_query.answer("Личность не найдена", show_alert=True)
+                     except Exception: pass
+                 # Отправляем сообщение в чат
+                 await context.bot.send_message(chat_id, final_error_msg, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
                  return ConversationHandler.END
 
-            # Show the main wizard menu
+            # Вызываем _show_edit_wizard_menu (патченную версию), она отправит НОВОЕ сообщение
             return await _show_edit_wizard_menu(update, context, persona_config)
 
     except SQLAlchemyError as e:
-         logger.error(f"Database error starting edit persona {persona_id}: {e}", exc_info=True)
+         logger.error(f"Database error starting edit persona {persona_id} for user {user_id}: {e}", exc_info=True)
          await context.bot.send_message(chat_id, error_db, parse_mode=ParseMode.MARKDOWN_V2)
          return ConversationHandler.END
     except Exception as e:
-         logger.error(f"Unexpected error starting edit persona {persona_id}: {e}", exc_info=True)
+         logger.error(f"Unexpected error starting edit persona {persona_id} for user {user_id}: {e}", exc_info=True)
          await context.bot.send_message(chat_id, error_general, parse_mode=ParseMode.MARKDOWN_V2)
          return ConversationHandler.END
 
@@ -3021,32 +3037,37 @@ async def edit_persona_button_callback(update: Update, context: ContextTypes.DEF
     query = update.callback_query
     if not query or not query.data: return ConversationHandler.END
     
-    # Не отвечаем сразу на коллбэк, если будем удалять сообщение
+    # НЕ отвечаем здесь сразу, если будем удалять сообщение
+    # await query.answer("Начинаем редактирование...")
 
     error_invalid_id_callback = escape_markdown_v2("❌ ошибка: неверный ID личности в кнопке.")
+    
+    original_chat_id = None
+    if query.message: # Сохраняем chat_id ПЕРЕД удалением сообщения
+        original_chat_id = query.message.chat.id
+    elif update.effective_chat:
+        original_chat_id = update.effective_chat.id
+    else:
+        logger.error("edit_persona_button_callback: Could not determine chat_id to send error message.")
+        if query:
+            try: await query.answer("Критическая ошибка: чат не найден.", show_alert=True)
+            except: pass
+        return ConversationHandler.END
+
 
     try:
         persona_id = int(query.data.split('_')[-1])
-        logger.info(f"CALLBACK edit_persona < User {query.from_user.id} for persona_id: {persona_id}")
+        logger.info(f"CALLBACK edit_persona < User {query.from_user.id} for persona_id: {persona_id} in chat {original_chat_id}")
         
-        # Удаляем сообщение с кнопками "Настроить", "Удалить" и "В чат"
-        if query.message: # Убедимся, что query.message существует
+        if query.message: # Удаляем сообщение с кнопками, если оно существует
             try:
-                # Отвечаем на коллбэк до того, как сообщение будет удалено
-                try:
-                    await query.answer("Начинаем редактирование...")
-                except Exception as e_ans:
-                    logger.debug(f"Could not answer query in edit_persona_button_callback: {e_ans}")
-                
-                # Удаляем сообщение
-                chat_id = query.message.chat.id
-                message_id = query.message.message_id
-                await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
-                logger.debug(f"Deleted message {message_id} before showing edit wizard.")
+                await context.bot.delete_message(chat_id=query.message.chat.id, message_id=query.message.message_id)
+                logger.debug(f"Deleted message {query.message.message_id} before showing edit wizard.")
             except Exception as e:
-                logger.warning(f"Could not delete message with buttons: {e}. Continuing...")
+                logger.warning(f"Could not delete message ({query.message.message_id}) with buttons: {e}. Continuing...")
         
-        # `_start_edit_convo` вызовет `fixed_show_edit_wizard_menu`, который отправит новое сообщение.
+        # `_start_edit_convo` теперь должен сам корректно определить chat_id из `update.effective_chat`
+        # `update` объект передается целиком.
         return await _start_edit_convo(update, context, persona_id)
     except (IndexError, ValueError):
         logger.error(f"Could not parse persona_id from edit_persona callback data: {query.data}")
@@ -3699,50 +3720,113 @@ fix_markdown_prompt_strings()
 def apply_menu_structure_fixes():
     """Улучшение структуры меню настроек персоны"""
     async def fixed_show_edit_wizard_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, persona_config: PersonaConfig) -> int:
-        """Отображает главное меню настройки без кнопок выбора количества сообщений."""
+        """Отображает главное меню настройки персоны, отправляя новое сообщение."""
         try:
-            query = update.callback_query
-            message = update.effective_message if not query else query.message
-            chat_id = message.chat.id
+            query = update.callback_query # query может быть None, если вход через команду
+            
+            # ПРИОРИТЕТ: update.effective_chat для определения chat_id
+            chat_id = None
+            if update.effective_chat: # Это должно быть наиболее надежным
+                chat_id = update.effective_chat.id
+            elif query and query.message: # Fallback, если вдруг effective_chat нет, но query.message есть
+                chat_id = query.message.chat.id
+            
+            if not chat_id:
+                logger.error("fixed_show_edit_wizard_menu: Could not determine chat_id reliably.")
+                if query:
+                    try: await query.answer("Ошибка: не удалось определить чат.", show_alert=True)
+                    except Exception: pass
+                # Если это не коллбэк, а команда, и нет effective_chat, то это странно
+                elif update.message: # Если это сообщение от команды
+                     await update.message.reply_text("Ошибка: не удалось определить чат для отображения меню.")
+                return ConversationHandler.END
+
+            logger.info(f"fixed_show_edit_wizard_menu: Preparing to send wizard menu. ChatID: {chat_id}, PersonaID: {persona_config.id}")
+
             persona_id = persona_config.id
             user_id = update.effective_user.id
 
-            # Определяем подпись для кнопки количества сообщений
-            val = persona_config.max_response_messages
-            if val == 1:
-                label = "Поменьше"
-            elif val == 2:
-                label = "Стандартное"
-            elif val == 3:
-                label = "Побольше"
-            elif val == 0:
-                label = "Случайное"
-            else:
-                label = f"{val}"
-
-            # Создаем клавиатуру для главного меню
-            keyboard = [
-                [InlineKeyboardButton("🎭 Настроить настроения", callback_data="edit_moods_entry")],
-                [InlineKeyboardButton("🗣️ Разговорчивость", callback_data="edit_verbosity")],
-                [InlineKeyboardButton("👥 Групповые ответы", callback_data="edit_group_reply")],
-                [InlineKeyboardButton("🖼️ Реакция на медиа", callback_data="edit_media_reaction")],
-                [InlineKeyboardButton("⬅️ Назад к списку персон", callback_data="back_to_personas_list")]
-            ]
+            owner = persona_config.owner
+            is_premium = owner.is_active_subscriber or is_admin(user_id) if owner else False
+            star = " ⭐"
             
+            style = persona_config.communication_style or "neutral"
+            verbosity = persona_config.verbosity_level or "medium"
+            group_reply = persona_config.group_reply_preference or "mentioned_or_contextual"
+            media_react = persona_config.media_reaction or "text_only"
+            
+            style_map = {"neutral": "Нейтральный", "friendly": "Дружелюбный", "sarcastic": "Саркастичный", "formal": "Формальный", "brief": "Краткий"}
+            verbosity_map = {"concise": "Лаконичный", "medium": "Средний", "talkative": "Разговорчивый"}
+            group_reply_map = {"always": "Всегда", "mentioned_only": "По @", "mentioned_or_contextual": "По @ / Контексту", "never": "Никогда"}
+            media_react_map = {"all": "Текст+GIF", "text_only": "Только текст", "none": "Никак", "photo_only": "Только фото", "voice_only": "Только голос"}
+            
+            max_msgs_setting = persona_config.max_response_messages
+            max_msgs_value = ""
+            if max_msgs_setting == 0: max_msgs_value = "random"
+            elif max_msgs_setting == 1: max_msgs_value = "few"
+            elif max_msgs_setting == 3: max_msgs_value = "normal"
+            elif max_msgs_setting == 6: max_msgs_value = "many"
+            else:
+                logger.warning(f"Persona {persona_id} has unexpected max_response_messages: {max_msgs_setting}. Defaulting display to normal.")
+                max_msgs_value = "normal" 
+            
+            keyboard = [
+                [
+                    InlineKeyboardButton("✏️ Имя", callback_data="edit_wizard_name"),
+                    InlineKeyboardButton("📜 Описание", callback_data="edit_wizard_description")
+                ],
+                [InlineKeyboardButton(f"💬 Стиль ({style_map.get(style, '?')})", callback_data="edit_wizard_comm_style")],
+                [InlineKeyboardButton(f"🗣️ Разговорчивость ({verbosity_map.get(verbosity, '?')})", callback_data="edit_wizard_verbosity")],
+                [InlineKeyboardButton(f"👥 Ответы в группе ({group_reply_map.get(group_reply, '?')})", callback_data="edit_wizard_group_reply")],
+                [InlineKeyboardButton(f"🖼️ Реакция на медиа ({media_react_map.get(media_react, '?')})", callback_data="edit_wizard_media_reaction")],
+                
+                [InlineKeyboardButton(f"{'✅ ' if max_msgs_value == 'few' else ''}🤋 Поменьше сообщ.", callback_data="set_max_msgs_few")],
+                [InlineKeyboardButton(f"{'✅ ' if max_msgs_value == 'normal' else ''}💬 Стандартно", callback_data="set_max_msgs_normal")],
+                [InlineKeyboardButton(f"{'✅ ' if max_msgs_value == 'many' else ''}📚 Побольше сообщ.", callback_data="set_max_msgs_many")],
+                [InlineKeyboardButton(f"{'✅ ' if max_msgs_value == 'random' else ''}🎲 Случайно", callback_data="set_max_msgs_random")],
+                
+                [InlineKeyboardButton(f"🎭 Настроения{star if not is_premium else ''}", callback_data="edit_wizard_moods")],
+                [InlineKeyboardButton("✅ Завершить", callback_data="finish_edit")]
+            ]
             reply_markup = InlineKeyboardMarkup(keyboard)
             
-            await update.callback_query.edit_message_text(
-                f"🤖 Настройка персоны: {escape_markdown_v2(persona_config.name)}", 
+            msg_text_raw = f"⚙️ *Настройка личности: {persona_config.name}* (ID: {persona_id})\n\nВыберите, что изменить:"
+            msg_text = escape_markdown_v2(msg_text_raw) # escape_markdown_v2 обработает скобки и звездочки
+            
+            logger.debug(f"fixed_show_edit_wizard_menu: Attempting to send NEW wizard menu message to chat_id: {chat_id}")
+            sent_message = await context.bot.send_message(
+                chat_id=chat_id,
+                text=msg_text, 
                 reply_markup=reply_markup, 
                 parse_mode=ParseMode.MARKDOWN_V2
             )
+            logger.info(f"fixed_show_edit_wizard_menu: Successfully sent NEW wizard menu message_id: {sent_message.message_id} to chat_id: {chat_id}")
             
-            return EDIT_PERSONA_WIZARD
+            context.user_data['wizard_menu_message_id'] = sent_message.message_id
+            context.user_data['edit_message_id'] = sent_message.message_id 
+            context.user_data['edit_chat_id'] = chat_id # Сохраняем актуальный chat_id
+            
+            if query: 
+                try:
+                    await query.answer()
+                except Exception as e_ans: 
+                    logger.debug(f"fixed_show_edit_wizard_menu: Could not answer query (original message might be gone): {e_ans}")
+
+            return EDIT_WIZARD_MENU
         except Exception as e:
-            logger.error(f"Error in fixed_show_edit_wizard_menu: {e}")
+            logger.error(f"CRITICAL Error in fixed_show_edit_wizard_menu: {e}", exc_info=True)
+            # Попытка отправить сообщение об ошибке в чат
+            chat_id_fallback = None
+            if hasattr(update, 'effective_chat') and update.effective_chat:
+                chat_id_fallback = update.effective_chat.id
+            
+            if chat_id_fallback:
+                try:
+                    await context.bot.send_message(chat_id_fallback, "Произошла критическая ошибка при отображении меню настроек. Попробуйте снова позже.")
+                except Exception as fallback_e:
+                    logger.error(f"Failed to send critical error message in fixed_show_edit_wizard_menu: {fallback_e}")
             return ConversationHandler.END
     
-    # Применяем патч к _show_edit_wizard_menu
     global _show_edit_wizard_menu
     _show_edit_wizard_menu = fixed_show_edit_wizard_menu
 
