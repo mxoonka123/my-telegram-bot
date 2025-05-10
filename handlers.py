@@ -3164,18 +3164,14 @@ async def fixed_show_edit_wizard_menu(update: Update, context: ContextTypes.DEFA
             max_msgs_display = str(max_msgs_setting)
             
         # Определяем текущие выбранные значения для макс. сообщений
-        max_msgs_value = ""
-        if max_msgs_setting == 0:
-            max_msgs_value = "random"
-        elif max_msgs_setting == 1:
-            max_msgs_value = "few"
-        elif max_msgs_setting == 3:
-            max_msgs_value = "normal"
-        elif max_msgs_setting == 6:
-            max_msgs_value = "many"
-        else: # Фоллбэк для неожиданных или старых значений (например, 2)
-            logger.warning(f"Persona {persona_id} has unexpected max_response_messages: {max_msgs_setting}. Defaulting display to normal.")
-            max_msgs_value = "normal" 
+        max_msgs_display_text = "Стандартно" # Значение по умолчанию для отображения
+        if max_msgs_setting == 0: max_msgs_display_text = "Случайно"
+        elif max_msgs_setting == 1: max_msgs_display_text = "Поменьше"
+        elif max_msgs_setting == 3: max_msgs_display_text = "Стандартно"
+        elif max_msgs_setting == 6: max_msgs_display_text = "Побольше"
+        else:
+            logger.warning(f"Persona {persona_id} has unexpected max_response_messages: {max_msgs_setting}. Displaying as 'Стандартно'.")
+        
 
         # Build keyboard with full text
         keyboard = [
@@ -3188,10 +3184,7 @@ async def fixed_show_edit_wizard_menu(update: Update, context: ContextTypes.DEFA
             [InlineKeyboardButton(f"👥 Ответы в группе ({group_reply_map.get(group_reply, '?')})", callback_data="edit_wizard_group_reply")],
             [InlineKeyboardButton(f"🖼️ Реакция на медиа ({media_react_map.get(media_react, '?')})", callback_data="edit_wizard_media_reaction")],
             
-            [InlineKeyboardButton(f"{'✅ ' if max_msgs_value == 'few' else ''}🤋 Поменьше сообщ.", callback_data="set_max_msgs_few")],
-            [InlineKeyboardButton(f"{'✅ ' if max_msgs_value == 'normal' else ''}💬 Стандартно", callback_data="set_max_msgs_normal")],
-            [InlineKeyboardButton(f"{'✅ ' if max_msgs_value == 'many' else ''}📚 Побольше сообщ.", callback_data="set_max_msgs_many")],
-            [InlineKeyboardButton(f"{'✅ ' if max_msgs_value == 'random' else ''}🎲 Случайно", callback_data="set_max_msgs_random")],
+            [InlineKeyboardButton(f"🗨️ Макс. сообщ. ({max_msgs_display_text})", callback_data="edit_wizard_max_msgs")],
             
             [InlineKeyboardButton(f"🎭 Настроения{star if not is_premium else ''}", callback_data="edit_wizard_moods")],
             [InlineKeyboardButton("✅ Завершить", callback_data="finish_edit")]
