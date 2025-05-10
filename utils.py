@@ -138,13 +138,32 @@ import builtins as _builtins_module  # Local alias
 _builtins_module._split_aggressively = _split_aggressively
 
 # --- V13: Improved Splitting ---
-def postprocess_response(response: str, max_messages: int, message_volume: str = 'normal') -> List[str]:
+def postprocess_response(response: str, max_messages: int, message_volume: str = "normal") -> List[str]:
+    # Оригинальная обработка ответа
+    parts = _split_response_to_messages(response, max_messages, message_volume)
+    
+    # Дополнительная проверка ограничения сообщений
+    if len(parts) > max_messages:
+        logger.warning(
+            f"Postprocess returned {len(parts)} parts, exceeding requested {max_messages}. Truncating."
+        )
+        parts = parts[:max_messages]
+    
+    return parts
+
+def _split_response_to_messages(response: str, max_messages: int, message_volume: str = "normal") -> List[str]:
+    """Обработка ответа с учетом ограничений на количество сообщений и их объем.
+    
+    Args:
+        response (str): Полный текст ответа
+        max_messages (int): Максимальное количество сообщений
+        message_volume (str): Желаемый объем сообщений ('short', 'normal', 'voluminous')
+    
+    Returns:
+        List[str]: Список обработанных сообщений
     """
-    Splits text aiming for approx. max_messages (v13).
-    Prioritizes natural breaks, then splits longer parts further.
-    Adjusts split based on message_volume: 'short', 'normal', 'long', or 'random'.
-    """
-    if not response:
+    # Если указано 0 или отрицательное число, возвращаем пустой список
+    if max_messages <= 0:
         return []
 
     # Adjust max_messages based on volume if random is selected

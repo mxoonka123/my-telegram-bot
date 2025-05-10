@@ -57,6 +57,32 @@ DEFAULT_MOOD_PROMPTS = {
 DEFAULT_SYSTEM_PROMPT_TEMPLATE = "описание твоей личности: {persona_description}. твое текущее настроение: {mood_prompt}. {internet_info} {time_info} твое имя {persona_name}. сообщение от {username} (id: {user_id}) в чате {chat_id}: {message}"
 # Остальные DEFAULT_*_PROMPT_TEMPLATE удалены, так как они генерируются в классе Persona
 
+# Загрузка конфигурации из переменных окружения
+
+# Дополнительные настройки и патчи
+def apply_advanced_settings_patches():
+    """Применение расширенных настроек и патчей"""
+    global TELEGRAM_TOKEN, LANGDOCK_API_KEY, ADMIN_USER_ID
+    
+    # Дополнительные проверки и преобразования
+    if not TELEGRAM_TOKEN:
+        logger.warning("TELEGRAM_TOKEN не установлен. Используется резервный токен.")
+        TELEGRAM_TOKEN = os.getenv('BACKUP_TELEGRAM_TOKEN', '')
+    
+    if not LANGDOCK_API_KEY:
+        logger.warning("LANGDOCK_API_KEY не установлен. Используется резервный ключ.")
+        LANGDOCK_API_KEY = os.getenv('BACKUP_LANGDOCK_API_KEY', '')
+    
+    # Расширенная обработка списка админов
+    if isinstance(ADMIN_USER_ID, str):
+        try:
+            ADMIN_USER_ID = [int(uid.strip()) for uid in ADMIN_USER_ID.split(',') if uid.strip()]
+        except ValueError:
+            logger.error("Ошибка при преобразовании ADMIN_USER_ID")
+            ADMIN_USER_ID = []
+
+apply_advanced_settings_patches()
+
 # Общие инструкции и дополнения к промптам
 # <<< СТИЛЬ: Немного скорректированы формулировки >>>
 BASE_PROMPT_SUFFIX = (

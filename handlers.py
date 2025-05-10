@@ -3619,6 +3619,97 @@ async def edit_moods_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             logger.error(f"Persona {persona_id} not found after premium check in edit_moods_entry.")
             return await _try_return_to_wizard_menu(update, context, user_id, persona_id)
 
+# --- Markdown Safety Fixes ---
+def fix_markdown_prompt_strings():
+    """Исправляет все строки с подсказками для корректного экранирования в Markdown V2"""
+    global (
+        prompt_new_name, prompt_new_prompt_fmt_raw, prompt_confirm_delete_fmt_raw,
+        error_validation, error_name_exists_fmt_raw, error_no_session,
+        error_not_found, error_db, error_general, prompt_for_prompt_fmt_raw
+    )
+    
+    # Список всех строк, которые нуждаются в экранировании
+    markdown_strings = [
+        prompt_new_name, prompt_new_prompt_fmt_raw, prompt_confirm_delete_fmt_raw,
+        error_validation, error_name_exists_fmt_raw, error_no_session,
+        error_not_found, error_db, error_general, prompt_for_prompt_fmt_raw
+    ]
+    
+    for i, string in enumerate(markdown_strings):
+        markdown_strings[i] = escape_markdown_v2(string)
+    
+    (
+        prompt_new_name, prompt_new_prompt_fmt_raw, prompt_confirm_delete_fmt_raw,
+        error_validation, error_name_exists_fmt_raw, error_no_session,
+        error_not_found, error_db, error_general, prompt_for_prompt_fmt_raw
+    ) = markdown_strings
+
+fix_markdown_prompt_strings()
+
+# --- Mood Escape Fixes ---
+def escape_mood_names(mood_prompts_json):
+    """Безопасное экранирование названий настроений"""
+    try:
+        moods = json.loads(mood_prompts_json or '{}')
+        escaped_moods = {escape_markdown_v2(k): escape_markdown_v2(v) for k, v in moods.items()}
+        return json.dumps(escaped_moods, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"Error escaping mood names: {e}")
+        return mood_prompts_json
+
+# --- Menu Structure and Navigation Improvements ---
+def apply_menu_structure_fixes():
+    """Улучшение структуры меню настроек персоны"""
+    async def fixed_show_edit_wizard_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, persona_config: PersonaConfig) -> int:
+        """Отображает главное меню настройки без кнопок выбора количества сообщений."""
+        try:
+            query = update.callback_query
+            message = update.effective_message if not query else query.message
+            chat_id = message.chat.id
+            persona_id = persona_config.id
+            user_id = update.effective_user.id
+
+            # Определяем подпись для кнопки количества сообщений
+            val = persona_config.max_response_messages
+            if val == 1:
+                label = "Поменьше"
+            elif val == 2:
+                label = "Стандартное"
+            elif val == 3:
+                label = "Побольше"
+            elif val == 0:
+                label = "Случайное"
+            else:
+                label = f"{val}"
+
+            # Создаем клавиатуру для главного меню
+            keyboard = [
+                [InlineKeyboardButton("🎭 Настроить настроения", callback_data="edit_moods_entry")],
+                [InlineKeyboardButton("🗣️ Разговорчивость", callback_data="edit_verbosity")],
+                [InlineKeyboardButton("👥 Групповые ответы", callback_data="edit_group_reply")],
+                [InlineKeyboardButton("🖼️ Реакция на медиа", callback_data="edit_media_reaction")],
+                [InlineKeyboardButton("⬅️ Назад к списку персон", callback_data="back_to_personas_list")]
+            ]
+            
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await update.callback_query.edit_message_text(
+                f"🤖 Настройка персоны: {escape_markdown_v2(persona_config.name)}", 
+                reply_markup=reply_markup, 
+                parse_mode=ParseMode.MARKDOWN_V2
+            )
+            
+            return EDIT_PERSONA_WIZARD
+        except Exception as e:
+            logger.error(f"Error in fixed_show_edit_wizard_menu: {e}")
+            return ConversationHandler.END
+    
+    # Применяем патч к _show_edit_wizard_menu
+    global _show_edit_wizard_menu
+    _show_edit_wizard_menu = fixed_show_edit_wizard_menu
+
+apply_menu_structure_fixes()
+
 # --- Mood Editing Functions (Adapted for Wizard Flow) ---
 
 async def edit_moods_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, persona_config: Optional[PersonaConfig] = None) -> int:
@@ -3669,7 +3760,18 @@ async def edit_moods_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, pe
 
     try:
         # Use _send_prompt to handle editing/sending and store message ID
-        await _send_prompt(update, context, msg_text, reply_markup)
+        async def _send_prompt(update, context, text, reply_markup=None, parse_mode=None):
+            if not update.callback_query:
+                return
+            query = update.callback_query
+            chat_id = query.message.chat.id
+            message_id = query.message.message_id
+            try:
+                await context.bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text, reply_markup=reply_markup, parse_mode=parse_mode)
+            except Exception as e:
+                logger.error(f"Error editing message for persona {persona_id}: {e}")
+                await context.bot.send_message(chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode)
+        await _send_prompt(update, context, msg_text, reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
     except Exception as e:
          logger.error(f"Error displaying moods menu message for persona {persona_id}: {e}")
 
