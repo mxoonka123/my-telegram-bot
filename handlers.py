@@ -3040,12 +3040,26 @@ async def edit_persona_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
     """Entry point for /editpersona command."""
     if not update.message: return ConversationHandler.END
     user_id = update.effective_user.id
-    chat_id = update.effective_chat.id
+    chat_id = update.effective_chat.id # Сохраняем для возможной отправки сообщения от cancel
     args = context.args
     logger.info(f"CMD /editpersona < User {user_id} with args: {args}")
-    context.user_data['_user_id_for_logging'] = user_id # Для логгирования в _clean_previous_edit_session
 
-    await _clean_previous_edit_session(context, chat_id) # Очищаем предыдущую сессию
+    # Проверяем, не активен ли уже диалог редактирования
+    if context.user_data.get('edit_persona_id') is not None:
+        logger.info(f"User {user_id} trying to start new edit_persona while another is active. Cancelling previous.")
+        # Вызываем fallback-функцию отмены, чтобы корректно завершить предыдущий диалог
+        # Мы передаем update и context, чтобы edit_persona_cancel мог работать
+        await edit_persona_cancel(update, context) 
+        # edit_persona_cancel уже очистит user_data и вернет ConversationHandler.END
+        # После этого мы можем попытаться начать новый диалог, но ConversationHandler 
+        # может потребовать нового взаимодействия от пользователя.
+        # Поэтому, возможно, лучше просто сообщить пользователю.
+        # Однако, попробуем продолжить и начать новый.
+        # Важно: edit_persona_cancel изменит context.user_data.
+
+    # Очищаем user_data еще раз на всякий случай, т.к. cancel мог не все специфичное для нового убрать
+    context.user_data.clear() 
+    context.user_data['_user_id_for_logging'] = user_id # Для логгирования
 
     usage_text = escape_markdown_v2("укажи id личности: `/editpersona <id>`\nили используй кнопку из `/mypersonas`")
     error_invalid_id = escape_markdown_v2("❌ id должен быть числом.")
@@ -3059,6 +3073,7 @@ async def edit_persona_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text(error_invalid_id, parse_mode=ParseMode.MARKDOWN_V2)
         return ConversationHandler.END
 
+    # Запускаем новый диалог
     return await _start_edit_convo(update, context, persona_id)
 
 async def edit_persona_button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -3069,14 +3084,22 @@ async def edit_persona_button_callback(update: Update, context: ContextTypes.DEF
     user_id = query.from_user.id
     original_chat_id = query.message.chat.id if query.message else (update.effective_chat.id if update.effective_chat else None)
     logger.info(f"CALLBACK edit_persona BUTTON < User {user_id} for data {query.data} in chat {original_chat_id}")
-    context.user_data['_user_id_for_logging'] = user_id
 
-    await _clean_previous_edit_session(context, original_chat_id) # Очищаем предыдущую сессию
+    # Проверяем, не активен ли уже диалог редактирования
+    if context.user_data.get('edit_persona_id') is not None:
+        logger.info(f"User {user_id} trying to start new edit_persona via button while another is active. Cancelling previous.")
+        # Передаем текущий update (CallbackQuery) в edit_persona_cancel
+        await edit_persona_cancel(update, context)
+        # edit_persona_cancel очистит user_data.
+
+    # Очищаем user_data еще раз на всякий случай
+    context.user_data.clear()
+    context.user_data['_user_id_for_logging'] = user_id
 
     # Важно! Отвечаем на коллбэк ПОСЛЕ потенциальной очистки и ДО удаления сообщения,
     # чтобы пользователь не видел "часики" слишком долго.
-    try:
-        await query.answer() # Быстрый ответ, что кнопка принята
+    try: # Быстрый ответ на коллбэк
+        await query.answer() 
     except Exception as e_ans:
         logger.debug(f"edit_persona_button_callback: Could not answer query: {e_ans}")
 
@@ -3095,34 +3118,20 @@ async def edit_persona_button_callback(update: Update, context: ContextTypes.DEF
                 logger.warning(f"Could not delete message ({query.message.message_id}) with 'Настроить' button: {e}. Continuing...")
         
         return await _start_edit_convo(update, context, persona_id)
+        
     except (IndexError, ValueError):
         logger.error(f"Could not parse persona_id from edit_persona callback data: {query.data}")
-        # Если предыдущее сообщение не удалось удалить или его не было,
-        # пытаемся отредактировать текущее сообщение с ошибкой, если оно есть.
-        if query.message:
-            try:
-                await query.edit_message_text(error_invalid_id_callback, parse_mode=ParseMode.MARKDOWN_V2)
-            except Exception as e_edit:
-                logger.error(f"Failed to edit message with invalid ID error (original message might be gone): {e_edit}")
-                # Если редактирование не удалось, просто отправим новое сообщение об ошибке
-                try:
-                    await context.bot.send_message(query.message.chat.id, error_invalid_id_callback, parse_mode=ParseMode.MARKDOWN_V2)
-                except Exception as e_send:
-                    logger.error(f"Failed to send error message: {e_send}")
-        elif update.effective_chat: # Если query.message нет, но есть чат
-            try:
-                await context.bot.send_message(update.effective_chat.id, error_invalid_id_callback, parse_mode=ParseMode.MARKDOWN_V2)
-            except Exception as e_send:
-                logger.error(f"Failed to send error message to effective_chat: {e_send}")
+        if original_chat_id:
+            await context.bot.send_message(original_chat_id, error_invalid_id_callback, parse_mode=ParseMode.MARKDOWN_V2)
         return ConversationHandler.END
-    except Exception as e: # Общий обработчик ошибок на случай непредвиденных ситуаций
-        logger.error(f"Unexpected error in edit_persona_button_callback for persona_id from {query.data if query else 'N/A'}: {e}", exc_info=True)
-        if query and query.message:
-            try: 
-                await query.answer("Произошла ошибка.", show_alert=True)
-            except: 
-                pass
+    except Exception as e:
+        logger.error(f"Unexpected error in edit_persona_button_callback for {query.data}: {e}", exc_info=True)
+        if original_chat_id:
+            try: await context.bot.send_message(original_chat_id, "Произошла непредвиденная ошибка.", parse_mode=None)
+            except Exception: pass
         return ConversationHandler.END
+
+# Функция delete_persona_start перемещена в новую часть файла
 
 async def _handle_back_to_wizard_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, persona_id: int) -> int:
     """Общая функция для обработки кнопки "Назад" в меню настроек"""
@@ -4587,9 +4596,15 @@ async def delete_persona_start(update: Update, context: ContextTypes.DEFAULT_TYP
     chat_id = update.effective_chat.id
     args = context.args
     logger.info(f"CMD /deletepersona < User {user_id} with args: {args}")
-    context.user_data['_user_id_for_logging'] = user_id
 
-    await _clean_previous_edit_session(context, chat_id) # Очищаем предыдущую сессию НАСТРОЙКИ
+    # Проверяем, не активен ли уже диалог редактирования
+    if context.user_data.get('edit_persona_id') is not None: # Если был активен диалог РЕДАКТИРОВАНИЯ
+        logger.info(f"User {user_id} trying to start delete_persona while edit_persona is active. Cancelling edit_persona first.")
+        await edit_persona_cancel(update, context) # Отменяем диалог редактирования
+    
+    # Очищаем на случай, если cancel не всё убрал или для нового диалога
+    context.user_data.clear() 
+    context.user_data['_user_id_for_logging'] = user_id
 
     usage_text = escape_markdown_v2("укажи id личности: `/deletepersona <id>`\nили используй кнопку из `/mypersonas`")
     error_invalid_id = escape_markdown_v2("❌ id должен быть числом.")
@@ -4611,27 +4626,46 @@ async def delete_persona_button_callback(update: Update, context: ContextTypes.D
     if not query or not query.data: return ConversationHandler.END
     
     user_id = query.from_user.id
-    chat_id = query.message.chat.id if query.message else (update.effective_chat.id if update.effective_chat else None)
-    logger.info(f"CALLBACK delete_persona < User {user_id} button press, data: {query.data}")
+    original_chat_id = query.message.chat.id if query.message else (update.effective_chat.id if update.effective_chat else None)
+    logger.info(f"CALLBACK delete_persona BUTTON < User {user_id} for data {query.data} in chat {original_chat_id}")
+
+    # Проверяем, не активен ли уже диалог редактирования
+    if context.user_data.get('edit_persona_id') is not None: # Если был активен диалог РЕДАКТИРОВАНИЯ
+        logger.info(f"User {user_id} trying to start delete_persona via button while edit_persona is active. Cancelling edit_persona first.")
+        await edit_persona_cancel(update, context) # Отменяем диалог редактирования
+        
+    # Очищаем user_data полностью для нового диалога
+    context.user_data.clear() 
     context.user_data['_user_id_for_logging'] = user_id
     
-    await _clean_previous_edit_session(context, chat_id) # Очищаем предыдущую сессию НАСТРОЙКИ
-    
-    # Отвечаем на коллбэк только после очистки предыдущих сессий
-    await query.answer("Начинаем удаление...")
+    # Быстрый ответ на коллбэк после очистки предыдущих сессий
+    try: 
+        await query.answer("Начинаем удаление...")
+    except Exception as e_ans:
+        logger.debug(f"delete_persona_button_callback: Could not answer query: {e_ans}")
 
     error_invalid_id_callback = escape_markdown_v2("❌ ошибка: неверный ID личности в кнопке.")
 
     try:
-        persona_id = int(query.data.split('_')[-1])
+        persona_id = int(query.data.split('_')[-1]) 
         logger.info(f"Parsed persona_id for deletion: {persona_id} for user {user_id}")
+        if query.message:
+            try:
+                await context.bot.delete_message(chat_id=query.message.chat.id, message_id=query.message.message_id)
+                logger.debug(f"Deleted message {query.message.message_id} that contained the 'Удалить' button.")
+            except Exception as e:
+                logger.warning(f"Could not delete message ({query.message.message_id}) with 'Удалить' button: {e}. Continuing...")
         return await _start_delete_convo(update, context, persona_id)
     except (IndexError, ValueError):
         logger.error(f"Could not parse persona_id from delete_persona callback data: {query.data}")
-        try:
-            await query.edit_message_text(error_invalid_id_callback, parse_mode=ParseMode.MARKDOWN_V2)
-        except Exception as e:
-            logger.error(f"Failed to edit message with invalid ID error: {e}")
+        if original_chat_id:
+            await context.bot.send_message(original_chat_id, error_invalid_id_callback, parse_mode=ParseMode.MARKDOWN_V2)
+        return ConversationHandler.END
+    except Exception as e:
+        logger.error(f"Unexpected error in delete_persona_button_callback for {query.data}: {e}", exc_info=True)
+        if original_chat_id:
+            try: await context.bot.send_message(original_chat_id, "Произошла непредвиденная ошибка.", parse_mode=None)
+            except Exception: pass
         return ConversationHandler.END
 
 async def delete_persona_confirmed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
