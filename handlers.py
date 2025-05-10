@@ -3791,57 +3791,50 @@ async def edit_moods_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 def fix_markdown_prompt_strings(markdown_strings=None):
     """Исправляет все строки с подсказками для корректного экранирования в Markdown V2"""
     global prompt_new_name, prompt_new_prompt_fmt_raw, prompt_confirm_delete_fmt_raw
-    global error_validation, error_name_exists_fmt_raw, error_no_session
-    global error_not_found, error_db, error_general, prompt_for_prompt_fmt_raw
+    global prompt_delete_successful_fmt_raw, prompt_add_successful_fmt_raw, prompt_edit_successful_fmt_raw
+    global error_generic_mood_edit, error_name_length, error_name_regex, error_name_exists, error_no_moods
+    global error_mood_not_found, error_db
     
-    # Если список не предоставлен, создаем его
-    if markdown_strings is None:
-        markdown_strings = [
-            prompt_new_name, prompt_new_prompt_fmt_raw, prompt_confirm_delete_fmt_raw,
-            error_validation, error_name_exists_fmt_raw, error_no_session,
-            error_not_found, error_db, error_general, prompt_for_prompt_fmt_raw
-        ]
-    
-    # Экранируем строки
-    escaped_strings = [escape_markdown_v2(s) for s in markdown_strings]
-    
-    # Обновляем глобальные переменные
-    (
-        prompt_new_name, prompt_new_prompt_fmt_raw, prompt_confirm_delete_fmt_raw,
-        error_validation, error_name_exists_fmt_raw, error_no_session,
-        error_not_found, error_db, error_general, prompt_for_prompt_fmt_raw
-    ) = escaped_strings
+    # Экранируем все исходные строки
+    prompt_new_name = "введи название нового настроения (1-30 символов, буквы/цифры/дефис/подчерк., без пробелов):"
+    prompt_new_prompt_fmt_raw = "введи описание для настроения {mood_name}:"
+    prompt_confirm_delete_fmt_raw = "Вы уверены, что хотите удалить настроение {mood_name}?"
+    prompt_delete_successful_fmt_raw = "Настроение {mood_name} успешно удалено."
+    prompt_add_successful_fmt_raw = "Настроение {mood_name} успешно добавлено."
+    prompt_edit_successful_fmt_raw = "Настроение {mood_name} успешно изменено."
+    error_generic_mood_edit = "При редактировании настроений произошла ошибка."
+    error_name_length = "Название должно быть от 1 до 30 символов."
+    error_name_regex = "Название может содержать только буквы, цифры, дефис и подчеркивание (без пробелов)."
+    error_name_exists = "Такое настроение уже существует. Выберите другое название."
+    error_no_moods = "У этой личности еще нет настроений. Добавьте первое!"
+    error_mood_not_found = "Настроение не найдено."
+    error_db = "Ошибка базы данных при работе с настроениями."
 
 # Инициализация переменных перед вызовом
 prompt_new_name = "введи название нового настроения (1-30 символов, буквы/цифры/дефис/подчерк., без пробелов):"
 prompt_new_prompt_fmt_raw = "введи описание для настроения {mood_name}:"
 prompt_confirm_delete_fmt_raw = "Вы уверены, что хотите удалить настроение {mood_name}?"
+prompt_delete_successful_fmt_raw = "Настроение {mood_name} успешно удалено."
+prompt_add_successful_fmt_raw = "Настроение {mood_name} успешно добавлено."
+prompt_edit_successful_fmt_raw = "Настроение {mood_name} успешно изменено."
+error_generic_mood_edit = "При редактировании настроений произошла ошибка."
+error_name_length = "Название должно быть от 1 до 30 символов."
+error_name_regex = "Название может содержать только буквы, цифры, дефис и подчеркивание (без пробелов)."
+error_name_exists = "Такое настроение уже существует. Выберите другое название."
+error_no_moods = "У этой личности еще нет настроений. Добавьте первое!"
+error_mood_not_found = "Настроение не найдено."
+error_db = "Ошибка базы данных при работе с настроениями."
 
-error_validation = "Ошибка: некорректный ввод. Пожалуйста, проверьте формат."
-error_name_exists_fmt_raw = "Настроение {mood_name} уже существует."
-error_no_session = "Сессия не найдена. Пожалуйста, начните заново."
-
-error_not_found = "Ресурс не найден."
-error_db = "Ошибка базы данных."
-error_general = "Произошла неизвестная ошибка."
-prompt_for_prompt_fmt_raw = "Введите описание для {mood_name}:"
-
-# Вызов функции экранирования
-fix_markdown_prompt_strings()
-
-# --- Menu Structure and Navigation Improvements ---
 def apply_menu_structure_fixes():
     """Улучшение структуры меню настроек персоны"""
     async def fixed_show_edit_wizard_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, persona_config: PersonaConfig) -> int:
-        """Отображает главное меню настройки персоны, отправляя новое сообщение."""
         try:
-            query = update.callback_query # query может быть None, если вход через команду
+            query = update.callback_query
             
-            # ПРИОРИТЕТ: update.effective_chat для определения chat_id
             chat_id = None
-            if update.effective_chat: # Это должно быть наиболее надежным
+            if update.effective_chat:
                 chat_id = update.effective_chat.id
-            elif query and query.message: # Fallback, если вдруг effective_chat нет, но query.message есть
+            elif query and query.message:
                 chat_id = query.message.chat.id
             
             if not chat_id:
@@ -3849,8 +3842,7 @@ def apply_menu_structure_fixes():
                 if query:
                     try: await query.answer("Ошибка: не удалось определить чат.", show_alert=True)
                     except Exception: pass
-                # Если это не коллбэк, а команда, и нет effective_chat, то это странно
-                elif update.message: # Если это сообщение от команды
+                elif update.message:
                      await update.message.reply_text("Ошибка: не удалось определить чат для отображения меню.")
                 return ConversationHandler.END
 
@@ -3873,15 +3865,15 @@ def apply_menu_structure_fixes():
             group_reply_map = {"always": "Всегда", "mentioned_only": "По @", "mentioned_or_contextual": "По @ / Контексту", "never": "Никогда"}
             media_react_map = {"all": "Текст+GIF", "text_only": "Только текст", "none": "Никак", "photo_only": "Только фото", "voice_only": "Только голос"}
             
-            # Отображение текущего значения max_response_messages
-            max_msgs_setting = persona_config.max_response_messages
-            max_msgs_display_text = "Стандартно" # Значение по умолчанию для отображения
-            if max_msgs_setting == 0: max_msgs_display_text = "Случайно"
-            elif max_msgs_setting == 1: max_msgs_display_text = "Поменьше"
-            elif max_msgs_setting == 3: max_msgs_display_text = "Стандартно"
-            elif max_msgs_setting == 6: max_msgs_display_text = "Побольше"
-            else:
-                logger.warning(f"Persona {persona_id} has unexpected max_response_messages: {max_msgs_setting}. Displaying as 'Стандартно'.")
+            # Определяем текст для кнопки "Макс. сообщ."
+            current_max_msgs_setting = persona_config.max_response_messages
+            display_for_max_msgs_button = "Стандартно" # Текст по умолчанию
+            if current_max_msgs_setting == 0: display_for_max_msgs_button = "Случайно"
+            elif current_max_msgs_setting == 1: display_for_max_msgs_button = "Поменьше"
+            elif current_max_msgs_setting == 3: display_for_max_msgs_button = "Стандартно"
+            elif current_max_msgs_setting == 6: display_for_max_msgs_button = "Побольше"
+            else: # Если значение неожиданное
+                logger.warning(f"Persona {persona_id} has unexpected max_response_messages: {current_max_msgs_setting} for button display. Using 'Стандартно'.")
             
             keyboard = [
                 [
@@ -3892,56 +3884,43 @@ def apply_menu_structure_fixes():
                 [InlineKeyboardButton(f"🗣️ Разговорчивость ({verbosity_map.get(verbosity, '?')})", callback_data="edit_wizard_verbosity")],
                 [InlineKeyboardButton(f"👥 Ответы в группе ({group_reply_map.get(group_reply, '?')})", callback_data="edit_wizard_group_reply")],
                 [InlineKeyboardButton(f"🖼️ Реакция на медиа ({media_react_map.get(media_react, '?')})", callback_data="edit_wizard_media_reaction")],
-                # Одна кнопка для перехода в подменю настройки макс. сообщений
-                [InlineKeyboardButton(f"🗨️ Макс. сообщ. (тек.: {max_msgs_display_text})", callback_data="edit_wizard_max_msgs")],
-                # [InlineKeyboardButton(f"🔊 Объем сообщений", callback_data="edit_wizard_message_volume")], # Временно отключено
+                # Вот эта кнопка:
+                [InlineKeyboardButton(f"🗨️ Макс. сообщ. ({display_for_max_msgs_button})", callback_data="edit_wizard_max_msgs")],
                 [InlineKeyboardButton(f"🎭 Настроения{star if not is_premium else ''}", callback_data="edit_wizard_moods")],
                 [InlineKeyboardButton("✅ Завершить", callback_data="finish_edit")]
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
             
             msg_text_raw = f"⚙️ *Настройка личности: {persona_config.name}* (ID: {persona_id})\n\nВыберите, что изменить:"
-            msg_text = escape_markdown_v2(msg_text_raw) # escape_markdown_v2 обработает скобки и звездочки
+            msg_text = escape_markdown_v2(msg_text_raw)
             
-            logger.debug(f"fixed_show_edit_wizard_menu: Attempting to send NEW wizard menu message to chat_id: {chat_id}")
-            
-            # Удаляем старое сообщение меню, если оно было сохранено
-            old_menu_id = context.user_data.pop('wizard_menu_message_id', None)
-            if old_menu_id and query and query.message and old_menu_id == query.message.message_id:
-                logger.debug(f"fixed_show_edit_wizard_menu: Old menu ID {old_menu_id} matches current query message. Will be replaced by send_message or edit below.")
-            elif old_menu_id:
-                try:
-                    await context.bot.delete_message(chat_id=chat_id, message_id=old_menu_id)
-                    logger.debug(f"fixed_show_edit_wizard_menu: Deleted previous wizard menu message {old_menu_id}.")
-                except Exception as del_err:
-                    logger.warning(f"fixed_show_edit_wizard_menu: Could not delete previous wizard menu message {old_menu_id}: {del_err}")
-            
-            # Если это коллбэк и сообщение то же, что и раньше, редактируем. Иначе - отправляем новое.
+            logger.debug(f"fixed_show_edit_wizard_menu: Final msg_text='{msg_text[:100]}...', reply_markup first button text: '{keyboard[0][0].text if keyboard and keyboard[0] else 'N/A'}'")
+
             sent_message = None
-            if query and query.message: # Если это коллбэк, пытаемся редактировать
+            if query and query.message:
                 try:
-                    await query.edit_message_text(
-                        text=msg_text,
-                        reply_markup=reply_markup,
-                        parse_mode=ParseMode.MARKDOWN_V2
-                    )
+                    # Проверяем, отличается ли текст или клавиатура, чтобы избежать "message is not modified"
+                    if query.message.text != msg_text or query.message.reply_markup != reply_markup:
+                        await query.edit_message_text(text=msg_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
+                        logger.info(f"fixed_show_edit_wizard_menu: Successfully EDITED wizard menu. MsgID: {query.message.message_id}")
+                    else:
+                        logger.info(f"fixed_show_edit_wizard_menu: Wizard menu message not modified. MsgID: {query.message.message_id}")
                     sent_message = query.message
-                    logger.info(f"fixed_show_edit_wizard_menu: Successfully EDITED wizard menu message_id: {sent_message.message_id} in chat_id: {chat_id}")
                 except BadRequest as e_edit:
                     if "message is not modified" in str(e_edit).lower():
                         sent_message = query.message # Сообщение не изменилось
-                        logger.info(f"fixed_show_edit_wizard_menu: Wizard menu message not modified. message_id: {sent_message.message_id}")
-                    else: # Другая ошибка BadRequest, отправляем новое
-                        logger.warning(f"fixed_show_edit_wizard_menu: Failed to edit, sending new. Error: {e_edit}")
+                        logger.info(f"fixed_show_edit_wizard_menu: Wizard menu message not modified (caught exception). MsgID: {sent_message.message_id}")
+                    else:
+                        logger.warning(f"fixed_show_edit_wizard_menu: Failed to edit (error: {e_edit}), sending new.")
                         sent_message = await context.bot.send_message(chat_id=chat_id, text=msg_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
-                        logger.info(f"fixed_show_edit_wizard_menu: Successfully sent NEW (after edit fail) wizard menu message_id: {sent_message.message_id} to chat_id: {chat_id}")
-            else: # Если это не коллбэк (например, первый вход) или нет query.message, отправляем новое
+                        logger.info(f"fixed_show_edit_wizard_menu: Successfully sent NEW (after edit fail) wizard menu. MsgID: {sent_message.message_id}")
+            else:
                 sent_message = await context.bot.send_message(chat_id=chat_id, text=msg_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
-                logger.info(f"fixed_show_edit_wizard_menu: Successfully sent NEW wizard menu message_id: {sent_message.message_id} to chat_id: {chat_id}")
+                logger.info(f"fixed_show_edit_wizard_menu: Successfully sent NEW wizard menu. MsgID: {sent_message.message_id}")
 
             context.user_data['wizard_menu_message_id'] = sent_message.message_id
             context.user_data['edit_message_id'] = sent_message.message_id 
-            context.user_data['edit_chat_id'] = chat_id # Сохраняем актуальный chat_id
+            context.user_data['edit_chat_id'] = chat_id
             
             if query: 
                 try: await query.answer()
@@ -3950,16 +3929,10 @@ def apply_menu_structure_fixes():
             return EDIT_WIZARD_MENU
         except Exception as e:
             logger.error(f"CRITICAL Error in fixed_show_edit_wizard_menu: {e}", exc_info=True)
-            # Попытка отправить сообщение об ошибке в чат
-            chat_id_fallback = None
-            if hasattr(update, 'effective_chat') and update.effective_chat:
-                chat_id_fallback = update.effective_chat.id
-            
+            chat_id_fallback = update.effective_chat.id if update.effective_chat else None
             if chat_id_fallback:
-                try:
-                    await context.bot.send_message(chat_id_fallback, "Произошла критическая ошибка при отображении меню настроек. Попробуйте снова позже.")
-                except Exception as fallback_e:
-                    logger.error(f"Failed to send critical error message in fixed_show_edit_wizard_menu: {fallback_e}")
+                try: await context.bot.send_message(chat_id_fallback, "Произошла критическая ошибка при отображении меню настроек.")
+                except Exception: pass
             return ConversationHandler.END
     
     global _show_edit_wizard_menu
