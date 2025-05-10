@@ -3040,26 +3040,24 @@ async def edit_persona_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
     """Entry point for /editpersona command."""
     if not update.message: return ConversationHandler.END
     user_id = update.effective_user.id
-    chat_id = update.effective_chat.id # Сохраняем для возможной отправки сообщения от cancel
+    chat_id = update.effective_chat.id
     args = context.args
     logger.info(f"CMD /editpersona < User {user_id} with args: {args}")
 
     # Проверяем, не активен ли уже диалог редактирования
     if context.user_data.get('edit_persona_id') is not None:
-        logger.info(f"User {user_id} trying to start new edit_persona while another is active. Cancelling previous.")
-        # Вызываем fallback-функцию отмены, чтобы корректно завершить предыдущий диалог
-        # Мы передаем update и context, чтобы edit_persona_cancel мог работать
-        await edit_persona_cancel(update, context) 
-        # edit_persona_cancel уже очистит user_data и вернет ConversationHandler.END
-        # После этого мы можем попытаться начать новый диалог, но ConversationHandler 
-        # может потребовать нового взаимодействия от пользователя.
-        # Поэтому, возможно, лучше просто сообщить пользователю.
-        # Однако, попробуем продолжить и начать новый.
-        # Важно: edit_persona_cancel изменит context.user_data.
+        active_persona_id = context.user_data.get('edit_persona_id')
+        logger.warning(f"User {user_id} tried to start /editpersona while edit session for persona {active_persona_id} is active.")
+        await update.message.reply_text(
+            escape_markdown_v2("У вас уже открыта сессия настройки личности. "
+                           "Пожалуйста, сначала завершите ее (кнопка '✅ Завершить' в меню настроек) или отмените командой /cancel."),
+            parse_mode=ParseMode.MARKDOWN_V2
+        )
+        return ConversationHandler.END # Не даем начать новый диалог
 
-    # Очищаем user_data еще раз на всякий случай, т.к. cancel мог не все специфичное для нового убрать
+    # Если предыдущий диалог не активен, очищаем user_data для нового диалога
     context.user_data.clear() 
-    context.user_data['_user_id_for_logging'] = user_id # Для логгирования
+    context.user_data['_user_id_for_logging'] = user_id 
 
     usage_text = escape_markdown_v2("укажи id личности: `/editpersona <id>`\nили используй кнопку из `/mypersonas`")
     error_invalid_id = escape_markdown_v2("❌ id должен быть числом.")
@@ -3073,7 +3071,6 @@ async def edit_persona_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text(error_invalid_id, parse_mode=ParseMode.MARKDOWN_V2)
         return ConversationHandler.END
 
-    # Запускаем новый диалог
     return await _start_edit_convo(update, context, persona_id)
 
 async def edit_persona_button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -3087,19 +3084,22 @@ async def edit_persona_button_callback(update: Update, context: ContextTypes.DEF
 
     # Проверяем, не активен ли уже диалог редактирования
     if context.user_data.get('edit_persona_id') is not None:
-        logger.info(f"User {user_id} trying to start new edit_persona via button while another is active. Cancelling previous.")
-        # Передаем текущий update (CallbackQuery) в edit_persona_cancel
-        await edit_persona_cancel(update, context)
-        # edit_persona_cancel очистит user_data.
+        active_persona_id = context.user_data.get('edit_persona_id')
+        logger.warning(f"User {user_id} clicked 'Настроить' for persona while edit session for persona {active_persona_id} is active.")
+        try:
+            await query.answer(
+                "Сессия настройки уже активна. Завершите или отмените ее.",
+                show_alert=True
+            )
+        except Exception: pass # Если ответ на коллбэк не удался
+        return ConversationHandler.END # Не даем начать новый диалог, так как старый активен
 
-    # Очищаем user_data еще раз на всякий случай
+    # Если предыдущий диалог не активен, очищаем user_data для нового диалога
     context.user_data.clear()
     context.user_data['_user_id_for_logging'] = user_id
 
-    # Важно! Отвечаем на коллбэк ПОСЛЕ потенциальной очистки и ДО удаления сообщения,
-    # чтобы пользователь не видел "часики" слишком долго.
-    try: # Быстрый ответ на коллбэк
-        await query.answer() 
+    try: 
+        await query.answer() # Отвечаем на коллбэк
     except Exception as e_ans:
         logger.debug(f"edit_persona_button_callback: Could not answer query: {e_ans}")
 
@@ -4599,10 +4599,15 @@ async def delete_persona_start(update: Update, context: ContextTypes.DEFAULT_TYP
 
     # Проверяем, не активен ли уже диалог редактирования
     if context.user_data.get('edit_persona_id') is not None: # Если был активен диалог РЕДАКТИРОВАНИЯ
-        logger.info(f"User {user_id} trying to start delete_persona while edit_persona is active. Cancelling edit_persona first.")
-        await edit_persona_cancel(update, context) # Отменяем диалог редактирования
+        active_persona_id = context.user_data.get('edit_persona_id')
+        logger.warning(f"User {user_id} tried to start /deletepersona while edit session for persona {active_persona_id} is active.")
+        await update.message.reply_text(
+            escape_markdown_v2("Сначала завершите или отмените текущую сессию настройки личности ('✅ Завершить' или /cancel)."),
+            parse_mode=ParseMode.MARKDOWN_V2
+        )
+        return ConversationHandler.END
     
-    # Очищаем на случай, если cancel не всё убрал или для нового диалога
+    # Очищаем для нового диалога
     context.user_data.clear() 
     context.user_data['_user_id_for_logging'] = user_id
 
@@ -4631,14 +4636,21 @@ async def delete_persona_button_callback(update: Update, context: ContextTypes.D
 
     # Проверяем, не активен ли уже диалог редактирования
     if context.user_data.get('edit_persona_id') is not None: # Если был активен диалог РЕДАКТИРОВАНИЯ
-        logger.info(f"User {user_id} trying to start delete_persona via button while edit_persona is active. Cancelling edit_persona first.")
-        await edit_persona_cancel(update, context) # Отменяем диалог редактирования
+        active_persona_id = context.user_data.get('edit_persona_id')
+        logger.warning(f"User {user_id} clicked 'Удалить' while edit session for persona {active_persona_id} is active.")
+        try:
+            await query.answer(
+                "Сначала завершите или отмените текущую настройку личности.",
+                show_alert=True
+            )
+        except Exception: pass
+        return ConversationHandler.END # Не даем начать новый диалог, если уже есть активный
         
     # Очищаем user_data полностью для нового диалога
     context.user_data.clear() 
     context.user_data['_user_id_for_logging'] = user_id
     
-    # Быстрый ответ на коллбэк после очистки предыдущих сессий
+    # Быстрый ответ на коллбэк
     try: 
         await query.answer("Начинаем удаление...")
     except Exception as e_ans:
