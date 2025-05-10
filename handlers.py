@@ -3337,14 +3337,6 @@ async def edit_wizard_menu_handler(update: Update, context: ContextTypes.DEFAULT
     with next(get_db()) as db_session:
         persona_config = db_session.query(PersonaConfig).filter(PersonaConfig.id == persona_id).first()
         return await _show_edit_wizard_menu(update, context, persona_config) if persona_config else ConversationHandler.END
-    elif data == "finish_edit":
-        return await edit_persona_finish(update, context)
-    elif data == "back_to_wizard_menu":
-        # Обработка кнопки "Назад"
-        return await _handle_back_to_wizard_menu(update, context, persona_id)
-    else:
-        logger.warning(f"Unhandled wizard menu callback: {data}")
-        return EDIT_WIZARD_MENU
 
 # --- Helper to send prompt and store message ID ---
 async def _send_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, reply_markup: InlineKeyboardMarkup) -> None:
