@@ -3337,20 +3337,6 @@ async def edit_wizard_menu_handler(update: Update, context: ContextTypes.DEFAULT
     with next(get_db()) as db_session:
         persona_config = db_session.query(PersonaConfig).filter(PersonaConfig.id == persona_id).first()
         return await _show_edit_wizard_menu(update, context, persona_config) if persona_config else ConversationHandler.END
-
-    elif data == "edit_wizard_message_volume":
-        # Временно отключено, пока миграция не применена
-        await query.answer("Эта функция временно недоступна")
-        return EDIT_WIZARD_MENU
-        # return await edit_message_volume_prompt(update, context)
-    elif data == "edit_wizard_moods":
-        with next(get_db()) as db:
-            owner = db.query(User).join(PersonaConfig).filter(PersonaConfig.id == persona_id).first()
-            if owner and (owner.is_active_subscriber or is_admin(user_id)):
-                return await edit_moods_entry(update, context)
-            else:
-                await query.answer("⭐ Доступно по подписке", show_alert=True)
-                return EDIT_WIZARD_MENU
     elif data == "finish_edit":
         return await edit_persona_finish(update, context)
     elif data == "back_to_wizard_menu":
