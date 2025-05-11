@@ -2021,13 +2021,15 @@ async def my_personas(update: Union[Update, CallbackQuery], context: ContextType
     error_general = escape_markdown_v2("❌ произошла ошибка при получении списка личностей.")
     error_user_not_found = escape_markdown_v2("❌ ошибка: не удалось найти пользователя.")
     info_no_personas_fmt_raw = "у тебя пока нет личностей ({count}/{limit})\\. создай первую: `/createpersona <имя>`"
-    info_list_header_fmt_raw = "🎭 *твои личности* \\\\({count}/{limit}\\\\):"
-    fallback_text_plain = "Ошибка загрузки списка личностей." # Запасной текст при ошибке Markdown
+    # Исправляем экранирование скобок: было \\\\, стало \\
+    info_list_header_fmt_raw = "🎭 *твои личности* \\({count}/{limit}\\):"
+    # Заменяем единую строку fallback на список частей для более точного построения
+    fallback_text_plain_parts = []
 
     final_text_to_send = ""
     final_reply_markup = None
     final_parse_mode = ParseMode.MARKDOWN_V2
-    use_fallback_plain_text = False
+    # Убираем переменную use_fallback_plain_text, она больше не нужна, всё решает наличие ошибки
 
     try:
         with next(get_db()) as db:
@@ -2040,10 +2042,9 @@ async def my_personas(update: Union[Update, CallbackQuery], context: ContextType
                  if not user_with_personas:
                      logger.error(f"User {user_id} not found even after get_or_create/refresh in my_personas.")
                      final_text_to_send = error_user_not_found
-                     # final_reply_markup будет None
-                     # final_parse_mode останется MARKDOWN_V2
+                     # Добавляем человекочитаемый текст ошибки для случая отказа Markdown
+                     fallback_text_plain_parts.append("Ошибка: не удалось найти пользователя.")
                      # Отправка будет ниже, после блока with
-                     use_fallback_plain_text = False # Попробуем отправить MD ошибку
                      # Выходим из with, чтобы отправить сообщение
                      raise StopIteration # Прерываем with блок, чтобы перейти к отправке
 
@@ -2056,7 +2057,7 @@ async def my_personas(update: Union[Update, CallbackQuery], context: ContextType
                     count=escape_markdown_v2(str(persona_count)),
                     limit=escape_markdown_v2(str(persona_limit))
                 )
-                fallback_text_plain = f"у тебя пока нет личностей ({persona_count}/{persona_limit}). создай первую: /createpersona <имя>"
+                fallback_text_plain_parts.append(f"у тебя пока нет личностей ({persona_count}/{persona_limit}). создай первую: /createpersona <имя>")
                 keyboard_no_personas = [[InlineKeyboardButton("⬅️ Назад в Меню", callback_data="show_menu")]] if is_callback else None
                 final_reply_markup = InlineKeyboardMarkup(keyboard_no_personas) if keyboard_no_personas else ReplyKeyboardRemove()
             else:
@@ -2067,11 +2068,12 @@ async def my_personas(update: Union[Update, CallbackQuery], context: ContextType
                     )
                 ]
                 keyboard_personas = []
-                fallback_lines = [f"Твои личности ({persona_count}/{persona_limit}):"]
+                fallback_text_plain_parts.append(f"Твои личности ({persona_count}/{persona_limit}):")
 
                 for p in personas:
-                     message_lines.append(f"\n👤 *{escape_markdown_v2(p.name)}* \\\\(ID: `{p.id}`\\\\)")
-                     fallback_lines.append(f"\n- {p.name} (ID: {p.id})")
+                     # ИСПРАВЛЯЕМ ЭКРАНИРОВАНИЕ: заменяем двойные бэкслеши на одинарные и экранируем ID
+                     message_lines.append(f"\n👤 *{escape_markdown_v2(p.name)}* \\(ID: `{escape_markdown_v2(str(p.id))}`\\)")
+                     fallback_text_plain_parts.append(f"\n- {p.name} (ID: {p.id})")
                      edit_cb = f"edit_persona_{p.id}"
                      delete_cb = f"delete_persona_{p.id}"
                      add_cb = f"add_bot_{p.id}"
@@ -2082,23 +2084,26 @@ async def my_personas(update: Union[Update, CallbackQuery], context: ContextType
                      ])
                 
                 final_text_to_send = "\n".join(message_lines)
-                fallback_text_plain = "\n".join(fallback_lines)
+                # fallback теперь формируется отдельно
                 if is_callback:
                     keyboard_personas.append([InlineKeyboardButton("⬅️ Назад в Меню", callback_data="show_menu")])
                 final_reply_markup = InlineKeyboardMarkup(keyboard_personas)
             
-            logger.info(f"User {user_id} requested mypersonas. Prepared {persona_count} personas with action buttons.")
+            logger.info(f"User {user_id} requested mypersonas. Prepared {persona_count} personas with action buttons. MD text preview: {final_text_to_send[:100]}")
 
     except StopIteration: # Используем для выхода из with блока при ошибке user_not_found
         pass
     except SQLAlchemyError as e:
         logger.error(f"Database error during my_personas for user {user_id}: {e}", exc_info=True)
         final_text_to_send = error_db
-        use_fallback_plain_text = False # Попробуем MD ошибку
+        fallback_text_plain_parts.append("Ошибка базы данных при загрузке списка личностей.")
     except Exception as e: # Общие ошибки подготовки
         logger.error(f"Error preparing my_personas for user {user_id}: {e}", exc_info=True)
         final_text_to_send = error_general
-        use_fallback_plain_text = False # Попробуем MD ошибку
+        fallback_text_plain_parts.append("Произошла ошибка при получении списка личностей.")
+        
+    # Формируем запасной текст из частей
+    current_fallback_text_plain = "\n".join(fallback_text_plain_parts) if fallback_text_plain_parts else "Ошибка отображения."
 
     # --- Отправка сообщения ---
     try:
@@ -2121,12 +2126,12 @@ async def my_personas(update: Union[Update, CallbackQuery], context: ContextType
 
     except TelegramError as e_send: # Ошибки при отправке (включая BadRequest)
         logger.error(f"Telegram error sending my_personas for user {user_id}: {e_send}", exc_info=True)
-        if isinstance(e_send, BadRequest) and "Can't parse entities" in str(e_send).lower():
-            logger.error(f"--> my_personas: Failed MD text: '{final_text_to_send[:500]}...' Using fallback.")
+        if isinstance(e_send, BadRequest) and "parse entities" in str(e_send).lower(): # Более общее условие для поиска ошибок форматирования
+            logger.error(f"--> my_personas: Failed MD text: '{final_text_to_send[:500]}...' Using fallback: '{current_fallback_text_plain[:500]}'")
             try:
                 await context.bot.send_message(
                     chat_id=chat_id, 
-                    text=fallback_text_plain, # Используем заранее подготовленный простой текст
+                    text=current_fallback_text_plain, # Используем сформированный выше fallback текст
                     reply_markup=final_reply_markup, 
                     parse_mode=None
                 )
