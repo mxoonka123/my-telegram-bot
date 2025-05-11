@@ -1975,30 +1975,46 @@ async def my_personas(update: Union[Update, CallbackQuery], context: ContextType
     """Handles the /mypersonas command and show_mypersonas callback."""
     is_callback = isinstance(update, CallbackQuery)
     query = update if is_callback else None
-    message = update.message if not is_callback else None
+    message_cmd = update.message if not is_callback else None # Сообщение от команды /mypersonas
 
-    if is_callback:
+    user = None
+    # Определяем пользователя и целевой чат
+    if query: # Если это коллбэк
         user = query.from_user
-        message_target = query.message
-    elif message:
-        user = message.from_user
-        message_target = message
+        if not query.message: # На всякий случай, если сообщение в коллбэке отсутствует
+            logger.error("my_personas (callback): query.message is None.")
+            try: await query.answer("Ошибка: сообщение не найдено.", show_alert=True)
+            except Exception: pass
+            return
+        chat_id = query.message.chat.id
+        # message_target для коллбэка будет использоваться для удаления
+        message_to_delete_if_callback = query.message 
+    elif message_cmd: # Если это команда
+        user = message_cmd.from_user
+        chat_id = message_cmd.chat.id
+        message_to_delete_if_callback = None # Нет сообщения для удаления от команды
     else:
-        logger.error("my_personas handler called with invalid update type.")
+        logger.error("my_personas handler called with invalid update type or missing user/chat info.")
         return
 
     user_id = user.id
     username = user.username or f"id_{user_id}"
-    chat_id = message_target.chat.id
     chat_id_str = str(chat_id)
 
     if is_callback:
         logger.info(f"Callback 'show_mypersonas' < User {user_id} ({username}) in Chat {chat_id_str}")
-    else:
+        try:
+            await query.answer() # Отвечаем на коллбэк СРАЗУ
+        except Exception as e_ans:
+            logger.warning(f"Could not answer query in my_personas: {e_ans}")
+    else: # Команда /mypersonas
         logger.info(f"CMD /mypersonas < User {user_id} ({username}) in Chat {chat_id_str}")
         if not await check_channel_subscription(update, context):
             await send_subscription_required_message(update, context)
             return
+    
+    # Действие typing только для команды, для коллбэка это может выглядеть странно, если сообщение быстро меняется
+    if not is_callback:
         await context.bot.send_chat_action(chat_id=chat_id_str, action=ChatAction.TYPING)
 
     error_db = escape_markdown_v2("❌ ошибка при загрузке списка личностей.")
@@ -2006,7 +2022,12 @@ async def my_personas(update: Union[Update, CallbackQuery], context: ContextType
     error_user_not_found = escape_markdown_v2("❌ ошибка: не удалось найти пользователя.")
     info_no_personas_fmt_raw = "у тебя пока нет личностей ({count}/{limit})\\. создай первую: `/createpersona <имя>`"
     info_list_header_fmt_raw = "🎭 *твои личности* \\\\({count}/{limit}\\\\):"
-    fallback_text_plain = "Ошибка загрузки списка личностей."
+    fallback_text_plain = "Ошибка загрузки списка личностей." # Запасной текст при ошибке Markdown
+
+    final_text_to_send = ""
+    final_reply_markup = None
+    final_parse_mode = ParseMode.MARKDOWN_V2
+    use_fallback_plain_text = False
 
     try:
         with next(get_db()) as db:
@@ -2014,118 +2035,113 @@ async def my_personas(update: Union[Update, CallbackQuery], context: ContextType
 
             if not user_with_personas:
                  user_with_personas = get_or_create_user(db, user_id, username)
-                 db.commit()
-                 db.refresh(user_with_personas)
-                 user_with_personas = db.query(User).options(selectinload(User.persona_configs)).filter(User.id == user_with_personas.id).one()
+                 db.commit(); db.refresh(user_with_personas)
+                 user_with_personas = db.query(User).options(selectinload(User.persona_configs)).filter(User.id == user_with_personas.id).one_or_none()
                  if not user_with_personas:
                      logger.error(f"User {user_id} not found even after get_or_create/refresh in my_personas.")
-                     error_text = error_user_not_found
-                     if is_callback: await query.edit_message_text(error_text, parse_mode=ParseMode.MARKDOWN_V2)
-                     else: await message_target.reply_text(error_text, parse_mode=ParseMode.MARKDOWN_V2)
-                     return
+                     final_text_to_send = error_user_not_found
+                     # final_reply_markup будет None
+                     # final_parse_mode останется MARKDOWN_V2
+                     # Отправка будет ниже, после блока with
+                     use_fallback_plain_text = False # Попробуем отправить MD ошибку
+                     # Выходим из with, чтобы отправить сообщение
+                     raise StopIteration # Прерываем with блок, чтобы перейти к отправке
 
             personas = sorted(user_with_personas.persona_configs, key=lambda p: p.name) if user_with_personas.persona_configs else []
             persona_limit = user_with_personas.persona_limit
             persona_count = len(personas)
 
             if not personas:
-                text_to_send = info_no_personas_fmt_raw.format(
-                    count=escape_markdown_v2(str(persona_count)),
-                    limit=escape_markdown_v2(str(persona_limit))
-                    )
-                fallback_text_plain = f"у тебя пока нет личностей ({persona_count}/{persona_limit}). создай первую: /createpersona <имя>"
-                keyboard = [[InlineKeyboardButton("⬅️ Назад в Меню", callback_data="show_menu")]] if is_callback else None
-                reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else ReplyKeyboardRemove()
-
-                if is_callback:
-                    if message_target.text != text_to_send or message_target.reply_markup != reply_markup:
-                        await query.edit_message_text(text_to_send, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
-                    else: await query.answer()
-                else: await message_target.reply_text(text_to_send, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
-                return
-
-            message_lines = [
-                info_list_header_fmt_raw.format(
+                final_text_to_send = info_no_personas_fmt_raw.format(
                     count=escape_markdown_v2(str(persona_count)),
                     limit=escape_markdown_v2(str(persona_limit))
                 )
-            ]
-            keyboard = []
-            fallback_lines = [f"Твои личности ({persona_count}/{persona_limit}):"]
+                fallback_text_plain = f"у тебя пока нет личностей ({persona_count}/{persona_limit}). создай первую: /createpersona <имя>"
+                keyboard_no_personas = [[InlineKeyboardButton("⬅️ Назад в Меню", callback_data="show_menu")]] if is_callback else None
+                final_reply_markup = InlineKeyboardMarkup(keyboard_no_personas) if keyboard_no_personas else ReplyKeyboardRemove()
+            else:
+                message_lines = [
+                    info_list_header_fmt_raw.format(
+                        count=escape_markdown_v2(str(persona_count)),
+                        limit=escape_markdown_v2(str(persona_limit))
+                    )
+                ]
+                keyboard_personas = []
+                fallback_lines = [f"Твои личности ({persona_count}/{persona_limit}):"]
 
-            for p in personas:
-                 # Используем двойные бэкслеши для экранирования скобок в f-строке
-                 message_lines.append(f"\n👤 *{escape_markdown_v2(p.name)}* \\\\(ID: `{p.id}`\\\\)")
-                 fallback_lines.append(f"\n- {p.name} (ID: {p.id})")
+                for p in personas:
+                     message_lines.append(f"\n👤 *{escape_markdown_v2(p.name)}* \\\\(ID: `{p.id}`\\\\)")
+                     fallback_lines.append(f"\n- {p.name} (ID: {p.id})")
+                     edit_cb = f"edit_persona_{p.id}"
+                     delete_cb = f"delete_persona_{p.id}"
+                     add_cb = f"add_bot_{p.id}"
+                     keyboard_personas.append([
+                         InlineKeyboardButton("⚙️ Настроить", callback_data=edit_cb),
+                         InlineKeyboardButton("🗑️ Удалить", callback_data=delete_cb),
+                         InlineKeyboardButton("➕ В чат", callback_data=add_cb)
+                     ])
+                
+                final_text_to_send = "\n".join(message_lines)
+                fallback_text_plain = "\n".join(fallback_lines)
+                if is_callback:
+                    keyboard_personas.append([InlineKeyboardButton("⬅️ Назад в Меню", callback_data="show_menu")])
+                final_reply_markup = InlineKeyboardMarkup(keyboard_personas)
+            
+            logger.info(f"User {user_id} requested mypersonas. Prepared {persona_count} personas with action buttons.")
 
-                 edit_cb = f"edit_persona_{p.id}"
-                 delete_cb = f"delete_persona_{p.id}"
-                 add_cb = f"add_bot_{p.id}"
-                 if len(edit_cb.encode('utf-8')) > 64 or len(delete_cb.encode('utf-8')) > 64 or len(add_cb.encode('utf-8')) > 64:
-                      logger.warning(f"Callback data for persona {p.id} might be too long.")
-
-                 keyboard.append([
-                     InlineKeyboardButton("⚙️ Настроить", callback_data=edit_cb), # Changed text
-                     InlineKeyboardButton("🗑️ Удалить", callback_data=delete_cb),
-                     InlineKeyboardButton("➕ В чат", callback_data=add_cb)
-                 ])
-
-            text_to_send = "\n".join(message_lines)
-            fallback_text_plain = "\n".join(fallback_lines)
-
-            if is_callback:
-                keyboard.append([InlineKeyboardButton("⬅️ Назад в Меню", callback_data="show_menu")])
-
-            reply_markup = InlineKeyboardMarkup(keyboard)
-
-            if is_callback:
-                # Удаляем старое сообщение и отправляем новое
-                try:
-                    # Сначала отвечаем на колбэк, чтобы избежать ошибки
-                    await query.answer()
-                    
-                    # Удаляем старое сообщение
-                    await context.bot.delete_message(chat_id=chat_id, message_id=message_target.message_id)
-                    
-                    # Отправляем новое сообщение
-                    await context.bot.send_message(chat_id=chat_id, text=fallback_text_plain, reply_markup=reply_markup, parse_mode=None)
-                except Exception as e:
-                    logger.warning(f"Error in my_personas when handling callback: {e}")
-                    # Если не удалось удалить, пробуем отредактировать
-                    try:
-                        await query.edit_message_text(fallback_text_plain, reply_markup=reply_markup, parse_mode=None)
-                    except Exception as edit_err:
-                        logger.warning(f"Failed to edit message in my_personas: {edit_err}")
-            # Отправляем как простой текст
-            else: await message_target.reply_text(fallback_text_plain, reply_markup=reply_markup, parse_mode=None)
-
-            logger.info(f"User {user_id} requested mypersonas. Sent {persona_count} personas with action buttons.")
-
+    except StopIteration: # Используем для выхода из with блока при ошибке user_not_found
+        pass
     except SQLAlchemyError as e:
         logger.error(f"Database error during my_personas for user {user_id}: {e}", exc_info=True)
-        error_text = error_db
-        if is_callback: await query.edit_message_text(error_text, parse_mode=ParseMode.MARKDOWN_V2)
-        else: await message_target.reply_text(error_text, parse_mode=ParseMode.MARKDOWN_V2)
-    except TelegramError as e:
-        logger.error(f"Telegram error during my_personas for user {user_id}: {e}", exc_info=True)
-        if isinstance(e, BadRequest) and "Can't parse entities" in str(e):
-            logger.error(f"--> Failed text (MD): '{text_to_send[:500]}...'")
+        final_text_to_send = error_db
+        use_fallback_plain_text = False # Попробуем MD ошибку
+    except Exception as e: # Общие ошибки подготовки
+        logger.error(f"Error preparing my_personas for user {user_id}: {e}", exc_info=True)
+        final_text_to_send = error_general
+        use_fallback_plain_text = False # Попробуем MD ошибку
+
+    # --- Отправка сообщения ---
+    try:
+        if is_callback and message_to_delete_if_callback:
             try:
-                if is_callback:
-                    await query.edit_message_text(fallback_text_plain, reply_markup=reply_markup, parse_mode=None)
-                else:
-                    await message_target.reply_text(fallback_text_plain, reply_markup=reply_markup, parse_mode=None)
-            except Exception as fallback_e:
-                 logger.error(f"Failed sending fallback mypersonas message: {fallback_e}")
-        else:
-            error_text = error_general
-            if is_callback: await query.edit_message_text(error_text, parse_mode=ParseMode.MARKDOWN_V2)
-            else: await message_target.reply_text(error_text, parse_mode=ParseMode.MARKDOWN_V2)
-    except Exception as e:
-        logger.error(f"Error in my_personas handler for user {user_id}: {e}", exc_info=True)
-        error_text = error_general
-        if is_callback: await query.edit_message_text(error_text, parse_mode=ParseMode.MARKDOWN_V2)
-        else: await message_target.reply_text(error_text, parse_mode=ParseMode.MARKDOWN_V2)
+                # Удаляем старое сообщение, на котором была кнопка (например, "Панель управления")
+                await context.bot.delete_message(chat_id=message_to_delete_if_callback.chat.id, 
+                                                 message_id=message_to_delete_if_callback.message_id)
+                logger.debug(f"my_personas (callback): Deleted previous message {message_to_delete_if_callback.message_id}")
+            except Exception as e_del:
+                logger.warning(f"my_personas (callback): Could not delete previous message {message_to_delete_if_callback.message_id}: {e_del}")
+        
+        # Всегда отправляем новое сообщение для /mypersonas (и для команды, и для коллбэка после удаления)
+        await context.bot.send_message(
+            chat_id=chat_id, 
+            text=final_text_to_send, 
+            reply_markup=final_reply_markup, 
+            parse_mode=final_parse_mode
+        )
+
+    except TelegramError as e_send: # Ошибки при отправке (включая BadRequest)
+        logger.error(f"Telegram error sending my_personas for user {user_id}: {e_send}", exc_info=True)
+        if isinstance(e_send, BadRequest) and "Can't parse entities" in str(e_send).lower():
+            logger.error(f"--> my_personas: Failed MD text: '{final_text_to_send[:500]}...' Using fallback.")
+            try:
+                await context.bot.send_message(
+                    chat_id=chat_id, 
+                    text=fallback_text_plain, # Используем заранее подготовленный простой текст
+                    reply_markup=final_reply_markup, 
+                    parse_mode=None
+                )
+            except Exception as e_fallback_send:
+                 logger.error(f"my_personas: Failed sending fallback plain text: {e_fallback_send}")
+        else: # Другие TelegramError
+            # Можно попытаться отправить общий текст ошибки, если fallback_text_plain не подходит
+            try:
+                await context.bot.send_message(chat_id=chat_id, text="Произошла ошибка при отображении списка личностей.", parse_mode=None)
+            except Exception: pass
+    except Exception as e_final_send: # Другие неожиданные ошибки при отправке
+        logger.error(f"Unexpected error sending my_personas for user {user_id}: {e_final_send}", exc_info=True)
+        try:
+            await context.bot.send_message(chat_id=chat_id, text="Произошла критическая ошибка.", parse_mode=None)
+        except Exception: pass
 
 
 async def add_bot_to_chat(update: Update, context: ContextTypes.DEFAULT_TYPE, persona_id: Optional[int] = None) -> None:
