@@ -2948,66 +2948,29 @@ async def yookassa_webhook_placeholder(update: Update, context: ContextTypes.DEF
 
 # --- Edit Persona Wizard ---
 
-async def _clean_previous_edit_session(context: ContextTypes.DEFAULT_TYPE, chat_id: Optional[int]):
-    """Helper to clean up user_data from a previous edit/delete session."""
-    # Проверяем наличие ключей, указывающих на активную сессию (не только edit, но и delete)
+async def _clean_previous_edit_session(context: ContextTypes.DEFAULT_TYPE): # Убрали chat_id из аргументов
+    """Helper to delete the menu message from a previous edit session, if any."""
     old_wizard_menu_id = context.user_data.get('wizard_menu_message_id')
-    old_edit_chat_id = context.user_data.get('edit_chat_id') # Чат ID, где было отправлено старое меню
+    old_edit_chat_id = context.user_data.get('edit_chat_id') 
     
-    # Если есть признаки активной сессии (ключи edit_persona_id, wizard_menu_message_id, или delete_persona_id)
-    if context.user_data.get('edit_persona_id') or old_wizard_menu_id or context.user_data.get('delete_persona_id'):
-        logger.info(f"Cleaning previous edit/delete session data for user {context.user_data.get('_user_id_for_logging', 'N/A')}")
-        
-        # Пытаемся удалить старое сообщение меню, если оно было от сессии редактирования
-        if old_wizard_menu_id and old_edit_chat_id:
-            try:
-                await context.bot.delete_message(chat_id=old_edit_chat_id, message_id=old_wizard_menu_id)
-                logger.debug(f"Deleted old wizard menu message {old_wizard_menu_id} from chat {old_edit_chat_id} from previous session.")
-            except Exception as e:
-                logger.warning(f"Could not delete old wizard menu message {old_wizard_menu_id} from chat {old_edit_chat_id}: {e}")
-        
-        context.user_data.clear() # Очищаем все данные сессии для этого пользователя
-        
-        # Опционально: можно отправить сообщение пользователю, что предыдущая сессия завершена.
-        # Но это может быть излишне, если пользователь намеренно переключается.
-        # if chat_id: # chat_id текущего взаимодействия
-        #     try:
-        #         # await context.bot.send_message(chat_id, "Предыдущая сессия настройки была завершена.", parse_mode=None)
-        #         pass 
-        #     except Exception as e:
-        #         logger.warning(f"Could not send previous session cleanup message to chat {chat_id}: {e}")
+    # Только если есть ID старого меню и его чат
+    if old_wizard_menu_id and old_edit_chat_id:
+        logger.info(f"Attempting to clean previous edit session's menu message for user {context.user_data.get('_user_id_for_logging', 'N/A')}")
+        try:
+            await context.bot.delete_message(chat_id=old_edit_chat_id, message_id=old_wizard_menu_id)
+            logger.debug(f"Deleted old wizard menu message {old_wizard_menu_id} from chat {old_edit_chat_id}.")
+        except Exception as e:
+            logger.warning(f"Could not delete old wizard menu message {old_wizard_menu_id} from chat {old_edit_chat_id}: {e}")
+    # Не очищаем user_data здесь
 
 async def _start_edit_convo(update: Update, context: ContextTypes.DEFAULT_TYPE, persona_id: int) -> int:
     """Starts the persona editing wizard."""
     user_id = update.effective_user.id
     
-    # Определяем chat_id для возможного уведомления в _clean_previous_edit_session
-    chat_id_for_cleanup_notification = None
-    if update.effective_chat:
-        chat_id_for_cleanup_notification = update.effective_chat.id
-    else:
-        logger.error("_start_edit_convo: update.effective_chat is None. Cannot determine chat_id for cleanup notification.")
-        # Если нет чата, то и уведомлять некуда, но очистку user_data все равно проведем.
-    
-    is_callback = update.callback_query is not None
-
-    logger.info(f"_start_edit_convo: User {user_id}, New PersonaID to edit {persona_id}, CurrentEffectiveChatID {chat_id_for_cleanup_notification}, IsCallback {is_callback}")
-    
-    # --- ВЫЗОВ ОЧИСТКИ ПРЕДЫДУЩЕЙ СЕССИИ ---
-    # Эта функция удалит старое меню (если было) и очистит user_data.
-    await _clean_previous_edit_session(context, chat_id_for_cleanup_notification)
-    # --- КОНЕЦ ВЫЗОВА ОЧИСТКИ ---
-
-    # Теперь user_data чист, можно устанавливать новые значения для текущей сессии
-    context.user_data['edit_persona_id'] = persona_id
-    context.user_data['_user_id_for_logging'] = user_id # Для отладки
-
-    # Определяем chat_id, куда будет отправлено НОВОЕ меню настроек
-    # Это должен быть чат, где пользователь инициировал действие
     chat_id_for_new_menu = None
-    if update.effective_chat: # Если команда /editpersona
+    if update.effective_chat: 
         chat_id_for_new_menu = update.effective_chat.id
-    elif update.callback_query and update.callback_query.message: # Если кнопка "Настроить"
+    elif update.callback_query and update.callback_query.message: 
         chat_id_for_new_menu = update.callback_query.message.chat.id
     
     if not chat_id_for_new_menu:
@@ -3017,14 +2980,27 @@ async def _start_edit_convo(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             except Exception: pass
         return ConversationHandler.END
 
-    if not is_callback: # Проверка подписки только для команд, не для коллбэков
+    is_callback = update.callback_query is not None
+    logger.info(f"_start_edit_convo: User {user_id}, New PersonaID to edit {persona_id}, TargetChatID for new menu {chat_id_for_new_menu}, IsCallback {is_callback}")
+    
+    # 1. Сначала пытаемся удалить меню от *возможно* существующей предыдущей сессии
+    #    _clean_previous_edit_session теперь не будет очищать user_data сама.
+    await _clean_previous_edit_session(context) 
+    
+    # 2. Теперь очищаем user_data для начала чистой новой сессии
+    logger.debug(f"_start_edit_convo: Clearing user_data for user {user_id} to start new session.")
+    context.user_data.clear() 
+    
+    # 3. Устанавливаем данные для новой сессии
+    context.user_data['edit_persona_id'] = persona_id
+    context.user_data['_user_id_for_logging'] = user_id
+
+    if not is_callback:
         if not await check_channel_subscription(update, context):
             await send_subscription_required_message(update, context)
             return ConversationHandler.END
 
     await context.bot.send_chat_action(chat_id=chat_id_for_new_menu, action=ChatAction.TYPING)
-    # context.user_data.clear() # ЭТО УЖЕ СДЕЛАНО В _clean_previous_edit_session
-    # context.user_data['edit_persona_id'] = persona_id # ЭТО УЖЕ СДЕЛАНО ВЫШЕ
 
     error_not_found_fmt_raw = "❌ личность с id `{id}` не найдена или не твоя."
     error_db = escape_markdown_v2("❌ ошибка базы данных при начале редактирования.")
@@ -3043,21 +3019,20 @@ async def _start_edit_convo(update: Update, context: ContextTypes.DEFAULT_TYPE, 
                  if is_callback and update.callback_query: # Отвечаем на коллбэк, если он был
                      try: await update.callback_query.answer("Личность не найдена", show_alert=True)
                      except Exception: pass
-                 # Отправляем сообщение в чат
-                 await context.bot.send_message(chat_id, final_error_msg, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
+                 await context.bot.send_message(chat_id_for_new_menu, final_error_msg, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
                  return ConversationHandler.END
 
             # Вызываем _show_edit_wizard_menu (патченную версию), она отправит НОВОЕ сообщение
             return await _show_edit_wizard_menu(update, context, persona_config)
 
     except SQLAlchemyError as e:
-         logger.error(f"Database error starting edit persona {persona_id} for user {user_id}: {e}", exc_info=True)
-         await context.bot.send_message(chat_id, error_db, parse_mode=ParseMode.MARKDOWN_V2)
-         return ConversationHandler.END
+        logger.error(f"Database error starting edit persona {persona_id} for user {user_id}: {e}", exc_info=True)
+        await context.bot.send_message(chat_id_for_new_menu, error_db, parse_mode=ParseMode.MARKDOWN_V2)
+        return ConversationHandler.END
     except Exception as e:
-         logger.error(f"Unexpected error starting edit persona {persona_id} for user {user_id}: {e}", exc_info=True)
-         await context.bot.send_message(chat_id, error_general, parse_mode=ParseMode.MARKDOWN_V2)
-         return ConversationHandler.END
+        logger.error(f"Unexpected error starting edit persona {persona_id} for user {user_id}: {e}", exc_info=True)
+        await context.bot.send_message(chat_id_for_new_menu, error_general, parse_mode=ParseMode.MARKDOWN_V2)
+        return ConversationHandler.END
 
 async def edit_persona_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Entry point for /editpersona command."""
