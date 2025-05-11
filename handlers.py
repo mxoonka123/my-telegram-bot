@@ -3152,13 +3152,12 @@ async def _handle_back_to_wizard_menu(update: Update, context: ContextTypes.DEFA
 async def fixed_show_edit_wizard_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, persona_config: PersonaConfig) -> int:
     """Отображает главное меню настройки персоны. Отправляет новое или редактирует существующее."""
     try:
-        query = update.callback_query # Может быть None, если вызвано из /editpersona
+        query = update.callback_query 
         
-        # Определяем chat_id, куда отправлять/где редактировать меню
         chat_id_for_menu = None
-        if query and query.message: # Если это коллбэк (напр., "Назад")
+        if query and query.message: 
             chat_id_for_menu = query.message.chat.id
-        elif update.effective_chat: # Если это команда /editpersona
+        elif update.effective_chat: 
             chat_id_for_menu = update.effective_chat.id
         
         if not chat_id_for_menu:
@@ -3209,47 +3208,73 @@ async def fixed_show_edit_wizard_menu(update: Update, context: ContextTypes.DEFA
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        # Переписываем f-строку в одну строку для исправления синтаксической ошибки
-        msg_text_raw = f"⚙️ *Настройка личности: {persona_config.name}* (ID: `{persona_id}`)\n\nВыберите, что изменить:"
+        msg_text_raw = f"⚙️ *Настройка личности: {persona_config.name}* (ID: `{persona_id}`)
+
+Выберите, что изменить:"
         msg_text = escape_markdown_v2(msg_text_raw)
         
         sent_message = None
-        existing_menu_message_id = context.user_data.get('wizard_menu_message_id')
+        # Получаем ID *актуального* меню настроек, если оно было сохранено в user_data
+        # Это ID сообщения, которое мы хотим редактировать, если мы внутри визарда.
+        current_wizard_menu_message_id = context.user_data.get('wizard_menu_message_id')
         
-        # Если есть query (значит, это коллбэк, например, "Назад") И есть ID существующего меню
-        if query and existing_menu_message_id and query.message and query.message.message_id == existing_menu_message_id:
-            try:
-                if query.message.text != msg_text or query.message.reply_markup != reply_markup:
-                    await query.edit_message_text(text=msg_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
-                    logger.info(f"fixed_show_edit_wizard_menu: EDITED existing wizard menu. MsgID: {existing_menu_message_id}")
-                else:
-                    logger.info(f"fixed_show_edit_wizard_menu: Wizard menu message not modified. MsgID: {existing_menu_message_id}")
-                sent_message = query.message
-            except BadRequest as e_edit:
-                if "message is not modified" in str(e_edit).lower():
+        # Флаг, нужно ли отправлять новое сообщение
+        send_new_message = True
+
+        if query and query.message and current_wizard_menu_message_id:
+            # Если есть коллбэк и ID сохраненного меню, И ID сообщения из коллбэка совпадает с сохраненным ID
+            if query.message.message_id == current_wizard_menu_message_id:
+                # Пытаемся редактировать существующее меню
+                try:
+                    if query.message.text != msg_text or query.message.reply_markup != reply_markup:
+                        await query.edit_message_text(text=msg_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
+                        logger.info(f"fixed_show_edit_wizard_menu: EDITED existing wizard menu. MsgID: {current_wizard_menu_message_id}")
+                    else:
+                        logger.info(f"fixed_show_edit_wizard_menu: Wizard menu message not modified. MsgID: {current_wizard_menu_message_id}")
                     sent_message = query.message
-                    logger.info(f"fixed_show_edit_wizard_menu: Wizard menu not modified (caught exception). MsgID: {existing_menu_message_id}")
-                else: # Другая ошибка при редактировании
-                    logger.warning(f"fixed_show_edit_wizard_menu: Failed to edit (error: {e_edit}), sending new.")
-                    # Удаляем старый ID, чтобы отправить новое сообщение
-                    context.user_data.pop('wizard_menu_message_id', None) 
-                    sent_message = await context.bot.send_message(chat_id=chat_id_for_menu, text=msg_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
-                    logger.info(f"fixed_show_edit_wizard_menu: Sent NEW (after edit fail) wizard menu. MsgID: {sent_message.message_id}")
-            except Exception as e_gen_edit: # Общая ошибка при редактировании
-                 logger.warning(f"fixed_show_edit_wizard_menu: General error editing (error: {e_gen_edit}), sending new.")
-                 context.user_data.pop('wizard_menu_message_id', None)
-                 sent_message = await context.bot.send_message(chat_id=chat_id_for_menu, text=msg_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
-                 logger.info(f"fixed_show_edit_wizard_menu: Sent NEW (after general edit fail) wizard menu. MsgID: {sent_message.message_id}")
-        else: # Отправляем новое сообщение (начало сессии или не удалось отредактировать)
-            # Если был ID старого меню, но query.message.id не совпал (например, его уже удалили), тоже отправляем новое
-            if existing_menu_message_id:
-                 logger.warning(f"fixed_show_edit_wizard_menu: Old menu ID {existing_menu_message_id} was present, but not editing. Sending new.")
+                    send_new_message = False # Редактирование успешно, новое сообщение не нужно
+                except BadRequest as e_edit:
+                    if "message is not modified" in str(e_edit).lower():
+                        sent_message = query.message
+                        send_new_message = False # Сообщение не изменилось, новое не нужно
+                        logger.info(f"fixed_show_edit_wizard_menu: Wizard menu not modified (caught exception). MsgID: {current_wizard_menu_message_id}")
+                    else: # Другая ошибка при редактировании
+                        logger.warning(f"fixed_show_edit_wizard_menu: Failed to edit (error: {e_edit}), will send new.")
+                        # send_new_message остается True
+                except Exception as e_gen_edit: # Общая ошибка при редактировании
+                     logger.warning(f"fixed_show_edit_wizard_menu: General error editing (error: {e_gen_edit}), will send new.")
+                     # send_new_message остается True
+            else:
+                # ID сообщения из коллбэка не совпадает с сохраненным ID меню.
+                # Это может случиться, если, например, _clean_previous_edit_session удалила старое меню,
+                # а query.message все еще ссылается на какое-то другое (возможно, удаленное) сообщение.
+                # В этом случае мы должны отправить новое меню.
+                logger.warning(f"fixed_show_edit_wizard_menu: Callback message ID ({query.message.message_id}) "
+                               f"does not match stored wizard menu ID ({current_wizard_menu_message_id}). Will send new.")
+                # send_new_message остается True
+        
+        if send_new_message:
+            # Если мы здесь, значит, нужно отправить НОВОЕ сообщение с меню.
+            # Это происходит при первом входе в визард (current_wizard_menu_message_id будет None после _clean_previous_edit_session)
+            # или если редактирование существующего меню не удалось / нецелесообразно.
+            
+            # Перед отправкой нового, если был current_wizard_menu_message_id (и он не был query.message.id),
+            # можно попытаться удалить это "старое" меню, чтобы избежать дублирования.
+            if current_wizard_menu_message_id and (not query or not query.message or query.message.message_id != current_wizard_menu_message_id):
+                try:
+                    await context.bot.delete_message(chat_id=context.user_data.get('edit_chat_id', chat_id_for_menu), 
+                                                     message_id=current_wizard_menu_message_id)
+                    logger.info(f"fixed_show_edit_wizard_menu: Deleted obsolete wizard menu message {current_wizard_menu_message_id} before sending new.")
+                except Exception as e_del_obs:
+                    logger.warning(f"fixed_show_edit_wizard_menu: Could not delete obsolete wizard menu {current_wizard_menu_message_id}: {e_del_obs}")
+
             sent_message = await context.bot.send_message(chat_id=chat_id_for_menu, text=msg_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
             logger.info(f"fixed_show_edit_wizard_menu: Sent NEW wizard menu. MsgID: {sent_message.message_id}")
 
+        # Обновляем ID сохраненного меню в user_data на ID только что отправленного/отредактированного сообщения
         context.user_data['wizard_menu_message_id'] = sent_message.message_id
-        context.user_data['edit_message_id'] = sent_message.message_id 
-        context.user_data['edit_chat_id'] = chat_id_for_menu # Сохраняем chat_id, куда было отправлено меню
+        context.user_data['edit_message_id'] = sent_message.message_id # Для _send_prompt в подменю
+        context.user_data['edit_chat_id'] = chat_id_for_menu
         
         if query: 
             try: await query.answer()
