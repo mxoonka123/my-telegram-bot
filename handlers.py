@@ -3179,9 +3179,9 @@ async def fixed_show_edit_wizard_menu(update: Update, context: ContextTypes.DEFA
             [InlineKeyboardButton("✅ Завершить", callback_data="finish_edit")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        msg_text_raw = f"⚙️ *Настройка личности: {persona_config.name}* (ID: `{persona_id}`)
+        msg_text_raw = f"""⚙️ *Настройка личности: {persona_config.name}* (ID: `{persona_id}`)
 
-Выберите, что изменить:"
+Выберите, что изменить:"""
         msg_text = escape_markdown_v2(msg_text_raw)
         
         sent_message = None
