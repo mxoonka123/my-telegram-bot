@@ -144,8 +144,15 @@ class Persona:
         # Could potentially load from self.config.system_prompt_template if needed
         return DEFAULT_SYSTEM_PROMPT_TEMPLATE
 
-    def format_system_prompt(self, user_id: int, username: str, message: str) -> str:
-        """Formats the main system prompt using template and dynamic info."""
+    def format_system_prompt(self, user_id: int, username: str, message: str) -> Optional[str]:
+        """Formats the main system prompt using template and dynamic info.
+           Returns None if persona should not respond to text based on media_reaction.
+        """
+        # Check if text responses are disabled by media_reaction setting
+        if self.media_reaction in ["all_media_no_text", "photo_only", "voice_only", "none"]:
+            logger.debug(f"Persona {self.id} ({self.name}) configured NOT to react to TEXT with setting '{self.media_reaction}'. System prompt generation skipped.")
+            return None
+
         template = self._get_system_template() # Получаем актуальный шаблон
         mood_instruction = self.get_mood_prompt_snippet()
         mood_name = self.current_mood
@@ -252,14 +259,26 @@ class Persona:
              return None
 
     def _format_media_prompt(self, media_type_text: str) -> Optional[str]:
-         """Helper to format prompts for photo/voice reactions."""
-         # Check if reaction is enabled for this media type
+         """Helper to format prompts for photo/voice reactions based on media_reaction setting."""
          react_setting = self.media_reaction
-         if react_setting == "none": return None
-         if react_setting == "photo_only" and media_type_text != "фото": return None
-         if react_setting == "voice_only" and media_type_text != "голосовое сообщение": return None
-         # "text_only" and "all" allow reaction
 
+         # Determine if we should react to this specific media type based on the setting
+         should_react = False
+         if react_setting == "text_and_all_media":
+             should_react = True
+         elif react_setting == "all_media_no_text":
+             should_react = True
+         elif react_setting == "photo_only" and media_type_text == "фото":
+             should_react = True
+         elif react_setting == "voice_only" and media_type_text == "голосовое сообщение":
+             should_react = True
+         # "text_only" and "none" should not react to media, so should_react remains False
+
+         if not should_react:
+             logger.debug(f"Persona {self.id} ({self.name}) configured NOT to react to '{media_type_text}' with setting '{react_setting}'.")
+             return None
+
+         # Proceed with prompt generation if should_react is True
          base_instructions = self._generate_base_instructions()
          mood_instruction = self.get_mood_prompt_snippet()
          chat_id_info = str(self.chat_instance.chat_id) if self.chat_instance else "unknown"
@@ -277,12 +296,13 @@ class Persona:
          prompt_parts.extend(base_instructions) # Add style/verbosity
          prompt_parts.append(get_time_info())
 
-         # Combine and add suffixes
-         formatted_prompt = " ".join(prompt_parts)
-         formatted_prompt += BASE_PROMPT_SUFFIX
-         formatted_prompt += LANGDOCK_RESPONSE_INSTRUCTIONS
-
-         return formatted_prompt
+          # Combine and add suffixes
+          formatted_prompt = " ".join(prompt_parts)
+          formatted_prompt += BASE_PROMPT_SUFFIX
+          formatted_prompt += LANGDOCK_RESPONSE_INSTRUCTIONS
+          
+          logger.debug(f"Persona {self.id} ({self.name}) WILL react to '{media_type_text}' with setting '{react_setting}'. Prompt generated.")
+          return formatted_prompt
 
     def format_photo_prompt(self) -> Optional[str]:
         """Formats the prompt for responding to photos."""

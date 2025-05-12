@@ -1033,6 +1033,32 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 persona, initial_context_from_db, owner_user = persona_context_owner_tuple
                 logger.info(f"handle_message: Found active persona '{persona.name}' (ID: {persona.id}) owned by User ID {owner_user.id} (TG: {owner_user.telegram_id}).")
 
+                # --- Проверка настроек реакции на текст ---
+                if persona.config.media_reaction in ["all_media_no_text", "photo_only", "voice_only", "none"]:
+                    logger.info(f"handle_message: Persona '{persona.name}' (ID: {persona.id}) is configured with media_reaction='{persona.config.media_reaction}', so it will not respond to this text message. Message will still be added to context if not muted.")
+                    # If muted, the existing mute check later will handle not saving context.
+                    # If not muted, context will be saved, but no LLM call.
+                    # We need to ensure limit_state_updated and context_user_msg_added are committed if true.
+                    
+                    # Add user message to context IF NOT MUTED (mute check is later but this avoids LLM call)
+                    if not persona.chat_instance.is_muted:
+                        current_user_message_content = f"{username}: {message_text}"
+                        try:
+                            add_message_to_context(db_session, persona.chat_instance.id, "user", current_user_message_content)
+                            context_user_msg_added = True # Mark for commit
+                        except (SQLAlchemyError, Exception) as e_ctx_text_ignore:
+                            logger.error(f"handle_message: Error preparing user message context (for ignored text response) for CBI {persona.chat_instance.id}: {e_ctx_text_ignore}", exc_info=True)
+                            # Don't send error to user, as bot is intentionally not responding with text.
+                    
+                    if limit_state_updated or context_user_msg_added:
+                        try:
+                            db_session.commit()
+                            logger.debug("handle_message: Committed owner limit/context state (text response ignored due to media_reaction).")
+                        except Exception as commit_err:
+                            logger.error(f"handle_message: Commit failed (text response ignored): {commit_err}", exc_info=True)
+                            db_session.rollback()
+                    return # Exit handler as no text response is needed.
+
                 # --- Проверка лимитов владельца ---
                 limit_ok = check_and_update_user_limits(db_session, owner_user)
                 limit_state_updated = db_session.is_modified(owner_user)
@@ -3831,16 +3857,29 @@ async def edit_media_reaction_prompt(update: Update, context: ContextTypes.DEFAU
     persona_id = context.user_data.get('edit_persona_id')
     with next(get_db()) as db:
         current = db.query(PersonaConfig.media_reaction).filter(PersonaConfig.id == persona_id).scalar() or "text_only"
-    prompt_text = escape_markdown_v2(f"🖼️ Как реагировать на фото/голос (текущее: {current}):")
-    keyboard = [
-        [InlineKeyboardButton(f"{'✅ ' if current == 'all' else ''}✍️ Текст + GIF", callback_data="set_media_react_all")],
-        [InlineKeyboardButton(f"{'✅ ' if current == 'text_only' else ''}💬 Только текст", callback_data="set_media_react_text_only")],
-        [InlineKeyboardButton(f"{'✅ ' if current == 'photo_only' else ''}🖼️ Только на фото", callback_data="set_media_react_photo_only")],
-        [InlineKeyboardButton(f"{'✅ ' if current == 'voice_only' else ''}🎤 Только на голос", callback_data="set_media_react_voice_only")],
-        [InlineKeyboardButton(f"{'✅ ' if current == 'none' else ''}🚫 Никак", callback_data="set_media_react_none")],
-        [InlineKeyboardButton("⬅️ Назад", callback_data="back_to_wizard_menu")]
-    ]
-    await _send_prompt(update, context, prompt_text, InlineKeyboardMarkup(keyboard))
+    
+    media_react_map = {
+        "text_and_all_media": "На всё (текст, фото, голос)",
+        "text_only": "Только текст",
+        "all_media_no_text": "Только медиа (фото, голос)",
+        "photo_only": "Только фото",
+        "voice_only": "Только голос",
+        "none": "Никак не реагировать"
+    }
+    # Совместимость со старыми значениями
+    if current == "all": current = "text_and_all_media"
+    
+    current_display_text = media_react_map.get(current, "Только текст") # Fallback
+    prompt_text = escape_markdown_v2(f"🖼️ Как реагировать на текст и медиа (текущее: {current_display_text}):")
+    
+    keyboard_buttons = []
+    for key, text_val in media_react_map.items():
+        button_text = f"{'✅ ' if current == key else ''}{text_val}"
+        keyboard_buttons.append([InlineKeyboardButton(button_text, callback_data=f"set_media_react_{key}")])
+    
+    keyboard_buttons.append([InlineKeyboardButton("⬅️ Назад", callback_data="back_to_wizard_menu")])
+    
+    await _send_prompt(update, context, prompt_text, InlineKeyboardMarkup(keyboard_buttons))
     return EDIT_MEDIA_REACTION
 
 async def edit_media_reaction_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
