@@ -26,6 +26,7 @@ from telegraph import Telegraph, exceptions as telegraph_exceptions
 import config
 import db # db.py should be fixed now (no circular import)
 import handlers # handlers.py теперь содержит новые состояния
+import tasks # Импорт модуля tasks для фоновых задач
 
 # Настройки UI также оставляем, т.к. они содержат базовый функционал
 from utils import escape_markdown_v2
