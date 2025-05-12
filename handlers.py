@@ -3856,7 +3856,13 @@ async def edit_group_reply_received(update: Update, context: ContextTypes.DEFAUL
 async def edit_media_reaction_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     persona_id = context.user_data.get('edit_persona_id')
     with next(get_db()) as db:
-        current = db.query(PersonaConfig.media_reaction).filter(PersonaConfig.id == persona_id).scalar() or "text_only"
+        current_config = db.query(PersonaConfig).filter(PersonaConfig.id == persona_id).first()
+        if not current_config:
+            # Обработка случая, если личность не найдена
+            if update.callback_query:
+                await update.callback_query.answer("Ошибка: личность не найдена.", show_alert=True)
+            return ConversationHandler.END
+        current = current_config.media_reaction or "text_only"
     
     media_react_map = {
         "text_and_all_media": "На всё (текст, фото, голос)",
@@ -3875,11 +3881,27 @@ async def edit_media_reaction_prompt(update: Update, context: ContextTypes.DEFAU
     keyboard_buttons = []
     for key, text_val in media_react_map.items():
         button_text = f"{'✅ ' if current == key else ''}{text_val}"
+        # Если это ключ для "На всё", добавляем (на всё) в конце текста кнопки
+        if key == "text_and_all_media":
+            button_text += " (на всё)" # Добавляем (на всё)
         keyboard_buttons.append([InlineKeyboardButton(button_text, callback_data=f"set_media_react_{key}")])
     
     keyboard_buttons.append([InlineKeyboardButton("⬅️ Назад", callback_data="back_to_wizard_menu")])
     
-    await _send_prompt(update, context, prompt_text, InlineKeyboardMarkup(keyboard_buttons))
+    # Убедимся, что _send_prompt вызывается правильно, если это коллбэк
+    if update.callback_query and update.callback_query.message:
+        await _send_prompt(update, context, prompt_text, InlineKeyboardMarkup(keyboard_buttons))
+    else:
+        # Если это не коллбэк (маловероятно для этой функции, но на всякий случай)
+        # или сообщение в коллбэке отсутствует
+        chat_id_to_send = update.effective_chat.id
+        if chat_id_to_send:
+            await context.bot.send_message(chat_id=chat_id_to_send, text=prompt_text, reply_markup=InlineKeyboardMarkup(keyboard_buttons), parse_mode=ParseMode.MARKDOWN_V2)
+        else:
+            logger.error("edit_media_reaction_prompt: Не удалось определить chat_id для отправки сообщения.")
+            if update.callback_query:
+                await update.callback_query.answer("Ошибка отображения меню.", show_alert=True)
+    
     return EDIT_MEDIA_REACTION
 
 async def edit_media_reaction_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
