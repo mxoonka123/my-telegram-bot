@@ -320,7 +320,29 @@ class Persona:
 
     def format_photo_prompt(self) -> Optional[str]:
         """Formats the prompt for responding to photos."""
+        # Проверка, должна ли персона реагировать на фото согласно настройкам
+        if self.media_reaction not in ["text_and_all_media", "all_media_no_text", "photo_only"]:
+            logger.debug(f"Persona {self.id} ({self.name}) configured NOT to react to PHOTO with setting '{self.media_reaction}'. Photo prompt generation skipped.")
+            return None
+
+        # --- ДИАГНОСТИКА: ВРЕМЕННО УПРОЩЕННЫЙ ПРОМПТ ДЛЯ АНАЛИЗА ИЗОБРАЖЕНИЙ ---
+        # Это для проверки, получим ли мы вообще ответ на изображение с базовым промптом.
+        # Если это сработает, проблема, скорее всего, в сложности или инструкциях по JSON 
+        # в основном системном промпте при обработке изображений.
+        #
+        # НЕ ЗАБУДЬТЕ ВЕРНУТЬ ИЛИ УТОЧНИТЬ ЭТО ПОСЛЕ ТЕСТИРОВАНИЯ.
+        #
+        simple_photo_prompt = "Опиши изображение, которое прислал пользователь. Ответ дай в виде JSON-массива строк, например: [\"Это интересное изображение.\", \"На нем я вижу...\"]"  
+        logger.warning(f"ИСПОЛЬЗУЕТСЯ ВРЕМЕННЫЙ УПРОЩЕННЫЙ ПРОМПТ ДЛЯ ФОТО для Персоны {self.id}: '{simple_photo_prompt}'")
+        return simple_photo_prompt
+        # --- КОНЕЦ ДИАГНОСТИЧЕСКОГО РАЗДЕЛА ---
+
+        # --- ИСХОДНАЯ ЛОГИКА ПРОМПТА (закомментирована на время теста) ---
+        # Если упрощенный промпт не сработает, проблема может быть глубже (API, фильтры безопасности).
+        # Если упрощенный промпт сработает, то следующую логику нужно будет тщательно пересмотреть.
+        """ 
         return self._format_media_prompt("фото")
+        """
 
     def format_voice_prompt(self) -> Optional[str]:
         """Formats the prompt for responding to voice messages."""
