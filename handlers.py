@@ -376,8 +376,17 @@ def get_persona_and_context_with_owner(chat_id: Union[str, int], db: Session) ->
     return persona, context_list, owner_user
 
 
-async def send_to_langdock(system_prompt: str, messages: List[Dict[str, str]]) -> str:
-    """Sends the prompt and context to the Langdock API and returns the response."""
+async def send_to_langdock(system_prompt: str, messages: List[Dict[str, str]], image_data: Optional[bytes] = None) -> str:
+    """Sends the prompt and context to the Langdock API and returns the response.
+    
+    Args:
+        system_prompt: System prompt text for the LLM
+        messages: List of message dictionaries
+        image_data: Optional binary data of an image for multimodal requests
+    
+    Returns:
+        The text response from the LLM
+    """
     if not LANGDOCK_API_KEY:
         logger.error("LANGDOCK_API_KEY is not set.")
         return escape_markdown_v2("❌ ошибка: ключ api не настроен.")
@@ -391,7 +400,34 @@ async def send_to_langdock(system_prompt: str, messages: List[Dict[str, str]]) -
         "Content-Type": "application/json",
     }
     messages_to_send = messages[-MAX_CONTEXT_MESSAGES_SENT_TO_LLM:]
-
+    
+    # Если есть данные изображения, модифицируем последнее сообщение пользователя
+    if image_data:
+        try:
+            # Найдем последнее сообщение пользователя
+            for i in range(len(messages_to_send) - 1, -1, -1):
+                if messages_to_send[i].get("role") == "user":
+                    # Преобразуем его в мультимодальный формат
+                    import base64
+                    image_base64 = base64.b64encode(image_data).decode('utf-8')
+                    
+                    # Сохраняем оригинальный текст
+                    original_content = messages_to_send[i].get("content", "")
+                    
+                    # Формируем мультимодальное сообщение для Claude 3.5
+                    messages_to_send[i] = {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": original_content},
+                            {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": image_base64}}
+                        ]
+                    }
+                    logger.info(f"Converted message to multimodal format with image")
+                    break
+        except Exception as e:
+            logger.error(f"Error adding image to request: {e}", exc_info=True)
+            # Продолжаем без изображения, если что-то пошло не так
+    
     payload = {
         "model": LANGDOCK_MODEL,
         "system": system_prompt,
@@ -1323,6 +1359,24 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
                 logger.info(f"Persona {persona.name} in chat {chat_id_str} is configured not to react to {media_type} (media_reaction: {persona.media_reaction}). Skipping response.")
                 db.commit()
                 return
+            
+            # Получаем данные изображения для мультимодального запроса, если это фото
+            image_data = None
+            if media_type == "photo":
+                try:
+                    # Получаем список размеров фото (от меньшего к большему)
+                    photo_sizes = update.message.photo
+                    if photo_sizes:
+                        # Берем последний (самый большой) размер
+                        photo_file = photo_sizes[-1]
+                        # Получаем файл по его file_id
+                        file = await context.bot.get_file(photo_file.file_id)
+                        # Скачиваем бинарные данные файла
+                        image_data_io = await context.bot.download_as_bytearray(file.file_id)
+                        image_data = bytes(image_data_io)
+                        logger.info(f"Downloaded image: {len(image_data)} bytes")
+                except Exception as e:
+                    logger.error(f"Error downloading photo: {e}", exc_info=True)
 
             context_for_ai = []
             if persona.chat_instance:
@@ -1338,7 +1392,8 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
                  db.rollback()
                  return
 
-            response_text = await send_to_langdock(system_prompt, context_for_ai)
+            # Отправляем данные изображения вместе с запросом, если есть
+            response_text = await send_to_langdock(system_prompt, context_for_ai, image_data)
             logger.debug(f"Received response from Langdock for {media_type}: {response_text[:100]}...")
 
             context_response_prepared = await process_and_send_response(
