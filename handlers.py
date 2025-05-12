@@ -467,25 +467,53 @@ async def send_to_langdock(system_prompt: str, messages: List[Dict[str, str]], i
     url = f"{LANGDOCK_BASE_URL.rstrip('/')}/v1/messages" # Убедимся, что URL корректный
     
     # --- Детальное логирование запроса ---
-    payload_log = payload.copy()
-    if 'messages' in payload_log:
-        logged_messages = []
-        for msg in payload_log['messages']:
-            logged_msg = msg.copy()
-            if isinstance(logged_msg.get('content'), list):
-                logged_content = []
-                for item in logged_msg['content']:
-                    if isinstance(item, dict) and item.get('type') == 'image' and 'source' in item and isinstance(item['source'], dict) and 'data' in item['source']:
-                        logged_content.append({**item, 'source': {**item['source'], 'data': '[BASE64_IMAGE_DATA_TRUNCATED]'}})
-                    else:
-                        logged_content.append(item)
-                logged_msg['content'] = logged_content
-            logged_messages.append(logged_msg)
-        payload_log['messages'] = logged_messages
-    
-    logger.info(f"Sending request to Langdock. URL: {url}")
-    logger.debug(f"Langdock System Prompt: {system_prompt}")
-    logger.debug(f"Langdock Payload (image data truncated): {json.dumps(payload_log, ensure_ascii=False, indent=2)}")
+    # MODIFICATION START
+    payload_log_str = "[Payload logging failed or was skipped]"
+    try:
+        # Create a separate copy for logging to avoid modifying the original payload
+        payload_for_logging = payload.copy() # Shallow copy is fine for top level
+        if 'messages' in payload_for_logging:
+            # Deep copy messages if modification is needed (like truncation)
+            logged_messages_list = []
+            for original_msg_dict in payload_for_logging['messages']:
+                msg_copy_for_log = original_msg_dict.copy() # Shallow copy message dict
+
+                if isinstance(msg_copy_for_log.get('content'), list):
+                    # Deep copy content list and its items if modification is needed
+                    new_content_list_for_log = []
+                    for content_item_dict in msg_copy_for_log['content']:
+                        item_copy_for_log = content_item_dict.copy() # Shallow copy content item dict
+                        
+                        if isinstance(item_copy_for_log, dict) and \
+                           item_copy_for_log.get('type') == 'image' and \
+                           'source' in item_copy_for_log and \
+                           isinstance(item_copy_for_log.get('source'), dict) and \
+                           'data' in item_copy_for_log['source']:
+                            
+                            # Copy source dict before modifying 'data' for logging
+                            source_copy_for_log = item_copy_for_log['source'].copy()
+                            source_copy_for_log['data'] = '[BASE64_IMAGE_DATA_TRUNCATED]'
+                            item_copy_for_log['source'] = source_copy_for_log # Assign copied source to copied item
+                        
+                        new_content_list_for_log.append(item_copy_for_log)
+                    msg_copy_for_log['content'] = new_content_list_for_log # Assign new content list to copied message
+                logged_messages_list.append(msg_copy_for_log)
+            payload_for_logging['messages'] = logged_messages_list # Assign new messages list to logging payload
+
+        payload_log_str = json.dumps(payload_for_logging, ensure_ascii=False, indent=2)
+        
+        # These logs will now only appear if json.dumps was successful
+        logger.info(f"Sending request to Langdock. URL: {url}")
+        logger.debug(f"Langdock System Prompt: {system_prompt}")
+        logger.debug(f"Langdock Payload (image data truncated): {payload_log_str}")
+
+    except Exception as e_payload_log:
+        logger.error(f"!!! CRITICAL ERROR during payload_log preparation or json.dumps: {e_payload_log}", exc_info=True)
+        # Fallback logging if the detailed logging failed
+        logger.info(f"Sending request to Langdock (payload logging failed). URL: {url}")
+        logger.debug(f"Langdock System Prompt (payload logging failed): {system_prompt}")
+        # The payload_log_str will retain its default "[Payload logging failed...]" value
+    # MODIFICATION END
     # --- Конец детального логирования ---
 
     try:
@@ -566,7 +594,9 @@ async def send_to_langdock(system_prompt: str, messages: List[Dict[str, str]], i
         logger.error(f"Langdock API request error (network issue?): {e}", exc_info=True)
         return escape_markdown_v2("❌ не могу связаться с ai сейчас (ошибка сети)...")
     except json.JSONDecodeError as e:
-        logger.error(f"Failed to parse Langdock JSON response: {e}. Raw response: {raw_response_text[:500]}", exc_info=True)
+        # Используем raw_response_text с проверкой, что оно существует
+        raw_response_for_error_log = raw_response_text if 'raw_response_text' in locals() else "[Raw response text not captured]"
+        logger.error(f"Failed to parse Langdock JSON response: {e}. Raw response: {raw_response_for_error_log[:500]}", exc_info=True)
         return escape_markdown_v2("❌ ошибка: не удалось обработать ответ от ai (неверный формат).")
     except Exception as e:
         logger.error(f"Unexpected error communicating with Langdock: {e}", exc_info=True)
