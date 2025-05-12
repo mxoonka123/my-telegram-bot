@@ -441,7 +441,30 @@ async def send_to_langdock(system_prompt: str, messages: List[Dict[str, str]], i
                     "role": "user",
                     "content": new_content
                 }
-                logger.info(f"MODIFIED last user message at index {last_user_message_index} to include image. New content structure: {messages_to_send[last_user_message_index]['content']}")
+                
+                # ---- НАЧАЛО ИЗМЕНЕНИЯ ЛОГИРОВАНИЯ ----
+                try:
+                    log_content_structure = messages_to_send[last_user_message_index]['content']
+                    # Попытка сократить base64 для этого конкретного лога, если он там есть
+                    if isinstance(log_content_structure, list) and len(log_content_structure) > 0:
+                        temp_logged_content_for_info = []
+                        for item_idx, item_val in enumerate(log_content_structure):
+                            if isinstance(item_val, dict) and item_val.get('type') == 'image' and \
+                               isinstance(item_val.get('source'), dict) and 'data' in item_val['source']:
+                                copied_item = item_val.copy()
+                                copied_item['source'] = item_val['source'].copy()
+                                copied_item['source']['data'] = f"[BASE64_TRUNCATED_FOR_INITIAL_LOG_LEN_{len(item_val['source']['data'])}]"
+                                temp_logged_content_for_info.append(copied_item)
+                            else:
+                                temp_logged_content_for_info.append(item_val)
+                        logger.info(f"MODIFIED last user message at index {last_user_message_index} to include image. New content structure (truncated for log): {temp_logged_content_for_info}")
+                    else:
+                        logger.info(f"MODIFIED last user message at index {last_user_message_index} to include image. New content structure: {log_content_structure}")
+                except Exception as log_ex:
+                    logger.error(f"Error during f-string logging of modified message content: {log_ex}", exc_info=True)
+                    logger.info(f"MODIFIED last user message at index {last_user_message_index} to include image. (Content logging failed).")
+                # ---- КОНЕЦ ИЗМЕНЕНИЯ ЛОГИРОВАНИЯ ----
+
             else:
                 logger.warning("No user message found to attach the image to. Sending image as a new message.")
                 # Если нет сообщения от пользователя, можно отправить изображение как часть нового сообщения
