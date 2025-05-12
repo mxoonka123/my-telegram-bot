@@ -277,8 +277,15 @@ class Persona:
         if not should_react:
             logger.debug(f"Persona {self.id} ({self.name}) configured NOT to react to '{media_type_text}' with setting '{react_setting}'.") 
             return None
+            
+        # ---- ЭКСПЕРИМЕНТ: Максимально упрощенный промпт для фото ----
+        if media_type_text == "фото":
+            minimal_photo_prompt = "Опиши это изображение."
+            logger.warning(f"ИСПОЛЬЗУЕТСЯ ЭКСПЕРИМЕНТАЛЬНЫЙ МИНИМАЛЬНЫЙ ПРОМПТ для фото ID {self.id}: '{minimal_photo_prompt}'")
+            return minimal_photo_prompt
+        # ---- КОНЕЦ ЭКСПЕРИМЕНТА ----
 
-        # Proceed with prompt generation if should_react is True
+        # Proceed with prompt generation if should_react is True (for other media types, e.g., voice)
         base_instructions = self._generate_base_instructions()
         mood_instruction = self.get_mood_prompt_snippet()
         chat_id_info = str(self.chat_instance.chat_id) if self.chat_instance else "unknown"
