@@ -259,50 +259,50 @@ class Persona:
              return None
 
     def _format_media_prompt(self, media_type_text: str) -> Optional[str]:
-         """Helper to format prompts for photo/voice reactions based on media_reaction setting."""
-         react_setting = self.media_reaction
+        """Helper to format prompts for photo/voice reactions based on media_reaction setting."""
+        react_setting = self.media_reaction
 
-         # Determine if we should react to this specific media type based on the setting
-         should_react = False
-         if react_setting == "text_and_all_media":
-             should_react = True
-         elif react_setting == "all_media_no_text":
-             should_react = True
-         elif react_setting == "photo_only" and media_type_text == "фото":
-             should_react = True
-         elif react_setting == "voice_only" and media_type_text == "голосовое сообщение":
-             should_react = True
-         # "text_only" and "none" should not react to media, so should_react remains False
+        # Determine if we should react to this specific media type based on the setting
+        should_react = False
+        if react_setting == "text_and_all_media":
+            should_react = True
+        elif react_setting == "all_media_no_text":
+            should_react = True
+        elif react_setting == "photo_only" and media_type_text == "фото":
+            should_react = True
+        elif react_setting == "voice_only" and media_type_text == "голосовое сообщение":
+            should_react = True
+        # "text_only" and "none" should not react to media, so should_react remains False
 
-         if not should_react:
-             logger.debug(f"Persona {self.id} ({self.name}) configured NOT to react to '{media_type_text}' with setting '{react_setting}'.")
-             return None
+        if not should_react:
+            logger.debug(f"Persona {self.id} ({self.name}) configured NOT to react to '{media_type_text}' with setting '{react_setting}'.")
+            return None
 
-         # Proceed with prompt generation if should_react is True
-         base_instructions = self._generate_base_instructions()
-         mood_instruction = self.get_mood_prompt_snippet()
-         chat_id_info = str(self.chat_instance.chat_id) if self.chat_instance else "unknown"
+        # Proceed with prompt generation if should_react is True
+        base_instructions = self._generate_base_instructions()
+        mood_instruction = self.get_mood_prompt_snippet()
+        chat_id_info = str(self.chat_instance.chat_id) if self.chat_instance else "unknown"
 
-         prompt_parts = [
-             f"ты {self.get_persona_description_short()} ({self.name}).",
-             f"тебе прислали {media_type_text} в чате {chat_id_info}.",
-         ]
-         if mood_instruction:
-             prompt_parts.append(f"твое текущее настроение: {mood_instruction}.")
-         if media_type_text == "фото":
-              prompt_parts.append("кратко опиши, что видишь, и добавь комментарий от своего лица.")
-         else: # Голосовое
-              prompt_parts.append("представь, что прослушал его. кратко прокомментируй от своего лица.")
-         prompt_parts.extend(base_instructions) # Add style/verbosity
-         prompt_parts.append(get_time_info())
+        prompt_parts = [
+            f"ты {self.get_persona_description_short()} ({self.name}).",
+            f"тебе прислали {media_type_text} в чате {chat_id_info}.",
+        ]
+        if mood_instruction:
+            prompt_parts.append(f"твое текущее настроение: {mood_instruction}.")
+        if media_type_text == "фото":
+            prompt_parts.append("кратко опиши, что видишь, и добавь комментарий от своего лица.")
+        else: # Голосовое
+            prompt_parts.append("представь, что прослушал его. кратко прокомментируй от своего лица.")
+        prompt_parts.extend(base_instructions) # Add style/verbosity
+        prompt_parts.append(get_time_info())
 
-          # Combine and add suffixes
-          formatted_prompt = " ".join(prompt_parts)
-          formatted_prompt += BASE_PROMPT_SUFFIX
-          formatted_prompt += LANGDOCK_RESPONSE_INSTRUCTIONS
-          
-          logger.debug(f"Persona {self.id} ({self.name}) WILL react to '{media_type_text}' with setting '{react_setting}'. Prompt generated.")
-          return formatted_prompt
+        # Combine and add suffixes
+        formatted_prompt = " ".join(prompt_parts)
+        formatted_prompt += BASE_PROMPT_SUFFIX
+        formatted_prompt += LANGDOCK_RESPONSE_INSTRUCTIONS
+        
+        logger.debug(f"Persona {self.id} ({self.name}) WILL react to '{media_type_text}' with setting '{react_setting}'. Prompt generated.")
+        return formatted_prompt
 
     def format_photo_prompt(self) -> Optional[str]:
         """Formats the prompt for responding to photos."""
