@@ -2969,20 +2969,39 @@ async def yookassa_webhook_placeholder(update: Update, context: ContextTypes.DEF
 
 # --- Edit Persona Wizard ---
 
-async def _clean_previous_edit_session(context: ContextTypes.DEFAULT_TYPE): # Убрали chat_id из аргументов
+async def _clean_previous_edit_session(context: ContextTypes.DEFAULT_TYPE):
     """Helper to delete the menu message from a previous edit session, if any."""
+    user_id_for_log = context.user_data.get('_user_id_for_logging', 'N/A')
+    logger.debug(f"_clean_previous_edit_session: Called for user {user_id_for_log}. Current user_data keys: {list(context.user_data.keys())}")
+    
     old_wizard_menu_id = context.user_data.get('wizard_menu_message_id')
     old_edit_chat_id = context.user_data.get('edit_chat_id') 
     
-    # Только если есть ID старого меню и его чат
+    logger.debug(f"_clean_previous_edit_session: For user {user_id_for_log} - old_wizard_menu_id: {old_wizard_menu_id}, old_edit_chat_id: {old_edit_chat_id}")
+    
     if old_wizard_menu_id and old_edit_chat_id:
-        logger.info(f"Attempting to clean previous edit session's menu message for user {context.user_data.get('_user_id_for_logging', 'N/A')}")
+        logger.info(f"_clean_previous_edit_session: Attempting to delete old menu message {old_wizard_menu_id} in chat {old_edit_chat_id} for user {user_id_for_log}")
         try:
             await context.bot.delete_message(chat_id=old_edit_chat_id, message_id=old_wizard_menu_id)
-            logger.debug(f"Deleted old wizard menu message {old_wizard_menu_id} from chat {old_edit_chat_id}.")
-        except Exception as e:
-            logger.warning(f"Could not delete old wizard menu message {old_wizard_menu_id} from chat {old_edit_chat_id}: {e}")
-    # Не очищаем user_data здесь
+            logger.info(f"_clean_previous_edit_session: Successfully deleted old wizard menu message {old_wizard_menu_id} from chat {old_edit_chat_id}.")
+        except BadRequest as e_bad_req:
+            if "message to delete not found" in str(e_bad_req).lower():
+                logger.warning(f"_clean_previous_edit_session: Message {old_wizard_menu_id} in chat {old_edit_chat_id} not found for deletion (already deleted or invalid ID). Error: {e_bad_req}")
+            elif "message can't be deleted" in str(e_bad_req).lower():
+                 logger.warning(f"_clean_previous_edit_session: Message {old_wizard_menu_id} in chat {old_edit_chat_id} can't be deleted (e.g. too old, not bot's message). Error: {e_bad_req}")
+            else:
+                logger.error(f"_clean_previous_edit_session: BadRequest while deleting message {old_wizard_menu_id} in chat {old_edit_chat_id}. Error: {e_bad_req}")
+        except Forbidden as e_forbidden:
+            logger.error(f"_clean_previous_edit_session: Forbidden to delete message {old_wizard_menu_id} in chat {old_edit_chat_id}. Bot permissions? Error: {e_forbidden}")
+        except Exception as e: # Ловим другие возможные исключения
+            logger.error(f"_clean_previous_edit_session: Generic error deleting message {old_wizard_menu_id} in chat {old_edit_chat_id}. Error: {e}")
+    elif old_wizard_menu_id:
+        logger.warning(f"_clean_previous_edit_session: Found old_wizard_menu_id ({old_wizard_menu_id}) but no old_edit_chat_id for user {user_id_for_log}. Cannot delete.")
+    elif old_edit_chat_id: # Менее вероятно, но для полноты
+        logger.warning(f"_clean_previous_edit_session: Found old_edit_chat_id ({old_edit_chat_id}) but no old_wizard_menu_id for user {user_id_for_log}. Cannot delete.")
+    else:
+        logger.debug(f"_clean_previous_edit_session: No old wizard menu message found in user_data for user {user_id_for_log} to delete.")
+    # Не очищаем user_data здесь, это будет делать _start_edit_convo
 
 async def _start_edit_convo(update: Update, context: ContextTypes.DEFAULT_TYPE, persona_id: int) -> int:
     """Starts the persona editing wizard."""
@@ -3144,6 +3163,12 @@ async def _handle_back_to_wizard_menu(update: Update, context: ContextTypes.DEFA
             logger.warning(f"Could not delete submenu message: {e}")
     
         return await fixed_show_edit_wizard_menu(update, context, persona)
+
+async def _show_edit_wizard_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, persona_config: PersonaConfig) -> int:
+    """Прокси-функция для перенаправления на fixed_show_edit_wizard_menu.
+    Эта функция вызывается из _start_edit_convo и необходима для совместимости."""
+    logger.debug(f"_show_edit_wizard_menu: Redirecting to fixed_show_edit_wizard_menu for persona {persona_config.id}")
+    return await fixed_show_edit_wizard_menu(update, context, persona_config)
 
 async def fixed_show_edit_wizard_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, persona_config: PersonaConfig) -> int:
     """Отображает главное меню настройки персоны. Отправляет новое или редактирует существующее."""
