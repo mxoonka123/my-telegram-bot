@@ -2859,10 +2859,10 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                     # Создаем клавиатуру с обновленными галочками
                     max_msgs_value = new_value_str
                     keyboard = [
-                        [InlineKeyboardButton(f"{CHECK_MARK if max_msgs_value == 'few' else \'\'}🤋 Поменьше сообщений", callback_data="set_max_msgs_few")],
-                        [InlineKeyboardButton(f"{CHECK_MARK if max_msgs_value == 'normal' else \'\'}💬 Стандартное количество", callback_data="set_max_msgs_normal")],
-                        [InlineKeyboardButton(f"{CHECK_MARK if max_msgs_value == 'many' else \'\'}📚 Побольше сообщений", callback_data="set_max_msgs_many")],
-                        [InlineKeyboardButton(f"{CHECK_MARK if max_msgs_value == 'random' else \'\'}🎲 Случайное количество", callback_data="set_max_msgs_random")],
+                        [InlineKeyboardButton(f"{CHECK_MARK if max_msgs_value == 'few' else ""}🤋 Поменьше сообщений", callback_data="set_max_msgs_few")],
+                        [InlineKeyboardButton(f"{CHECK_MARK if max_msgs_value == 'normal' else ""}💬 Стандартное количество", callback_data="set_max_msgs_normal")],
+                        [InlineKeyboardButton(f"{CHECK_MARK if max_msgs_value == 'many' else ""}📚 Побольше сообщений", callback_data="set_max_msgs_many")],
+                        [InlineKeyboardButton(f"{CHECK_MARK if max_msgs_value == 'random' else ""}🎲 Случайное количество", callback_data="set_max_msgs_random")],
                         [InlineKeyboardButton(f"↩️ Назад", callback_data="back_to_wizard_menu")]
                     ]
                     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -4051,12 +4051,12 @@ async def edit_max_messages_prompt(update: Update, context: ContextTypes.DEFAULT
 
     keyboard = [
         [
-            InlineKeyboardButton(f"{CHECK_MARK if current_value_str == 'few' else \'\'}{display_map['few']}", callback_data="set_max_msgs_few"),
-            InlineKeyboardButton(f"{CHECK_MARK if current_value_str == 'normal' else \'\'}{display_map['normal']}", callback_data="set_max_msgs_normal"),
+            InlineKeyboardButton(f"{CHECK_MARK if current_value_str == 'few' else ""}{display_map['few']}", callback_data="set_max_msgs_few"),
+            InlineKeyboardButton(f"{CHECK_MARK if current_value_str == 'normal' else ""}{display_map['normal']}", callback_data="set_max_msgs_normal"),
         ],
         [
-            InlineKeyboardButton(f"{CHECK_MARK if current_value_str == 'many' else \'\'}{display_map['many']}", callback_data="set_max_msgs_many"),
-            InlineKeyboardButton(f"{CHECK_MARK if current_value_str == 'random' else \'\'}{display_map['random']}", callback_data="set_max_msgs_random"),
+            InlineKeyboardButton(f"{CHECK_MARK if current_value_str == 'many' else ""}{display_map['many']}", callback_data="set_max_msgs_many"),
+            InlineKeyboardButton(f"{CHECK_MARK if current_value_str == 'random' else ""}{display_map['random']}", callback_data="set_max_msgs_random"),
         ],
         [InlineKeyboardButton("⬅️ Назад", callback_data="back_to_wizard_menu")] # Возврат в главное меню
     ]
