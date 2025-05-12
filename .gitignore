@@ -1,0 +1,48 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+
+# Environment and local configs
+.env
+.env.local
+venv/
+env/
+ENV/
+.vscode/
+.idea/
+
+# Local ffmpeg binary
+ffmpeg-bin/
+
+# Logs
+*.log
+
+# Temporary files
+temp_voice_*
+*.ogg
+*.wav
+
+# Local Vosk model - исключаем локальную модель, она будет скачиваться при деплое
+/model_vosk_ru/
+
+# Скачанные ZIP-архивы
+*.zip
+
+# Сохраняем nixpacks.toml для Railway
+!nixpacks.toml

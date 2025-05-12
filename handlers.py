@@ -9,6 +9,18 @@ import time
 import traceback
 import urllib.parse
 import uuid
+import wave
+import subprocess
+import asyncio
+
+# Импорты для работы с Vosk (будут использоваться после установки библиотеки)
+try:
+    from vosk import Model, KaldiRecognizer
+    VOSK_AVAILABLE = True
+except ImportError:
+    logger = logging.getLogger(__name__)
+    logger.warning("Vosk library not available. Voice transcription will not work.")
+    VOSK_AVAILABLE = False
 from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Any, Optional, Union, Tuple
 
@@ -59,6 +71,122 @@ from utils import (
 )
 
 logger = logging.getLogger(__name__)
+
+# --- Vosk model setup ---
+# Путь к модели Vosk для русского языка
+# Нужно скачать модель с https://alphacephei.com/vosk/models и распаковать в эту папку
+VOSK_MODEL_PATH = "model_vosk_ru"
+vosk_model = None
+
+if VOSK_AVAILABLE:
+    try:
+        if os.path.exists(VOSK_MODEL_PATH):
+            vosk_model = Model(VOSK_MODEL_PATH)
+            logger.info(f"Vosk model loaded successfully from {VOSK_MODEL_PATH}")
+        else:
+            logger.warning(f"Vosk model path not found: {VOSK_MODEL_PATH}. Please download a model from https://alphacephei.com/vosk/models")
+    except Exception as e:
+        logger.error(f"Error loading Vosk model: {e}", exc_info=True)
+        vosk_model = None
+
+async def transcribe_audio_with_vosk(audio_data: bytes, original_mime_type: str) -> Optional[str]:
+    """
+    Транскрибирует аудиоданные с помощью Vosk.
+    Сначала конвертирует OGG в WAV PCM 16kHz моно.
+    """
+    global vosk_model
+    
+    if not VOSK_AVAILABLE:
+        logger.error("Vosk library not available. Cannot transcribe.")
+        return None
+        
+    if not vosk_model:
+        logger.error("Vosk model not loaded. Cannot transcribe.")
+        return None
+
+    # Имя временного входного файла (OGG)
+    temp_ogg_filename = f"temp_voice_{uuid.uuid4().hex}.ogg"
+    # Имя временного выходного файла (WAV)
+    temp_wav_filename = f"temp_voice_wav_{uuid.uuid4().hex}.wav"
+
+    try:
+        # 1. Сохраняем полученные аудиоданные во временный OGG файл
+        with open(temp_ogg_filename, "wb") as f_ogg:
+            f_ogg.write(audio_data)
+        logger.info(f"Saved temporary OGG file: {temp_ogg_filename}")
+
+        # 2. Конвертируем OGG в WAV (16kHz, моно, pcm_s16le) с помощью ffmpeg
+        #    -ac 1 (моно), -ar 16000 (частота дискретизации 16kHz)
+        #    -f wav (формат WAV), -c:a pcm_s16le (кодек PCM signed 16-bit little-endian)
+        command = [
+            "ffmpeg",
+            "-i", temp_ogg_filename,
+            "-ac", "1",
+            "-ar", "16000",
+            "-c:a", "pcm_s16le",
+            "-f", "wav",
+            temp_wav_filename,
+            "-y" # Перезаписывать выходной файл, если существует
+        ]
+        logger.info(f"Running ffmpeg command: {' '.join(command)}")
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await process.communicate()
+
+        if process.returncode != 0:
+            logger.error(f"ffmpeg conversion failed. Return code: {process.returncode}")
+            logger.error(f"ffmpeg stderr: {stderr.decode(errors='ignore')}")
+            logger.error(f"ffmpeg stdout: {stdout.decode(errors='ignore')}")
+            return None
+        logger.info(f"Successfully converted OGG to WAV: {temp_wav_filename}")
+
+        # 3. Транскрибируем WAV файл с помощью Vosk
+        wf = wave.open(temp_wav_filename, "rb")
+        if wf.getnchannels() != 1 or wf.getsampwidth() != 2 or wf.getcomptype() != "NONE" or wf.getframerate() != 16000:
+            logger.error(f"Audio file {temp_wav_filename} is not mono WAV 16kHz 16bit PCM. Details: CH={wf.getnchannels()}, SW={wf.getsampwidth()}, CT={wf.getcomptype()}, FR={wf.getframerate()}")
+            wf.close()
+            return None
+        
+        # Инициализируем KaldiRecognizer с частотой дискретизации аудиофайла
+        current_recognizer = KaldiRecognizer(vosk_model, wf.getframerate())
+        current_recognizer.SetWords(True) # Включить информацию о словах, если нужно
+
+        full_transcription = ""
+        while True:
+            data = wf.readframes(4000) # Читаем порциями
+            if len(data) == 0:
+                break
+            if current_recognizer.AcceptWaveform(data):
+                result = json.loads(current_recognizer.Result())
+                full_transcription += result.get("text", "") + " "
+        
+        # Получаем финальный результат
+        final_result_json = json.loads(current_recognizer.FinalResult())
+        full_transcription += final_result_json.get("text", "")
+        wf.close()
+        
+        transcribed_text = full_transcription.strip()
+        logger.info(f"Vosk transcription result: '{transcribed_text}'")
+        return transcribed_text if transcribed_text else None
+
+    except FileNotFoundError:
+        logger.error("ffmpeg not found. Please ensure ffmpeg is installed and in your system's PATH.")
+        return None
+    except Exception as e:
+        logger.error(f"Error during Vosk transcription: {e}", exc_info=True)
+        return None
+    finally:
+        # Удаляем временные файлы
+        for temp_file in [temp_ogg_filename, temp_wav_filename]:
+            if os.path.exists(temp_file):
+                try:
+                    os.remove(temp_file)
+                    logger.info(f"Removed temporary file: {temp_file}")
+                except Exception as e_remove:
+                    logger.error(f"Error removing temporary file {temp_file}: {e_remove}")
 
 # --- Helper Functions ---
 
@@ -377,17 +505,8 @@ def get_persona_and_context_with_owner(chat_id: Union[str, int], db: Session) ->
 
 
 async def send_to_langdock(system_prompt: str, messages: List[Dict[str, str]], image_data: Optional[bytes] = None, audio_data: Optional[bytes] = None) -> str:
-    """Sends the prompt and context to the Langdock API and returns the response.
+    """Sends the prompt and context to the Langdock API and returns the response."""
     
-    Args:
-        system_prompt: System prompt text for the LLM
-        messages: List of message dictionaries
-        image_data: Optional binary data of an image for multimodal requests
-        audio_data: Optional binary data of an audio file for multimodal requests
-    
-    Returns:
-        The text response from the LLM
-    """
     if not LANGDOCK_API_KEY:
         logger.error("LANGDOCK_API_KEY is not set.")
         return escape_markdown_v2("❌ ошибка: ключ api не настроен.")
@@ -403,105 +522,86 @@ async def send_to_langdock(system_prompt: str, messages: List[Dict[str, str]], i
     # Берем последние N сообщений, как и раньше
     messages_to_send = messages[-MAX_CONTEXT_MESSAGES_SENT_TO_LLM:].copy() # Используем .copy() для безопасного изменения
     
-    # --- Улучшенное логирование ---
-    logger.debug(f"Original last user message before image processing: {messages_to_send[-1] if messages_to_send and messages_to_send[-1].get('role') == 'user' else 'N/A'}")
+    last_user_message_index = -1
+    for i in range(len(messages_to_send) - 1, -1, -1):
+        if messages_to_send[i].get("role") == "user":
+            last_user_message_index = i
+            break
 
-    # Добавляем изображение или аудио, если есть
-    if image_data or audio_data:
-        # TODO 1: make this neater
-        try:
-            # Найдем последнее сообщение пользователя для модификации
-            last_user_message_index = -1
-            for i in range(len(messages_to_send) - 1, -1, -1):
-                if messages_to_send[i].get("role") == "user":
-                    last_user_message_index = i
-                    break
-            
-            if last_user_message_index != -1:
+    if last_user_message_index != -1:
+        original_user_content_field = messages_to_send[last_user_message_index].get("content", "")
+        
+        # Инициализируем new_content как массив. 
+        # Claude API ожидает массив для "content", если есть хотя бы один элемент не "text".
+        new_content_array = []
+
+        # 1. Добавляем текстовую часть
+        # original_user_content_field может быть строкой или уже массивом (если предыдущие шаги его так сформировали)
+        if isinstance(original_user_content_field, str):
+            if original_user_content_field: # Добавляем текст, только если он не пустой
+                new_content_array.append({"type": "text", "text": original_user_content_field})
+        elif isinstance(original_user_content_field, list): # Если это уже был список (маловероятно здесь)
+            new_content_array.extend(item for item in original_user_content_field if item.get("type") == "text") # Копируем только текстовые части
+
+        # 2. Добавляем изображение, если есть
+        if image_data:
+            try:
                 import base64
-                
-                original_user_content = messages_to_send[last_user_message_index].get("content", "")
-                
-                # Формируем мультимодальное сообщение для Claude 3.5
-                # Важно: если original_user_content это уже список (например, от предыдущей обработки),
-                # нужно аккуратно добавить изображение/аудио. Но обычно это строка.
-                if isinstance(original_user_content, str):
-                    new_content = [
-                        {"type": "text", "text": original_user_content if original_user_content else 
-                         ("Проанализируй это изображение." if image_data else "Проанализируй это голосовое сообщение.")
-                        }, # Добавляем текст по умолчанию, если его нет
-                    ]
-                elif isinstance(original_user_content, list): # Если вдруг контент уже список
-                    new_content = original_user_content
-                else: # Неожиданный тип контента
-                    logger.warning(f"Unexpected content type for user message: {type(original_user_content)}. Using default text.")
-                    new_content = [{"type": "text", "text": "Проанализируй это медиа."}]
+                image_base64 = base64.b64encode(image_data).decode('utf-8')
+                new_content_array.append(
+                    {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": image_base64}}
+                )
+                logger.info("Image data prepared for Langdock request.")
+            except Exception as e:
+                logger.error(f"Error encoding image data: {e}", exc_info=True)
+        
+        # 3. Обработка аудио (пока что только плейсхолдер, так как прямая отправка не работает)
+        #    Если в будущем Langdock/Claude начнут поддерживать аудио, здесь будет логика его добавления.
+        #    Сейчас, если есть audio_data, мы не будем его добавлять в new_content_array в виде base64,
+        #    так как это вызывает ошибку. Вместо этого, текстовый плейсхолдер '[получено голосовое сообщение]'
+        #    уже должен быть в original_user_content_field (добавлен в handle_media).
+        
+        if audio_data:
+            # Логируем, что аудио было, но не добавляем его в запрос в формате base64, чтобы избежать ошибки.
+            # Промпт в persona.py должен быть настроен на реакцию на *факт* получения аудио.
+            logger.info("Audio data was received by send_to_langdock, but direct audio upload is likely not supported by the current API structure. Text placeholder should be used in prompt.")
+            # Если текстовый плейсхолдер для аудио не был добавлен ранее, его можно добавить здесь,
+            # но лучше это делать на более раннем этапе (в handle_media), что у тебя и сделано.
+            # Например, если new_content_array пуст и есть audio_data:
+            if not any(item.get("type") == "text" for item in new_content_array):
+                # Этого не должно происходить, если handle_media корректно добавляет плейсхолдер
+                logger.warning("Audio data present, but no text part found in new_content_array. Adding generic audio placeholder.")
+                new_content_array.append({"type": "text", "text": "[Пришло голосовое сообщение]"})
+        # Обновляем сообщение пользователя
+        messages_to_send[last_user_message_index]["content"] = new_content_array
+        
+        # Логирование (осторожно с base64 в логах)
+        try:
+            log_content_structure = messages_to_send[last_user_message_index]['content']
+            temp_logged_content_for_info = []
+            for item_val in log_content_structure:
+                if isinstance(item_val, dict) and item_val.get('type') == 'image' and \
+                   isinstance(item_val.get('source'), dict) and 'data' in item_val['source']:
+                    copied_item = item_val.copy()
+                    copied_item['source'] = item_val['source'].copy()
+                    copied_item['source']['data'] = f"[BASE64_TRUNCATED_FOR_LOG_LEN_{len(item_val['source']['data'])}]"
+                    temp_logged_content_for_info.append(copied_item)
+                else:
+                    temp_logged_content_for_info.append(item_val)
+            logger.info(f"Last user message content for API (media base64 truncated for log): {temp_logged_content_for_info}")
+        except Exception as log_ex:
+            logger.error(f"Error during f-string logging of modified message content: {log_ex}", exc_info=True)
+            logger.info(f"Last user message content for API was modified to include media (content logging failed).")
 
-                # Добавляем изображение, если есть
-                if image_data:
-                    image_base64 = base64.b64encode(image_data).decode('utf-8')
-                    new_content.append(
-                        {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": image_base64}}
-                    )
-                    logger.info(f"Added image data ({len(image_base64)} chars) to request.")
-                
-                # Добавляем аудио, если есть
-                if audio_data:
-                    audio_base64 = base64.b64encode(audio_data).decode('utf-8')
-                    # Claude 3.5 поддерживает тип "audio" для голосовых сообщений
-                    new_content.append(
-                        {"type": "audio", "source": {"type": "base64", "media_type": "audio/ogg", "data": audio_base64}}
-                    )
-                    logger.info(f"Added audio data ({len(audio_base64)} chars) to request.")
-                
-                messages_to_send[last_user_message_index] = {
-                    "role": "user",
-                    "content": new_content
-                }
-                
-                # ---- НАЧАЛО ИЗМЕНЕНИЯ ЛОГИРОВАНИЯ ----
-                try:
-                    log_content_structure = messages_to_send[last_user_message_index]['content']
-                    # Попытка сократить base64 для этого конкретного лога, если он там есть
-                    if isinstance(log_content_structure, list) and len(log_content_structure) > 0:
-                        temp_logged_content_for_info = []
-                        for item_idx, item_val in enumerate(log_content_structure):
-                            if isinstance(item_val, dict) and item_val.get('type') == 'image' and \
-                               isinstance(item_val.get('source'), dict) and 'data' in item_val['source']:
-                                copied_item = item_val.copy()
-                                copied_item['source'] = item_val['source'].copy()
-                                copied_item['source']['data'] = f"[BASE64_TRUNCATED_FOR_INITIAL_LOG_LEN_{len(item_val['source']['data'])}]"
-                                temp_logged_content_for_info.append(copied_item)
-                            else:
-                                temp_logged_content_for_info.append(item_val)
-                        logger.info(f"MODIFIED last user message at index {last_user_message_index} to include image. New content structure (truncated for log): {temp_logged_content_for_info}")
-                    else:
-                        logger.info(f"MODIFIED last user message at index {last_user_message_index} to include image. New content structure: {log_content_structure}")
-                except Exception as log_ex:
-                    logger.error(f"Error during f-string logging of modified message content: {log_ex}", exc_info=True)
-                    logger.info(f"MODIFIED last user message at index {last_user_message_index} to include image. (Content logging failed).")
-                # ---- КОНЕЦ ИЗМЕНЕНИЯ ЛОГИРОВАНИЯ ----
-
-            else:
-                logger.warning("No user message found to attach the image to. Sending image as a new message.")
-                # Если нет сообщения от пользователя, можно отправить изображение как часть нового сообщения
-                # (это менее типично, но возможно) или просто добавить его к системному промпту, если API позволяет.
-                # Для Claude API, изображение должно быть в 'messages'.
-                # Можно создать новое "user" сообщение только с изображением, если других нет.
-                # Но это маловероятно, т.к. handle_media добавляет плейсхолдер.
-                # Пока оставим как есть, но это место для потенциального улучшения, если такая ситуация возникнет.
-
-        except Exception as e:
-            logger.error(f"Error adding image to request: {e}", exc_info=True)
-            # Продолжаем без изображения, если что-то пошло не так, но логируем это
+    else: # last_user_message_index == -1
+        logger.warning("No user message found to attach media to. This is unusual.")
     
     payload = {
         "model": LANGDOCK_MODEL,
-        "system": system_prompt, # Системный промпт должен быть строкой
+        "system": system_prompt, 
         "messages": messages_to_send,
-        "max_tokens": 1024, # Можно увеличить для описания изображений, например, до 2048
-        "temperature": 0.5, # Для описания изображений лучше чуть пониже температуру для фактологичности
-        "top_p": 0.95,      # Можно оставить
+        "max_tokens": 2048, # Увеличиваем для более подробных ответов на медиа
+        "temperature": 0.6, # Можно немного поднять для более "живых" ответов на медиа
         "stream": False
     }
     url = f"{LANGDOCK_BASE_URL.rstrip('/')}/v1/messages" # Убедимся, что URL корректный
@@ -1460,11 +1560,43 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
 
             context_text_placeholder = ""
             prompt_generator = None
+            
             if media_type == "photo":
                 context_text_placeholder = "[получено фото]"
                 prompt_generator = persona.format_photo_prompt
+                
             elif media_type == "voice":
-                context_text_placeholder = "[получено голосовое сообщение]"
+                # Для голосовых сообщений сначала попробуем транскрибировать
+                transcribed_text = None
+                if update.message.voice:
+                    try:
+                        voice_file_id = update.message.voice.file_id
+                        voice_file = await context.bot.get_file(voice_file_id)
+                        voice_bytes = await voice_file.download_as_bytearray()
+                        
+                        # Транскрибируем аудио, если Vosk доступен
+                        if VOSK_AVAILABLE and vosk_model:
+                            transcribed_text = await transcribe_audio_with_vosk(
+                                bytes(voice_bytes), 
+                                update.message.voice.mime_type
+                            )
+                            
+                            if transcribed_text:
+                                logger.info(f"Voice message transcribed successfully: '{transcribed_text}'")
+                                # Используем расшифрованный текст для контекста
+                                context_text_placeholder = f"[голосом]: {transcribed_text}"
+                            else:
+                                logger.warning("Voice transcription failed or returned empty text")
+                                context_text_placeholder = "[получено голосовое сообщение, не удалось расшифровать]"
+                        else:
+                            logger.warning("Vosk not available for transcription. Using placeholder.")
+                            context_text_placeholder = "[получено голосовое сообщение]"
+                    except Exception as e:
+                        logger.error(f"Error processing voice message for transcription: {e}", exc_info=True)
+                        context_text_placeholder = "[ошибка обработки голосового сообщения]"
+                else:
+                    context_text_placeholder = "[получено пустое голосовое сообщение]"
+                
                 prompt_generator = persona.format_voice_prompt
             else:
                  logger.error(f"Unsupported media_type '{media_type}' in handle_media")
@@ -1576,8 +1708,9 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
                  db.rollback()
                  return
 
-            # Отправляем данные медиа вместе с запросом
-            response_text = await send_to_langdock(system_prompt, context_for_ai, image_data, audio_data)
+            # Отправляем данные медиа вместе с запросом (для фото), аудио уже превращено в текст
+            # Аудиоданные не отправляем в Langdock API, так как они вызывают ошибку 400
+            response_text = await send_to_langdock(system_prompt, context_for_ai, image_data, None)
             logger.debug(f"Received response from Langdock for {media_type}: {response_text[:100]}...")
 
             context_response_prepared = await process_and_send_response(
