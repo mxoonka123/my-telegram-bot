@@ -2971,49 +2971,70 @@ async def yookassa_webhook_placeholder(update: Update, context: ContextTypes.DEF
 
 async def _clean_previous_edit_session(context: ContextTypes.DEFAULT_TYPE):
     """Helper to delete the menu message from a previous edit session, if any."""
-    user_id_for_log = context.user_data.get('_user_id_for_logging', 'N/A')
-    logger.debug(f"_clean_previous_edit_session: Called for user {user_id_for_log}. Current user_data keys: {list(context.user_data.keys())}")
+    # Получаем ID пользователя из _user_id_for_logging, если он был установлен ранее.
+    # Если нет, то context.user_data может быть уже очищен к этому моменту,
+    # и мы не сможем получить user_id для лога таким образом.
+    user_id_for_log = context.user_data.get('_user_id_for_logging', 'N/A_OR_CLEARED')
+    
+    current_keys = list(context.user_data.keys()) # Получаем ключи ДО попытки извлечения
+    logger.info(f"_clean_previous_edit_session: CALLED for user '{user_id_for_log}'. "
+                f"Current user_data keys BEFORE getting IDs: {current_keys}")
     
     old_wizard_menu_id = context.user_data.get('wizard_menu_message_id')
     old_edit_chat_id = context.user_data.get('edit_chat_id') 
     
-    logger.debug(f"_clean_previous_edit_session: For user {user_id_for_log} - old_wizard_menu_id: {old_wizard_menu_id}, old_edit_chat_id: {old_edit_chat_id}")
+    logger.info(f"_clean_previous_edit_session: For user '{user_id_for_log}' - "
+                f"Found old_wizard_menu_id: {old_wizard_menu_id}, old_edit_chat_id: {old_edit_chat_id}")
     
     if old_wizard_menu_id and old_edit_chat_id:
-        logger.info(f"_clean_previous_edit_session: Attempting to delete old menu message {old_wizard_menu_id} in chat {old_edit_chat_id} for user {user_id_for_log}")
+        logger.info(f"_clean_previous_edit_session: Attempting to delete old menu message {old_wizard_menu_id} "
+                    f"in chat {old_edit_chat_id} for user '{user_id_for_log}'")
         try:
-            await context.bot.delete_message(chat_id=old_edit_chat_id, message_id=old_wizard_menu_id)
-            logger.info(f"_clean_previous_edit_session: Successfully deleted old wizard menu message {old_wizard_menu_id} from chat {old_edit_chat_id}.")
+            delete_successful = await context.bot.delete_message(chat_id=old_edit_chat_id, message_id=old_wizard_menu_id)
+            if delete_successful:
+                logger.info(f"_clean_previous_edit_session: Successfully deleted old wizard menu message "
+                            f"{old_wizard_menu_id} from chat {old_edit_chat_id}.")
+            else:
+                logger.warning(f"_clean_previous_edit_session: delete_message returned {delete_successful} "
+                               f"for message {old_wizard_menu_id} in chat {old_edit_chat_id}.")
         except BadRequest as e_bad_req:
             if "message to delete not found" in str(e_bad_req).lower():
-                logger.warning(f"_clean_previous_edit_session: Message {old_wizard_menu_id} in chat {old_edit_chat_id} not found for deletion (already deleted or invalid ID). Error: {e_bad_req}")
+                logger.warning(f"_clean_previous_edit_session: Message {old_wizard_menu_id} in chat {old_edit_chat_id} "
+                               f"not found for deletion. Error: {e_bad_req}")
             elif "message can't be deleted" in str(e_bad_req).lower():
-                 logger.warning(f"_clean_previous_edit_session: Message {old_wizard_menu_id} in chat {old_edit_chat_id} can't be deleted (e.g. too old, not bot's message). Error: {e_bad_req}")
+                 logger.warning(f"_clean_previous_edit_session: Message {old_wizard_menu_id} in chat {old_edit_chat_id} "
+                                f"can't be deleted. Error: {e_bad_req}")
             else:
-                logger.error(f"_clean_previous_edit_session: BadRequest while deleting message {old_wizard_menu_id} in chat {old_edit_chat_id}. Error: {e_bad_req}")
+                logger.error(f"_clean_previous_edit_session: BadRequest while deleting message {old_wizard_menu_id} "
+                             f"in chat {old_edit_chat_id}. Error: {e_bad_req}")
         except Forbidden as e_forbidden:
-            logger.error(f"_clean_previous_edit_session: Forbidden to delete message {old_wizard_menu_id} in chat {old_edit_chat_id}. Bot permissions? Error: {e_forbidden}")
-        except Exception as e: # Ловим другие возможные исключения
-            logger.error(f"_clean_previous_edit_session: Generic error deleting message {old_wizard_menu_id} in chat {old_edit_chat_id}. Error: {e}")
+            logger.error(f"_clean_previous_edit_session: Forbidden to delete message {old_wizard_menu_id} "
+                         f"in chat {old_edit_chat_id}. Error: {e_forbidden}")
+        except Exception as e:
+            logger.error(f"_clean_previous_edit_session: Generic error deleting message {old_wizard_menu_id} "
+                         f"in chat {old_edit_chat_id}. Error: {e}")
     elif old_wizard_menu_id:
-        logger.warning(f"_clean_previous_edit_session: Found old_wizard_menu_id ({old_wizard_menu_id}) but no old_edit_chat_id for user {user_id_for_log}. Cannot delete.")
-    elif old_edit_chat_id: # Менее вероятно, но для полноты
-        logger.warning(f"_clean_previous_edit_session: Found old_edit_chat_id ({old_edit_chat_id}) but no old_wizard_menu_id for user {user_id_for_log}. Cannot delete.")
+        logger.warning(f"_clean_previous_edit_session: Found old_wizard_menu_id ({old_wizard_menu_id}) "
+                       f"but no old_edit_chat_id for user '{user_id_for_log}'. Cannot delete.")
+    elif old_edit_chat_id:
+        logger.warning(f"_clean_previous_edit_session: Found old_edit_chat_id ({old_edit_chat_id}) "
+                       f"but no old_wizard_menu_id for user '{user_id_for_log}'. Cannot delete.")
     else:
-        logger.debug(f"_clean_previous_edit_session: No old wizard menu message found in user_data for user {user_id_for_log} to delete.")
-    # Не очищаем user_data здесь, это будет делать _start_edit_convo
+        logger.info(f"_clean_previous_edit_session: No old wizard menu message found in user_data "
+                    f"for user '{user_id_for_log}' to delete.")
 
 async def _start_edit_convo(update: Update, context: ContextTypes.DEFAULT_TYPE, persona_id: int) -> int:
     """Starts the persona editing wizard."""
-    user_id = update.effective_user.id
+    user_id = update.effective_user.id # Это ID текущего пользователя, инициирующего действие
     
+    # Определяем chat_id для нового меню
     chat_id_for_new_menu = None
     if update.effective_chat: 
         chat_id_for_new_menu = update.effective_chat.id
     elif update.callback_query and update.callback_query.message: 
         chat_id_for_new_menu = update.callback_query.message.chat.id
     
-    if not chat_id_for_new_menu:
+    if not chat_id_for_new_menu: # Добавили return если не определен chat_id
         logger.error("_start_edit_convo: Could not determine chat_id for sending the new wizard menu.")
         if update.callback_query:
             try: await update.callback_query.answer("Ошибка: чат для меню не определен.", show_alert=True)
@@ -3023,17 +3044,21 @@ async def _start_edit_convo(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     is_callback = update.callback_query is not None
     logger.info(f"_start_edit_convo: User {user_id}, New PersonaID to edit {persona_id}, TargetChatID for new menu {chat_id_for_new_menu}, IsCallback {is_callback}")
     
-    # 1. Сначала пытаемся удалить меню от *возможно* существующей предыдущей сессии
-    #    _clean_previous_edit_session теперь не будет очищать user_data сама.
+    # 1. Сначала сохраняем ID пользователя во временную переменную
+    logger.debug(f"_start_edit_convo: Before cleaning - user_data keys: {list(context.user_data.keys())}")
+    
+    # 2. Вызываем очистку. Она использует user_data от ВОЗМОЖНОЙ ПРЕДЫДУЩЕЙ сессии.
+    # _user_id_for_logging в user_data должен был быть установлен в конце предыдущего _start_edit_convo
+    logger.info(f"_start_edit_convo: Calling _clean_previous_edit_session for user {user_id}")
     await _clean_previous_edit_session(context) 
     
-    # 2. Теперь очищаем user_data для начала чистой новой сессии
-    logger.debug(f"_start_edit_convo: Clearing user_data for user {user_id} to start new session.")
+    # 3. Очищаем user_data для начала чистой НОВОЙ сессии
+    logger.info(f"_start_edit_convo: Clearing user_data for user {user_id} to start new session.")
     context.user_data.clear() 
     
-    # 3. Устанавливаем данные для новой сессии
+    # 4. Устанавливаем данные для НОВОЙ сессии
     context.user_data['edit_persona_id'] = persona_id
-    context.user_data['_user_id_for_logging'] = user_id
+    context.user_data['_user_id_for_logging'] = user_id # <--- Устанавливаем для СЛЕДУЮЩЕГО вызова _clean_previous_edit_session
 
     if not is_callback:
         if not await check_channel_subscription(update, context):
