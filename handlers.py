@@ -1371,8 +1371,8 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
                         photo_file = photo_sizes[-1]
                         # Получаем файл по его file_id
                         file = await context.bot.get_file(photo_file.file_id)
-                        # Скачиваем бинарные данные файла
-                        image_data_io = await context.bot.download_as_bytearray(file.file_id)
+                        # Скачиваем бинарные данные файла (правильный вызов - у объекта file)
+                        image_data_io = await file.download_as_bytearray()
                         image_data = bytes(image_data_io)
                         logger.info(f"Downloaded image: {len(image_data)} bytes")
                 except Exception as e:
@@ -3920,7 +3920,7 @@ async def edit_media_reaction_prompt(update: Update, context: ContextTypes.DEFAU
         current = current_config.media_reaction or "text_only"
     
     media_react_map = {
-        "text_and_all_media": "На всё (текст, фото, голос)",
+        "text_and_all_media": "На всё (текст, фото, голос)", # Уже содержит описание типов контента
         "text_only": "Только текст",
         "all_media_no_text": "Только медиа (фото, голос)",
         "photo_only": "Только фото",
@@ -3936,9 +3936,6 @@ async def edit_media_reaction_prompt(update: Update, context: ContextTypes.DEFAU
     keyboard_buttons = []
     for key, text_val in media_react_map.items():
         button_text = f"{'✅ ' if current == key else ''}{text_val}"
-        # Если это ключ для "На всё", добавляем (на всё) в конце текста кнопки
-        if key == "text_and_all_media":
-            button_text += " (на всё)" # Добавляем (на всё)
         keyboard_buttons.append([InlineKeyboardButton(button_text, callback_data=f"set_media_react_{key}")])
     
     keyboard_buttons.append([InlineKeyboardButton("⬅️ Назад", callback_data="back_to_wizard_menu")])
