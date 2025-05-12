@@ -503,7 +503,8 @@ def main() -> None:
         ],
         per_message=False,
         name="edit_persona_wizard",
-        conversation_timeout=timedelta(minutes=15).total_seconds()
+        conversation_timeout=timedelta(minutes=15).total_seconds(),
+        allow_reentry=True  # Разрешить повторный вход, даже если предыдущий диалог все еще активен
     )
 
     # Delete Persona Conversation Handler
@@ -524,7 +525,8 @@ def main() -> None:
             ],
         per_message=False,
         name="delete_persona_conversation",
-        conversation_timeout=timedelta(minutes=5).total_seconds()
+        conversation_timeout=timedelta(minutes=5).total_seconds(),
+        allow_reentry=True  # Разрешить повторный вход, даже если предыдущий диалог все еще активен
     )
     logger.info("Conversation Handlers configured.")
 
