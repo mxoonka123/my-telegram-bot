@@ -1587,7 +1587,9 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
                             if transcribed_text:
                                 logger.info(f"Voice message transcribed successfully: '{transcribed_text}'")
                                 # Используем расшифрованный текст для контекста
-                                context_text_placeholder = f"[голосом]: {transcribed_text}"
+                                # Сохраняем имя отправителя для лучшего контекста
+                                sender_name = update.effective_user.username or update.effective_user.first_name or str(update.effective_user.id)
+                                context_text_placeholder = f"{sender_name}: {transcribed_text}"
                             else:
                                 logger.warning("Voice transcription failed or returned empty text")
                                 context_text_placeholder = "[получено голосовое сообщение, не удалось расшифровать]"
