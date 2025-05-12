@@ -4583,11 +4583,10 @@ async def _start_delete_convo(update: Update, context: ContextTypes.DEFAULT_TYPE
     """Starts the persona deletion conversation (common logic)."""
     user_id = update.effective_user.id
     
-    # Определяем chat_id для возможного уведомления и отправки нового сообщения
     chat_id_for_action = None
-    if update.effective_chat: # Если команда /deletepersona
+    if update.effective_chat: 
         chat_id_for_action = update.effective_chat.id
-    elif update.callback_query and update.callback_query.message: # Если кнопка "Удалить"
+    elif update.callback_query and update.callback_query.message: 
         chat_id_for_action = update.callback_query.message.chat.id
         
     if not chat_id_for_action:
@@ -4598,95 +4597,87 @@ async def _start_delete_convo(update: Update, context: ContextTypes.DEFAULT_TYPE
         return ConversationHandler.END
 
     is_callback = update.callback_query is not None
-    # reply_target больше не нужен в таком виде, будем использовать chat_id_for_action
     
     logger.info(f"--- _start_delete_convo: User={user_id}, New PersonaID to delete {persona_id}, ChatID {chat_id_for_action}, IsCallback={is_callback} ---")
     
-    # --- ВЫЗОВ ОЧИСТКИ ПРЕДЫДУЩЕЙ СЕССИИ ---
-    # Эта функция удалит старое меню (если было от сессии редактирования) и очистит user_data.
-    # Передаем user_id ТЕКУЩЕГО пользователя для логирования в _clean_previous_edit_session
     logger.info(f"_start_delete_convo: Calling _clean_previous_edit_session for user {user_id}")
     await _clean_previous_edit_session(context, user_id)
-    # --- КОНЕЦ ВЫЗОВА ОЧИСТКИ ---
 
-    # Теперь user_data чист, можно устанавливать новые значения для текущей сессии
     context.user_data['delete_persona_id'] = persona_id
     context.user_data['_user_id_for_logging'] = user_id
 
-    if not is_callback:
+    if not is_callback: # This check is for /deletepersona <id> command
         if not await check_channel_subscription(update, context):
             await send_subscription_required_message(update, context)
             return ConversationHandler.END
 
-    await context.bot.send_chat_action(chat_id=chat_id_for_action, action=ChatAction.TYPING)
-    # context.user_data.clear() # ЭТО УЖЕ СДЕЛАНО В _clean_previous_edit_session
-    # context.user_data['delete_persona_id'] = persona_id # ЭТО УЖЕ СДЕЛАНО ВЫШЕ
+    try:
+        await context.bot.send_chat_action(chat_id=chat_id_for_action, action=ChatAction.TYPING)
+    except Exception as e:
+        logger.warning(f"Could not send chat action in _start_delete_convo: {e}")
 
-    # --- ИСПРАВЛЕНИЕ: Экранируем сообщения ---
-    error_not_found_fmt_raw = "❌ Личность с ID `{id}` не найдена или не твоя." # Убираем экранирование тут
-    prompt_delete_fmt_raw = "🚨 *ВНИМАНИЕ\\!* 🚨\nУдалить личность '{name}' \\(ID: `{id}`\\)?\n\nЭто действие *НЕОБРАТИМО\\!*" # Оставляем экранирование для ! и ( )
+    error_not_found_fmt_raw = "❌ Личность с ID `{id}` не найдена или не твоя."
+    prompt_delete_fmt_raw = "🚨 *ВНИМАНИЕ\\!* 🚨\nУдалить личность '{name}' \\(ID: `{id}`\\)?\n\nЭто действие *НЕОБРАТИМО\\!*"
     error_db_raw = "❌ Ошибка базы данных."
     error_general_raw = "❌ Непредвиденная ошибка."
     error_db = escape_markdown_v2(error_db_raw)
     error_general = escape_markdown_v2(error_general_raw)
-    # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
 
     try:
         with next(get_db()) as db:
-            # ... (поиск persona_config) ...
-            logger.debug(f"Fetching PersonaConfig {persona_id} for owner {user_id}...") # <--- ЛОГ
+            logger.debug(f"Fetching PersonaConfig {persona_id} for owner {user_id}...")
             persona_config = db.query(PersonaConfig).options(selectinload(PersonaConfig.owner)).filter(
                 PersonaConfig.id == persona_id,
                 PersonaConfig.owner.has(User.telegram_id == user_id)
             ).first()
 
             if not persona_config:
-                 # --- ИСПРАВЛЕНИЕ: Экранируем перед отправкой ---
                  final_error_msg = escape_markdown_v2(error_not_found_fmt_raw.format(id=persona_id))
-                 # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
-                 logger.warning(f"Persona {persona_id} not found or not owned by user {user_id}.") # <--- ЛОГ
-                 if is_callback: await update.callback_query.answer("Личность не найдена", show_alert=True)
-                 await reply_target.reply_text(final_error_msg, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
+                 logger.warning(f"Persona {persona_id} not found or not owned by user {user_id}.")
+                 if is_callback and update.callback_query: # Check if query exists
+                     try: await update.callback_query.answer("Личность не найдена", show_alert=True)
+                     except Exception: pass
+                 # Отправляем новое сообщение об ошибке в правильный чат
+                 await context.bot.send_message(chat_id_for_action, final_error_msg, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
                  return ConversationHandler.END
 
-            # ... (создание клавиатуры) ...
-            logger.debug(f"Persona found: {persona_config.name}. Storing ID in user_data.") # <--- ЛОГ
-            context.user_data['delete_persona_id'] = persona_id
+            logger.debug(f"Persona found: {persona_config.name}. Storing ID in user_data.")
+            # context.user_data['delete_persona_id'] = persona_id # Already set above
+
             persona_name_display = persona_config.name[:20] + "..." if len(persona_config.name) > 20 else persona_config.name
             keyboard = [
-                 [InlineKeyboardButton(f"‼️ ДА, УДАЛИТЬ '{persona_name_display}' ‼️", callback_data=f"delete_persona_confirm_{persona_id}")],
+                 [InlineKeyboardButton(f"‼️ ДА, УДАЛИТЬ '{escape_markdown_v2(persona_name_display)}' ‼️", callback_data=f"delete_persona_confirm_{persona_id}")],
                  [InlineKeyboardButton("❌ НЕТ, ОСТАВИТЬ", callback_data="delete_persona_cancel")]
              ]
             reply_markup = InlineKeyboardMarkup(keyboard)
-
-            # Используем уже частично экранированный prompt_delete_fmt_raw
             msg_text = prompt_delete_fmt_raw.format(name=escape_markdown_v2(persona_config.name), id=persona_id)
 
-            # ... (отправка/редактирование сообщения) ...
-            logger.debug(f"Sending confirmation message for persona {persona_id}.") # <--- ЛОГ
-            if is_callback:
-                 query = update.callback_query
-                 try:
-                      if query.message.text != msg_text or query.message.reply_markup != reply_markup:
-                           await query.edit_message_text(msg_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
-                      else:
-                           await query.answer()
-                 except BadRequest as edit_err:
-                      logger.warning(f"Could not edit message for delete start (persona {persona_id}): {edit_err}. Sending new message.")
-                      await context.bot.send_message(chat_id, msg_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
-                 except Exception as edit_err:
-                      logger.error(f"Unexpected error editing message for delete start (persona {persona_id}): {edit_err}", exc_info=True)
-                      await context.bot.send_message(chat_id, msg_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
-            else:
-                 await reply_target.reply_text(msg_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
-
-            logger.info(f"User {user_id} initiated delete for persona {persona_id}. Asking confirmation. Returning state DELETE_PERSONA_CONFIRM.") # <--- ЛОГ
+            logger.debug(f"Sending confirmation message for persona {persona_id}.")
+            
+            # Поскольку сообщение с кнопкой "Удалить" уже было удалено в delete_persona_button_callback,
+            # мы всегда будем отправлять новое сообщение для подтверждения.
+            if is_callback and update.callback_query:
+                try:
+                    await update.callback_query.answer() # Просто отвечаем на коллбэк
+                except Exception as ans_err:
+                    logger.warning(f"Could not answer callback in _start_delete_convo: {ans_err}")
+            
+            sent_message = await context.bot.send_message(chat_id_for_action, msg_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
+            context.user_data['delete_confirm_message_id'] = sent_message.message_id
+            
+            logger.info(f"User {user_id} initiated delete for persona {persona_id}. Asking confirmation. Returning state DELETE_PERSONA_CONFIRM.")
             return DELETE_PERSONA_CONFIRM
-    # ... (обработка ошибок) ...
+
     except SQLAlchemyError as e:
          logger.error(f"Database error starting delete persona {persona_id}: {e}", exc_info=True)
-         await context.bot.send_message(chat_id, error_db, parse_mode=ParseMode.MARKDOWN_V2)
+         if chat_id_for_action:
+            await context.bot.send_message(chat_id_for_action, error_db, parse_mode=ParseMode.MARKDOWN_V2)
          return ConversationHandler.END
+    except Exception as e:
+        logger.error(f"Error in _start_delete_convo for persona {persona_id}: {e}", exc_info=True)
+        if chat_id_for_action:
+            await context.bot.send_message(chat_id_for_action, error_general, parse_mode=ParseMode.MARKDOWN_V2)
+        return ConversationHandler.END
 async def delete_persona_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Entry point for /deletepersona command."""
     if not update.message: return ConversationHandler.END
