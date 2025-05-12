@@ -1505,15 +1505,30 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
                     logger.error(f"Error downloading photo: {e}", exc_info=True)
 
             context_for_ai = []
-            if persona.chat_instance:
+            current_user_message_content_for_ai = f"{username}: {context_text_placeholder}" # username и context_text_placeholder уже определены выше в handle_media
+
+            if media_type == "photo":
+                logger.warning(f"ЭКСПЕРИМЕНТ С КОНТЕКСТОМ: Для фото используется только текущее сообщение, БЕЗ ИСТОРИИ ЧАТА.")
+                context_for_ai = [{"role": "user", "content": current_user_message_content_for_ai}]
+            elif persona.chat_instance: # Для других типов медиа (например, voice) оставляем загрузку истории
                 try:
                     context_for_ai = get_context_for_chat_bot(db, persona.chat_instance.id)
+                    # Убедимся, что последнее сообщение в context_for_ai (если оно есть и от user)
+                    # это наш плейсхолдер, или добавим его, если история пуста.
+                    # Это важно, так как send_to_langdock будет модифицировать последнее сообщение user.
+                    if not context_for_ai or context_for_ai[-1].get("role") != "user" or context_for_ai[-1].get("content") != current_user_message_content_for_ai:
+                        # Если история пуста, или последнее сообщение не то, что мы ожидаем,
+                        # это может указывать на расхождение. Для простоты теста с фото мы это игнорируем,
+                        # но для других типов медиа это может потребовать более аккуратной обработки.
+                        # Пока что, если это не фото, и история загрузилась, send_to_langdock
+                        # должен корректно найти последнее сообщение пользователя (плейсхолдер, который уже был добавлен в БД).
+                        pass # Для не-фото оставляем как есть, send_to_langdock разберется
                 except (SQLAlchemyError, Exception) as e_ctx:
                     logger.error(f"DB Error getting context for AI media response: {e_ctx}", exc_info=True)
                     if update.effective_message: await update.effective_message.reply_text(escape_markdown_v2("❌ ошибка при получении контекста для ответа на медиа."), parse_mode=ParseMode.MARKDOWN_V2)
                     db.rollback()
                     return
-            else:
+            else: # Если это не фото и нет chat_instance (маловероятно здесь)
                  logger.error("Cannot get context for AI media response, chat_instance is None.")
                  db.rollback()
                  return
