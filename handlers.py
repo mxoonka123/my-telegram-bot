@@ -1504,31 +1504,41 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
                 except Exception as e:
                     logger.error(f"Error downloading photo: {e}", exc_info=True)
 
+            # --- Подготовка контекста для LLM ---
             context_for_ai = []
-            current_user_message_content_for_ai = f"{username}: {context_text_placeholder}" # username и context_text_placeholder уже определены выше в handle_media
+            # Плейсхолдер, который будет модифицирован в send_to_langdock для добавления base64 изображения
+            current_user_message_for_ai = f"{username}: {context_text_placeholder}"
+            current_media_placeholder_for_llm = {"role": "user", "content": current_user_message_for_ai}
 
-            if media_type == "photo":
-                logger.warning(f"ЭКСПЕРИМЕНТ С КОНТЕКСТОМ: Для фото используется только текущее сообщение, БЕЗ ИСТОРИИ ЧАТА.")
-                context_for_ai = [{"role": "user", "content": current_user_message_content_for_ai}]
-            elif persona.chat_instance: # Для других типов медиа (например, voice) оставляем загрузку истории
+            if persona.chat_instance:
                 try:
-                    context_for_ai = get_context_for_chat_bot(db, persona.chat_instance.id)
-                    # Убедимся, что последнее сообщение в context_for_ai (если оно есть и от user)
-                    # это наш плейсхолдер, или добавим его, если история пуста.
-                    # Это важно, так как send_to_langdock будет модифицировать последнее сообщение user.
-                    if not context_for_ai or context_for_ai[-1].get("role") != "user" or context_for_ai[-1].get("content") != current_user_message_content_for_ai:
-                        # Если история пуста, или последнее сообщение не то, что мы ожидаем,
-                        # это может указывать на расхождение. Для простоты теста с фото мы это игнорируем,
-                        # но для других типов медиа это может потребовать более аккуратной обработки.
-                        # Пока что, если это не фото, и история загрузилась, send_to_langdock
-                        # должен корректно найти последнее сообщение пользователя (плейсхолдер, который уже был добавлен в БД).
-                        pass # Для не-фото оставляем как есть, send_to_langdock разберется
-                except (SQLAlchemyError, Exception) as e_ctx:
-                    logger.error(f"DB Error getting context for AI media response: {e_ctx}", exc_info=True)
+                    # Загружаем историю из БД
+                    history_from_db = get_context_for_chat_bot(db, persona.chat_instance.id)
+                    context_for_ai.extend(history_from_db)
+                    
+                    # Удаляем из загруженной истории плейсхолдер, если он там уже есть (get_context_for_chat_bot его вернет)
+                    # чтобы избежать дублирования перед добавлением актуального плейсхолдера для LLM.
+                    if context_for_ai and \
+                       context_for_ai[-1].get("role") == "user" and \
+                       context_for_ai[-1].get("content") == current_user_message_for_ai:
+                        logger.debug("Popping identical media placeholder from end of DB history before appending LLM version.")
+                        context_for_ai.pop()
+
+                    # Добавляем актуальный плейсхолдер для LLM в конец
+                    context_for_ai.append(current_media_placeholder_for_llm)
+
+                    # Обрезаем до финального лимита, если необходимо
+                    if len(context_for_ai) > MAX_CONTEXT_MESSAGES_SENT_TO_LLM:
+                        context_for_ai = context_for_ai[-MAX_CONTEXT_MESSAGES_SENT_TO_LLM:]
+                    
+                    logger.info(f"Prepared context for LLM ({media_type}): {len(context_for_ai)} messages. DB history items: {len(history_from_db)}.")
+
+                except (SQLAlchemyError, Exception) as e_ctx_hist:
+                    logger.error(f"DB Error getting/forming history context for AI {media_type} response: {e_ctx_hist}", exc_info=True)
                     if update.effective_message: await update.effective_message.reply_text(escape_markdown_v2("❌ ошибка при получении контекста для ответа на медиа."), parse_mode=ParseMode.MARKDOWN_V2)
                     db.rollback()
                     return
-            else: # Если это не фото и нет chat_instance (маловероятно здесь)
+            else: # Это не должно происходить, т.к. persona.chat_instance проверялся выше
                  logger.error("Cannot get context for AI media response, chat_instance is None.")
                  db.rollback()
                  return
