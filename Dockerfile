@@ -26,8 +26,9 @@ COPY . .
 # Скачивание и распаковка модели Vosk
 RUN mkdir -p model_vosk_ru && \
     wget -q https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip && \
-    unzip -q vosk-model-small-ru-0.22.zip -d model_vosk_ru && \
-    rm vosk-model-small-ru-0.22.zip
+    unzip -q vosk-model-small-ru-0.22.zip && \
+    mv vosk-model-small-ru-0.22/* model_vosk_ru/ && \
+    rm -rf vosk-model-small-ru-0.22.zip vosk-model-small-ru-0.22
 
 # Запуск приложения
 CMD ["python", "main.py"]
