@@ -511,7 +511,7 @@ def main() -> None:
     delete_persona_conv_handler = ConversationHandler(
         entry_points=[
             CommandHandler('deletepersona', handlers.delete_persona_start),
-            CallbackQueryHandler(handlers.delete_persona_button_callback, pattern='^delete_persona_')
+            CallbackQueryHandler(handlers.delete_persona_button_callback, pattern=r'^delete_persona_\d+$')  # Матчит только delete_persona_123, но не delete_persona_confirm_123
             ],
         states={
             handlers.DELETE_PERSONA_CONFIRM: [
