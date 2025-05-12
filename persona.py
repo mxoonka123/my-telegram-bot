@@ -275,7 +275,7 @@ class Persona:
         # "text_only" and "none" should not react to media, so should_react remains False
 
         if not should_react:
-            logger.debug(f"Persona {self.id} ({self.name}) configured NOT to react to '{media_type_text}' with setting '{react_setting}'.")
+            logger.debug(f"Persona {self.id} ({self.name}) configured NOT to react to '{media_type_text}' with setting '{react_setting}'.") 
             return None
 
         # Proceed with prompt generation if should_react is True
@@ -284,24 +284,38 @@ class Persona:
         chat_id_info = str(self.chat_instance.chat_id) if self.chat_instance else "unknown"
 
         prompt_parts = [
-            f"ты {self.get_persona_description_short()} ({self.name}).",
-            f"тебе прислали {media_type_text} в чате {chat_id_info}.",
+            # Можно временно убрать описание личности, чтобы не отвлекать модель
+            # f"ты {self.get_persona_description_short()} ({self.name}).",
+            f"тебе прислали {media_type_text} в чате {chat_id_info}."
         ]
-        if mood_instruction:
+        if mood_instruction and self.current_mood.lower() != "нейтрально": # Добавляем настроение, только если оно не нейтральное
             prompt_parts.append(f"твое текущее настроение: {mood_instruction}.")
+
         if media_type_text == "фото":
-            prompt_parts.append("кратко опиши, что видишь, и добавь комментарий от своего лица.")
+            # Более прямой и детальный запрос на описание изображения
+            prompt_parts.append(
+                "Внимательно изучи присланное изображение. "
+                "Подробно опиши все ключевые объекты, людей, животных, фон и происходящие события на изображении. "
+                "Каков общий смысл или настроение изображения? " # Дополнительный вопрос для стимулирования анализа
+                "После описания, добавь свой комментарий или реакцию от лица персонажа, учитывая его стиль и настроение (если оно указано)."
+            )
         else: # Голосовое
-            prompt_parts.append("представь, что прослушал его. кратко прокомментируй от своего лица.")
+            prompt_parts.append("представь, что прослушал его. кратко прокомментируй от своего лица, учитывая свой стиль и настроение (если оно указано).")
+        
         prompt_parts.extend(base_instructions) # Add style/verbosity
         prompt_parts.append(get_time_info())
 
         # Combine and add suffixes
         formatted_prompt = " ".join(prompt_parts)
-        formatted_prompt += BASE_PROMPT_SUFFIX
-        formatted_prompt += LANGDOCK_RESPONSE_INSTRUCTIONS
+        # Временно уберем BASE_PROMPT_SUFFIX и LANGDOCK_RESPONSE_INSTRUCTIONS для чистоты эксперимента с фото
+        # formatted_prompt += BASE_PROMPT_SUFFIX
+        # formatted_prompt += LANGDOCK_RESPONSE_INSTRUCTIONS
         
-        logger.debug(f"Persona {self.id} ({self.name}) WILL react to '{media_type_text}' with setting '{react_setting}'. Prompt generated.")
+        # Для фото можно добавить специфичную инструкцию по формату ответа, если JSON не является обязательным для медиа
+        if media_type_text == "фото":
+             formatted_prompt += " Ответь обычным текстом, не JSON." # Если JSON не нужен для медиа
+
+        logger.debug(f"Persona {self.id} ({self.name}) WILL react to '{media_type_text}' with setting '{react_setting}'. Prompt generated: {formatted_prompt[:200]}...")
         return formatted_prompt
 
     def format_photo_prompt(self) -> Optional[str]:

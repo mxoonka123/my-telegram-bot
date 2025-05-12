@@ -399,131 +399,148 @@ async def send_to_langdock(system_prompt: str, messages: List[Dict[str, str]], i
         "Authorization": f"Bearer {LANGDOCK_API_KEY}",
         "Content-Type": "application/json",
     }
-    messages_to_send = messages[-MAX_CONTEXT_MESSAGES_SENT_TO_LLM:]
+    # Берем последние N сообщений, как и раньше
+    messages_to_send = messages[-MAX_CONTEXT_MESSAGES_SENT_TO_LLM:].copy() # Используем .copy() для безопасного изменения
     
-    # Если есть данные изображения, модифицируем последнее сообщение пользователя
+    # --- Улучшенное логирование ---
+    logger.debug(f"Original last user message before image processing: {messages_to_send[-1] if messages_to_send and messages_to_send[-1].get('role') == 'user' else 'N/A'}")
+
     if image_data:
         try:
-            # Найдем последнее сообщение пользователя
+            # Найдем последнее сообщение пользователя для модификации
+            last_user_message_index = -1
             for i in range(len(messages_to_send) - 1, -1, -1):
                 if messages_to_send[i].get("role") == "user":
-                    # Преобразуем его в мультимодальный формат
-                    import base64
-                    image_base64 = base64.b64encode(image_data).decode('utf-8')
-                    
-                    # Сохраняем оригинальный текст
-                    original_content = messages_to_send[i].get("content", "")
-                    
-                    # Формируем мультимодальное сообщение для Claude 3.5
-                    messages_to_send[i] = {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": original_content},
-                            {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": image_base64}}
-                        ]
-                    }
-                    logger.info(f"Converted message to multimodal format with image")
+                    last_user_message_index = i
                     break
+            
+            if last_user_message_index != -1:
+                import base64
+                image_base64 = base64.b64encode(image_data).decode('utf-8')
+                
+                original_user_content = messages_to_send[last_user_message_index].get("content", "")
+                
+                # Формируем мультимодальное сообщение для Claude 3.5
+                # Важно: если original_user_content это уже список (например, от предыдущей обработки),
+                # нужно аккуратно добавить изображение. Но обычно это строка.
+                if isinstance(original_user_content, str):
+                    new_content = [
+                        {"type": "text", "text": original_user_content if original_user_content else "Проанализируй это изображение."}, # Добавляем текст по умолчанию, если его нет
+                    ]
+                elif isinstance(original_user_content, list): # Если вдруг контент уже список
+                    new_content = original_user_content
+                else: # Неожиданный тип контента
+                    logger.warning(f"Unexpected content type for user message: {type(original_user_content)}. Using default text.")
+                    new_content = [{"type": "text", "text": "Проанализируй это изображение."}]
+
+                new_content.append(
+                     {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": image_base64}}
+                )
+                
+                messages_to_send[last_user_message_index] = {
+                    "role": "user",
+                    "content": new_content
+                }
+                logger.info(f"MODIFIED last user message at index {last_user_message_index} to include image. New content structure: {messages_to_send[last_user_message_index]['content']}")
+            else:
+                logger.warning("No user message found to attach the image to. Sending image as a new message.")
+                # Если нет сообщения от пользователя, можно отправить изображение как часть нового сообщения
+                # (это менее типично, но возможно) или просто добавить его к системному промпту, если API позволяет.
+                # Для Claude API, изображение должно быть в 'messages'.
+                # Можно создать новое "user" сообщение только с изображением, если других нет.
+                # Но это маловероятно, т.к. handle_media добавляет плейсхолдер.
+                # Пока оставим как есть, но это место для потенциального улучшения, если такая ситуация возникнет.
+
         except Exception as e:
             logger.error(f"Error adding image to request: {e}", exc_info=True)
-            # Продолжаем без изображения, если что-то пошло не так
+            # Продолжаем без изображения, если что-то пошло не так, но логируем это
     
     payload = {
         "model": LANGDOCK_MODEL,
-        "system": system_prompt,
+        "system": system_prompt, # Системный промпт должен быть строкой
         "messages": messages_to_send,
-        "max_tokens": 1024,
-        "temperature": 0.65, # Снижаем с 0.7 до 0.65
-        "top_p": 0.95,
+        "max_tokens": 1024, # Можно увеличить для описания изображений, например, до 2048
+        "temperature": 0.5, # Для описания изображений лучше чуть пониже температуру для фактологичности
+        "top_p": 0.95,      # Можно оставить
         "stream": False
     }
-    url = f"{LANGDOCK_BASE_URL.rstrip('/')}/v1/messages"
+    url = f"{LANGDOCK_BASE_URL.rstrip('/')}/v1/messages" # Убедимся, что URL корректный
     
-    # Улучшенное логирование запроса
-    has_image = any(isinstance(msg.get('content'), list) and 
-                   any(item.get('type') == 'image' for item in msg.get('content', [])) 
-                   for msg in messages_to_send)
-    
-    logger.debug(f"Sending request to Langdock: {url} with {len(messages_to_send)} messages. "
-              f"Temp: {payload['temperature']}. System prompt length: {len(system_prompt)}. "
-              f"Contains image: {has_image}")
-    
-    # Логируем упрощенную версию payload без больших base64 строк
+    # --- Детальное логирование запроса ---
     payload_log = payload.copy()
     if 'messages' in payload_log:
-        payload_log['messages'] = [{
-            'role': msg.get('role'),
-            'content': '[text and image]' if isinstance(msg.get('content'), list) and 
-                      any(item.get('type') == 'image' for item in msg.get('content', [])) 
-                      else (msg.get('content')[:100] + '...' if isinstance(msg.get('content'), str) and len(msg.get('content', '')) > 100 else msg.get('content'))
-        } for msg in payload_log['messages']]
+        logged_messages = []
+        for msg in payload_log['messages']:
+            logged_msg = msg.copy()
+            if isinstance(logged_msg.get('content'), list):
+                logged_content = []
+                for item in logged_msg['content']:
+                    if isinstance(item, dict) and item.get('type') == 'image' and 'source' in item and isinstance(item['source'], dict) and 'data' in item['source']:
+                        logged_content.append({**item, 'source': {**item['source'], 'data': '[BASE64_IMAGE_DATA_TRUNCATED]'}})
+                    else:
+                        logged_content.append(item)
+                logged_msg['content'] = logged_content
+            logged_messages.append(logged_msg)
+        payload_log['messages'] = logged_messages
     
-    logger.debug(f"Langdock payload simplified: {json.dumps(payload_log, ensure_ascii=False)[:500]}...")
-
+    logger.info(f"Sending request to Langdock. URL: {url}")
+    logger.debug(f"Langdock System Prompt: {system_prompt}")
+    logger.debug(f"Langdock Payload (image data truncated): {json.dumps(payload_log, ensure_ascii=False, indent=2)}")
+    # --- Конец детального логирования ---
 
     try:
-        async with httpx.AsyncClient(timeout=90.0) as client:
+        async with httpx.AsyncClient(timeout=90.0) as client: # Увеличил таймаут
              resp = await client.post(url, json=payload, headers=headers)
-        logger.debug(f"Langdock response status: {resp.status_code}")
-        resp.raise_for_status()
+        
+        logger.info(f"Langdock response status: {resp.status_code}")
+        # Логируем тело ответа ДО попытки парсинга JSON
+        raw_response_text = resp.text
+        logger.debug(f"Langdock raw response text (first 500 chars): {raw_response_text[:500]}")
+
+        resp.raise_for_status() # Вызовет исключение для 4xx/5xx
         data = resp.json()
 
-        # Улучшенная обработка ответа с подробным логированием
-        full_response = ""
-        logger.debug(f"Langdock raw response: {json.dumps(data, ensure_ascii=False)[:500]}...")
-        
-        # Получаем важные метаданные для логирования
-        input_tokens = data.get('input_tokens', 0)
-        output_tokens = data.get('output_tokens', 0)
+        # --- Детальное логирование ответа ---
+        logger.debug(f"Langdock parsed JSON response: {json.dumps(data, ensure_ascii=False, indent=2)}")
+
+        input_tokens = data.get('usage', {}).get('input_tokens') # Claude 3.5 использует 'usage'
+        output_tokens = data.get('usage', {}).get('output_tokens')
         stop_reason = data.get('stop_reason', 'unknown')
+        
+        # Если usage отсутствует, попробуем старый вариант (для обратной совместимости или других моделей)
+        if input_tokens is None: input_tokens = data.get('input_tokens', 0)
+        if output_tokens is None: output_tokens = data.get('output_tokens', 0)
+
         logger.info(f"Langdock response stats: input_tokens={input_tokens}, output_tokens={output_tokens}, stop_reason={stop_reason}")
         
-        content = data.get("content")
+        full_response_text = ""
+        content_blocks = data.get("content")
         
-        if isinstance(content, list) and content:
-            logger.debug(f"Content is a list with {len(content)} items")
-            first_content_block = content[0] if content else None
-            if isinstance(first_content_block, dict):
-                logger.debug(f"First content block type: {first_content_block.get('type')}")
-                if first_content_block.get("type") == "text":
-                    full_response = first_content_block.get("text", "")
-        elif isinstance(content, dict) and "text" in content:
-            logger.debug("Content is a dict with 'text' key")
-            full_response = content["text"]
-        elif isinstance(content, str):
-            logger.debug("Content is a string")
-            full_response = content
-        elif "response" in data and isinstance(data["response"], str):
-            logger.debug("Using 'response' key from data")
-            full_response = data.get("response", "")
-        elif "choices" in data and isinstance(data["choices"], list) and data["choices"]:
-            logger.debug(f"Using 'choices' array with {len(data['choices'])} items")
-            choice = data["choices"][0]
-            if "message" in choice and isinstance(choice["message"], dict) and "content" in choice["message"]:
-                full_response = choice["message"]["content"]
-            elif "text" in choice:
-                full_response = choice["text"]
+        if isinstance(content_blocks, list) and content_blocks:
+            logger.debug(f"Response 'content' is a list with {len(content_blocks)} item(s).")
+            for block in content_blocks:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    full_response_text += block.get("text", "")
+                    logger.debug(f"Extracted text block: '{block.get('text', '')[:100]}...'")
+                else:
+                    logger.warning(f"Non-text block found in content: {block}")
+        elif isinstance(content_blocks, str): # На случай, если API вернет просто строку в content
+             full_response_text = content_blocks
+             logger.debug(f"Response 'content' is a string: '{content_blocks[:100]}...'")
+        else:
+            logger.warning(f"Unexpected structure or empty 'content' in Langdock response. Content: {content_blocks}")
 
-        if not full_response:
-            logger.warning(f"Could not extract text from Langdock response structure (Content: {content}, StopReason: {stop_reason}).")
-            # Проверяем разные структуры ответа для диагностики
+        if not full_response_text.strip():
+            logger.warning(f"Extracted text from Langdock response is empty or whitespace. StopReason: {stop_reason}. Original data: {json.dumps(data, ensure_ascii=False)}")
+            # Проверяем, есть ли ошибка в ответе
             if 'error' in data:
-                logger.error(f"Langdock API error: {data['error']}")
-            
-            # Пытаемся извлечь любой текст из ответа
-            if isinstance(content, list):
-                for item in content:
-                    if isinstance(item, dict) and 'text' in item:
-                        logger.debug(f"Found text in content list item: {item['text'][:100]}...")
-                        full_response = item['text']
-                        break
-            
-            # Если все равно не нашли текст, возвращаем сообщение об ошибке
-            if not full_response:
-                logger.warning(f"Still could not extract text from Langdock response: {json.dumps(data, ensure_ascii=False)[:300]}...")
-                return escape_markdown_v2("аi вернул пустой ответ 🤷")
+                error_details = data['error']
+                logger.error(f"Langdock API returned an error: {error_details}")
+                error_message_to_user = f"AI сообщило об ошибке: {error_details.get('message', 'Неизвестная ошибка') if isinstance(error_details, dict) else error_details}"
+                return escape_markdown_v2(error_message_to_user)
+            return escape_markdown_v2("ai вернул пустой текстовый ответ 🤷")
 
-        return full_response.strip()
+        return full_response_text.strip()
 
     except httpx.ReadTimeout:
          logger.error("Langdock API request timed out.")
@@ -537,18 +554,23 @@ async def send_to_langdock(system_prompt: str, messages: List[Dict[str, str]], i
              if isinstance(error_data.get('error'), dict) and 'message' in error_data['error']:
                   api_error_msg = error_data['error']['message']
                   logger.error(f"Langdock API Error Message: {api_error_msg}")
+                  error_text_raw += f": {api_error_msg}" # Добавляем деталей пользователю
              elif isinstance(error_data.get('error'), str):
                    logger.error(f"Langdock API Error Message: {error_data['error']}")
-        except Exception: pass
-        return error_text_raw
+                   error_text_raw += f": {error_data['error']}"
+        except json.JSONDecodeError:
+            logger.warning(f"Could not parse error body from Langdock as JSON: {error_body}")
+        except Exception: pass # Общий случай
+        return escape_markdown_v2(error_text_raw) # Экранируем финальное сообщение
     except httpx.RequestError as e:
-        logger.error(f"Langdock API request error: {e}", exc_info=True)
+        logger.error(f"Langdock API request error (network issue?): {e}", exc_info=True)
         return escape_markdown_v2("❌ не могу связаться с ai сейчас (ошибка сети)...")
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to parse Langdock JSON response: {e}. Raw response: {raw_response_text[:500]}", exc_info=True)
+        return escape_markdown_v2("❌ ошибка: не удалось обработать ответ от ai (неверный формат).")
     except Exception as e:
         logger.error(f"Unexpected error communicating with Langdock: {e}", exc_info=True)
         return escape_markdown_v2("❌ произошла внутренняя ошибка при генерации ответа.")
-
-
 
 
     logger.debug(f"Processing AI response for chat {chat_id}, persona {persona.name}. Raw length: {len(full_bot_response_text)}. ReplyTo: {reply_to_message_id}. IsFirstMsg: {is_first_message}")
