@@ -469,8 +469,8 @@ def create_persona_config(db: Session, owner_id: int, name: str, description: st
             group_reply_preference="mentioned_or_contextual",
             media_reaction="text_only",
             mood_prompts_json=default_moods,
-            max_response_messages="normal",
-            message_volume="normal",
+            max_response_messages=3,  # Устанавливаем числовое значение по умолчанию
+            # message_volume удалено, т.к. нет такого поля в модели PersonaConfig
             system_prompt_template=DEFAULT_SYSTEM_PROMPT_TEMPLATE,
             should_respond_prompt_template=DEFAULT_SHOULD_RESPOND_TEMPLATE
         )

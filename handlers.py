@@ -2020,9 +2020,14 @@ async def my_personas(update: Union[Update, CallbackQuery], context: ContextType
     error_db = escape_markdown_v2("❌ ошибка при загрузке списка личностей.")
     error_general = escape_markdown_v2("❌ произошла ошибка при получении списка личностей.")
     error_user_not_found = escape_markdown_v2("❌ ошибка: не удалось найти пользователя.")
-    info_no_personas_fmt_raw = "у тебя пока нет личностей ({count}/{limit})\\. создай первую: `/createpersona <имя>`"
-    # Исправляем экранирование скобок: было \\\\, стало \\
-    info_list_header_fmt_raw = "🎭 *твои личности* \\({count}/{limit}\\):"
+    # Убираем ручное экранирование из строки формата и добавляем информацию о возможности указания описания
+    info_no_personas_fmt_raw = (
+        "У тебя пока нет личностей ({count}/{limit}).\n"
+        "Создай первую: `/createpersona <имя> [описание]`\n\n"
+        "Подробное описание помогает личности лучше понять свою роль и вести себя более последовательно."
+    )
+    # Убираем ручное экранирование из строки формата
+    info_list_header_fmt_raw = "🎭 *твои личности* ({count}/{limit}):"
     # Заменяем единую строку fallback на список частей для более точного построения
     fallback_text_plain_parts = []
 
@@ -2053,26 +2058,35 @@ async def my_personas(update: Union[Update, CallbackQuery], context: ContextType
             persona_count = len(personas)
 
             if not personas:
-                final_text_to_send = info_no_personas_fmt_raw.format(
-                    count=escape_markdown_v2(str(persona_count)),
-                    limit=escape_markdown_v2(str(persona_limit))
+                # Формируем текст БЕЗ Markdown экранирования сначала
+                raw_text_no_personas = info_no_personas_fmt_raw.format(
+                    count=str(persona_count),
+                    limit=str(persona_limit)
                 )
-                fallback_text_plain_parts.append(f"у тебя пока нет личностей ({persona_count}/{persona_limit}). создай первую: /createpersona <имя>")
+                # Теперь экранируем ВЕСЬ текст
+                final_text_to_send = escape_markdown_v2(raw_text_no_personas)
+                
+                # Для fallback текста (если Markdown не пройдет)
+                fallback_text_plain_parts.append(
+                    f"У тебя пока нет личностей ({persona_count}/{persona_limit}).\n"
+                    f"Создай первую: /createpersona <имя> [описание]\n\n"
+                    f"Подробное описание помогает личности лучше понять свою роль."
+                )
                 keyboard_no_personas = [[InlineKeyboardButton("⬅️ Назад в Меню", callback_data="show_menu")]] if is_callback else None
                 final_reply_markup = InlineKeyboardMarkup(keyboard_no_personas) if keyboard_no_personas else ReplyKeyboardRemove()
             else:
-                message_lines = [
-                    info_list_header_fmt_raw.format(
-                        count=escape_markdown_v2(str(persona_count)),
-                        limit=escape_markdown_v2(str(persona_limit))
-                    )
-                ]
+                # ИСПРАВЛЕННЫЙ ПОДХОД ДЛЯ ЗАГОЛОВКА С MARKDOWN:
+                # Создаем и экранируем заголовок целиком
+                header_text = f"🎭 *твои личности* ({persona_count}/{persona_limit}):"
+                message_lines = [escape_markdown_v2(header_text)]
                 keyboard_personas = []
                 fallback_text_plain_parts.append(f"Твои личности ({persona_count}/{persona_limit}):")
 
                 for p in personas:
-                     # ИСПРАВЛЯЕМ ЭКРАНИРОВАНИЕ: заменяем двойные бэкслеши на одинарные и экранируем ID
-                     message_lines.append(f"\n👤 *{escape_markdown_v2(p.name)}* \\(ID: `{escape_markdown_v2(str(p.id))}`\\)")
+                     # Создаем текст личности без экранирования
+                     persona_text = f"\n👤 *{p.name}* (ID: `{p.id}`)"
+                     # Теперь экранируем ВЕСЬ текст целиком
+                     message_lines.append(escape_markdown_v2(persona_text))
                      fallback_text_plain_parts.append(f"\n- {p.name} (ID: {p.id})")
                      edit_cb = f"edit_persona_{p.id}"
                      delete_cb = f"delete_persona_{p.id}"
@@ -2083,6 +2097,7 @@ async def my_personas(update: Union[Update, CallbackQuery], context: ContextType
                          InlineKeyboardButton("➕ В чат", callback_data=add_cb)
                      ])
                 
+                # Соединяем все строки в одно сообщение
                 final_text_to_send = "\n".join(message_lines)
                 # fallback теперь формируется отдельно
                 if is_callback:
