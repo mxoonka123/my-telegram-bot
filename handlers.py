@@ -3129,8 +3129,13 @@ async def edit_persona_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def edit_persona_button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Entry point for edit persona button press."""
+    # САМЫЙ ПЕРВЫЙ ЛОГ
+    logger.info("--- edit_persona_button_callback: ENTERED ---") 
+    
     query = update.callback_query
-    if not query or not query.data: return ConversationHandler.END
+    if not query or not query.data: 
+        logger.warning("edit_persona_button_callback: Query or query.data is None. Returning END.")
+        return ConversationHandler.END
     
     user_id = query.from_user.id
     original_chat_id = query.message.chat.id if query.message else (update.effective_chat.id if update.effective_chat else None)
