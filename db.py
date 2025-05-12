@@ -281,10 +281,34 @@ def initialize_database():
         })
 
     try:
-        # Создаем engine с URL из переменной и базовыми engine_args
+        # Импортируем необходимые модули для настройки psycopg3
+        from sqlalchemy import event
+        from sqlalchemy.engine import Engine
+        from sqlalchemy.dialects.postgresql import psycopg
+        
+        # Отключаем prepared statements для psycopg3, чтобы избежать ошибки DuplicatePreparedStatement
+        if 'postgres' in db_url_str:
+            # Настраиваем параметры для psycopg3
+            connect_args = engine_args.get('connect_args', {})
+            connect_args['prepare_threshold'] = None  # Отключение prepared statements
+            connect_args['options'] = "-c statement_timeout=60000 -c idle_in_transaction_session_timeout=60000"
+            engine_args['connect_args'] = connect_args
+            
+            logger.info("PostgreSQL: Disabled prepared statements and set timeouts to prevent transaction issues")
+            
+        # Создаем engine с URL из переменной и модифицированными engine_args
         engine = create_engine(db_url_str, **engine_args, echo=False)
+        
+        # Для postgres подключений добавляем обработчик событий для мониторинга
+        if 'postgres' in db_url_str:
+            @event.listens_for(Engine, "before_cursor_execute")
+            def before_cursor_execute(conn, cursor, statement, parameters, context, executemany):
+                # Логируем длинные запросы для диагностики
+                if len(statement) > 1000:
+                    logger.debug(f"Long SQL query: {statement[:100]}... ({len(statement)} chars)")
+        
         SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-        logger.info("Database engine and session maker initialized.")
+        logger.info("Database engine and session maker initialized with prepared statements disabled.")
 
         logger.info("Attempting to establish initial database connection...")
         with engine.connect() as connection:

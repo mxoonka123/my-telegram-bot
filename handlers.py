@@ -438,7 +438,28 @@ async def send_to_langdock(system_prompt: str, messages: List[Dict[str, str]], i
         "stream": False
     }
     url = f"{LANGDOCK_BASE_URL.rstrip('/')}/v1/messages"
-    logger.debug(f"Sending request to Langdock: {url} with {len(messages_to_send)} messages. Temp: {payload['temperature']}. System prompt length: {len(system_prompt)}")
+    
+    # Улучшенное логирование запроса
+    has_image = any(isinstance(msg.get('content'), list) and 
+                   any(item.get('type') == 'image' for item in msg.get('content', [])) 
+                   for msg in messages_to_send)
+    
+    logger.debug(f"Sending request to Langdock: {url} with {len(messages_to_send)} messages. "
+              f"Temp: {payload['temperature']}. System prompt length: {len(system_prompt)}. "
+              f"Contains image: {has_image}")
+    
+    # Логируем упрощенную версию payload без больших base64 строк
+    payload_log = payload.copy()
+    if 'messages' in payload_log:
+        payload_log['messages'] = [{
+            'role': msg.get('role'),
+            'content': '[text and image]' if isinstance(msg.get('content'), list) and 
+                      any(item.get('type') == 'image' for item in msg.get('content', [])) 
+                      else (msg.get('content')[:100] + '...' if isinstance(msg.get('content'), str) and len(msg.get('content', '')) > 100 else msg.get('content'))
+        } for msg in payload_log['messages']]
+    
+    logger.debug(f"Langdock payload simplified: {json.dumps(payload_log, ensure_ascii=False)[:500]}...")
+
 
     try:
         async with httpx.AsyncClient(timeout=90.0) as client:
@@ -447,30 +468,60 @@ async def send_to_langdock(system_prompt: str, messages: List[Dict[str, str]], i
         resp.raise_for_status()
         data = resp.json()
 
+        # Улучшенная обработка ответа с подробным логированием
         full_response = ""
+        logger.debug(f"Langdock raw response: {json.dumps(data, ensure_ascii=False)[:500]}...")
+        
+        # Получаем важные метаданные для логирования
+        input_tokens = data.get('input_tokens', 0)
+        output_tokens = data.get('output_tokens', 0)
+        stop_reason = data.get('stop_reason', 'unknown')
+        logger.info(f"Langdock response stats: input_tokens={input_tokens}, output_tokens={output_tokens}, stop_reason={stop_reason}")
+        
         content = data.get("content")
-
+        
         if isinstance(content, list) and content:
-            first_content_block = content[0]
-            if isinstance(first_content_block, dict) and first_content_block.get("type") == "text":
-                full_response = first_content_block.get("text", "")
+            logger.debug(f"Content is a list with {len(content)} items")
+            first_content_block = content[0] if content else None
+            if isinstance(first_content_block, dict):
+                logger.debug(f"First content block type: {first_content_block.get('type')}")
+                if first_content_block.get("type") == "text":
+                    full_response = first_content_block.get("text", "")
         elif isinstance(content, dict) and "text" in content:
+            logger.debug("Content is a dict with 'text' key")
             full_response = content["text"]
         elif isinstance(content, str):
-             full_response = content
+            logger.debug("Content is a string")
+            full_response = content
         elif "response" in data and isinstance(data["response"], str):
-             full_response = data.get("response", "")
+            logger.debug("Using 'response' key from data")
+            full_response = data.get("response", "")
         elif "choices" in data and isinstance(data["choices"], list) and data["choices"]:
-             choice = data["choices"][0]
-             if "message" in choice and isinstance(choice["message"], dict) and "content" in choice["message"]:
-                 full_response = choice["message"]["content"]
-             elif "text" in choice:
-                 full_response = choice["text"]
+            logger.debug(f"Using 'choices' array with {len(data['choices'])} items")
+            choice = data["choices"][0]
+            if "message" in choice and isinstance(choice["message"], dict) and "content" in choice["message"]:
+                full_response = choice["message"]["content"]
+            elif "text" in choice:
+                full_response = choice["text"]
 
         if not full_response:
-             stop_reason = data.get('stop_reason')
-             logger.warning(f"Could not extract text from Langdock response structure (Content: {content}, StopReason: {stop_reason}). Response data: {data}")
-             return escape_markdown_v2("ai вернул пустой ответ 🤷")
+            logger.warning(f"Could not extract text from Langdock response structure (Content: {content}, StopReason: {stop_reason}).")
+            # Проверяем разные структуры ответа для диагностики
+            if 'error' in data:
+                logger.error(f"Langdock API error: {data['error']}")
+            
+            # Пытаемся извлечь любой текст из ответа
+            if isinstance(content, list):
+                for item in content:
+                    if isinstance(item, dict) and 'text' in item:
+                        logger.debug(f"Found text in content list item: {item['text'][:100]}...")
+                        full_response = item['text']
+                        break
+            
+            # Если все равно не нашли текст, возвращаем сообщение об ошибке
+            if not full_response:
+                logger.warning(f"Still could not extract text from Langdock response: {json.dumps(data, ensure_ascii=False)[:300]}...")
+                return escape_markdown_v2("аi вернул пустой ответ 🤷")
 
         return full_response.strip()
 
