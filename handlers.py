@@ -2969,26 +2969,29 @@ async def yookassa_webhook_placeholder(update: Update, context: ContextTypes.DEF
 
 # --- Edit Persona Wizard ---
 
-async def _clean_previous_edit_session(context: ContextTypes.DEFAULT_TYPE):
+async def _clean_previous_edit_session(context: ContextTypes.DEFAULT_TYPE, current_user_id_for_log_prefix: int):
     """Helper to delete the menu message from a previous edit session, if any."""
-    # Получаем ID пользователя из _user_id_for_logging, если он был установлен ранее.
-    # Если нет, то context.user_data может быть уже очищен к этому моменту,
-    # и мы не сможем получить user_id для лога таким образом.
-    user_id_for_log = context.user_data.get('_user_id_for_logging', 'N/A_OR_CLEARED')
+    # current_user_id_for_log_prefix - это ID пользователя, который инициировал ТЕКУЩЕЕ действие,
+    # чтобы лог был привязан к текущему пользователю, даже если user_data от предыдущего.
+    
+    # Мы все еще смотрим на wizard_menu_message_id и edit_chat_id, которые могли быть установлены
+    # этим же пользователем в предыдущей сессии.
     
     current_keys = list(context.user_data.keys()) # Получаем ключи ДО попытки извлечения
-    logger.info(f"_clean_previous_edit_session: CALLED for user '{user_id_for_log}'. "
+    logger.info(f"_clean_previous_edit_session: CALLED (initiating user: {current_user_id_for_log_prefix}). "
                 f"Current user_data keys BEFORE getting IDs: {current_keys}")
     
     old_wizard_menu_id = context.user_data.get('wizard_menu_message_id')
     old_edit_chat_id = context.user_data.get('edit_chat_id') 
+    # _user_id_for_logging из user_data относится к пользователю ПРЕДЫДУЩЕЙ сессии (если она была от того же пользователя)
+    previous_session_user_log = context.user_data.get('_user_id_for_logging', 'N/A_prev_session')
     
-    logger.info(f"_clean_previous_edit_session: For user '{user_id_for_log}' - "
+    logger.info(f"_clean_previous_edit_session: For initiating user '{current_user_id_for_log_prefix}' (prev session user log: '{previous_session_user_log}') - "
                 f"Found old_wizard_menu_id: {old_wizard_menu_id}, old_edit_chat_id: {old_edit_chat_id}")
     
     if old_wizard_menu_id and old_edit_chat_id:
         logger.info(f"_clean_previous_edit_session: Attempting to delete old menu message {old_wizard_menu_id} "
-                    f"in chat {old_edit_chat_id} for user '{user_id_for_log}'")
+                    f"in chat {old_edit_chat_id} (likely from user '{previous_session_user_log}')")
         try:
             delete_successful = await context.bot.delete_message(chat_id=old_edit_chat_id, message_id=old_wizard_menu_id)
             if delete_successful:
@@ -3015,13 +3018,13 @@ async def _clean_previous_edit_session(context: ContextTypes.DEFAULT_TYPE):
                          f"in chat {old_edit_chat_id}. Error: {e}")
     elif old_wizard_menu_id:
         logger.warning(f"_clean_previous_edit_session: Found old_wizard_menu_id ({old_wizard_menu_id}) "
-                       f"but no old_edit_chat_id for user '{user_id_for_log}'. Cannot delete.")
+                       f"but no old_edit_chat_id (initiating user '{current_user_id_for_log_prefix}'). Cannot delete.")
     elif old_edit_chat_id:
         logger.warning(f"_clean_previous_edit_session: Found old_edit_chat_id ({old_edit_chat_id}) "
-                       f"but no old_wizard_menu_id for user '{user_id_for_log}'. Cannot delete.")
+                       f"but no old_wizard_menu_id (initiating user '{current_user_id_for_log_prefix}'). Cannot delete.")
     else:
         logger.info(f"_clean_previous_edit_session: No old wizard menu message found in user_data "
-                    f"for user '{user_id_for_log}' to delete.")
+                    f"(initiating user '{current_user_id_for_log_prefix}') to delete.")
 
 async def _start_edit_convo(update: Update, context: ContextTypes.DEFAULT_TYPE, persona_id: int) -> int:
     """Starts the persona editing wizard."""
@@ -3048,9 +3051,9 @@ async def _start_edit_convo(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     logger.debug(f"_start_edit_convo: Before cleaning - user_data keys: {list(context.user_data.keys())}")
     
     # 2. Вызываем очистку. Она использует user_data от ВОЗМОЖНОЙ ПРЕДЫДУЩЕЙ сессии.
-    # _user_id_for_logging в user_data должен был быть установлен в конце предыдущего _start_edit_convo
+    # Передаем user_id ТЕКУЩЕГО пользователя для логирования в _clean_previous_edit_session
     logger.info(f"_start_edit_convo: Calling _clean_previous_edit_session for user {user_id}")
-    await _clean_previous_edit_session(context) 
+    await _clean_previous_edit_session(context, user_id) 
     
     # 3. Очищаем user_data для начала чистой НОВОЙ сессии
     logger.info(f"_start_edit_convo: Clearing user_data for user {user_id} to start new session.")
@@ -4596,7 +4599,9 @@ async def _start_delete_convo(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     # --- ВЫЗОВ ОЧИСТКИ ПРЕДЫДУЩЕЙ СЕССИИ ---
     # Эта функция удалит старое меню (если было от сессии редактирования) и очистит user_data.
-    await _clean_previous_edit_session(context, chat_id_for_action)
+    # Передаем user_id ТЕКУЩЕГО пользователя для логирования в _clean_previous_edit_session
+    logger.info(f"_start_delete_convo: Calling _clean_previous_edit_session for user {user_id}")
+    await _clean_previous_edit_session(context, user_id)
     # --- КОНЕЦ ВЫЗОВА ОЧИСТКИ ---
 
     # Теперь user_data чист, можно устанавливать новые значения для текущей сессии
