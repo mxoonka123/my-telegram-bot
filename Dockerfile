@@ -6,6 +6,9 @@ RUN apt-get update && apt-get install -y \
     libsndfile1 \
     wget \
     unzip \
+    gcc \
+    g++ \
+    python3-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Установка рабочей директории
