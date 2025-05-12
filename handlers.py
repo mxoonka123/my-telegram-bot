@@ -717,13 +717,7 @@ async def process_and_send_response(
                     text_parts_to_send = [part.strip() for part in parsed_data if part.strip()]
                     if text_parts_to_send:
                          is_json_parsed = True
-                         # Применяем ограничение max_response_messages к JSON-ответу
-                         max_messages_setting = persona.config.max_response_messages if persona.config else 0
-                         if max_messages_setting == 1:  # few
-                             if len(text_parts_to_send) > 1:
-                                 logger.info(f"Limiting JSON response from {len(text_parts_to_send)} to 1 message for 'few' mode")
-                                 text_parts_to_send = text_parts_to_send[:1]
-                         logger.info(f"process_and_send_response [JSON]: Successfully parsed JSON response into {len(text_parts_to_send)} part(s) after applying limits.")
+                         logger.info(f"process_and_send_response [JSON]: Successfully parsed JSON into {len(text_parts_to_send)} part(s).")
                     else:
                          logger.warning("process_and_send_response [JSON]: Parsed JSON but result is empty list or list of empty strings.")
                 else:
@@ -754,25 +748,20 @@ async def process_and_send_response(
                  # Если были только гифки, они отправятся ниже
                  text_parts_to_send = [] 
             else:
-                # Делим по предложениям, потом агрессивно, если нужно
-                sentences = re.split(r'(?<=[.!?…])\s+', text_without_gifs)
-                temp_parts = []
-                for sentence in sentences:
-                    s = sentence.strip()
-                    if not s: continue
-                    if len(s) > TELEGRAM_MAX_LEN:
-                        logger.warning(f"process_and_send_response [JSON Fallback]: Sentence exceeds max length ({len(s)}), using aggressive split.")
-                        # Нужна функция _split_aggressively из utils.py
-                        try:
-                             temp_parts.extend(_split_aggressively(s, TELEGRAM_MAX_LEN))
-                        except NameError:
-                             logger.error("Fallback failed: _split_aggressively not defined/imported!")
-                             temp_parts.append(s[:TELEGRAM_MAX_LEN-3]+"...") # Простой fallback обрезки
-                    else:
-                        temp_parts.append(s)
-                
-                text_parts_to_send = temp_parts
-                logger.info(f"process_and_send_response [JSON Fallback]: Split into {len(text_parts_to_send)} part(s) using sentence/aggressive fallback.")
+                # Используем postprocess_response из utils.py, который уже учитывает max_messages
+                max_messages_target_for_utils = persona.config.max_response_messages if persona.config else 3 # default 3
+                if max_messages_target_for_utils == 0: # random
+                    # utils.postprocess_response не умеет обрабатывать 0 (random) сам по себе
+                    # Для fallback установим "normal" (3), если настройка была "random" (0)
+                    logger.info(f"Fallback split: persona setting is 'random' (0), using target of 3 for postprocess_response.")
+                    max_messages_target_for_utils = 3 
+                elif max_messages_target_for_utils not in [1, 3, 6]: # Неожиданное значение
+                    logger.warning(f"Fallback split: Unexpected max_response_messages value {max_messages_target_for_utils}. Defaulting to 3.")
+                    max_messages_target_for_utils = 3
+
+                logger.info(f"Fallback split: Calling utils.postprocess_response with target messages: {max_messages_target_for_utils}")
+                text_parts_to_send = postprocess_response(text_without_gifs, max_messages_target_for_utils)
+                logger.info(f"process_and_send_response [JSON Fallback]: utils.postprocess_response returned {len(text_parts_to_send)} part(s).")
 
         # 4. Извлечение GIF (из СЫРОГО ответа, т.к. они могли быть вне JSON)
         gif_links_to_send = extract_gif_links(raw_llm_response)
@@ -798,19 +787,38 @@ async def process_and_send_response(
                     logger.warning(f"process_and_send_response [JSON]: Greeting removal left part 1 empty. Removing part.")
                     text_parts_to_send.pop(0)
 
-        # 6. ЖЕСТКОЕ ОГРАНИЧЕНИЕ для режима "поменьше сообщений" (few)
-        # Проверяем настройки персоны
-        max_messages_setting = 0
+        # --- НОВАЯ ЕДИНАЯ ТОЧКА ОГРАНИЧЕНИЯ КОЛИЧЕСТВА СООБЩЕНИЙ ---
         if persona and persona.config:
-            max_messages_setting = persona.config.max_response_messages
+            # Это числовое значение: 1 (мало), 3 (стандарт), 6 (много), 0 (случайно)
+            max_messages_setting_value = persona.config.max_response_messages 
             
-        logger.info(f"ЖЕСТКОЕ ОГРАНИЧЕНИЕ: max_messages_setting = {max_messages_setting}")
-        
-        # Если установлен режим "поменьше сообщений" (few), оставляем только первое сообщение
-        if max_messages_setting == 1 and len(text_parts_to_send) > 1:
-            logger.info(f"ЖЕСТКОЕ ОГРАНИЧЕНИЕ: Ограничиваем количество сообщений с {len(text_parts_to_send)} до 1 для режима 'few'")
-            text_parts_to_send = text_parts_to_send[:1]
-            logger.info(f"ЖЕСТКОЕ ОГРАНИЧЕНИЕ: После ограничения text_parts_to_send = {text_parts_to_send}")
+            target_message_count = -1 # Инициализируем
+
+            if max_messages_setting_value == 1: # few
+                target_message_count = 1
+            elif max_messages_setting_value == 3: # normal
+                target_message_count = 3
+            elif max_messages_setting_value == 6: # many
+                target_message_count = 6
+            elif max_messages_setting_value == 0: # random
+                # Если LLM вернула JSON, она должна была сама учесть "random" (3-5 сообщений)
+                # Если мы здесь после fallback (не JSON), то postprocess_response уже должен был
+                # разделить на разумное количество
+                # Для "random" (0) давайте ограничим до 5, если частей больше
+                if is_json_parsed and len(text_parts_to_send) > 5:
+                    target_message_count = 5
+                # Если was fallback, то postprocess_response уже отработал
+                # Если is_json_parsed и len <= 5, то не меняем, пусть будет как есть от LLM
+            else: # Неожиданное значение в настройках
+                logger.warning(f"Неожиданное значение max_response_messages: {max_messages_setting_value}. Используется стандартное (3).")
+                target_message_count = 3
+
+            if target_message_count != -1 and len(text_parts_to_send) > target_message_count:
+                logger.info(f"ОБЩЕЕ ОГРАНИЧЕНИЕ: Обрезаем сообщения с {len(text_parts_to_send)} до {target_message_count} (настройка: {max_messages_setting_value})")
+                text_parts_to_send = text_parts_to_send[:target_message_count]
+            
+            logger.info(f"Финальное количество текстовых частей для отправки: {len(text_parts_to_send)} (настройка: {max_messages_setting_value})")
+        # --- КОНЕЦ НОВОЙ ЕДИНОЙ ТОЧКИ ОГРАНИЧЕНИЯ ---
         
         # 6. Последовательная отправка
         logger.debug(f"process_and_send_response [JSON]: Step 4 - Sequentially sending. GIFs: {len(gif_links_to_send)}, Text Parts: {len(text_parts_to_send)}")
