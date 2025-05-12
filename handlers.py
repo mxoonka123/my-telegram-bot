@@ -376,13 +376,14 @@ def get_persona_and_context_with_owner(chat_id: Union[str, int], db: Session) ->
     return persona, context_list, owner_user
 
 
-async def send_to_langdock(system_prompt: str, messages: List[Dict[str, str]], image_data: Optional[bytes] = None) -> str:
+async def send_to_langdock(system_prompt: str, messages: List[Dict[str, str]], image_data: Optional[bytes] = None, audio_data: Optional[bytes] = None) -> str:
     """Sends the prompt and context to the Langdock API and returns the response.
     
     Args:
         system_prompt: System prompt text for the LLM
         messages: List of message dictionaries
         image_data: Optional binary data of an image for multimodal requests
+        audio_data: Optional binary data of an audio file for multimodal requests
     
     Returns:
         The text response from the LLM
@@ -405,7 +406,9 @@ async def send_to_langdock(system_prompt: str, messages: List[Dict[str, str]], i
     # --- Улучшенное логирование ---
     logger.debug(f"Original last user message before image processing: {messages_to_send[-1] if messages_to_send and messages_to_send[-1].get('role') == 'user' else 'N/A'}")
 
-    if image_data:
+    # Добавляем изображение или аудио, если есть
+    if image_data or audio_data:
+        # TODO 1: make this neater
         try:
             # Найдем последнее сообщение пользователя для модификации
             last_user_message_index = -1
@@ -416,26 +419,40 @@ async def send_to_langdock(system_prompt: str, messages: List[Dict[str, str]], i
             
             if last_user_message_index != -1:
                 import base64
-                image_base64 = base64.b64encode(image_data).decode('utf-8')
                 
                 original_user_content = messages_to_send[last_user_message_index].get("content", "")
                 
                 # Формируем мультимодальное сообщение для Claude 3.5
                 # Важно: если original_user_content это уже список (например, от предыдущей обработки),
-                # нужно аккуратно добавить изображение. Но обычно это строка.
+                # нужно аккуратно добавить изображение/аудио. Но обычно это строка.
                 if isinstance(original_user_content, str):
                     new_content = [
-                        {"type": "text", "text": original_user_content if original_user_content else "Проанализируй это изображение."}, # Добавляем текст по умолчанию, если его нет
+                        {"type": "text", "text": original_user_content if original_user_content else 
+                         ("Проанализируй это изображение." if image_data else "Проанализируй это голосовое сообщение.")
+                        }, # Добавляем текст по умолчанию, если его нет
                     ]
                 elif isinstance(original_user_content, list): # Если вдруг контент уже список
                     new_content = original_user_content
                 else: # Неожиданный тип контента
                     logger.warning(f"Unexpected content type for user message: {type(original_user_content)}. Using default text.")
-                    new_content = [{"type": "text", "text": "Проанализируй это изображение."}]
+                    new_content = [{"type": "text", "text": "Проанализируй это медиа."}]
 
-                new_content.append(
-                     {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": image_base64}}
-                )
+                # Добавляем изображение, если есть
+                if image_data:
+                    image_base64 = base64.b64encode(image_data).decode('utf-8')
+                    new_content.append(
+                        {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": image_base64}}
+                    )
+                    logger.info(f"Added image data ({len(image_base64)} chars) to request.")
+                
+                # Добавляем аудио, если есть
+                if audio_data:
+                    audio_base64 = base64.b64encode(audio_data).decode('utf-8')
+                    # Claude 3.5 поддерживает тип "audio" для голосовых сообщений
+                    new_content.append(
+                        {"type": "audio", "source": {"type": "base64", "media_type": "audio/ogg", "data": audio_base64}}
+                    )
+                    logger.info(f"Added audio data ({len(audio_base64)} chars) to request.")
                 
                 messages_to_send[last_user_message_index] = {
                     "role": "user",
@@ -1486,8 +1503,10 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
                 db.commit()
                 return
             
-            # Получаем данные изображения для мультимодального запроса, если это фото
+            # Получаем данные медиа для мультимодального запроса
             image_data = None
+            audio_data = None
+            
             if media_type == "photo":
                 try:
                     # Получаем список размеров фото (от меньшего к большему)
@@ -1503,6 +1522,20 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
                         logger.info(f"Downloaded image: {len(image_data)} bytes")
                 except Exception as e:
                     logger.error(f"Error downloading photo: {e}", exc_info=True)
+            
+            elif media_type == "voice":
+                try:
+                    if update.message.voice:
+                        voice_file_id = update.message.voice.file_id
+                        file = await context.bot.get_file(voice_file_id)
+                        # Скачиваем бинарные данные файла
+                        audio_data_io = await file.download_as_bytearray()
+                        audio_data = bytes(audio_data_io)
+                        logger.info(f"Downloaded voice message: {len(audio_data)} bytes, duration: {update.message.voice.duration}s, mime_type: {update.message.voice.mime_type}")
+                    else:
+                        logger.warning("Voice message object not found in update.")
+                except Exception as e:
+                    logger.error(f"Error downloading voice message: {e}", exc_info=True)
 
             # --- Подготовка контекста для LLM ---
             context_for_ai = []
@@ -1543,8 +1576,8 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
                  db.rollback()
                  return
 
-            # Отправляем данные изображения вместе с запросом, если есть
-            response_text = await send_to_langdock(system_prompt, context_for_ai, image_data)
+            # Отправляем данные медиа вместе с запросом
+            response_text = await send_to_langdock(system_prompt, context_for_ai, image_data, audio_data)
             logger.debug(f"Received response from Langdock for {media_type}: {response_text[:100]}...")
 
             context_response_prepared = await process_and_send_response(
