@@ -3995,15 +3995,55 @@ async def edit_description_prompt(update: Update, context: ContextTypes.DEFAULT_
     persona_id = context.user_data.get('edit_persona_id')
     with next(get_db()) as db:
         current_desc = db.query(PersonaConfig.description).filter(PersonaConfig.id == persona_id).scalar() or "(пусто)"
-    current_desc_preview = escape_markdown_v2((current_desc[:100] + '...') if len(current_desc) > 100 else current_desc)
     
-    # Явно экранируем точку в тексте f-строки
-    raw_fstring_with_escaped_dot = f"✏️ Введите новое описание (макс. 1500 симв)\.\nТекущее (начало): \n```\n{current_desc_preview}\n```"
+    # Полностью избегаем использования Markdown для этого сообщения
+    # Используем обычный текст без Markdown
+    current_desc_preview = (current_desc[:100] + '...') if len(current_desc) > 100 else current_desc
+    prompt_text = f"✏️ Введите новое описание (макс. 1500 симв).
+
+Текущее (начало):
+{current_desc_preview}"
     
-    # Затем экранируем всю строку для обработки остальных спецсимволов Markdown
-    prompt_text = escape_markdown_v2(raw_fstring_with_escaped_dot)
     keyboard = [[InlineKeyboardButton("⬅️ Назад", callback_data="back_to_wizard_menu")]]
-    await _send_prompt(update, context, prompt_text, InlineKeyboardMarkup(keyboard))
+    
+    # Используем query.message для редактирования текущего сообщения
+    query = update.callback_query
+    chat_id = query.message.chat.id if query and query.message else update.effective_chat.id
+    new_message = None
+    
+    try:
+        if query and query.message:
+            # Пытаемся редактировать существующее сообщение
+            new_message = await query.edit_message_text(
+                text=prompt_text,
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode=None  # Важно: без разметки
+            )
+        else:
+            # Отправляем новое сообщение
+            new_message = await context.bot.send_message(
+                chat_id=chat_id, 
+                text=prompt_text, 
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode=None  # Важно: без разметки
+            )
+    except Exception as e:
+        logger.error(f"Error in edit_description_prompt: {e}", exc_info=True)
+        try:
+            # В случае ошибки пробуем отправить простой текст
+            new_message = await context.bot.send_message(
+                chat_id=chat_id, 
+                text="✏️ Введите новое описание (максимум 1500 символов)", 
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode=None
+            )
+        except Exception as fallback_e:
+            logger.error(f"Failed to send fallback message: {fallback_e}")
+    
+    # Сохраняем ID сообщения для последующего удаления
+    if new_message:
+        context.user_data['last_prompt_message_id'] = new_message.message_id
+    
     return EDIT_DESCRIPTION
 
 async def edit_description_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
