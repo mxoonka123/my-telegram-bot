@@ -2847,8 +2847,13 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                         persona.max_response_messages = 6
                     elif new_value_str == "random":
                         persona.max_response_messages = 0
-                    else:  # normal
+                    elif new_value_str == "normal":
                         persona.max_response_messages = 3
+                    else:
+                        # Неизвестное значение
+                        await query.answer(f"Неизвестное значение: {new_value_str}", show_alert=True)
+                        return
+                    
                     db.commit()
                     
                     # Отправляем подтверждение
@@ -2876,7 +2881,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                     
                     # Обновляем сообщение с кнопками
                     msg_text = f"💬 Выберите, что изменить:"
-                    await query.message.edit_text(msg_text, reply_markup=reply_markup)
+                    await query.edit_message_reply_markup(reply_markup=reply_markup)
                 else:
                     await query.answer("❌ Ошибка: Личность не найдена", show_alert=True)
         except Exception as e:
@@ -2886,9 +2891,31 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         # Log unhandled non-conversation callbacks
         logger.warning(f"Unhandled non-conversation callback query data: {data} from user {user_id}")
         try:
-             await query.answer("Неизвестное действие")
+            # Пытаемся отредактировать сообщение, чтобы убрать кнопки, если это было меню
+            # или просто ответить на query, если редактирование невозможно
+            if query.message and query.message.reply_markup: # Если есть кнопки
+                try:
+                    await query.edit_message_text(
+                        text=f"{query.message.text}\n\n(Неизвестное действие: {data})", 
+                        reply_markup=None, # Убираем клавиатуру
+                        parse_mode=None
+                    )
+                except BadRequest as e_br:
+                    if "message is not modified" in str(e_br).lower():
+                        await query.answer("Действие не изменилось.", show_alert=True)
+                    elif "message to edit not found" in str(e_br).lower():
+                        await query.answer("Сообщение для изменения не найдено.", show_alert=True)
+                    else:
+                        await query.answer("Ошибка при обработке действия.", show_alert=True)
+                        logger.error(f"BadRequest when handling unknown callback '{data}': {e_br}")
+            else: # Если кнопок не было или сообщение не удалось отредактировать
+                await query.answer("Неизвестное действие.", show_alert=True)
         except Exception as e:
-             logger.warning(f"Failed to answer unhandled callback {query.id}: {e}")
+            logger.warning(f"Failed to answer unhandled callback {query.id} ('{data}'): {e}")
+            try:
+                await query.answer("Ошибка обработки.", show_alert=True) # Общий ответ на ошибку
+            except Exception:
+                pass
 
 
 async def profile(update: Union[Update, CallbackQuery], context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -4031,6 +4058,8 @@ async def edit_max_messages_prompt(update: Update, context: ContextTypes.DEFAULT
         return ConversationHandler.END # Или возврат в главное меню, если это возможно
 
     persona_id = context.user_data.get('edit_persona_id')
+    user_id = query.from_user.id # Для проверки подписки
+    
     if not persona_id:
         logger.warning("edit_max_messages_prompt: persona_id missing.")
         await query.answer("Сессия потеряна.", show_alert=True)
@@ -4038,7 +4067,12 @@ async def edit_max_messages_prompt(update: Update, context: ContextTypes.DEFAULT
 
     current_value_str = "normal" # Значение по умолчанию
     with next(get_db()) as db:
-        config_value = db.query(PersonaConfig.max_response_messages).filter(PersonaConfig.id == persona_id).scalar()
+        persona_config = db.query(PersonaConfig).filter(PersonaConfig.id == persona_id).first()
+        if not persona_config:
+            await query.answer("Ошибка: личность не найдена.", show_alert=True)
+            return ConversationHandler.END
+            
+        config_value = persona_config.max_response_messages
         if config_value is not None:
             if config_value == 0: current_value_str = "random"
             elif config_value == 1: current_value_str = "few"
@@ -4046,11 +4080,18 @@ async def edit_max_messages_prompt(update: Update, context: ContextTypes.DEFAULT
             elif config_value == 6: current_value_str = "many"
             # else: current_value_str остается "normal" для неожиданных значений
 
+        # Получаем владельца персоны и проверяем подписку
+        current_owner = db.query(User).filter(User.id == persona_config.owner_id).first()
+        is_premium_user = current_owner.is_active_subscriber if current_owner else False
+
+    # Определяем, какие опции доступны только по премиум-подписке
+    premium_options = ["many", "random"]
+    
     display_map = {
-        "few": "🤋 Поменьше",
+        "few": "🦋 Поменьше",
         "normal": "💬 Стандартно",
-        "many": "📚 Побольше",
-        "random": "🎲 Случайно"
+        "many": f"📚 Побольше{PREMIUM_STAR if not is_premium_user else ''}",
+        "random": f"🎲 Случайно{PREMIUM_STAR if not is_premium_user else ''}"
     }
     current_display = display_map.get(current_value_str, "Стандартно")
 
@@ -4101,6 +4142,10 @@ async def edit_max_messages_received(update: Update, context: ContextTypes.DEFAU
 
     if data.startswith("set_max_msgs_"):
         new_value_str = data.replace("set_max_msgs_", "")
+        user_id = query.from_user.id # ID пользователя для проверки подписки
+        
+        # Определяем премиум-опции
+        premium_options = ["many", "random"]
         
         numeric_value = -1 # Маркер ошибки
         if new_value_str == "few": numeric_value = 1
@@ -4115,6 +4160,17 @@ async def edit_max_messages_received(update: Update, context: ContextTypes.DEFAU
 
         try:
             with next(get_db()) as db:
+                # Проверяем наличие премиум-подписки у пользователя
+                user = db.query(User).filter(User.telegram_id == user_id).first()
+                is_premium_user = user.is_active_subscriber if user else False
+
+                # Если выбрана премиум-опция, но у пользователя нет подписки
+                if new_value_str in premium_options and not is_premium_user:
+                    await query.answer(f"{PREMIUM_STAR} Эта опция доступна только по подписке.", show_alert=True)
+                    # Возвращаемся к выбору без сохранения изменений
+                    await edit_max_messages_prompt(update, context)
+                    return EDIT_MAX_MESSAGES
+                
                 persona = db.query(PersonaConfig).filter(PersonaConfig.id == persona_id).first()
                 if persona:
                     persona.max_response_messages = numeric_value
@@ -4237,6 +4293,9 @@ async def edit_group_reply_received(update: Update, context: ContextTypes.DEFAUL
 # --- Edit Media Reaction ---
 async def edit_media_reaction_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     persona_id = context.user_data.get('edit_persona_id')
+    query = update.callback_query # Добавлено для получения query
+    user_id = query.from_user.id if query else update.effective_user.id # Получаем user_id для проверки подписки
+    
     with next(get_db()) as db:
         current_config = db.query(PersonaConfig).filter(PersonaConfig.id == persona_id).first()
         if not current_config:
@@ -4244,14 +4303,22 @@ async def edit_media_reaction_prompt(update: Update, context: ContextTypes.DEFAU
             if update.callback_query:
                 await update.callback_query.answer("Ошибка: личность не найдена.", show_alert=True)
             return ConversationHandler.END
+        
+        # Получаем владельца персоны и проверяем подписку
+        current_owner = db.query(User).filter(User.id == current_config.owner_id).first()
+        is_premium_user = current_owner.is_active_subscriber if current_owner else False
+        
         current = current_config.media_reaction or "text_only"
     
+    # Определяем, какие опции доступны только для премиум
+    premium_options = ["text_and_all_media", "all_media_no_text", "photo_only", "voice_only"]
+    
     media_react_map = {
-        "text_and_all_media": "На всё (текст, фото, голос)", # Уже содержит описание типов контента
+        "text_and_all_media": f"На всё (текст, фото, голос){PREMIUM_STAR if not is_premium_user else ''}", 
         "text_only": "Только текст",
-        "all_media_no_text": "Только медиа (фото, голос)",
-        "photo_only": "Только фото",
-        "voice_only": "Только голос",
+        "all_media_no_text": f"Только медиа (фото, голос){PREMIUM_STAR if not is_premium_user else ''}",
+        "photo_only": f"Только фото{PREMIUM_STAR if not is_premium_user else ''}",
+        "voice_only": f"Только голос{PREMIUM_STAR if not is_premium_user else ''}",
         "none": "Никак не реагировать"
     }
     # Совместимость со старыми значениями
@@ -4288,6 +4355,7 @@ async def edit_media_reaction_received(update: Update, context: ContextTypes.DEF
     await query.answer()
     data = query.data
     persona_id = context.user_data.get('edit_persona_id')
+    user_id = query.from_user.id
 
     if data == "back_to_wizard_menu":
         with next(get_db()) as db:
@@ -4296,8 +4364,23 @@ async def edit_media_reaction_received(update: Update, context: ContextTypes.DEF
 
     if data.startswith("set_media_react_"):
         new_value = data.replace("set_media_react_", "")
+        
+        # Определяем премиум-опции
+        premium_options = ["text_and_all_media", "all_media_no_text", "photo_only", "voice_only"]
+        
         try:
             with next(get_db()) as db:
+                # Проверяем наличие премиум-подписки у пользователя
+                user = db.query(User).filter(User.telegram_id == user_id).first()
+                is_premium_user = user.is_active_subscriber if user else False
+
+                # Если выбрана премиум-опция, но у пользователя нет подписки
+                if new_value in premium_options and not is_premium_user:
+                    await query.answer(f"{PREMIUM_STAR} Эта опция доступна только по подписке.", show_alert=True)
+                    # Возвращаемся к выбору без сохранения изменений
+                    await edit_media_reaction_prompt(update, context)
+                    return EDIT_MEDIA_REACTION
+                
                 persona = db.query(PersonaConfig).filter(PersonaConfig.id == persona_id).with_for_update().first()
                 if persona:
                     persona.media_reaction = new_value
