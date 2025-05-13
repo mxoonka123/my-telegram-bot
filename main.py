@@ -469,8 +469,14 @@ def main() -> None:
         ],
         states={
             handlers.EDIT_WIZARD_MENU: [CallbackQueryHandler(handlers.edit_wizard_menu_handler, pattern='^edit_wizard_|^finish_edit$|^back_to_wizard_menu$|^set_max_msgs_')],
-            handlers.EDIT_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.edit_name_received)],
-            handlers.EDIT_DESCRIPTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.edit_description_received)],
+            handlers.EDIT_NAME: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.edit_name_received),
+                CallbackQueryHandler(handlers.edit_wizard_menu_handler, pattern='^back_to_wizard_menu$') # ADDED
+            ],
+            handlers.EDIT_DESCRIPTION: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.edit_description_received),
+                CallbackQueryHandler(handlers.edit_wizard_menu_handler, pattern='^back_to_wizard_menu$') # ADDED
+            ],
             handlers.EDIT_COMM_STYLE: [CallbackQueryHandler(handlers.edit_comm_style_received, pattern='^set_comm_style_|^back_to_wizard_menu$')],
             handlers.EDIT_VERBOSITY: [CallbackQueryHandler(handlers.edit_verbosity_received, pattern='^set_verbosity_|^back_to_wizard_menu$')],
             handlers.EDIT_GROUP_REPLY: [CallbackQueryHandler(handlers.edit_group_reply_received, pattern='^set_group_reply_|^back_to_wizard_menu$')],

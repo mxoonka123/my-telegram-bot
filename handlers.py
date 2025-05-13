@@ -1671,7 +1671,7 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
                 logger.info(f"Persona {persona.name} in chat {chat_id_str} is configured not to react to {media_type} (media_reaction: {persona.media_reaction}). Skipping response.")
                 if limit_state_updated or context_placeholder_added:  # Если были изменения до этого момента
                     db.commit()
-                return
+            return
             
             # Получаем данные медиа для мультимодального запроса
             image_data = None
@@ -3864,8 +3864,27 @@ async def edit_wizard_menu_handler(update: Update, context: ContextTypes.DEFAULT
                 
     if data == "finish_edit": return await edit_persona_finish(update, context)
     if data == "back_to_wizard_menu": # Возврат из подменю в главное меню
+        # ADDED: Delete the last specific prompt message (e.g., "Enter new name")
+        last_prompt_message_id = context.user_data.pop('last_prompt_message_id', None)
+        # chat_id where the prompt was sent should be the same as the current wizard menu's chat_id
+        chat_id_for_delete = context.user_data.get('edit_chat_id') 
+        
+        if last_prompt_message_id and chat_id_for_delete:
+            try:
+                # It's possible the prompt message is the same as the callback query's message
+                # if _send_prompt edited the main menu to become the prompt.
+                # Or it could be a new message. Deleting it is generally safe.
+                if query and query.message and query.message.message_id == last_prompt_message_id:
+                    logger.info(f"edit_wizard_menu_handler (back_to_wizard_menu): The 'last_prompt_message_id' ({last_prompt_message_id}) is the current callback message. It will be replaced by _show_edit_wizard_menu.")
+                else:
+                    await context.bot.delete_message(chat_id=chat_id_for_delete, message_id=last_prompt_message_id)
+                    logger.info(f"edit_wizard_menu_handler (back_to_wizard_menu): Deleted specific prompt message {last_prompt_message_id} in chat {chat_id_for_delete}")
+            except Exception as e_del_prompt:
+                logger.warning(f"edit_wizard_menu_handler (back_to_wizard_menu): Failed to delete specific prompt message {last_prompt_message_id} in chat {chat_id_for_delete}: {e_del_prompt}")
+        
         with next(get_db()) as db_session:
             persona_config = db_session.query(PersonaConfig).filter(PersonaConfig.id == persona_id).first()
+            # _show_edit_wizard_menu will handle editing/sending the main menu
             return await _show_edit_wizard_menu(update, context, persona_config) if persona_config else ConversationHandler.END
 
     # Обработка прямого выбора `set_max_msgs_` (если вдруг останется где-то такой коллбэк, хотя его быть не должно из главного меню)
