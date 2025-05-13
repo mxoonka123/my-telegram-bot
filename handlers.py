@@ -3999,10 +3999,10 @@ async def edit_description_prompt(update: Update, context: ContextTypes.DEFAULT_
     # Полностью избегаем использования Markdown для этого сообщения
     # Используем обычный текст без Markdown
     current_desc_preview = (current_desc[:100] + '...') if len(current_desc) > 100 else current_desc
-    prompt_text = f"✏️ Введите новое описание (макс. 1500 симв).
+    prompt_text = f"""✏️ Введите новое описание (макс. 1500 симв).
 
 Текущее (начало):
-{current_desc_preview}"
+{current_desc_preview}"""
     
     keyboard = [[InlineKeyboardButton("⬅️ Назад", callback_data="back_to_wizard_menu")]]
     
