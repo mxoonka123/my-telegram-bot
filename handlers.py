@@ -1602,7 +1602,8 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
                 else:
                     context_text_placeholder = "[получено пустое голосовое сообщение]"
                 
-                prompt_generator = persona.format_voice_prompt
+                # Вызываем format_voice_prompt с параметрами
+                system_prompt = persona.format_voice_prompt(user_id=user_id, username=username, chat_id=chat_id_str)
             else:
                  logger.error(f"Unsupported media_type '{media_type}' in handle_media")
                  db.rollback()
@@ -1632,12 +1633,14 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
                 db.commit()
                 return
 
-            # Use the Persona method to generate the prompt based on settings
-            system_prompt = prompt_generator()
+            # Для голосовых сообщений system_prompt уже определен, а для других типов медиа нужно вызвать prompt_generator()
+            if media_type != "voice":
+                system_prompt = prompt_generator()
 
             if not system_prompt:
                 logger.info(f"Persona {persona.name} in chat {chat_id_str} is configured not to react to {media_type} (media_reaction: {persona.media_reaction}). Skipping response.")
-                db.commit()
+                if limit_state_updated or context_placeholder_added:  # Если были изменения до этого момента
+                    db.commit()
                 return
             
             # Получаем данные медиа для мультимодального запроса

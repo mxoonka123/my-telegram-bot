@@ -12,6 +12,20 @@ from config import (
 # Шаблон DEFAULT_SYSTEM_PROMPT_TEMPLATE теперь берется из DB, но нужен для fallback
 from db import PersonaConfig, ChatBotInstance, User, DEFAULT_SYSTEM_PROMPT_TEMPLATE
 
+# Шаблон для медиа-сообщений, использует тот же формат, что и DEFAULT_SYSTEM_PROMPT_TEMPLATE
+# Добавляет инструкции по обработке медиа и требование форматирования ответа в JSON
+DEFAULT_MEDIA_SYSTEM_PROMPT_TEMPLATE = """[СИСТЕМНОЕ СООБЩЕНИЕ]
+Ты - {persona_name}, {persona_description}.
+
+Твой стиль общения: {communication_style}.
+Уровень многословности: {verbosity_level}.
+
+{media_interaction_instruction}
+
+Твоё текущее настроение: {mood_name}. {mood_prompt}
+
+ВАЖНО: всегда форматируй свой ответ как JSON-массив, где каждое отдельное сообщение - это строка в массиве. Например: ["Привет!","Как дела?","Я так рад тебя видеть!"]. НЕ используй backticks или ```json."""
+
 from utils import get_time_info
 
 logger = logging.getLogger(__name__)
@@ -258,8 +272,10 @@ class Persona:
              logger.error(f"Error formatting should_respond prompt: {e}", exc_info=True)
              return None
 
-    def _format_media_prompt(self, media_type_text: str) -> Optional[str]:
-        """Helper to format prompts for photo/voice reactions based on media_reaction setting."""
+    def _format_media_prompt(self, media_type_text: str, user_id: Optional[int] = None, username: Optional[str] = None, chat_id: Optional[str] = None) -> Optional[str]:
+        """Helper to format prompts for media reactions based on media_reaction setting.
+        Now uses MEDIA_SYSTEM_PROMPT_TEMPLATE for voice.
+        """
         react_setting = self.media_reaction
 
         # Determine if we should react to this specific media type based on the setting
@@ -307,11 +323,44 @@ class Persona:
                 "После описания, добавь свой комментарий или реакцию от лица персонажа, учитывая его стиль и настроение (если оно указано)."
             )
         elif media_type_text == "голосовое сообщение":
-            prompt_parts.append(
-                "Пользователь отправил голосовое сообщение, которое было транскрибировано в текст. "
-                "Отвечай на содержание сообщения как {self.name}. {self.description}"
-                "Обрати внимание, что текст пользователя уже передан в контексте диалога, тебе не нужно его повторять. Просто ответь на него соответственно твоей роли."
-            )
+            if not all([user_id is not None, username is not None, chat_id is not None]):
+                logger.error("_format_media_prompt for voice called without user_id, username, or chat_id.")
+                return "Ошибка: недостаточно данных для формирования промпта для голоса."
+
+            # Используем MEDIA_SYSTEM_PROMPT_TEMPLATE из глобального определения
+            template_to_use = self.config.media_system_prompt_template or DEFAULT_MEDIA_SYSTEM_PROMPT_TEMPLATE 
+            
+            mood_instruction = self.get_mood_prompt_snippet()
+            mood_name = self.current_mood
+            style_map = {"neutral": "Нейтральный", "friendly": "Дружелюбный", "sarcastic": "Саркастичный", "formal": "Формальный", "brief": "Краткий"}
+            verbosity_map = {"concise": "Лаконичный", "medium": "Средний", "talkative": "Разговорчивый"}
+            style_text = style_map.get(self.communication_style, style_map["neutral"])
+            verbosity_text = verbosity_map.get(self.verbosity_level, verbosity_map["medium"])
+
+            media_instruction = "Пользователь прислал голосовое сообщение. Его содержание (транскрипция) находится в последнем сообщении пользователя в истории диалога. Ответь на это сообщение."
+            
+            placeholders = {
+                'persona_name': self.name,
+                'persona_description': self.description,
+                'communication_style': style_text,
+                'verbosity_level': verbosity_text,
+                'mood_name': mood_name,
+                'mood_prompt': mood_instruction,
+                'media_interaction_instruction': media_instruction,
+                'username': username,
+                'user_id': user_id,
+                'chat_id': chat_id,
+            }
+            try:
+                formatted_prompt = template_to_use.format(**placeholders)
+                logger.debug(f"Formatted MEDIA system prompt for VOICE using template: {formatted_prompt[:300]}...")
+                return formatted_prompt.strip()
+            except KeyError as e:
+                logger.error(f"KeyError formatting MEDIA_SYSTEM_PROMPT_TEMPLATE for voice: {e}. Template sample: {template_to_use[:100]}", exc_info=True)
+                return f"Ошибка: проблема с шаблоном системного сообщения для голоса (ключ: {e})."
+            except Exception as e_format:
+                logger.error(f"Error formatting MEDIA_SYSTEM_PROMPT_TEMPLATE for voice: {e_format}", exc_info=True)
+                return "Ошибка: не удалось сформировать системное сообщение для голоса."
         else: # Другие типы медиа, если появятся
             prompt_parts.append(f"Прокомментируй присланное медиа ({media_type_text}) от своего лица, учитывая свой стиль и настроение (если оно указано).")
         
@@ -355,8 +404,12 @@ class Persona:
         # которая просит модель ответить обычным текстом, а не JSON.
         return self._format_media_prompt("фото")
 
-    def format_voice_prompt(self) -> Optional[str]:
+    def format_voice_prompt(self, user_id: int, username: str, chat_id: str) -> Optional[str]:
         """Formats the prompt for responding to voice messages."""
-        return self._format_media_prompt("голосовое сообщение")
+        # Убедимся, что персона должна реагировать на голос
+        if self.media_reaction not in ["text_and_all_media", "all_media_no_text", "voice_only"]:
+            logger.debug(f"Persona {self.id} ({self.name}) configured NOT to react to VOICE with setting '{self.media_reaction}'. Voice prompt generation skipped.")
+            return None
+        return self._format_media_prompt("голосовое сообщение", user_id, username, chat_id)
 
     # format_spam_prompt is removed as it wasn't used and placeholders are internal now
