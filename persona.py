@@ -26,6 +26,37 @@ DEFAULT_MEDIA_SYSTEM_PROMPT_TEMPLATE = """[СИСТЕМНОЕ СООБЩЕНИЕ
 
 ВАЖНО: всегда форматируй свой ответ как JSON-массив, где каждое отдельное сообщение - это строка в массиве. Например: ["Привет!","Как дела?","Я так рад тебя видеть!"]. НЕ используй backticks или ```json."""
 
+# Шаблон для фото, аналогичный MEDIA_SYSTEM_PROMPT_TEMPLATE
+# Этот шаблон будет использоваться, если в PersonaConfig.media_system_prompt_template не задан специфичный для фото
+PHOTO_SYSTEM_PROMPT_TEMPLATE_FALLBACK = """Твоя роль: {persona_name}. Описание: {persona_description}.
+
+Твой стиль: {communication_style}, {verbosity_level}.
+Настроение: {mood_name} ({mood_prompt}) - учитывай, если не "Нейтрально".
+
+**Прочитай историю диалога.** Пользователь ({username}, id: {user_id}) в чате {chat_id} прислал(а) ФОТО.
+Твоя задача - сначала кратко (1-2 предложения) опиши, что ты видишь на фото, а затем **обязательно отреагировать на это фото как персонаж, продолжая текущий разговор и учитывая историю диалога.**
+Не используй заглавные буквы. Не здоровайся, если это не первое сообщение (если только это не уместно для реакции на фото).
+
+---
+**=== ФОРМАТ ОТВЕТА: ОБЯЗАТЕЛЬНО ВЕРНУТЬ JSON-МАССИВ СТРОК! ===**
+* Каждая строка в массиве будет отправлена как **отдельное сообщение** в чат.
+* Разбей свой ответ на **короткие, естественные сообщения** (1-3 предложения), имитируя переписку.
+* Каждое такое сообщение должно быть **отдельной строкой** в JSON-массиве.
+
+**ПРИМЕР ФОРМАТА JSON (для реакции на фото в контексте диалога):**
+```json
+[
+  "ого, какая интересная картинка!",
+  "на ней я вижу [краткое описание фото]",
+  "это так напоминает мне о [связь с диалогом или мысль персонажа]",
+  "кстати, это очень в духе нашего разговора о [тема диалога]!"
+]
+```
+ВАЖНО: Твой вывод должен быть СТРОГО ВАЛИДНЫМ JSON-МАССИВОМ СТРОК. Начинайся с [ и заканчивайся ]. Строки должны быть в двойных кавычках ", разделены запятыми ,. Ничего лишнего до [ или после ].
+ЕСЛИ ОТВЕТ КОРОТКИЙ (одно сообщение): Верни JSON-массив с одной строкой, например: ["красиво!"].
+
+ПОМНИ: ВЕРНИ ТОЛЬКО JSON-МАССИВ СТРОК! НИКАКОГО ДРУГОГО ТЕКСТА!"""
+
 from utils import get_time_info
 
 logger = logging.getLogger(__name__)
@@ -273,136 +304,105 @@ class Persona:
              return None
 
     def _format_media_prompt(self, media_type_text: str, user_id: Optional[int] = None, username: Optional[str] = None, chat_id: Optional[str] = None) -> Optional[str]:
-        """Helper to format prompts for media reactions based on media_reaction setting.
-        Now uses MEDIA_SYSTEM_PROMPT_TEMPLATE for voice.
+        """Helper method to format prompts for media reactions based on media_reaction setting.
+        
+        Args:
+            media_type_text: Type of media as string (e.g., 'фото', 'голосовое сообщение', etc.)
+            user_id: Optional user ID for context
+            username: Optional username for context
+            chat_id: Optional chat ID for context
+        
+        Returns:
+            Formatted prompt string or None if shouldn't react
         """
+        # Determine whether we should react based on media_reaction setting
         react_setting = self.media_reaction
-
-        # Determine if we should react to this specific media type based on the setting
         should_react = False
-        if react_setting == "text_and_all_media":
+        
+        # Check if we should process this media type
+        if media_type_text == "фото" and react_setting in ["text_and_all_media", "all_media_no_text", "photo_only"]:
             should_react = True
-        elif react_setting == "all_media_no_text":
+        elif media_type_text == "голосовое сообщение" and react_setting in ["text_and_all_media", "all_media_no_text", "voice_only"]:
             should_react = True
-        elif react_setting == "photo_only" and media_type_text == "фото":
+        elif media_type_text == "видео" and react_setting in ["text_and_all_media", "all_media_no_text", "video_only"]:
             should_react = True
-        elif react_setting == "voice_only" and media_type_text == "голосовое сообщение":
+        elif media_type_text == "стикер" and react_setting in ["text_and_all_media", "all_media_no_text", "sticker_only"]:
             should_react = True
-        # "text_only" and "none" should not react to media, so should_react remains False
+        elif media_type_text == "гифка" and react_setting in ["text_and_all_media", "all_media_no_text", "animation_only"]:
+            should_react = True
 
         if not should_react:
-            logger.debug(f"Persona {self.id} ({self.name}) configured NOT to react to '{media_type_text}' with setting '{react_setting}'.") 
+            logger.debug(f"Persona {self.id} ({self.name}) configured NOT to react to {media_type_text.upper()} with setting '{react_setting}'. Media prompt generation skipped.")
             return None
+
+        # Проверка наличия необходимых параметров контекста
+        if media_type_text in ["фото", "голосовое сообщение"] and not all([user_id, username, chat_id]):
+            logger.error(f"Missing context parameters for {media_type_text} prompt: user_id={user_id}, username={username}, chat_id={chat_id}")
+            return None
+
+        # Выбор шаблона в зависимости от типа медиа
+        if media_type_text == "голосовое сообщение":
+            media_instruction = f"Пользователь прислал {media_type_text}. "
             
-        # ---- ЭКСПЕРИМЕНТ: Максимально упрощенный промпт для фото ----
-        if media_type_text == "фото":
-            minimal_photo_prompt = "Опиши это изображение."
-            logger.warning(f"ИСПОЛЬЗУЕТСЯ ЭКСПЕРИМЕНТАЛЬНЫЙ МИНИМАЛЬНЫЙ ПРОМПТ для фото ID {self.id}: '{minimal_photo_prompt}'")
-            return minimal_photo_prompt
-        # ---- КОНЕЦ ЭКСПЕРИМЕНТА ----
-
-        # Proceed with prompt generation if should_react is True (for other media types, e.g., voice)
-        base_instructions = self._generate_base_instructions()
-        mood_instruction = self.get_mood_prompt_snippet()
-        chat_id_info = str(self.chat_instance.chat_id) if self.chat_instance else "unknown"
-
-        prompt_parts = [
-            # Можно временно убрать описание личности, чтобы не отвлекать модель
-            # f"ты {self.get_persona_description_short()} ({self.name}).",
-            f"тебе прислали {media_type_text} в чате {chat_id_info}."
-        ]
-        if mood_instruction and self.current_mood.lower() != "нейтрально": # Добавляем настроение, только если оно не нейтральное
-            prompt_parts.append(f"твое текущее настроение: {mood_instruction}.")
-
-        if media_type_text == "фото":
-            # Более прямой и детальный запрос на описание изображения
-            prompt_parts.append(
-                "Внимательно изучи присланное изображение. "
-                "Подробно опиши все ключевые объекты, людей, животных, фон и происходящие события на изображении. "
-                "Каков общий смысл или настроение изображения? " # Дополнительный вопрос для стимулирования анализа
-                "После описания, добавь свой комментарий или реакцию от лица персонажа, учитывая его стиль и настроение (если оно указано)."
-            )
-        elif media_type_text == "голосовое сообщение":
-            if not all([user_id is not None, username is not None, chat_id is not None]):
-                logger.error("_format_media_prompt for voice called without user_id, username, or chat_id.")
-                return "Ошибка: недостаточно данных для формирования промпта для голоса."
-
-            # Используем MEDIA_SYSTEM_PROMPT_TEMPLATE из глобального определения
-            template_to_use = self.config.media_system_prompt_template or DEFAULT_MEDIA_SYSTEM_PROMPT_TEMPLATE 
+            # Default transcription instruction in case no transcription is available
+            default_transcription_note = "К сожалению, транскрипция сообщения недоступна, так что тебе нужно ответить на сам факт получения голосового сообщения."
             
-            mood_instruction = self.get_mood_prompt_snippet()
-            mood_name = self.current_mood
-            style_map = {"neutral": "Нейтральный", "friendly": "Дружелюбный", "sarcastic": "Саркастичный", "formal": "Формальный", "brief": "Краткий"}
-            verbosity_map = {"concise": "Лаконичный", "medium": "Средний", "talkative": "Разговорчивый"}
-            style_text = style_map.get(self.communication_style, style_map["neutral"])
-            verbosity_text = verbosity_map.get(self.verbosity_level, verbosity_map["medium"])
-
-            media_instruction = "Пользователь прислал голосовое сообщение. Его содержание (транскрипция) находится в последнем сообщении пользователя в истории диалога. Ответь на это сообщение."
+            media_instruction += default_transcription_note
             
-            placeholders = {
-                'persona_name': self.name,
-                'persona_description': self.description,
-                'communication_style': style_text,
-                'verbosity_level': verbosity_text,
-                'mood_name': mood_name,
-                'mood_prompt': mood_instruction,
-                'media_interaction_instruction': media_instruction,
-                'username': username,
-                'user_id': user_id,
-                'chat_id': chat_id,
-            }
-            try:
-                formatted_prompt = template_to_use.format(**placeholders)
-                logger.debug(f"Formatted MEDIA system prompt for VOICE using template: {formatted_prompt[:300]}...")
-                return formatted_prompt.strip()
-            except KeyError as e:
-                logger.error(f"KeyError formatting MEDIA_SYSTEM_PROMPT_TEMPLATE for voice: {e}. Template sample: {template_to_use[:100]}", exc_info=True)
-                return f"Ошибка: проблема с шаблоном системного сообщения для голоса (ключ: {e})."
-            except Exception as e_format:
-                logger.error(f"Error formatting MEDIA_SYSTEM_PROMPT_TEMPLATE for voice: {e_format}", exc_info=True)
-                return "Ошибка: не удалось сформировать системное сообщение для голоса."
-        else: # Другие типы медиа, если появятся
-            prompt_parts.append(f"Прокомментируй присланное медиа ({media_type_text}) от своего лица, учитывая свой стиль и настроение (если оно указано).")
+            # Use the media system prompt template specifically for voice messages
+            template = DEFAULT_MEDIA_SYSTEM_PROMPT_TEMPLATE
+            if self.media_system_prompt_template:
+                template = self.media_system_prompt_template
         
-        prompt_parts.extend(base_instructions) # Add style/verbosity
-        prompt_parts.append(get_time_info())
+        elif media_type_text == "фото":
+            # Для фото используем специальный шаблон
+            template = PHOTO_SYSTEM_PROMPT_TEMPLATE_FALLBACK
+            # Если в конфиге персоны есть специальный шаблон для фото, используем его
+            if hasattr(self, 'photo_system_prompt_template') and self.photo_system_prompt_template:
+                template = self.photo_system_prompt_template
+            
+            # Для фото не нужна дополнительная инструкция, так как она уже включена в шаблон
+            media_instruction = ""
+            
+        else:
+            # For other media types, we format a simpler prompt
+            template = f"""{self.name} ({self.description}), {self.communication_style}, {self.verbosity_level}, настроение: {self.mood['name']} - {self.mood['prompt']}
 
-        # Combine and add suffixes
-        formatted_prompt = " ".join(prompt_parts)
-        # Временно уберем BASE_PROMPT_SUFFIX и LANGDOCK_RESPONSE_INSTRUCTIONS для чистоты эксперимента с фото
-        # formatted_prompt += BASE_PROMPT_SUFFIX
-        # formatted_prompt += LANGDOCK_RESPONSE_INSTRUCTIONS
+Пользователь прислал {media_type_text}. Опиши что на нем и отреагируй на это как персонаж, сохраняя контекст диалога."""
+            formatted_prompt = template
+            logger.debug(f"Persona {self.id} ({self.name}) WILL react to '{media_type_text}' with setting '{react_setting}'. Prompt generated: {formatted_prompt[:200]}...")
+            return formatted_prompt
+            
+        # Для голосовых и фото сообщений форматируем шаблон с переменными
+        template_vars = {
+            'persona_name': self.name,
+            'persona_description': self.description,
+            'communication_style': self.communication_style,
+            'verbosity_level': self.verbosity_level,
+            'media_interaction_instruction': media_instruction,
+            'mood_name': self.mood['name'],
+            'mood_prompt': self.mood['prompt'],
+            'user_id': user_id,
+            'username': username,
+            'chat_id': chat_id
+        }
         
-        # Для фото можно добавить специфичную инструкцию по формату ответа, если JSON не является обязательным для медиа
-        if media_type_text == "фото":
-             formatted_prompt += " Ответь обычным текстом, не JSON." # Если JSON не нужен для медиа
+        try:
+            formatted_prompt = template.format(**template_vars)
+        except KeyError as e:
+            logger.error(f"Error formatting media system prompt for persona {self.id}: {str(e)}")
+            # Fallback to default template based on media type
+            if media_type_text == "голосовое сообщение":
+                formatted_prompt = DEFAULT_MEDIA_SYSTEM_PROMPT_TEMPLATE.format(**template_vars)
+            else:  # фото
+                formatted_prompt = PHOTO_SYSTEM_PROMPT_TEMPLATE_FALLBACK.format(**template_vars)
 
         logger.debug(f"Persona {self.id} ({self.name}) WILL react to '{media_type_text}' with setting '{react_setting}'. Prompt generated: {formatted_prompt[:200]}...")
         return formatted_prompt
 
-    def format_photo_prompt(self) -> Optional[str]:
+    def format_photo_prompt(self, user_id: int, username: str, chat_id: str) -> Optional[str]:
         """Formats the prompt for responding to photos."""
-        # Проверка, должна ли персона реагировать на фото согласно настройкам
-        if self.media_reaction not in ["text_and_all_media", "all_media_no_text", "photo_only"]:
-            logger.debug(f"Persona {self.id} ({self.name}) configured NOT to react to PHOTO with setting '{self.media_reaction}'. Photo prompt generation skipped.")
-            return None
-
-        # --- ДИАГНОСТИКА: ВРЕМЕННО УПРОЩЕННЫЙ ПРОМПТ ДЛЯ АНАЛИЗА ИЗОБРАЖЕНИЙ ---
-        # Это для проверки, получим ли мы вообще ответ на изображение с базовым промптом.
-        # Если это сработает, проблема, скорее всего, в сложности или инструкциях по JSON 
-        # в основном системном промпте при обработке изображений.
-        #
-        # НЕ ЗАБУДЬТЕ ВЕРНУТЬ ИЛИ УТОЧНИТЬ ЭТО ПОСЛЕ ТЕСТИРОВАНИЯ.
-        #
-        # simple_photo_prompt = "Опиши изображение, которое прислал пользователь. Ответ дай в виде JSON-массива строк, например: [\"Это интересное изображение.\", \"На нем я вижу...\"]"  
-        # logger.warning(f"ИСПОЛЬЗУЕТСЯ ВРЕМЕННЫЙ УПРОЩЕННЫЙ ПРОМПТ ДЛЯ ФОТО для Персоны {self.id}: '{simple_photo_prompt}'")
-        # return simple_photo_prompt
-        # --- КОНЕЦ ДИАГНОСТИЧЕСКОГО РАЗДЕЛА ---
-
-        # --- ИСХОДНАЯ ЛОГИКА ПРОМПТА ---
-        # Так как упрощенный промпт не сработал, возвращаемся к стандартной логике
-        # которая просит модель ответить обычным текстом, а не JSON.
-        return self._format_media_prompt("фото")
+        return self._format_media_prompt("фото", user_id, username, chat_id)
 
     def format_voice_prompt(self, user_id: int, username: str, chat_id: str) -> Optional[str]:
         """Formats the prompt for responding to voice messages."""

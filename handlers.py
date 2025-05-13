@@ -15,6 +15,7 @@ import asyncio
 
 # Константы для UI
 CHECK_MARK = "✅ "  # Unicode Check Mark Symbol
+PREMIUM_STAR = "⭐"  # Звездочка для премиум-функций
 
 # Импорты для работы с Vosk (будут использоваться после установки библиотеки)
 try:
@@ -1566,7 +1567,8 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
             
             if media_type == "photo":
                 context_text_placeholder = "[получено фото]"
-                prompt_generator = persona.format_photo_prompt
+                # Вызываем format_photo_prompt с параметрами, аналогично format_voice_prompt
+                system_prompt = persona.format_photo_prompt(user_id=user_id, username=username, chat_id=chat_id_str)
                 
             elif media_type == "voice":
                 # Для голосовых сообщений сначала попробуем транскрибировать
@@ -1633,8 +1635,8 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
                 db.commit()
                 return
 
-            # Для голосовых сообщений system_prompt уже определен, а для других типов медиа нужно вызвать prompt_generator()
-            if media_type != "voice":
+            # Для голосовых и фото сообщений system_prompt уже определен прямым вызовом, а для других типов медиа нужно вызвать prompt_generator() 
+            if media_type != "voice" and media_type != "photo" and prompt_generator:
                 system_prompt = prompt_generator()
 
             if not system_prompt:
