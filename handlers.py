@@ -1579,12 +1579,29 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
                         voice_file = await context.bot.get_file(voice_file_id)
                         voice_bytes = await voice_file.download_as_bytearray()
                         
+                        # Отправляем уведомление о начале обработки голосового сообщения
+                        await context.bot.send_chat_action(chat_id=chat_id_str, action=ChatAction.TYPING)
+                        
                         # Транскрибируем аудио, если Vosk доступен
+                        is_premium_user = owner_user.is_active_subscriber
+                        
                         if VOSK_AVAILABLE and vosk_model:
+                            # Для премиум-пользователей отправляем статус распознавания
+                            if is_premium_user:
+                                processing_msg = await update.message.reply_text("🔊 Распознаю голосовое сообщение...")
+                            
+                            # Начинаем транскрипцию
                             transcribed_text = await transcribe_audio_with_vosk(
                                 bytes(voice_bytes), 
                                 update.message.voice.mime_type
                             )
+                            
+                            # Удаляем сообщение о распознавании для премиум-пользователей
+                            if is_premium_user and 'processing_msg' in locals():
+                                try:
+                                    await processing_msg.delete()
+                                except Exception as del_err:
+                                    logger.warning(f"Failed to delete processing message: {del_err}")
                             
                             if transcribed_text:
                                 logger.info(f"Voice message transcribed successfully: '{transcribed_text}'")
@@ -1592,12 +1609,23 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
                                 # Сохраняем имя отправителя для лучшего контекста
                                 sender_name = update.effective_user.username or update.effective_user.first_name or str(update.effective_user.id)
                                 context_text_placeholder = f"{sender_name}: {transcribed_text}"
+                                
+                                # Показываем распознанный текст премиум-пользователям
+                                if is_premium_user:
+                                    transcription_msg = f"🔈 Распознано: \"{transcribed_text}\""
+                                    await update.message.reply_text(transcription_msg, quote=True)
                             else:
                                 logger.warning("Voice transcription failed or returned empty text")
                                 context_text_placeholder = "[получено голосовое сообщение, не удалось расшифровать]"
+                                # Уведомляем премиум-пользователей о неудаче
+                                if is_premium_user:
+                                    await update.message.reply_text("❌ Не удалось распознать голосовое сообщение")
                         else:
                             logger.warning("Vosk not available for transcription. Using placeholder.")
                             context_text_placeholder = "[получено голосовое сообщение]"
+                            # Уведомляем премиум-пользователей о недоступности Vosk
+                            if is_premium_user:
+                                await update.message.reply_text(f"{PREMIUM_STAR} Распознавание голоса временно недоступно")
                     except Exception as e:
                         logger.error(f"Error processing voice message for transcription: {e}", exc_info=True)
                         context_text_placeholder = "[ошибка обработки голосового сообщения]"
@@ -3968,7 +3996,12 @@ async def edit_description_prompt(update: Update, context: ContextTypes.DEFAULT_
     with next(get_db()) as db:
         current_desc = db.query(PersonaConfig.description).filter(PersonaConfig.id == persona_id).scalar() or "(пусто)"
     current_desc_preview = escape_markdown_v2((current_desc[:100] + '...') if len(current_desc) > 100 else current_desc)
-    prompt_text = escape_markdown_v2(f"✏️ Введите новое описание (макс. 1500 симв.).\nТекущее (начало): \n```\n{current_desc_preview}\n```")
+    
+    # Явно экранируем точку в тексте f-строки
+    raw_fstring_with_escaped_dot = f"✏️ Введите новое описание (макс. 1500 симв)\.\nТекущее (начало): \n```\n{current_desc_preview}\n```"
+    
+    # Затем экранируем всю строку для обработки остальных спецсимволов Markdown
+    prompt_text = escape_markdown_v2(raw_fstring_with_escaped_dot)
     keyboard = [[InlineKeyboardButton("⬅️ Назад", callback_data="back_to_wizard_menu")]]
     await _send_prompt(update, context, prompt_text, InlineKeyboardMarkup(keyboard))
     return EDIT_DESCRIPTION
