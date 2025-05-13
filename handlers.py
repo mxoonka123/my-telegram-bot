@@ -3992,32 +3992,76 @@ async def edit_name_received(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 # --- Edit Description ---
 async def edit_description_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Отображает форму редактирования описания без использования Markdown разметки."""
     persona_id = context.user_data.get('edit_persona_id')
     with next(get_db()) as db:
         current_desc = db.query(PersonaConfig.description).filter(PersonaConfig.id == persona_id).scalar() or "(пусто)"
     
-    # Используем текст без сложного форматирования (минимальное количество спецсимволов)
+    # Подготавливаем предпросмотр текущего описания
     current_desc_preview = (current_desc[:100] + '...') if len(current_desc) > 100 else current_desc
     
-    # Создаем простой текст без специальных символов для экранирования
-    prompt_text = f"✏️ Введите новое описание \(макс\. 1500 симв\)\."
+    # Создаем простой текст без специальных символов
+    prompt_text = f"✏️ Введите новое описание (макс. 1500 символов).\n\nТекущее (начало):\n{current_desc_preview}"
     
-    # Создаем отдельный текст для предпросмотра текущего текста
-    preview_text = f"Текущее \(начало\)\: {current_desc_preview}"
-    
-    # Объединяем тексты с простыми экранированными символами
-    full_text = f"{prompt_text}\n\n{preview_text}"
-    
+    # Создаем клавиатуру с кнопкой Назад
     keyboard = [[InlineKeyboardButton("⬅️ Назад", callback_data="back_to_wizard_menu")]]
     
-    # Важно: Используем стандартную функцию _send_prompt для сохранения связи с ConversationHandler
-    await _send_prompt(
-        update, 
-        context, 
-        full_text, 
-        InlineKeyboardMarkup(keyboard)
-    )
+    # Используем query.message для редактирования текущего сообщения
+    query = update.callback_query
+    chat_id = query.message.chat.id if query and query.message else update.effective_chat.id
     
+    # Сохраняем ID чата в контексте для последующей обработки callback
+    context.user_data['edit_chat_id'] = chat_id
+    new_message = None
+    
+    try:
+        # Отправляем сообщение БЕЗ использования Markdown (parse_mode=None)
+        if query and query.message:
+            try:
+                # Пробуем редактировать существующее сообщение
+                new_message = await query.edit_message_text(
+                    text=prompt_text,
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                    parse_mode=None  # Важно: без разметки!
+                )
+            except BadRequest as e:
+                logger.warning(f"Failed to edit message for edit_description_prompt: {e}")
+                # Если не удалось отредактировать, отправляем новое
+                new_message = await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=prompt_text,
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                    parse_mode=None  # Важно: без разметки!
+                )
+        else:
+            # Если нет сообщения для редактирования, отправляем новое
+            new_message = await context.bot.send_message(
+                chat_id=chat_id,
+                text=prompt_text,
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode=None  # Важно: без разметки!
+            )
+            
+        # Сохраняем ID сообщения в контексте для последующего удаления 
+        if new_message:
+            context.user_data['last_prompt_message_id'] = new_message.message_id
+            context.user_data['edit_message_id'] = new_message.message_id
+    
+    except Exception as e:
+        logger.error(f"Error in edit_description_prompt: {e}", exc_info=True)
+        try:
+            # Запасной вариант с максимально простым сообщением
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="Введите новое описание (максимум 1500 символов)",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode=None
+            )
+        except Exception as fallback_e:
+            logger.error(f"Failed even with fallback message: {fallback_e}")
+    
+    # Регистрируем обработчик для кнопки "Назад"
+    # Текущий ConversationHandler должен автоматически обрабатывать callback-запросы
     return EDIT_DESCRIPTION
 
 async def edit_description_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
