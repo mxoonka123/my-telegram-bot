@@ -4,6 +4,7 @@ from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, B
 from sqlalchemy.orm import sessionmaker, relationship, Session, joinedload, selectinload
 from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy.orm import declarative_base
+from contextlib import contextmanager # ДОБАВЛЕН ИМПОРТ
 from sqlalchemy.exc import SQLAlchemyError, IntegrityError, OperationalError, ProgrammingError
 from datetime import datetime, timezone, timedelta, date
 from typing import List, Dict, Any, Optional, Union, Tuple
@@ -363,6 +364,7 @@ def initialize_database():
          logger.critical(f"FATAL: An unexpected error occurred during database initialization for {db_log_url}: {e}", exc_info=True)
          raise
 
+@contextmanager # ДОБАВЛЕН ДЕКОРАТОР
 def get_db():
     if SessionLocal is None:
          logger.error("Database is not initialized. Call initialize_database() first.")
