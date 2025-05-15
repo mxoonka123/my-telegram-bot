@@ -25,9 +25,8 @@ logger = logging.getLogger(__name__)
 async def reset_daily_limits_task(context: ContextTypes.DEFAULT_TYPE):
     logger.info("Task started: Resetting daily message counts...")
     updated_count = 0
-    db_session = None
     try:
-        with next(get_db()) as db_session:
+        with get_db() as db_session:
             now = datetime.now(timezone.utc)
             today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
 
@@ -61,10 +60,8 @@ async def reset_daily_limits_task(context: ContextTypes.DEFAULT_TYPE):
                  logger.debug("Limit reset task: No users needed a reset.")
     except (SQLAlchemyError, ProgrammingError) as e: # Catch schema errors too
         logger.error(f"Error during daily limit reset: {e}", exc_info=True)
-        if db_session: db_session.rollback()
     except Exception as e:
         logger.error(f"Unexpected error during daily limit reset: {e}", exc_info=True)
-        if db_session: db_session.rollback()
 
 
 async def check_subscription_expiry_task(context: ContextTypes.DEFAULT_TYPE):
@@ -76,9 +73,8 @@ async def check_subscription_expiry_task(context: ContextTypes.DEFAULT_TYPE):
 
     now = datetime.now(timezone.utc)
     expired_users_info = []
-    db_session = None
     try:
-        with next(get_db()) as db_session:
+        with get_db() as db_session:
             # Select users who are subscribed AND expiry date is in the past
             expired_users_query = (
                 select(User.id, User.telegram_id, User.daily_message_count, User.subscription_expires_at)
@@ -124,11 +120,9 @@ async def check_subscription_expiry_task(context: ContextTypes.DEFAULT_TYPE):
 
     except (SQLAlchemyError, ProgrammingError) as e:
         logger.error(f"DB error during subscription expiry check: {e}", exc_info=True)
-        if db_session: db_session.rollback()
         return
     except Exception as e:
         logger.error(f"Unexpected error during subscription expiry check (DB phase): {e}", exc_info=True)
-        if db_session: db_session.rollback()
         return
 
     # Send notifications outside the DB transaction

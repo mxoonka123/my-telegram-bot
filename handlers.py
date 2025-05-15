@@ -1303,7 +1303,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         # --- Основной блок с БД ---
         db_session = None
         try:
-            with next(get_db()) as db:
+            with get_db() as db:
                 db_session = db
                 logger.debug("handle_message: DB session acquired.")
 
@@ -1543,7 +1543,7 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
         await send_subscription_required_message(update, context)
         return
 
-    with next(get_db()) as db:
+    with get_db() as db:
         try:
             persona_context_owner_tuple = get_persona_and_context_with_owner(chat_id_str, db)
             if not persona_context_owner_tuple:
@@ -1807,7 +1807,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     fallback_text_raw = "Привет! Произошла ошибка отображения стартового сообщения. Используй /help или /menu."
 
     try:
-        with next(get_db()) as db:
+        with get_db() as db:
             user = get_or_create_user(db, user_id, username)
             if db.is_modified(user):
                 logger.info(f"/start: Committing new/updated user {user_id}.")
@@ -2285,7 +2285,7 @@ async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     error_general = escape_markdown_v2("❌ ошибка при сбросе контекста.")
     success_reset_fmt_raw = "✅ память личности '{persona_name}' в этом чате очищена."
 
-    with next(get_db()) as db:
+    with get_db() as db:
         try:
             persona_info_tuple = get_persona_and_context_with_owner(chat_id_str, db)
             if not persona_info_tuple:
@@ -2359,7 +2359,7 @@ async def create_persona(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
          await update.message.reply_text(error_desc_len, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
          return
 
-    with next(get_db()) as db:
+    with get_db() as db:
         try:
             user = get_or_create_user(db, user_id, username)
             if not user.id:
@@ -2481,7 +2481,7 @@ async def my_personas(update: Union[Update, CallbackQuery], context: ContextType
     # Убираем переменную use_fallback_plain_text, она больше не нужна, всё решает наличие ошибки
 
     try:
-        with next(get_db()) as db:
+        with get_db() as db:
             user_with_personas = db.query(User).options(selectinload(User.persona_configs)).filter(User.telegram_id == user_id).first()
 
             if not user_with_personas:
@@ -2668,7 +2668,7 @@ async def add_bot_to_chat(update: Update, context: ContextTypes.DEFAULT_TYPE, pe
 
     await context.bot.send_chat_action(chat_id=chat_id_str, action=ChatAction.TYPING)
 
-    with next(get_db()) as db:
+    with get_db() as db:
         try:
             persona = get_persona_by_id_and_owner(db, user_id, local_persona_id)
             if not persona:
@@ -2865,7 +2865,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             persona_id = int(persona_id_match.group(1))
             new_value_str = data.replace("set_max_msgs_", "")
             
-            with next(get_db()) as db:
+            with get_db() as db:
                 persona = db.query(PersonaConfig).filter(PersonaConfig.id == persona_id).first()
                 if persona:
                     # Устанавливаем новое значение
@@ -2984,7 +2984,7 @@ async def profile(update: Union[Update, CallbackQuery], context: ContextTypes.DE
     error_user_not_found = escape_markdown_v2("❌ ошибка: пользователь не найден.")
     profile_text_plain = "Ошибка загрузки профиля."
 
-    with next(get_db()) as db:
+    with get_db() as db:
         try:
             user_db = db.query(User).options(selectinload(User.persona_configs)).filter(User.telegram_id == user_id).first()
             if not user_db:
@@ -3561,7 +3561,7 @@ async def _start_edit_convo(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     error_general = escape_markdown_v2("❌ непредвиденная ошибка.")
 
     try:
-        with next(get_db()) as db:
+        with get_db() as db:
             persona_config = db.query(PersonaConfig).options(selectinload(PersonaConfig.owner)).filter(
                 PersonaConfig.id == persona_id,
                 PersonaConfig.owner.has(User.telegram_id == user_id) # Проверка владения
@@ -3669,7 +3669,7 @@ async def _handle_back_to_wizard_menu(update: Update, context: ContextTypes.DEFA
     """Общая функция для обработки кнопки "Назад" в меню настроек"""
     query = update.callback_query
     
-    with next(get_db()) as db:
+    with get_db() as db:
         persona = db.query(PersonaConfig).filter(PersonaConfig.id == persona_id).first()
         if not persona:
             await query.answer("Ошибка: личность не найдена")
@@ -3845,12 +3845,12 @@ async def edit_wizard_menu_handler(update: Update, context: ContextTypes.DEFAULT
 
     if data == "edit_wizard_message_volume": # Временно отключено
         await query.answer("Функция 'Объем сообщений' временно недоступна.", show_alert=True)
-        with next(get_db()) as db_session:
+        with get_db() as db_session:
             persona_config = db_session.query(PersonaConfig).filter(PersonaConfig.id == persona_id).first()
             return await _show_edit_wizard_menu(update, context, persona_config) if persona_config else ConversationHandler.END
             
     if data == "edit_wizard_moods":
-        with next(get_db()) as db_session:
+        with get_db() as db_session:
             persona_for_moods = db_session.query(PersonaConfig).options(selectinload(PersonaConfig.owner)).filter(PersonaConfig.id == persona_id).first()
             if not persona_for_moods:
                 if query.message: await query.edit_message_text("", reply_markup=None)
@@ -3882,7 +3882,7 @@ async def edit_wizard_menu_handler(update: Update, context: ContextTypes.DEFAULT
             except Exception as e_del_prompt:
                 logger.warning(f"edit_wizard_menu_handler (back_to_wizard_menu): Failed to delete specific prompt message {last_prompt_message_id} in chat {chat_id_for_delete}: {e_del_prompt}")
         
-        with next(get_db()) as db_session:
+        with get_db() as db_session:
             persona_config = db_session.query(PersonaConfig).filter(PersonaConfig.id == persona_id).first()
             # _show_edit_wizard_menu will handle editing/sending the main menu
             return await _show_edit_wizard_menu(update, context, persona_config) if persona_config else ConversationHandler.END
@@ -3900,7 +3900,7 @@ async def edit_wizard_menu_handler(update: Update, context: ContextTypes.DEFAULT
         elif new_value_str == "random": numeric_value = 0
         if numeric_value != -1:
             try:
-                with next(get_db()) as db_session:
+                with get_db() as db_session:
                     persona = db_session.query(PersonaConfig).filter(PersonaConfig.id == persona_id).first()
                     if persona:
                         persona.max_response_messages = numeric_value
@@ -3910,12 +3910,12 @@ async def edit_wizard_menu_handler(update: Update, context: ContextTypes.DEFAULT
             except Exception as e_direct_set:
                 logger.error(f"Error in fallback direct set_max_msgs for {persona_id}: {e_direct_set}")
         
-        with next(get_db()) as db_session: # Fallback to re-render menu
+        with get_db() as db_session: # Fallback to re-render menu
             persona_config = db_session.query(PersonaConfig).filter(PersonaConfig.id == persona_id).first()
             return await _show_edit_wizard_menu(update, context, persona_config) if persona_config else ConversationHandler.END
 
     logger.warning(f"Unhandled wizard menu callback: {data} for persona {persona_id}")
-    with next(get_db()) as db_session:
+    with get_db() as db_session:
         persona_config = db_session.query(PersonaConfig).filter(PersonaConfig.id == persona_id).first()
         return await _show_edit_wizard_menu(update, context, persona_config) if persona_config else ConversationHandler.END
 
@@ -3962,7 +3962,7 @@ async def _send_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE, text:
 # --- Edit Name ---
 async def edit_name_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     persona_id = context.user_data.get('edit_persona_id')
-    with next(get_db()) as db:
+    with get_db() as db:
         current_name = db.query(PersonaConfig.name).filter(PersonaConfig.id == persona_id).scalar() or "N/A"
     prompt_text = escape_markdown_v2(f"✏️ Введите новое имя (текущее: '{current_name}', 2-50 симв.):")
     keyboard = [[InlineKeyboardButton("⬅️ Назад", callback_data="back_to_wizard_menu")]]
@@ -3979,7 +3979,7 @@ async def edit_name_received(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return EDIT_NAME
 
     try:
-        with next(get_db()) as db:
+        with get_db() as db:
             owner_id = db.query(PersonaConfig.owner_id).filter(PersonaConfig.id == persona_id).scalar()
             existing = db.query(PersonaConfig.id).filter(
                 PersonaConfig.owner_id == owner_id,
@@ -4013,7 +4013,7 @@ async def edit_name_received(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def edit_description_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Отображает форму редактирования описания без использования Markdown разметки."""
     persona_id = context.user_data.get('edit_persona_id')
-    with next(get_db()) as db:
+    with get_db() as db:
         current_desc = db.query(PersonaConfig.description).filter(PersonaConfig.id == persona_id).scalar() or "(пусто)"
     
     # Подготавливаем предпросмотр текущего описания
@@ -4093,7 +4093,7 @@ async def edit_description_received(update: Update, context: ContextTypes.DEFAUL
         return EDIT_DESCRIPTION
 
     try:
-        with next(get_db()) as db:
+        with get_db() as db:
             persona = db.query(PersonaConfig).filter(PersonaConfig.id == persona_id).with_for_update().first()
             if persona:
                 persona.description = new_desc
@@ -4115,7 +4115,7 @@ async def edit_description_received(update: Update, context: ContextTypes.DEFAUL
 # --- Edit Communication Style ---
 async def edit_comm_style_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     persona_id = context.user_data.get('edit_persona_id')
-    with next(get_db()) as db:
+    with get_db() as db:
         current_style = db.query(PersonaConfig.communication_style).filter(PersonaConfig.id == persona_id).scalar() or "neutral"
     prompt_text = escape_markdown_v2(f"💬 Выберите стиль общения (текущий: {current_style}):")
     keyboard = [
@@ -4141,7 +4141,7 @@ async def edit_comm_style_received(update: Update, context: ContextTypes.DEFAULT
     if data.startswith("set_comm_style_"):
         new_style = data.replace("set_comm_style_", "")
         try:
-            with next(get_db()) as db:
+            with get_db() as db:
                 persona = db.query(PersonaConfig).filter(PersonaConfig.id == persona_id).with_for_update().first()
                 if persona:
                     persona.communication_style = new_style
@@ -4176,7 +4176,7 @@ async def edit_max_messages_prompt(update: Update, context: ContextTypes.DEFAULT
         return ConversationHandler.END
 
     current_value_str = "normal" # Значение по умолчанию
-    with next(get_db()) as db:
+    with get_db() as db:
         persona_config = db.query(PersonaConfig).filter(PersonaConfig.id == persona_id).first()
         if not persona_config:
             await query.answer("Ошибка: личность не найдена.", show_alert=True)
@@ -4243,7 +4243,7 @@ async def edit_max_messages_received(update: Update, context: ContextTypes.DEFAU
 
     # Обработка кнопки "Назад"
     if data == "back_to_wizard_menu":
-        with next(get_db()) as db_session:
+        with get_db() as db_session:
             persona_config = db_session.query(PersonaConfig).filter(PersonaConfig.id == persona_id).first()
             if not persona_config: # На всякий случай
                 if query.message: await query.edit_message_text("Ошибка: личность не найдена.", reply_markup=None)
@@ -4269,7 +4269,7 @@ async def edit_max_messages_received(update: Update, context: ContextTypes.DEFAU
             return EDIT_MAX_MESSAGES 
 
         try:
-            with next(get_db()) as db:
+            with get_db() as db:
                 # Проверяем наличие премиум-подписки у пользователя
                 user = db.query(User).filter(User.telegram_id == user_id).first()
                 is_premium_user = user.is_active_subscriber if user else False
@@ -4308,7 +4308,7 @@ async def edit_max_messages_received(update: Update, context: ContextTypes.DEFAU
 # --- Edit Verbosity ---
 async def edit_verbosity_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     persona_id = context.user_data.get('edit_persona_id')
-    with next(get_db()) as db:
+    with get_db() as db:
         current = db.query(PersonaConfig.verbosity_level).filter(PersonaConfig.id == persona_id).scalar() or "medium"
     prompt_text = escape_markdown_v2(f"🗣️ Выберите разговорчивость (текущая: {current}):")
     keyboard = [
@@ -4327,14 +4327,14 @@ async def edit_verbosity_received(update: Update, context: ContextTypes.DEFAULT_
     persona_id = context.user_data.get('edit_persona_id')
 
     if data == "back_to_wizard_menu":
-        with next(get_db()) as db:
+        with get_db() as db:
             persona = db.query(PersonaConfig).filter(PersonaConfig.id == persona_id).first()
             return await _show_edit_wizard_menu(update, context, persona)
 
     if data.startswith("set_verbosity_"):
         new_value = data.replace("set_verbosity_", "")
         try:
-            with next(get_db()) as db:
+            with get_db() as db:
                 persona = db.query(PersonaConfig).filter(PersonaConfig.id == persona_id).with_for_update().first()
                 if persona:
                     persona.verbosity_level = new_value
@@ -4355,7 +4355,7 @@ async def edit_verbosity_received(update: Update, context: ContextTypes.DEFAULT_
 # --- Edit Group Reply Preference ---
 async def edit_group_reply_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     persona_id = context.user_data.get('edit_persona_id')
-    with next(get_db()) as db:
+    with get_db() as db:
         current = db.query(PersonaConfig.group_reply_preference).filter(PersonaConfig.id == persona_id).scalar() or "mentioned_or_contextual"
     prompt_text = escape_markdown_v2(f"👥 Как отвечать в группах (текущее: {current}):")
     keyboard = [
@@ -4375,14 +4375,14 @@ async def edit_group_reply_received(update: Update, context: ContextTypes.DEFAUL
     persona_id = context.user_data.get('edit_persona_id')
 
     if data == "back_to_wizard_menu":
-        with next(get_db()) as db:
+        with get_db() as db:
             persona = db.query(PersonaConfig).filter(PersonaConfig.id == persona_id).first()
             return await _show_edit_wizard_menu(update, context, persona)
 
     if data.startswith("set_group_reply_"):
         new_value = data.replace("set_group_reply_", "")
         try:
-            with next(get_db()) as db:
+            with get_db() as db:
                 persona = db.query(PersonaConfig).filter(PersonaConfig.id == persona_id).with_for_update().first()
                 if persona:
                     persona.group_reply_preference = new_value
@@ -4406,7 +4406,7 @@ async def edit_media_reaction_prompt(update: Update, context: ContextTypes.DEFAU
     query = update.callback_query # Добавлено для получения query
     user_id = query.from_user.id if query else update.effective_user.id # Получаем user_id для проверки подписки
     
-    with next(get_db()) as db:
+    with get_db() as db:
         current_config = db.query(PersonaConfig).filter(PersonaConfig.id == persona_id).first()
         if not current_config:
             # Обработка случая, если личность не найдена
@@ -4468,7 +4468,7 @@ async def edit_media_reaction_received(update: Update, context: ContextTypes.DEF
     user_id = query.from_user.id
 
     if data == "back_to_wizard_menu":
-        with next(get_db()) as db:
+        with get_db() as db:
             persona = db.query(PersonaConfig).filter(PersonaConfig.id == persona_id).first()
             return await _show_edit_wizard_menu(update, context, persona)
 
@@ -4479,7 +4479,7 @@ async def edit_media_reaction_received(update: Update, context: ContextTypes.DEF
         premium_options = ["text_and_all_media", "all_media_no_text", "photo_only", "voice_only"]
         
         try:
-            with next(get_db()) as db:
+            with get_db() as db:
                 # Проверяем наличие премиум-подписки у пользователя
                 user = db.query(User).filter(User.telegram_id == user_id).first()
                 is_premium_user = user.is_active_subscriber if user else False
@@ -4515,7 +4515,7 @@ async def edit_moods_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     persona_id = context.user_data.get('edit_persona_id')
     user_id = query.from_user.id
 
-    with next(get_db()) as db:
+    with get_db() as db:
         owner = db.query(User).join(PersonaConfig).filter(PersonaConfig.id == persona_id).first()
         if not owner or not (owner.is_active_subscriber or is_admin(user_id)):
             await query.answer("⭐ Доступно по подписке", show_alert=True)
@@ -4524,7 +4524,7 @@ async def edit_moods_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     logger.info(f"User {user_id} entering mood editing for persona {persona_id}.")
     # Pass control to the mood menu function
-    with next(get_db()) as db:
+    with get_db() as db:
         persona_config = db.query(PersonaConfig).filter(PersonaConfig.id == persona_id).first()
         if persona_config:
             return await edit_moods_menu(update, context, persona_config=persona_config)
@@ -4711,7 +4711,7 @@ async def edit_moods_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, pe
     local_persona_config = persona_config
     if local_persona_config is None:
         try:
-            with next(get_db()) as db:
+            with get_db() as db:
                 local_persona_config = db.query(PersonaConfig).options(selectinload(PersonaConfig.owner)).filter(
                      PersonaConfig.id == persona_id,
                      PersonaConfig.owner.has(User.telegram_id == user_id)
@@ -4780,7 +4780,7 @@ async def edit_mood_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     persona_config = None
     try:
-        with next(get_db()) as db:
+        with get_db() as db:
              persona_config = db.query(PersonaConfig).options(selectinload(PersonaConfig.owner)).filter(
                  PersonaConfig.id == persona_id,
                  PersonaConfig.owner.has(User.telegram_id == user_id)
@@ -4895,7 +4895,7 @@ async def edit_mood_name_received(update: Update, context: ContextTypes.DEFAULT_
     mood_name = mood_name_raw
 
     try:
-        with next(get_db()) as db:
+        with get_db() as db:
             persona_config = db.query(PersonaConfig).options(selectinload(PersonaConfig.owner)).filter(
                  PersonaConfig.id == persona_id,
                  PersonaConfig.owner.has(User.telegram_id == user_id)
@@ -4971,7 +4971,7 @@ async def edit_mood_prompt_received(update: Update, context: ContextTypes.DEFAUL
         return EDIT_MOOD_PROMPT
 
     try:
-        with next(get_db()) as db:
+        with get_db() as db:
             persona_config = db.query(PersonaConfig).options(selectinload(PersonaConfig.owner)).filter(
                  PersonaConfig.id == persona_id,
                  PersonaConfig.owner.has(User.telegram_id == user_id)
@@ -5058,7 +5058,7 @@ async def delete_mood_confirmed(update: Update, context: ContextTypes.DEFAULT_TY
     logger.warning(f"User {user_id} confirmed deletion of mood '{mood_name_to_delete}' for persona {persona_id}.")
 
     try:
-        with next(get_db()) as db:
+        with get_db() as db:
             persona_config = db.query(PersonaConfig).options(selectinload(PersonaConfig.owner)).filter(
                  PersonaConfig.id == persona_id,
                  PersonaConfig.owner.has(User.telegram_id == user_id)
@@ -5123,7 +5123,7 @@ async def _try_return_to_mood_menu(update: Update, context: ContextTypes.DEFAULT
      target_chat_id = target_message.chat.id
 
      try:
-         with next(get_db()) as db:
+         with get_db() as db:
              persona_config = db.query(PersonaConfig).options(selectinload(PersonaConfig.owner)).filter(
                  PersonaConfig.id == persona_id,
                  PersonaConfig.owner.has(User.telegram_id == user_id)
@@ -5280,7 +5280,7 @@ async def _start_delete_convo(update: Update, context: ContextTypes.DEFAULT_TYPE
     error_general = escape_markdown_v2(error_general_raw)
 
     try:
-        with next(get_db()) as db:
+        with get_db() as db:
             logger.debug(f"Fetching PersonaConfig {persona_id} for owner {user_id}...")
             persona_config = db.query(PersonaConfig).options(selectinload(PersonaConfig.owner)).filter(
                 PersonaConfig.id == persona_id,
@@ -5441,7 +5441,7 @@ async def delete_persona_confirmed(update: Update, context: ContextTypes.DEFAULT
     persona_name_deleted = f"ID {persona_id_from_state}" # Используем ID по умолчанию
 
     try:
-        with next(get_db()) as db:
+        with get_db() as db:
              user = db.query(User).filter(User.telegram_id == user_id).first()
              if not user:
                   logger.error(f"User {user_id} not found in DB during persona deletion.")
@@ -5541,7 +5541,7 @@ async def mute_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     info_already_muted_fmt_raw = "🔇 личность '{name}' уже заглушена в этом чате."
     success_muted_fmt_raw = "🔇 личность '{name}' больше не будет отвечать в этом чате \\(но будет запоминать сообщения\\)\\. используйте `/unmutebot`, чтобы вернуть."
 
-    with next(get_db()) as db:
+    with get_db() as db:
         try:
             instance_info = get_persona_and_context_with_owner(chat_id_str, db)
             if not instance_info:
@@ -5599,7 +5599,7 @@ async def unmute_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     info_not_muted_fmt_raw = "🔊 личность '{name}' не была заглушена."
     success_unmuted_fmt_raw = "🔊 личность '{name}' снова может отвечать в этом чате."
 
-    with next(get_db()) as db:
+    with get_db() as db:
         try:
             active_instance = get_active_chat_bot_instance_with_relations(db, chat_id_str)
 
@@ -5642,7 +5642,7 @@ async def edit_message_volume_prompt(update: Update, context: ContextTypes.DEFAU
     """Sends prompt to choose message volume."""
     persona_id = context.user_data.get('edit_persona_id')
     # Временно используем значение по умолчанию, пока миграция не применена
-    # with next(get_db()) as db:
+    # with get_db() as db:
     #     current_volume = db.query(PersonaConfig.message_volume).filter(PersonaConfig.id == persona_id).scalar() or "normal"
     current_volume = "normal"
 
@@ -5685,7 +5685,7 @@ async def edit_message_volume_received(update: Update, context: ContextTypes.DEF
             return EDIT_MESSAGE_VOLUME
 
         try:
-            with next(get_db()) as db:
+            with get_db() as db:
                 # Временно не обновляем столбец, пока миграция не применена
                 # db.query(PersonaConfig).filter(PersonaConfig.id == persona_id).update({"message_volume": volume})
                 # db.commit()
@@ -5735,7 +5735,7 @@ async def clear_memory(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     msg_general_error = escape_markdown_v2("❌ Непредвиденная ошибка при очистке памяти.")
     msg_success_fmt = "✅ Память личности '{name}' в этом чате очищена ({count} сообщений удалено)." # Используем format позже
 
-    with next(get_db()) as db:
+    with get_db() as db:
         try:
             # Находим активную личность и ее владельца
             persona_info_tuple = get_persona_and_context_with_owner(chat_id_str, db)
@@ -5809,7 +5809,7 @@ async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     error_general_raw = "❌ Ошибка при сбросе контекста."
     success_reset_fmt_raw = "✅ Память личности '{persona_name}' в этом чате очищена ({count} сообщений удалено)."
 
-    with next(get_db()) as db:
+    with get_db() as db:
         try:
             persona_info_tuple = get_persona_and_context_with_owner(chat_id_str, db)
             if not persona_info_tuple:
