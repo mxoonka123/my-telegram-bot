@@ -385,8 +385,20 @@ async def post_init(application: Application):
 
 
 # --- Main Function ---
-def main() -> None:
+async def main():
     """Starts the bot, Flask server, and background tasks."""
+    global application_instance
+
+    # Initialize database and create tables
+    try:
+        logger.info("Initializing database and creating tables...")
+        db.create_tables()  # Ensure tables are created/verified before anything else
+        logger.info("Database initialized and tables created/verified.")
+    except Exception as e:
+        logger.critical(f"FATAL: Failed to initialize database or create tables: {e}", exc_info=True)
+        logger.critical("Bot cannot start without a working database. Exiting.")
+        return # Exit if DB setup fails
+
     logger.info("----- Bot Starting -----")
 
     # --- Database Initialization ---
