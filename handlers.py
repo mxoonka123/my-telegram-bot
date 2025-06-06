@@ -1833,8 +1833,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
                 now = datetime.now(timezone.utc)
                 today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-                if not user.last_message_reset or user.last_message_reset < today_start:
-                    logger.info(f"/start: Resetting daily limit for user {user_id}.")
+                # Ensure user.last_message_reset is UTC-aware for comparison
+                # today_start is already UTC-aware
+                last_reset_dt_for_comparison = user.last_message_reset
+                if last_reset_dt_for_comparison and last_reset_dt_for_comparison.tzinfo is None:
+                    # Assume naive datetime from DB (e.g., SQLite) is intended to be UTC
+                    last_reset_dt_for_comparison = last_reset_dt_for_comparison.replace(tzinfo=timezone.utc)
+
+                if not last_reset_dt_for_comparison or last_reset_dt_for_comparison < today_start: # Compare aware with aware
+                    logger.info(f"/start: Resetting daily limit for user {user.telegram_id}.")
                     user.daily_message_count = 0
                     user.last_message_reset = now
                     db.commit()
