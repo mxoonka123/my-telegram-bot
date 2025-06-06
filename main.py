@@ -578,13 +578,15 @@ async def main():
     logger.info("Handlers registered.")
 
     # --- Start Bot ---
-    logger.info("Starting bot polling...")
-    application.run_polling(
+    logger.info("Starting bot using run_async...")
+    await application.run_async(
         allowed_updates=Update.ALL_TYPES,
         drop_pending_updates=True, # Good for development, consider False for production if needed
         timeout=30, # Increase polling timeout
+        # stop_signals=None # Let asyncio.run() handle signals
     )
-    logger.info("----- Bot Stopped -----")
+    # run_async will block here until the application is stopped.
+    logger.info("----- Bot Stopped (after run_async) -----")
 
 if __name__ == "__main__":
     asyncio.run(main())
