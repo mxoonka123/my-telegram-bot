@@ -385,7 +385,7 @@ async def post_init(application: Application):
 
 
 # --- Main Function ---
-async def main():
+def main():
     """Starts the bot, Flask server, and background tasks."""
     global application_instance
 
@@ -578,15 +578,13 @@ async def main():
     logger.info("Handlers registered.")
 
     # --- Start Bot ---
-    logger.info("Starting bot using run_async...")
-    await application.run_async(
+    logger.info("Starting bot polling...")
+    application.run_polling(
         allowed_updates=Update.ALL_TYPES,
         drop_pending_updates=True, # Good for development, consider False for production if needed
         timeout=30, # Increase polling timeout
-        # stop_signals=None # Let asyncio.run() handle signals
     )
-    # run_async will block here until the application is stopped.
-    logger.info("----- Bot Stopped (after run_async) -----")
+    logger.info("----- Bot Stopped -----")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
