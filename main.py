@@ -389,54 +389,39 @@ async def main():
     """Starts the bot, Flask server, and background tasks."""
     global application_instance
 
-    # Initialize database and create tables
+    # Initialize database connection FIRST
     try:
-        logger.info("Initializing database and creating tables...")
-        db.create_tables()  # Ensure tables are created/verified before anything else
-        logger.info("Database initialized and tables created/verified.")
+        logger.info("Initializing database connection...")
+        db.initialize_database() # Initialize the engine
+        logger.info("Database connection initialized.")
     except Exception as e:
-        logger.critical(f"FATAL: Failed to initialize database or create tables: {e}", exc_info=True)
-        logger.critical("Bot cannot start without a working database. Exiting.")
-        return # Exit if DB setup fails
+        logger.critical(f"FATAL: Failed to initialize database connection: {e}", exc_info=True)
+        logger.critical("Bot cannot start without a working database connection. Exiting.")
+        return # Exit if DB connection setup fails
+
+    # THEN create tables
+    try:
+        logger.info("Attempting to create database tables (if they don't exist)...")
+        db.create_tables()  # Now engine should be available
+        logger.info("Database tables verified/created successfully.")
+    except Exception as e:
+        logger.critical(f"FATAL: Failed to create/verify database tables: {e}", exc_info=True)
+        logger.critical("Bot cannot start if table creation/verification fails. Exiting.")
+        return # Exit if table creation fails
 
     logger.info("----- Bot Starting -----")
 
-    # --- Database Initialization ---
-    # CRITICAL: Ensure DB schema matches models before proceeding
-    try:
-        logger.info("Initializing database connection...")
-        db.initialize_database()
-        logger.info("Verifying database tables (this does NOT create missing columns automatically)...")
-        # create_tables() might fail if schema exists but is wrong.
-        # A proper migration tool (like Alembic) is recommended for production.
-        # For now, we rely on the user having fixed the schema manually.
-        db.create_tables() # This will create tables IF THEY DON'T EXIST AT ALL.
-        logger.info("Database connection initialized and tables verified/created.")
-        # Test connection again
-        with db.engine.connect() as conn:
-            logger.info("Successfully tested database connection after initialization.")
-            # Optional: Add a simple query to test if the new columns exist now
-            try:
-                conn.execute(db.select(db.PersonaConfig.communication_style).limit(1))
-                logger.info("Successfully queried a new column (communication_style). Schema seems updated.")
-            except ProgrammingError as pe:
-                 if "UndefinedColumn" in str(pe):
-                      logger.critical("FATAL: Database schema is still incorrect! Missing columns like 'communication_style'.")
-                      logger.critical("Please run the ALTER TABLE commands in Supabase SQL Editor and restart the bot.")
-                      return # Stop if schema is wrong
-                 else:
-                     raise # Re-raise other programming errors
-            except Exception as test_e:
-                logger.warning(f"Could not verify new column existence, continuing: {test_e}")
+    # The following block for db.initialize_database() is now redundant as it's called above.
+    # We can remove it or ensure it doesn't cause issues if called декоративно.
+    # For now, let's comment it out to avoid double initialization or confusion.
+    # try:
+    #     logger.info("Re-Verifying database connection (already initialized)...")
+    #     # db.initialize_database() # Already called
+    #     logger.info("Database connection re-verified.")
+    # except Exception as e:
+    #     logger.warning(f"Issue during re-verification of DB connection (should be harmless): {e}", exc_info=True)
 
-    except (OperationalError, SQLAlchemyError, ProgrammingError, RuntimeError, ValueError) as e:
-         logger.critical(f"Database initialization or connection test failed: {e}. Exiting.")
-         logger.critical("Ensure DATABASE_URL is correct and the database schema matches the models in db.py.")
-         return
-    except Exception as e:
-         logger.critical(f"An unexpected critical error during DB setup: {e}. Exiting.", exc_info=True)
-         return
-    logger.info("Database setup appears complete.")
+
 
     # --- Start Flask Webhook Server ---
     flask_thread = threading.Thread(target=run_flask, name="FlaskWebhookThread", daemon=True)
