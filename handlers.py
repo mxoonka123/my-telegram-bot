@@ -1850,10 +1850,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 status_raw = "⭐ Premium" if user.is_active_subscriber else "🆓 Free"
                 expires_raw = ""
                 if user.is_active_subscriber and user.subscription_expires_at:
-                     if user.subscription_expires_at > now + timedelta(days=365*10):
+                     # Ensure user.subscription_expires_at is UTC-aware for comparison
+                     # now is already UTC-aware
+                     subscription_expires_dt_for_comparison = user.subscription_expires_at
+                     if subscription_expires_dt_for_comparison.tzinfo is None:
+                         # Assume naive datetime from DB (e.g., SQLite) is intended to be UTC
+                         subscription_expires_dt_for_comparison = subscription_expires_dt_for_comparison.replace(tzinfo=timezone.utc)
+
+                     # now + timedelta is also UTC-aware
+                     if subscription_expires_dt_for_comparison > now + timedelta(days=365*10):
                          expires_raw = "(бессрочно)"
                      else:
-                         expires_raw = f"до {user.subscription_expires_at.strftime('%d.%m.%Y')}"
+                         expires_raw = f"до {user.subscription_expires_at.strftime('%d.%m.%Y')}" # Original for display is fine
 
                 persona_count = len(user.persona_configs) if user.persona_configs else 0
                 persona_limit_raw = f"{persona_count}/{user.persona_limit}"
