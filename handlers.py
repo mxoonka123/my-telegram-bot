@@ -1943,24 +1943,24 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     # Команды в ``, параметры < > [] внутри них НЕ экранируем
     help_text_md = f"""
 *_Основные команды:_*
-`/start`        - {escape_markdown_v2("Начало работы")}
-`/help`         - {escape_markdown_v2("Эта справка")}
-`/menu`         - {escape_markdown_v2("Главное меню")}
-`/profile`      - {escape_markdown_v2("Ваш профиль и лимиты")}
-`/subscribe`    - {escape_markdown_v2("Информация о подписке")}
+`/start`        \- {escape_markdown_v2("Начало работы")}
+`/help`         \- {escape_markdown_v2("Эта справка")}
+`/menu`         \- {escape_markdown_v2("Главное меню")}
+`/profile`      \- {escape_markdown_v2("Ваш профиль и лимиты")}
+`/subscribe`    \- {escape_markdown_v2("Информация о подписке")}
 
 *_Управление личностью в чате:_*
-`/mood`         - {escape_markdown_v2("Сменить настроение")}
-`/clear`        - {escape_markdown_v2("Очистить память (контекст)")}
-`/reset`        - {escape_markdown_v2("Сбросить диалог (то же, что /clear)")}
-`/mutebot`      - {escape_markdown_v2("Запретить отвечать в чате")}
-`/unmutebot`    - {escape_markdown_v2("Разрешить отвечать в чате")}
+`/mood`         \- {escape_markdown_v2("Сменить настроение")}
+`/clear`        \- {escape_markdown_v2("Очистить память (контекст)")}
+`/reset`        \- {escape_markdown_v2("Сбросить диалог (то же, что /clear)")}
+`/mutebot`      \- {escape_markdown_v2("Запретить отвечать в чате")}
+`/unmutebot`    \- {escape_markdown_v2("Разрешить отвечать в чате")}
 
 *_Создание и настройка личностей:_*
-`/createpersona <имя> [описание]` - {escape_markdown_v2("Создать новую")}
-`/mypersonas`    - {escape_markdown_v2("Список ваших личностей")}
-`/editpersona <id>`   - {escape_markdown_v2("Редактировать (имя, описание, стиль, настроения и др.)")}
-`/deletepersona <id>` - {escape_markdown_v2("Удалить личность")}
+`/createpersona <имя> [описание]` \- {escape_markdown_v2("Создать новую")}
+`/mypersonas`    \- {escape_markdown_v2("Список ваших личностей")}
+`/editpersona <id>`   \- {escape_markdown_v2("Редактировать (имя, описание, стиль, настроения и др.)")}
+`/deletepersona <id>` \- {escape_markdown_v2("Удалить личность")}
 
 *_Дополнительно:_*
 • {escape_markdown_v2("Бот может реагировать на фото и голосовые сообщения (настраивается в /editpersona <id>).")}
