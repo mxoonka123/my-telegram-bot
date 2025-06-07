@@ -69,8 +69,10 @@ from db import (
     create_persona_config, get_personas_by_owner, get_persona_by_name_and_owner,
     get_persona_by_id_and_owner, check_and_update_user_limits, activate_subscription,
     create_bot_instance, link_bot_instance_to_chat, delete_persona_config,
-    get_db, get_active_chat_bot_instance_with_relations,
-    User, PersonaConfig, BotInstance, ChatBotInstance, ChatContext
+    get_user_by_telegram_id, get_all_user_personas_with_usage, count_user_personas,
+    delete_user_data_by_telegram_id, get_chat_bot_instance_by_id, get_all_active_chat_bot_instances,
+    User, PersonaConfig as DBPersonaConfig, BotInstance as DBBotInstance, ChatBotInstance as DBChatBotInstance, ChatContext, Subscription, func, get_db,
+    DEFAULT_SYSTEM_PROMPT_TEMPLATE
 )
 from persona import Persona
 from utils import (
@@ -1743,14 +1745,35 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
                     # 2. Формирование запроса к LLM
                     formatted_messages_for_llm = []
-                    system_prompt_content_parts = [persona.config.system_prompt]
+                    p_config = persona.bot_instance_ref.persona_config # Correctly get PersonaConfig
 
-                    if persona.config.mood_prompt_active and persona.config.active_mood_prompt:
-                        system_prompt_content_parts.append(f"Текущее настроение: {persona.config.active_mood_prompt}")
+                    # Determine mood
+                    if p_config.mood_prompt_active:
+                        current_mood_name = persona.current_mood or "нейтрально"
+                        current_mood_prompt_text = p_config.get_mood_prompt(current_mood_name)
+                    else:
+                        current_mood_name = "Нейтрально" # Default if mood is not active
+                        current_mood_prompt_text = p_config.get_mood_prompt("Нейтрально") # Get neutral prompt
+                    
+                    # Determine base system prompt template
+                    template_to_use = p_config.system_prompt_template_override or DEFAULT_SYSTEM_PROMPT_TEMPLATE
+                    
+                    base_system_prompt = template_to_use.format(
+                        persona_name=p_config.name,
+                        persona_description=p_config.description,
+                        communication_style=p_config.communication_style,
+                        verbosity_level=p_config.verbosity_level,
+                        mood_name=current_mood_name,
+                        mood_prompt=current_mood_prompt_text,
+                        username=update.effective_user.username or "пользователь",
+                        user_id=update.effective_user.id,
+                        chat_id=chat_id_str
+                    ).strip()
+                    
+                    system_prompt_content_parts = [base_system_prompt] # Initialize with base
 
-                    # JSON output instruction based on persona.max_response_messages
-                    # (persona.max_response_messages was used in the old code at line 1704)
-                    max_resp_msg_setting = persona.max_response_messages 
+                    # JSON output instruction
+                    max_resp_msg_setting = p_config.max_response_messages # Use p_config
                     json_instruction = "ВАЖНО: Всегда формируй свой ответ в виде одного JSON-массива строк. Каждая строка в массиве - это отдельный параграф или логическая часть твоего ответа. Пример: [\"Привет!\", \"Как твои дела?\"]"
                     if max_resp_msg_setting == 6:  # many
                         json_instruction = "ВАЖНО: Разбей свой ответ на 5-6 отдельных сообщений в формате JSON-массива. Каждое сообщение должно быть отдельной мыслью или частью ответа."
