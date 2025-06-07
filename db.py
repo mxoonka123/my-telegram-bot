@@ -955,6 +955,23 @@ def set_mood_for_chat_bot(db: Session, chat_bot_instance_id: int, mood: str):
         logger.error(f"Failed to commit mood change for {chat_bot_instance_id}: {e}", exc_info=True)
         db.rollback()
 
+def get_active_chat_bot_instance_with_relations(db: Session, chat_id: str) -> Optional[ChatBotInstance]:
+    """Gets a specific active ChatBotInstance by chat_id with its relations."""
+    try:
+        return db.query(ChatBotInstance)\
+            .filter(ChatBotInstance.chat_id == chat_id)\
+            .filter(ChatBotInstance.active == True)\
+            .options(
+                selectinload(ChatBotInstance.bot_instance_ref)
+                .selectinload(BotInstance.persona_config)
+                .selectinload(PersonaConfig.owner),
+                selectinload(ChatBotInstance.bot_instance_ref)
+                .selectinload(BotInstance.owner)
+            ).one_or_none()
+    except SQLAlchemyError as e:
+        logger.error(f"DB error getting active ChatBotInstance for chat_id {chat_id}: {e}", exc_info=True)
+        return None
+
 # --- Bulk Operations / Tasks ---
 
 def get_all_active_chat_bot_instances(db: Session) -> List[ChatBotInstance]:

@@ -46,6 +46,7 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy import func
 from sqlalchemy import delete
 from db import PersonaConfig as DBPersonaConfig # Added to fix NameError
+from db import get_active_chat_bot_instance_with_relations # Added to fix NameError
 
 from yookassa import Configuration as YookassaConfig, Payment
 from yookassa.domain.models.currency import Currency
