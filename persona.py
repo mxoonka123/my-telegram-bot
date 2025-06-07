@@ -7,7 +7,7 @@ import urllib.parse
 
 # Убедимся, что импортируем нужные вещи
 from config import (
-    DEFAULT_MOOD_PROMPTS, BASE_PROMPT_SUFFIX, LANGDOCK_RESPONSE_INSTRUCTIONS
+    DEFAULT_MOOD_PROMPTS, BASE_PROMPT_SUFFIX
 )
 # Шаблон DEFAULT_SYSTEM_PROMPT_TEMPLATE теперь берется из DB, но нужен для fallback
 from db import PersonaConfig, ChatBotInstance, User, DEFAULT_SYSTEM_PROMPT_TEMPLATE

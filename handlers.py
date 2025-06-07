@@ -3,7 +3,7 @@ import httpx
 import json
 import logging
 from datetime import datetime, timezone
-from .utils import count_gemini_tokens
+from utils import count_gemini_tokens
 # Ensure config is imported, it's likely already there but as a safeguard:
 import config
 import os
@@ -53,7 +53,7 @@ from yookassa.domain.models.receipt import Receipt, ReceiptItem
 
 import config
 from config import (
-    GEMINI_API_KEY, LANGDOCK_API_KEY, LANGDOCK_BASE_URL, LANGDOCK_MODEL,
+    GEMINI_API_KEY,
     DEFAULT_MOOD_PROMPTS, YOOKASSA_SHOP_ID, YOOKASSA_SECRET_KEY,
     SUBSCRIPTION_PRICE_RUB, SUBSCRIPTION_CURRENCY, WEBHOOK_URL_BASE,
     SUBSCRIPTION_DURATION_DAYS, FREE_DAILY_MESSAGE_LIMIT, PAID_DAILY_MESSAGE_LIMIT,

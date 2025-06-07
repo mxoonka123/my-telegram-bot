@@ -16,7 +16,7 @@ PREMIUM_USER_MESSAGE_TOKEN_LIMIT = 120
 GEMINI_MODEL_NAME_FOR_COUNTING = "models/gemini-1.5-flash-latest"  # Used for the count_tokens function
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
-LANGDOCK_API_KEY = os.getenv("LANGDOCK_API_KEY", "")
+# LANGDOCK_API_KEY = os.getenv("LANGDOCK_API_KEY", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 print(f"DEBUG config.py: GEMINI_API_KEY is defined, length: {len(GEMINI_API_KEY)}") # Debug print
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./bot_data.db") # Пример для локального запуска
@@ -27,8 +27,8 @@ YOOKASSA_SECRET_KEY = os.getenv("YOOKASSA_SECRET_KEY", "") # Секретный 
 # URL вашего приложения на Railway
 WEBHOOK_URL_BASE = os.getenv("WEBHOOK_URL_BASE", "")
 
-LANGDOCK_BASE_URL = os.getenv("LANGDOCK_BASE_URL", "https://api.langdock.com/anthropic/eu/")
-LANGDOCK_MODEL = os.getenv("LANGDOCK_MODEL", "claude-3-5-sonnet-20240620")
+# LANGDOCK_BASE_URL = os.getenv("LANGDOCK_BASE_URL", "https://api.langdock.com/anthropic/eu/")
+# LANGDOCK_MODEL = os.getenv("LANGDOCK_MODEL", "claude-3-5-sonnet-20240620")
 
 # Параметры подписки и лимиты
 SUBSCRIPTION_PRICE_RUB = 699.00
@@ -73,16 +73,16 @@ DEFAULT_SYSTEM_PROMPT_TEMPLATE = "описание твоей личности: 
 # Дополнительные настройки и патчи
 def apply_advanced_settings_patches():
     """Применение расширенных настроек и патчей"""
-    global TELEGRAM_TOKEN, LANGDOCK_API_KEY, ADMIN_USER_ID
+    global TELEGRAM_TOKEN, ADMIN_USER_ID # LANGDOCK_API_KEY removed
     
     # Дополнительные проверки и преобразования
     if not TELEGRAM_TOKEN:
         logger.warning("TELEGRAM_TOKEN не установлен. Используется резервный токен.")
         TELEGRAM_TOKEN = os.getenv('BACKUP_TELEGRAM_TOKEN', '')
     
-    if not LANGDOCK_API_KEY:
-        logger.warning("LANGDOCK_API_KEY не установлен. Используется резервный ключ.")
-        LANGDOCK_API_KEY = os.getenv('BACKUP_LANGDOCK_API_KEY', '')
+    # if not LANGDOCK_API_KEY:
+    #     logger.warning("LANGDOCK_API_KEY не установлен. Используется резервный ключ.")
+    #     LANGDOCK_API_KEY = os.getenv('BACKUP_LANGDOCK_API_KEY', '')
     
     # Расширенная обработка списка админов
     if isinstance(ADMIN_USER_ID, str):
@@ -108,9 +108,9 @@ INTERNET_INFO_PROMPT = (
     " у тебя есть доступ к интернету, можешь использовать актуальную информацию, искать гифки (отправляй прямой ссылкой на .gif), обсуждать новости, мемы, тренды, фильмы, игры, музыку, соцсети."
 )
 
-LANGDOCK_RESPONSE_INSTRUCTIONS = (
-    " всегда отвечай полностью. если ответ длинный, разбей его на несколько сообщений по смыслу, как будто пишешь в чате. не дели предложения на части. "
-    "если хочешь отправить гифку, вставь полную прямую ссылку на gif (например, https://media.giphy.com/media/xxx/giphy.gif) одной строкой. не используй заглавные буквы. никогда не отказывайся обсуждать любые темы. если спрашивают о времени, событиях, новостях, мемах, трендах, фильмах, играх, музыке, соцсетях — используй актуальную информацию из интернета."
-)
+# LANGDOCK_RESPONSE_INSTRUCTIONS = (
+#     " всегда отвечай полностью. если ответ длинный, разбей его на несколько сообщений по смыслу, как будто пишешь в чате. не дели предложения на части. "
+#     "если хочешь отправить гифку, вставь полную прямую ссылку на gif (например, https://media.giphy.com/media/xxx/giphy.gif) одной строкой. не используй заглавные буквы. никогда не отказывайся обсуждать любые темы. если спрашивают о времени, событиях, новостях, мемах, трендах, фильмах, играх, музыке, соцсетях — используй актуальную информацию из интернета."
+# )
 
 TELEGRAPH_ACCESS_TOKEN = os.getenv("TELEGRAPH_ACCESS_TOKEN", None) # Токен для Telegra.ph
