@@ -2,6 +2,10 @@ import asyncio
 import httpx
 import json
 import logging
+from datetime import datetime, timezone
+from .utils import count_gemini_tokens
+# Ensure config is imported, it's likely already there but as a safeguard:
+import config
 import os
 import random
 import re
@@ -1530,6 +1534,66 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                             db_session.rollback()
                     return # Exit handler as no text response is needed.
 
+                # --- Логика лимитов для премиум-пользователей ---
+                premium_limit_checks_passed = True
+                premium_limit_state_changed = False # Флаг, что состояние лимитов пользователя изменилось (например, сброс месячного счетчика)
+
+                # 1. Проверка и сброс месячного счетчика
+                now_utc = datetime.now(timezone.utc)
+                if owner_user.message_count_reset_at is None or \
+                   (owner_user.message_count_reset_at.year != now_utc.year or \
+                    owner_user.message_count_reset_at.month != now_utc.month):
+                    
+                    logger.info(f"Resetting monthly message count for user {owner_user.id} (TG: {owner_user.telegram_id}). Old count: {owner_user.monthly_message_count}, old reset_at: {owner_user.message_count_reset_at}")
+                    owner_user.monthly_message_count = 0
+                    owner_user.message_count_reset_at = now_utc
+                    db_session.add(owner_user) # Явно добавляем для отслеживания изменений
+                    premium_limit_state_changed = True
+
+                if owner_user.is_active_subscriber:
+                    # 2. Проверка лимита токенов на сообщение
+                    message_tokens = count_gemini_tokens(message_text)
+                    if message_tokens > config.PREMIUM_USER_MESSAGE_TOKEN_LIMIT:
+                        logger.info(f"Premium user {owner_user.id} (TG: {owner_user.telegram_id}) exceeded token limit. Message tokens: {message_tokens}, Limit: {config.PREMIUM_USER_MESSAGE_TOKEN_LIMIT}")
+                        await update.message.reply_text(
+                            f"❌ Ваше сообщение слишком длинное ({message_tokens} токенов). "
+                            f"Для премиум-пользователей лимит на одно сообщение составляет {config.PREMIUM_USER_MESSAGE_TOKEN_LIMIT} токенов."
+                        )
+                        premium_limit_checks_passed = False
+                    
+                    if premium_limit_checks_passed:
+                        # 3. Проверка месячного лимита сообщений
+                        if owner_user.monthly_message_count >= config.PREMIUM_USER_MONTHLY_MESSAGE_LIMIT:
+                            logger.info(f"Premium user {owner_user.id} (TG: {owner_user.telegram_id}) exceeded monthly message limit. Count: {owner_user.monthly_message_count}, Limit: {config.PREMIUM_USER_MONTHLY_MESSAGE_LIMIT}")
+                            # Рассчитываем, когда будет сброс
+                            next_reset_month = now_utc.month % 12 + 1
+                            next_reset_year = now_utc.year + (1 if now_utc.month == 12 else 0)
+                            # Первое число следующего месяца
+                            next_reset_date_obj = datetime(next_reset_year, next_reset_month, 1, tzinfo=timezone.utc)
+                            
+                            months_ru = ["января", "февраля", "марта", "апреля", "мая", "июня", 
+                                         "июля", "августа", "сентября", "октября", "ноября", "декабря"]
+                            next_reset_date_str = f"{next_reset_date_obj.day} {months_ru[next_reset_date_obj.month - 1]} {next_reset_date_obj.year} г."
+
+                            await update.message.reply_text(
+                                f"😔 Вы исчерпали свой месячный лимит сообщений для премиум-пользователей ({config.PREMIUM_USER_MONTHLY_MESSAGE_LIMIT}).\n"
+                                f"Новый лимит будет доступен {next_reset_date_str}."
+                            )
+                            premium_limit_checks_passed = False
+
+                if not premium_limit_checks_passed:
+                    if premium_limit_state_changed: # Если был сброс счетчика, его нужно сохранить
+                        try:
+                            db_session.commit()
+                            logger.info(f"Committed monthly count reset for user {owner_user.id} before exiting due to premium limit.")
+                        except Exception as e_commit_prem_limit:
+                            logger.error(f"Error committing monthly count reset for user {owner_user.id} on premium limit: {e_commit_prem_limit}", exc_info=True)
+                            db_session.rollback()
+                    return # Выход из handle_message, если лимиты не пройдены
+
+                # TODO: Инкрементировать owner_user.monthly_message_count += 1 ПОСЛЕ УСПЕШНОГО ответа от Gemini
+                #       и ПЕРЕД db_session.commit(), если пользователь премиум.
+
                 # --- Проверка лимитов владельца ---
                 limit_ok = check_and_update_user_limits(db_session, owner_user)
                 limit_state_updated = db_session.is_modified(owner_user)
@@ -1685,6 +1749,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
                     if limit_state_updated or context_user_msg_added or context_response_prepared:
                         try:
+                        # --- НАЧАЛО ВСТАВКИ ДЛЯ ИНКРЕМЕНТА СЧЕТЧИКА ---
+                        if owner_user.is_active_subscriber and premium_limit_checks_passed and context_response_prepared:
+                            owner_user.monthly_message_count += 1
+                            # Убедимся, что SQLAlchemy отслеживает это изменение
+                            # Если owner_user уже был добавлен в сессию ранее (например, при сбросе месячного счетчика),
+                            # это может быть избыточным, но не повредит.
+                            # Если же он не был изменен с момента загрузки, db_session.add() необходим.
+                            db_session.add(owner_user) 
+                            logger.info(f"Incremented monthly message count for premium user {owner_user.id} (TG: {owner_user.telegram_id}). New count: {owner_user.monthly_message_count}")
+                        # --- КОНЕЦ ВСТАВКИ ДЛЯ ИНКРЕМЕНТА СЧЕТЧИКА ---
                             logger.debug(f"handle_message: Final commit. Limit: {limit_state_updated}, UserCtx: {context_user_msg_added}, RespCtx: {context_response_prepared}")
                             db_session.commit()
                             logger.info(f"handle_message: Successfully processed message and committed changes for chat {chat_id_str}.")

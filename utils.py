@@ -8,9 +8,37 @@ import random
 TELEGRAM_MAX_LEN = 4096  # Максимальная длина сообщения в Telegram
 MIN_SENSIBLE_LEN = 50   # Минимальная длина для разумного сообщения
 import logging
+import google.generativeai as genai
+import config
 import math
 
 logger = logging.getLogger(__name__)
+
+# Configure Gemini API key if not already configured elsewhere globally
+if config.GEMINI_API_KEY:
+    genai.configure(api_key=config.GEMINI_API_KEY)
+
+def count_gemini_tokens(text_content: str) -> int:
+    """Counts the number of tokens in the text_content using the Gemini API."""
+    if not config.GEMINI_API_KEY:
+        logger.error("GEMINI_API_KEY not configured. Cannot count tokens.")
+        # Fallback or raise error - for now, returning a high number to block if not configured
+        return 9999 # Or raise an exception
+    
+    if not text_content:
+        return 0
+        
+    try:
+        model_name = config.GEMINI_MODEL_NAME_FOR_COUNTING
+        model = genai.GenerativeModel(model_name)
+        response = model.count_tokens(text_content)
+        return response.total_tokens
+    except Exception as e:
+        logger.error(f"Error counting Gemini tokens for model {model_name}: {e}", exc_info=True)
+        # Fallback in case of API error - might be better to allow message and log error
+        # For now, returning a high number to be safe, or consider a simpler estimation
+        return len(text_content) // 3 # Very rough fallback estimation
+
 
 # Constants are defined above
 # Transition words (lowercase) indicating potential topic shifts

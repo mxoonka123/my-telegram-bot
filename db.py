@@ -124,6 +124,10 @@ class User(Base):
     daily_message_count = Column(Integer, default=0, nullable=False)
     last_message_reset = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
 
+    # Monthly limits for premium users
+    monthly_message_count = Column(Integer, default=0, nullable=False)
+    message_count_reset_at = Column(DateTime(timezone=True), nullable=True)  # Storing as timezone-aware
+
     persona_configs = relationship("PersonaConfig", back_populates="owner", cascade="all, delete-orphan", lazy="selectin")
     bot_instances = relationship("BotInstance", back_populates="owner", cascade="all, delete-orphan", lazy="selectin")
 

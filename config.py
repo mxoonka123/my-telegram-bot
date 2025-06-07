@@ -10,6 +10,11 @@ logger = logging.getLogger(__name__)
 ADMIN_USER_ID = 1324596928 # Замените на ваш реальный ID администратора, если нужно
 CHANNEL_ID = "@NuNuAiChannel" # ID или юзернейм вашего канала
 
+# Premium User Limits
+PREMIUM_USER_MONTHLY_MESSAGE_LIMIT = 1500
+PREMIUM_USER_MESSAGE_TOKEN_LIMIT = 120
+GEMINI_MODEL_NAME_FOR_COUNTING = "models/gemini-1.5-flash-latest"  # Used for the count_tokens function
+
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 LANGDOCK_API_KEY = os.getenv("LANGDOCK_API_KEY", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
