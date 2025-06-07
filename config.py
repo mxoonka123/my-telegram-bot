@@ -12,6 +12,8 @@ CHANNEL_ID = "@NuNuAiChannel" # ID или юзернейм вашего кана
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 LANGDOCK_API_KEY = os.getenv("LANGDOCK_API_KEY", "")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+print(f"DEBUG config.py: GEMINI_API_KEY is defined, length: {len(GEMINI_API_KEY)}") # Debug print
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./bot_data.db") # Пример для локального запуска
 
 YOOKASSA_SHOP_ID = os.getenv("YOOKASSA_SHOP_ID", "") # ID магазина
