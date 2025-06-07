@@ -4116,13 +4116,13 @@ async def _handle_back_to_wizard_menu(update: Update, context: ContextTypes.DEFA
     
         return await fixed_show_edit_wizard_menu(update, context, persona)
 
-async def _show_edit_wizard_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, persona_config: PersonaConfig) -> int:
+async def _show_edit_wizard_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, persona_config: DBPersonaConfig) -> int:
     """Прокси-функция для перенаправления на fixed_show_edit_wizard_menu.
     Эта функция вызывается из _start_edit_convo и необходима для совместимости."""
     logger.debug(f"_show_edit_wizard_menu: Redirecting to fixed_show_edit_wizard_menu for persona {persona_config.id}")
     return await fixed_show_edit_wizard_menu(update, context, persona_config)
 
-async def fixed_show_edit_wizard_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, persona_config: PersonaConfig) -> int:
+async def fixed_show_edit_wizard_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, persona_config: DBPersonaConfig) -> int:
     """Отображает главное меню настройки персоны. Отправляет новое или редактирует существующее."""
     try:
         query = update.callback_query 
