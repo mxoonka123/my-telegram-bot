@@ -8,36 +8,47 @@ import random
 TELEGRAM_MAX_LEN = 4096  # Максимальная длина сообщения в Telegram
 MIN_SENSIBLE_LEN = 50   # Минимальная длина для разумного сообщения
 import logging
-import google.generativeai as genai
 import config
 import math
+import tiktoken # Added for OpenRouter token counting
 
 logger = logging.getLogger(__name__)
 
-# Configure Gemini API key if not already configured elsewhere globally
-if config.GEMINI_API_KEY:
-    genai.configure(api_key=config.GEMINI_API_KEY)
-
-def count_gemini_tokens(text_content: str) -> int:
-    """Counts the number of tokens in the text_content using the Gemini API."""
-    if not config.GEMINI_API_KEY:
-        logger.error("GEMINI_API_KEY not configured. Cannot count tokens.")
-        # Fallback or raise error - for now, returning a high number to block if not configured
-        return 9999 # Or raise an exception
+def count_openai_compatible_tokens(text_content: str, model_identifier: str = config.OPENROUTER_MODEL_NAME) -> int:
+    """
+    Counts the number of tokens in the text_content using tiktoken,
+    compatible with OpenAI models and OpenRouter's Gemini via OpenAI-compatible API.
     
+    Args:
+        text_content: The text to count tokens for.
+        model_identifier: The model identifier (e.g., "google/gemini-2.5-flash-preview-05-20" or "gpt-4").
+                          This helps select the correct tiktoken encoding.
+    
+    Returns:
+        The number of tokens.
+    """
     if not text_content:
         return 0
-        
+    
     try:
-        model_name = config.GEMINI_MODEL_NAME_FOR_COUNTING
-        model = genai.GenerativeModel(model_name)
-        response = model.count_tokens(text_content)
-        return response.total_tokens
+        # For models like those from Google via OpenRouter, "cl100k_base" (used by GPT-4) 
+        # is often a suitable encoding if the specific model name isn't directly recognized by tiktoken.
+        try:
+            encoding = tiktoken.encoding_for_model(model_identifier)
+        except KeyError:
+            logger.warning(
+                f"Warning: model {model_identifier} not found by tiktoken. "
+                f"Using cl100k_base encoding as a fallback."
+            )
+            encoding = tiktoken.get_encoding("cl100k_base")
+            
+        num_tokens = len(encoding.encode(text_content))
+        return num_tokens
     except Exception as e:
-        logger.error(f"Error counting Gemini tokens for model {model_name}: {e}", exc_info=True)
-        # Fallback in case of API error - might be better to allow message and log error
-        # For now, returning a high number to be safe, or consider a simpler estimation
-        return len(text_content) // 3 # Very rough fallback estimation
+        logger.error(f"Error counting tokens with tiktoken for model {model_identifier}: {e}", exc_info=True)
+        # Fallback: very rough estimation if tiktoken fails
+        return len(text_content) // 3
+
 
 
 # Constants are defined above

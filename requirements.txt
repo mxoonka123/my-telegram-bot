@@ -20,5 +20,6 @@ aiohttp==3.9.3
 vosk==0.3.45
 ffmpeg-python==0.2.0
 cffi>=1.0
-google-generativeai==0.7.1
+openai>=1.0.0,<2.0.0
+tiktoken
 psycopg2-binary

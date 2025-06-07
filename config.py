@@ -13,12 +13,19 @@ CHANNEL_ID = "@NuNuAiChannel" # ID или юзернейм вашего кана
 # Premium User Limits
 PREMIUM_USER_MONTHLY_MESSAGE_LIMIT = 1500
 PREMIUM_USER_MESSAGE_TOKEN_LIMIT = 120
-GEMINI_MODEL_NAME_FOR_COUNTING = "models/gemini-1.5-flash-latest"  # Used for the count_tokens function
-
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
-# LANGDOCK_API_KEY = os.getenv("LANGDOCK_API_KEY", "")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-print(f"DEBUG config.py: GEMINI_API_KEY is defined, length: {len(GEMINI_API_KEY)}") # Debug print
+
+# OpenRouter Settings
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
+OPENROUTER_API_BASE_URL = "https://openrouter.ai/api/v1"
+OPENROUTER_MODEL_NAME = "google/gemini-2.5-flash-preview-05-20"
+
+if not OPENROUTER_API_KEY:
+    logger.warning("WARNING: Переменная окружения OPENROUTER_API_KEY не установлена!")
+else:
+    logger.info("INFO: OPENROUTER_API_KEY успешно загружена.")
+# Для отладки можно добавить print для нового ключа, если нужно
+# print(f"DEBUG config.py: OPENROUTER_API_KEY is defined, length: {len(OPENROUTER_API_KEY) if OPENROUTER_API_KEY else 0}")
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     logger.critical("CRITICAL: Переменная окружения DATABASE_URL не установлена!")

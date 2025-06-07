@@ -3,7 +3,8 @@ import httpx
 import json
 import logging
 from datetime import datetime, timezone
-from utils import count_gemini_tokens
+from openai import AsyncOpenAI, OpenAIError
+from utils import count_openai_compatible_tokens
 # Ensure config is imported, it's likely already there but as a safeguard:
 import config
 import os
@@ -53,7 +54,9 @@ from yookassa.domain.models.receipt import Receipt, ReceiptItem
 
 import config
 from config import (
-    GEMINI_API_KEY,
+    OPENROUTER_API_KEY,
+    OPENROUTER_API_BASE_URL,
+    OPENROUTER_MODEL_NAME,
     DEFAULT_MOOD_PROMPTS, YOOKASSA_SHOP_ID, YOOKASSA_SECRET_KEY,
     SUBSCRIPTION_PRICE_RUB, SUBSCRIPTION_CURRENCY, WEBHOOK_URL_BASE,
     SUBSCRIPTION_DURATION_DAYS,
@@ -1698,58 +1701,167 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                             logger.error(f"handle_message: ROLLBACK FAILED: {rollback_err}", exc_info=True)
                         return
                     
-                    # Добавляем инструкцию о количестве сообщений в зависимости от настройки
-                    max_messages_setting = persona.max_response_messages
-                    if max_messages_setting == 6:  # many
-                        system_prompt += "\n\nВАЖНО: Разбей свой ответ на 5-6 отдельных сообщений в формате JSON-массива. Каждое сообщение должно быть отдельной мыслью или частью ответа."
-                    elif max_messages_setting == 2:  # few
-                        system_prompt += "\n\nВАЖНО: Дай ОЧЕНЬ КРАТКИЙ ответ в формате JSON-массива. Максимум 1-2 коротких сообщения. Будь предельно лаконичным. Не разбивай ответ на много сообщений."
-                    elif max_messages_setting == 0:  # random
-                        system_prompt += "\n\nВАЖНО: Разбей свой ответ на 3-5 отдельных сообщений в формате JSON-массива."
-                    
-                    # Retrieve media bytes from context if handle_media put them there
-                    image_bytes_for_gemini = context.chat_data.pop('image_bytes_for_llm', None)
-                    voice_bytes_for_gemini = context.chat_data.pop('voice_bytes_for_llm', None)
+                    # --- OpenRouter LLM Integration --- 
 
-                    if image_bytes_for_gemini:
-                        logger.info("handle_message: Found image_bytes_for_llm in chat_data for Gemini call.")
-                    if voice_bytes_for_gemini:
-                        logger.info("handle_message: Found voice_bytes_for_llm in chat_data for Gemini call.")
-
-                    logger.info(f"handle_message: Sending request to Gemini for persona '{persona.name}' in chat {chat_id_str}.")
-                    response_text = await send_to_gemini(system_prompt, context_for_ai, image_data=image_bytes_for_gemini, audio_data=voice_bytes_for_gemini)
-
-                    if response_text.startswith(("ошибка:", "ой, ошибка связи с ai", "⏳ хм, кажется", "ai вернул пустой ответ")):
-                        logger.error(f"handle_message: Gemini returned error/empty: '{response_text}'")
+                    # 1. Check input token limit for premium users
+                    if owner_user.is_premium:
                         try:
-                            await update.message.reply_text(response_text, parse_mode=ParseMode.MARKDOWN_V2 if response_text.startswith("ai вернул") else None)
-                        except Exception as send_err:
-                            logger.error(f"handle_message: Failed to send Gemini error message to user: {send_err}", exc_info=True)
-                        if limit_state_updated or context_user_msg_added:
-                            try:
+                            user_message_token_count = count_openai_compatible_tokens(message_text, config.OPENROUTER_MODEL_NAME)
+                            if user_message_token_count > config.PREMIUM_USER_MESSAGE_TOKEN_LIMIT:
+                                logger.info(f"User {owner_user.id} input message token limit EXCEEDED: {user_message_token_count}/{config.PREMIUM_USER_MESSAGE_TOKEN_LIMIT}")
+                                await update.message.reply_text(
+                                    f"{PREMIUM_STAR} Ваше сообщение слишком длинное ({user_message_token_count} токенов). "
+                                    f"Лимит для премиум-пользователей: {config.PREMIUM_USER_MESSAGE_TOKEN_LIMIT} токенов на одно сообщение. "
+                                    f"Пожалуйста, сократите его.",
+                                    parse_mode=None
+                                )
+                                if limit_state_updated or context_user_msg_added: # Commit pending changes before returning
+                                    try: 
+                                        db_session.commit()
+                                        logger.debug("handle_message: Committed state after input token limit exceeded.")
+                                    except Exception as commit_err_token_limit:
+                                        logger.error(f"handle_message: Commit failed (input token limit): {commit_err_token_limit}", exc_info=True)
+                                        db_session.rollback()
+                                return # Exit if token limit exceeded
+                        except Exception as e_token_count:
+                            logger.error(f"Error counting tokens for user message (user {owner_user.id}): {e_token_count}", exc_info=True)
+                            await update.message.reply_text("Не удалось обработать ваше сообщение из-за внутренней ошибки подсчета. Попробуйте еще раз.", parse_mode=None)
+                            if limit_state_updated or context_user_msg_added: # Commit pending changes before returning
+                                try: 
+                                    db_session.commit()
+                                    logger.debug("handle_message: Committed state after token counting error.")
+                                except Exception as commit_err_token_count_exc:
+                                    logger.error(f"handle_message: Commit failed (token count error): {commit_err_token_count_exc}", exc_info=True)
+                                    db_session.rollback()
+                            return
+
+                    # 2. Формирование запроса к LLM
+                    formatted_messages_for_llm = []
+                    system_prompt_content_parts = [persona.config.system_prompt]
+
+                    if persona.config.mood_prompt_active and persona.config.active_mood_prompt:
+                        system_prompt_content_parts.append(f"Текущее настроение: {persona.config.active_mood_prompt}")
+
+                    # JSON output instruction based on persona.max_response_messages
+                    # (persona.max_response_messages was used in the old code at line 1704)
+                    max_resp_msg_setting = persona.max_response_messages 
+                    json_instruction = "ВАЖНО: Всегда формируй свой ответ в виде одного JSON-массива строк. Каждая строка в массиве - это отдельный параграф или логическая часть твоего ответа. Пример: [\"Привет!\", \"Как твои дела?\"]"
+                    if max_resp_msg_setting == 6:  # many
+                        json_instruction = "ВАЖНО: Разбей свой ответ на 5-6 отдельных сообщений в формате JSON-массива. Каждое сообщение должно быть отдельной мыслью или частью ответа."
+                    elif max_resp_msg_setting == 2:  # few
+                        json_instruction = "ВАЖНО: Дай ОЧЕНЬ КРАТКИЙ ответ в формате JSON-массива. Максимум 1-2 коротких сообщения. Будь предельно лаконичным. Не разбивай ответ на много сообщений."
+                    elif max_resp_msg_setting == 0:  # random (or default)
+                        json_instruction = "ВАЖНО: Разбей свой ответ на 3-5 отдельных сообщений в формате JSON-массива."
+                    system_prompt_content_parts.append(json_instruction)
+
+                    final_system_prompt_content = "\n\n".join(filter(None, system_prompt_content_parts))
+                    formatted_messages_for_llm.append({"role": "system", "content": final_system_prompt_content})
+
+                    for ctx_msg in initial_context_from_db:
+                        role = "user" if ctx_msg.role == "user" else "assistant"
+                        content = ctx_msg.content
+                        actual_content = content
+                        if role == "user" and ": " in content: # Basic username stripping
+                            parts = content.split(": ", 1)
+                            if len(parts) > 1:
+                                potential_username = parts[0]
+                                if not re.search(r'\s', potential_username): 
+                                     actual_content = parts[1]
+                        formatted_messages_for_llm.append({"role": role, "content": actual_content})
+                    
+                    formatted_messages_for_llm.append({"role": "user", "content": message_text})
+
+                    # 3. Инициализация клиента OpenAI и вызов API
+                    open_ai_client = AsyncOpenAI(
+                        api_key=config.OPENROUTER_API_KEY,
+                        base_url=config.OPENROUTER_API_BASE_URL,
+                    )
+                    assistant_response_text = None
+                    llm_call_succeeded = False
+
+                    try:
+                        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+                        
+                        logger.debug(f"Sending request to OpenRouter for CBI {persona.chat_instance.id}. Model: {config.OPENROUTER_MODEL_NAME}. Messages: {len(formatted_messages_for_llm)}")
+                        if formatted_messages_for_llm:
+                            logger.debug(f"Last message in prompt: role='{formatted_messages_for_llm[-1]['role']}', content='{str(formatted_messages_for_llm[-1]['content'])[:200]}...' ")
+
+                        llm_response = await open_ai_client.chat.completions.create(
+                            model=config.OPENROUTER_MODEL_NAME,
+                            messages=formatted_messages_for_llm,
+                            temperature=persona.config.temperature if persona.config.temperature is not None else 0.7,
+                            top_p=persona.config.top_p if persona.config.top_p is not None else 1.0,
+                        )
+                        raw_llm_output = llm_response.choices[0].message.content.strip()
+                        
+                        # Ensure response is a JSON array of strings for process_and_send_response
+                        try:
+                            parsed_json = json.loads(raw_llm_output)
+                            if isinstance(parsed_json, list) and all(isinstance(item, str) for item in parsed_json):
+                                assistant_response_text = raw_llm_output
+                            else:
+                                assistant_response_text = json.dumps([str(raw_llm_output)])
+                                logger.warning(f"LLM response was not a JSON array of strings. Wrapped: {assistant_response_text[:100]}")
+                        except json.JSONDecodeError:
+                            assistant_response_text = json.dumps([str(raw_llm_output)])
+                            logger.warning(f"LLM response was not JSON. Wrapped: {assistant_response_text[:100]}")
+                        
+                        llm_call_succeeded = True
+                        logger.info(f"LLM Response (CBI {persona.chat_instance.id}, User {owner_user.id}): '{assistant_response_text[:300]}...'")
+
+                    except OpenAIError as e:
+                        logger.error(f"OpenRouter API error (CBI {persona.chat_instance.id}, User {owner_user.id}): {e}", exc_info=True)
+                        error_message_to_user = "Произошла ошибка при обращении к нейросети. Попробуйте немного позже."
+                        if hasattr(e, 'status_code') and e.status_code == 401: error_message_to_user = "Ошибка авторизации с OpenRouter. Проверьте API ключ."
+                        elif hasattr(e, 'status_code') and e.status_code == 429: error_message_to_user = "Превышен лимит запросов к OpenRouter. Пожалуйста, подождите."
+                        await update.message.reply_text(error_message_to_user, parse_mode=None)
+                        if limit_state_updated or context_user_msg_added: # Commit before returning
+                            try: 
                                 db_session.commit()
-                                logger.debug("handle_message: Committed user context/limits after Gemini error.")
-                            except Exception as commit_err:
-                                logger.error(f"handle_message: Commit failed after Gemini error: {commit_err}", exc_info=True)
+                                logger.debug("handle_message: Committed state after OpenRouter API error.")
+                            except Exception as commit_err_api_err:
+                                logger.error(f"handle_message: Commit failed (API error): {commit_err_api_err}", exc_info=True)
+                                db_session.rollback()
+                        return
+                    except Exception as e:
+                        logger.error(f"Unexpected error during LLM call (CBI {persona.chat_instance.id}, User {owner_user.id}): {e}", exc_info=True)
+                        await update.message.reply_text("Произошла внутренняя ошибка при обработке вашего запроса.", parse_mode=None)
+                        if limit_state_updated or context_user_msg_added: # Commit before returning
+                            try: 
+                                db_session.commit()
+                                logger.debug("handle_message: Committed state after unexpected LLM error.")
+                            except Exception as commit_err_llm_exc:
+                                logger.error(f"handle_message: Commit failed (LLM unexpected error): {commit_err_llm_exc}", exc_info=True)
                                 db_session.rollback()
                         return
 
-                    response_text = response_text.strip()
-                    logger.info(f"handle_message: Received LLM response (len={len(response_text)}): '{response_text[:100]}'")
+                    if not llm_call_succeeded or not assistant_response_text or assistant_response_text == json.dumps([""]):
+                        logger.warning(f"LLM call did not produce a usable/non-empty response for CBI {persona.chat_instance.id}. Response: {assistant_response_text}")
+                        await update.message.reply_text("Модель не дала содержательного ответа. Попробуйте переформулировать запрос или обратиться позже.", parse_mode=None)
+                        if limit_state_updated or context_user_msg_added: # Commit before returning
+                            try: 
+                                db_session.commit()
+                                logger.debug("handle_message: Committed state after empty/failed LLM response.")
+                            except Exception as commit_err_empty_resp:
+                                logger.error(f"handle_message: Commit failed (empty LLM response): {commit_err_empty_resp}", exc_info=True)
+                                db_session.rollback()
+                        return
 
+                    # 4. Call existing process_and_send_response
                     context_response_prepared = await process_and_send_response(
                         update,
                         context,
                         chat_id_str,
                         persona,
-                        response_text,
+                        assistant_response_text, # This is the JSON string from LLM
                         db_session,
                         reply_to_message_id=message_id,
                         is_first_message=(len(initial_context_from_db) == 0)
                     )
+                    # --- End of OpenRouter LLM Integration ---
 
                     # Инкрементируем месячный счетчик сообщений после успешного ответа
-                    if response_text and not response_text.startswith(("ошибка:", "ой, ошибка связи с ai", "⏳ хм, кажется", "ai вернул пустой ответ")):
+                    if llm_call_succeeded and assistant_response_text and assistant_response_text != json.dumps([""]):
                         owner_user.monthly_message_count += 1
                         db_session.add(owner_user) # Убедимся, что изменение отслеживается
                         logger.info(f"Incremented monthly message count for user {owner_user.id} (TG: {owner_user.telegram_id}) to {owner_user.monthly_message_count}")
