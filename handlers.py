@@ -1755,19 +1755,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                         # Устанавливаем limit_state_changed в True, чтобы изменения сохранились, если это единственное изменение
                         limit_state_changed = True 
 
-                    if limit_state_updated or context_user_msg_added or context_response_prepared:
+                    if limit_state_changed or context_user_msg_added or context_response_prepared:
                         try:
-                            # --- НАЧАЛО ВСТАВКИ ДЛЯ ИНКРЕМЕНТА СЧЕТЧИКА ---
-                            if owner_user.is_active_subscriber and premium_limit_checks_passed and context_response_prepared:
-                                owner_user.monthly_message_count += 1
-                                # Убедимся, что SQLAlchemy отслеживает это изменение
-                                # Если owner_user уже был добавлен в сессию ранее (например, при сбросе месячного счетчика),
-                                # это может быть избыточным, но не повредит.
-                                # Если же он не был изменен с момента загрузки, db_session.add() необходим.
-                                db_session.add(owner_user) 
-                                logger.info(f"Incremented monthly message count for premium user {owner_user.id} (TG: {owner_user.telegram_id}). New count: {owner_user.monthly_message_count}")
-                            # --- КОНЕЦ ВСТАВКИ ДЛЯ ИНКРЕМЕНТА СЧЕТЧИКА ---
-                            logger.debug(f"handle_message: Final commit. Limit: {limit_state_updated}, UserCtx: {context_user_msg_added}, RespCtx: {context_response_prepared}")
+                            logger.debug(f"handle_message: Final commit. Limit: {limit_state_changed}, UserCtx: {context_user_msg_added}, RespCtx: {context_response_prepared}")
                             db_session.commit()
                             logger.info(f"handle_message: Successfully processed message and committed changes for chat {chat_id_str}.")
                         except SQLAlchemyError as final_commit_err:
