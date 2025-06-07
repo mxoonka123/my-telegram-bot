@@ -1710,7 +1710,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     # --- OpenRouter LLM Integration --- 
 
                     # 1. Check input token limit for premium users
-                    if owner_user.is_premium:
+                    if owner_user.is_active_subscriber:
                         try:
                             user_message_token_count = count_openai_compatible_tokens(message_text, config.OPENROUTER_MODEL_NAME)
                             if user_message_token_count > config.PREMIUM_USER_MESSAGE_TOKEN_LIMIT:
