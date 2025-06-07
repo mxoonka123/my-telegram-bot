@@ -1485,6 +1485,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         # Остальная логика функции здесь...
 
         logger.info(f"MSG < User {user_id} ({username}) in Chat {chat_id_str} (MsgID: {message_id}): '{message_text[:100]}'")
+        limit_state_changed = False  # Initialize flag for DB commit based on limit changes
 
         # --- Проверка подписки ---
         if not await check_channel_subscription(update, context):
@@ -1672,7 +1673,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
                     if not should_ai_respond:
                         logger.info(f"handle_message: Decision - Not responding in group chat '{update.effective_chat.title}'.")
-                        if limit_state_updated or context_user_msg_added:
+                        if limit_state_changed or context_user_msg_added:
                             try:
                                 db_session.commit()
                                 logger.debug("handle_message: Committed DB changes (limits/user context) before exiting group logic (no response).")
