@@ -1534,81 +1534,81 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                             db_session.rollback()
                     return # Exit handler as no text response is needed.
 
-                # --- Логика лимитов для премиум-пользователей ---
-                premium_limit_checks_passed = True
-                premium_limit_state_changed = False # Флаг, что состояние лимитов пользователя изменилось (например, сброс месячного счетчика)
+                # --- Логика лимитов для всех пользователей ---
+                limit_checks_passed = True
+                limit_state_changed = False # Флаг, что состояние лимитов пользователя изменилось
 
-                # 1. Проверка и сброс месячного счетчика
+                # 1. Проверка и сброс месячного счетчика (для всех пользователей)
                 now_utc = datetime.now(timezone.utc)
-                if owner_user.message_count_reset_at is None or \
-                   (owner_user.message_count_reset_at.year != now_utc.year or \
-                    owner_user.message_count_reset_at.month != now_utc.month):
-                    
-                    logger.info(f"Resetting monthly message count for user {owner_user.id} (TG: {owner_user.telegram_id}). Old count: {owner_user.monthly_message_count}, old reset_at: {owner_user.message_count_reset_at}")
-                    owner_user.monthly_message_count = 0
-                    owner_user.message_count_reset_at = now_utc
-                    db_session.add(owner_user) # Явно добавляем для отслеживания изменений
-                    premium_limit_state_changed = True
+                # Определяем начало текущего месяца
+                current_month_start = now_utc.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
-                if owner_user.is_active_subscriber:
-                    # 2. Проверка лимита токенов на сообщение
+                if owner_user.message_count_reset_at is None or owner_user.message_count_reset_at < current_month_start:
+                    logger.info(f"Resetting monthly message count for user {owner_user.id} (TG: {owner_user.telegram_id}). Old count: {owner_user.monthly_message_count}, old reset_at: {owner_user.message_count_reset_at}. New reset_at: {current_month_start}")
+                    owner_user.monthly_message_count = 0
+                    owner_user.message_count_reset_at = current_month_start # Сброс на начало текущего месяца
+                    db_session.add(owner_user) 
+                    limit_state_changed = True
+
+                # 2. Проверка лимитов в зависимости от типа пользователя
+                if owner_user.is_active_subscriber or owner_user.telegram_id == config.ADMIN_USER_ID:
+                    # Премиум-пользователь или Администратор
+                    # 2a. Проверка лимита токенов на сообщение (только для премиум, админ тоже подпадает)
                     message_tokens = count_gemini_tokens(message_text)
                     if message_tokens > config.PREMIUM_USER_MESSAGE_TOKEN_LIMIT:
-                        logger.info(f"Premium user {owner_user.id} (TG: {owner_user.telegram_id}) exceeded token limit. Message tokens: {message_tokens}, Limit: {config.PREMIUM_USER_MESSAGE_TOKEN_LIMIT}")
+                        logger.info(f"Premium user/Admin {owner_user.id} (TG: {owner_user.telegram_id}) exceeded token limit. Tokens: {message_tokens}, Limit: {config.PREMIUM_USER_MESSAGE_TOKEN_LIMIT}")
                         await update.message.reply_text(
                             f"❌ Ваше сообщение слишком длинное ({message_tokens} токенов). "
-                            f"Для премиум-пользователей лимит на одно сообщение составляет {config.PREMIUM_USER_MESSAGE_TOKEN_LIMIT} токенов."
+                            f"Лимит на одно сообщение: {config.PREMIUM_USER_MESSAGE_TOKEN_LIMIT} токенов."
                         )
-                        premium_limit_checks_passed = False
+                        limit_checks_passed = False
                     
-                    if premium_limit_checks_passed:
-                        # 3. Проверка месячного лимита сообщений
+                    if limit_checks_passed:
+                        # 2b. Проверка месячного лимита сообщений
                         if owner_user.monthly_message_count >= config.PREMIUM_USER_MONTHLY_MESSAGE_LIMIT:
-                            logger.info(f"Premium user {owner_user.id} (TG: {owner_user.telegram_id}) exceeded monthly message limit. Count: {owner_user.monthly_message_count}, Limit: {config.PREMIUM_USER_MONTHLY_MESSAGE_LIMIT}")
-                            # Рассчитываем, когда будет сброс
-                            next_reset_month = now_utc.month % 12 + 1
-                            next_reset_year = now_utc.year + (1 if now_utc.month == 12 else 0)
-                            # Первое число следующего месяца
+                            logger.info(f"Premium user/Admin {owner_user.id} (TG: {owner_user.telegram_id}) exceeded monthly message limit. Count: {owner_user.monthly_message_count}, Limit: {config.PREMIUM_USER_MONTHLY_MESSAGE_LIMIT}")
+                            # Расчет даты следующего сброса (первое число следующего месяца)
+                            next_reset_month = current_month_start.month % 12 + 1
+                            next_reset_year = current_month_start.year + (1 if current_month_start.month == 12 else 0)
                             next_reset_date_obj = datetime(next_reset_year, next_reset_month, 1, tzinfo=timezone.utc)
-                            
-                            months_ru = ["января", "февраля", "марта", "апреля", "мая", "июня", 
-                                         "июля", "августа", "сентября", "октября", "ноября", "декабря"]
+                            months_ru = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"]
                             next_reset_date_str = f"{next_reset_date_obj.day} {months_ru[next_reset_date_obj.month - 1]} {next_reset_date_obj.year} г."
-
                             await update.message.reply_text(
-                                f"😔 Вы исчерпали свой месячный лимит сообщений для премиум-пользователей ({config.PREMIUM_USER_MONTHLY_MESSAGE_LIMIT}).\n"
+                                f"😔 Вы исчерпали свой месячный лимит сообщений ({config.PREMIUM_USER_MONTHLY_MESSAGE_LIMIT}).\n"
                                 f"Новый лимит будет доступен {next_reset_date_str}."
                             )
-                            premium_limit_checks_passed = False
+                            limit_checks_passed = False
+                else:
+                    # Бесплатный пользователь
+                    if owner_user.monthly_message_count >= config.FREE_USER_MONTHLY_MESSAGE_LIMIT:
+                        logger.info(f"Free user {owner_user.id} (TG: {owner_user.telegram_id}) exceeded monthly message limit. Count: {owner_user.monthly_message_count}, Limit: {config.FREE_USER_MONTHLY_MESSAGE_LIMIT}")
+                        # Расчет даты следующего сброса
+                        next_reset_month = current_month_start.month % 12 + 1
+                        next_reset_year = current_month_start.year + (1 if current_month_start.month == 12 else 0)
+                        next_reset_date_obj = datetime(next_reset_year, next_reset_month, 1, tzinfo=timezone.utc)
+                        months_ru = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"]
+                        next_reset_date_str = f"{next_reset_date_obj.day} {months_ru[next_reset_date_obj.month - 1]} {next_reset_date_obj.year} г."
+                        await update.message.reply_text(
+                            f"😔 Вы исчерпали свой месячный лимит сообщений ({config.FREE_USER_MONTHLY_MESSAGE_LIMIT}).\n"
+                            f"Для увеличения лимита вы можете перейти на премиум-подписку (/subscribe).\n"
+                            f"Новый лимит будет доступен {next_reset_date_str}."
+                        )
+                        limit_checks_passed = False
 
-                if not premium_limit_checks_passed:
-                    if premium_limit_state_changed: # Если был сброс счетчика, его нужно сохранить
+                # 3. Если лимиты не пройдены, сохранить изменения счетчика (если были) и выйти
+                if not limit_checks_passed:
+                    if limit_state_changed: # Если был сброс счетчика, его нужно сохранить
                         try:
                             db_session.commit()
-                            logger.info(f"Committed monthly count reset for user {owner_user.id} before exiting due to premium limit.")
-                        except Exception as e_commit_prem_limit:
-                            logger.error(f"Error committing monthly count reset for user {owner_user.id} on premium limit: {e_commit_prem_limit}", exc_info=True)
+                            logger.info(f"Committed monthly count reset for user {owner_user.id} before exiting due to limit exceeded.")
+                        except Exception as e_commit_limit_exit:
+                            logger.error(f"Error committing monthly count reset for user {owner_user.id} on limit exit: {e_commit_limit_exit}", exc_info=True)
                             db_session.rollback()
                     return # Выход из handle_message, если лимиты не пройдены
 
-                # TODO: Инкрементировать owner_user.monthly_message_count += 1 ПОСЛЕ УСПЕШНОГО ответа от Gemini
-                #       и ПЕРЕД db_session.commit(), если пользователь премиум.
+                # Место для инкремента owner_user.monthly_message_count ПОСЛЕ успешного ответа от Gemini
+                # Старая логика проверки дневных лимитов удалена.
 
-                # --- Проверка лимитов владельца ---
-                limit_ok = check_and_update_user_limits(db_session, owner_user)
-                limit_state_updated = db_session.is_modified(owner_user)
-                
-                if not limit_ok:
-                    logger.info(f"Owner {owner_user.telegram_id} exceeded daily message limit ({owner_user.daily_message_count}/{owner_user.message_limit}).")
-                    await send_limit_exceeded_message(update, context, owner_user)
-                    if limit_state_updated:
-                        try:
-                            db_session.commit()
-                            logger.debug("handle_message: Committed owner limit state update (limit exceeded).")
-                        except Exception as commit_err:
-                            logger.error(f"handle_message: Commit failed after limit exceeded: {commit_err}", exc_info=True)
-                            db_session.rollback()
-                    return
 
                 # --- Добавление сообщения пользователя в контекст ---
                 current_user_message_content = f"{username}: {message_text}"
@@ -1746,6 +1746,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                         reply_to_message_id=message_id,
                         is_first_message=(len(initial_context_from_db) == 0)
                     )
+
+                    # Инкрементируем месячный счетчик сообщений после успешного ответа
+                    if response_text and not response_text.startswith(("ошибка:", "ой, ошибка связи с ai", "⏳ хм, кажется", "ai вернул пустой ответ")):
+                        owner_user.monthly_message_count += 1
+                        db_session.add(owner_user) # Убедимся, что изменение отслеживается
+                        logger.info(f"Incremented monthly message count for user {owner_user.id} (TG: {owner_user.telegram_id}) to {owner_user.monthly_message_count}")
+                        # Устанавливаем limit_state_changed в True, чтобы изменения сохранились, если это единственное изменение
+                        limit_state_changed = True 
 
                     if limit_state_updated or context_user_msg_added or context_response_prepared:
                         try:
@@ -2129,13 +2137,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                     # Assume naive datetime from DB (e.g., SQLite) is intended to be UTC
                     last_reset_dt_for_comparison = last_reset_dt_for_comparison.replace(tzinfo=timezone.utc)
 
-                if not last_reset_dt_for_comparison or last_reset_dt_for_comparison < today_start: # Compare aware with aware
-                    logger.info(f"/start: Resetting daily limit for user {user.telegram_id}.")
-                    user.daily_message_count = 0
-                    user.last_message_reset = now
-                    db.commit()
-                    db.refresh(user)
-
                 status_raw = "⭐ Premium" if user.is_active_subscriber else "🆓 Free"
                 expires_raw = ""
                 if user.is_active_subscriber and user.subscription_expires_at:
@@ -2154,12 +2155,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
                 persona_count = len(user.persona_configs) if user.persona_configs else 0
                 persona_limit_raw = f"{persona_count}/{user.persona_limit}"
-                if user.is_active_subscriber:
-                    # Для премиум-пользователей показываем месячный лимит
-                    message_limit_raw = f"{user.monthly_message_count}/{config.PREMIUM_USER_MONTHLY_MESSAGE_LIMIT}"
-                else:
-                    # Для бесплатных пользователей показываем дневной лимит
-                    message_limit_raw = f"{user.daily_message_count}/{user.message_limit}"
+                # Отображаем месячный лимит для всех пользователей
+                message_limit_raw = f"{user.monthly_message_count}/{user.message_limit}"
 
                 start_text_md = (
                     f"привет\\! 👋 я бот для создания ai\\-собеседников \\(`@{escape_markdown_v2(context.bot.username)}`\\)\\.\n\n"
@@ -3308,13 +3305,6 @@ async def profile(update: Union[Update, CallbackQuery], context: ContextTypes.DE
 
             now = datetime.now(timezone.utc)
             today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-            if not user_db.last_message_reset or user_db.last_message_reset < today_start:
-                logger.info(f"Resetting daily limit for user {user_id} during /profile check.")
-                user_db.daily_message_count = 0
-                user_db.last_message_reset = now
-                db.commit()
-                db.refresh(user_db)
-
             is_active_subscriber = user_db.is_active_subscriber
             status_text_escaped = escape_markdown_v2("⭐ Premium" if is_active_subscriber else "🆓 Free")
             expires_text_md = ""
@@ -3341,15 +3331,9 @@ async def profile(update: Union[Update, CallbackQuery], context: ContextTypes.DE
 
             persona_count = len(user_db.persona_configs) if user_db.persona_configs is not None else 0
             persona_limit_raw = f"{persona_count}/{user_db.persona_limit}"
-            if user_db.is_active_subscriber:
-                # Для премиум-пользователей показываем месячный лимит
-                msg_limit_raw = f"{user_db.monthly_message_count}/{config.PREMIUM_USER_MONTHLY_MESSAGE_LIMIT}"
-                # Также изменим текст "сообщения сегодня" на "сообщения в этом месяце"
-                message_limit_label = "сообщения в этом месяце:"
-            else:
-                # Для бесплатных пользователей показываем дневной лимит
-                msg_limit_raw = f"{user_db.daily_message_count}/{user_db.message_limit}"
-                message_limit_label = "сообщения сегодня:"
+            # Отображаем месячный лимит для всех пользователей
+            msg_limit_raw = f"{user_db.monthly_message_count}/{user_db.message_limit}"
+            message_limit_label = "сообщения в этом месяце:"
 
             persona_limit_escaped = escape_markdown_v2(persona_limit_raw)
             msg_limit_escaped = escape_markdown_v2(msg_limit_raw)
@@ -3372,7 +3356,7 @@ async def profile(update: Union[Update, CallbackQuery], context: ContextTypes.DE
                 f"Статус: {'Premium' if is_active_subscriber else 'Free'}\n"
                 f"{expires_text_plain}\n\n"
                 f"Лимиты:\n"
-                f"Сообщения сегодня: {msg_limit_raw}\n"
+                f"Сообщения в этом месяце: {msg_limit_raw}\n"
                 f"Создано личностей: {persona_limit_raw}\n\n"
             )
             if not is_active_subscriber:
@@ -3451,15 +3435,15 @@ async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE, from_cal
         price_raw = f"{SUBSCRIPTION_PRICE_RUB:.0f}"
         currency_raw = SUBSCRIPTION_CURRENCY
         duration_raw = str(SUBSCRIPTION_DURATION_DAYS)
-        paid_limit_raw = str(PAID_DAILY_MESSAGE_LIMIT)
-        free_limit_raw = str(FREE_DAILY_MESSAGE_LIMIT)
+        paid_limit_raw = str(config.PREMIUM_USER_MONTHLY_MESSAGE_LIMIT)
+        free_limit_raw = str(config.FREE_USER_MONTHLY_MESSAGE_LIMIT)
         paid_persona_raw = str(PAID_PERSONA_LIMIT)
         free_persona_raw = str(FREE_PERSONA_LIMIT)
 
         text_md = (
             f"✨ *Премиум подписка* \\({escape_markdown_v2(price_raw)} {escape_markdown_v2(currency_raw)}/мес\\) ✨\n\n"
             f"*Получите максимум возможностей:*\n"
-            f"✅ до `{escape_markdown_v2(paid_limit_raw)}` сообщений в день \\(вместо `{escape_markdown_v2(free_limit_raw)}`\\)\n"
+            f"✅ до `{escape_markdown_v2(paid_limit_raw)}` сообщений в месяц \\(вместо `{escape_markdown_v2(free_limit_raw)}`\\)\n"
             f"✅ до `{escape_markdown_v2(paid_persona_raw)}` личностей \\(вместо `{escape_markdown_v2(free_persona_raw)}`\\)\n"
             f"✅ полная настройка поведения\n"
             f"✅ создание и редактирование своих настроений\n"
@@ -3471,7 +3455,7 @@ async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE, from_cal
         text_raw = (
             f"✨ Премиум подписка ({price_raw} {currency_raw}/мес) ✨\n\n"
             f"Получите максимум возможностей:\n"
-            f"✅ {paid_limit_raw} сообщений в день (вместо {free_limit_raw})\n"
+            f"✅ {paid_limit_raw} сообщений в месяц (вместо {free_limit_raw})\n"
             f"✅ {paid_persona_raw} личностей (вместо {free_persona_raw})\n"
             f"✅ полная настройка поведения\n"
             f"✅ создание и редактирование своих настроений\n"

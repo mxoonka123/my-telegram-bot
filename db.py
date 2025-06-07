@@ -15,7 +15,8 @@ from sqlalchemy.engine.url import make_url # Импорт нужен для ло
 from config import (
     DATABASE_URL,
     DEFAULT_MOOD_PROMPTS,
-    FREE_PERSONA_LIMIT, PAID_PERSONA_LIMIT, FREE_DAILY_MESSAGE_LIMIT, PAID_DAILY_MESSAGE_LIMIT,
+    FREE_PERSONA_LIMIT, PAID_PERSONA_LIMIT, # Daily limits removed
+    PREMIUM_USER_MONTHLY_MESSAGE_LIMIT, FREE_USER_MONTHLY_MESSAGE_LIMIT, # Monthly limits added
     SUBSCRIPTION_DURATION_DAYS,
     MAX_CONTEXT_MESSAGES_SENT_TO_LLM,
     ADMIN_USER_ID
@@ -121,8 +122,8 @@ class User(Base):
 
     is_subscribed = Column(Boolean, default=False, index=True)
     subscription_expires_at = Column(DateTime(timezone=True), nullable=True, index=True)
-    daily_message_count = Column(Integer, default=0, nullable=False)
-    last_message_reset = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
+    daily_message_count = Column(Integer, default=0, nullable=False)  # DEPRECATED: Not used anymore, will be removed in a future migration.
+    last_message_reset = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True) # DEPRECATED: Not used anymore, will be removed in a future migration.
 
     # Monthly limits for premium users
     monthly_message_count = Column(Integer, default=0, nullable=False)
@@ -138,8 +139,9 @@ class User(Base):
 
     @property
     def message_limit(self) -> int:
-        if self.telegram_id == ADMIN_USER_ID: return PAID_DAILY_MESSAGE_LIMIT
-        return PAID_DAILY_MESSAGE_LIMIT if self.is_active_subscriber else FREE_DAILY_MESSAGE_LIMIT
+        # Returns the monthly message limit based on subscription status
+        if self.telegram_id == ADMIN_USER_ID: return PREMIUM_USER_MONTHLY_MESSAGE_LIMIT # Admin has premium limit
+        return PREMIUM_USER_MONTHLY_MESSAGE_LIMIT if self.is_active_subscriber else FREE_USER_MONTHLY_MESSAGE_LIMIT
 
     @property
     def persona_limit(self) -> int:

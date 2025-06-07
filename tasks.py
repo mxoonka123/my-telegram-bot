@@ -18,51 +18,9 @@ from db import (
 )
 from persona import Persona
 from utils import postprocess_response, extract_gif_links, escape_markdown_v2
-from config import FREE_PERSONA_LIMIT, PAID_PERSONA_LIMIT, FREE_DAILY_MESSAGE_LIMIT, PAID_DAILY_MESSAGE_LIMIT
+from config import FREE_PERSONA_LIMIT, PAID_PERSONA_LIMIT
 
 logger = logging.getLogger(__name__)
-
-async def reset_daily_limits_task(context: ContextTypes.DEFAULT_TYPE):
-    logger.info("Task started: Resetting daily message counts...")
-    updated_count = 0
-    try:
-        with get_db() as db_session:
-            now = datetime.now(timezone.utc)
-            today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-
-            # Select users whose last reset was before today OR is NULL
-            users_to_reset_stmt = (
-                select(User.id, User.telegram_id)
-                .where( (User.last_message_reset < today_start) | (User.last_message_reset == None) )
-            )
-            users_to_reset_results = db_session.execute(users_to_reset_stmt).all()
-
-            if users_to_reset_results:
-                user_ids_to_reset = [user.id for user in users_to_reset_results]
-                user_tg_ids_str = ", ".join(str(user.telegram_id) for user in users_to_reset_results)
-                logger.info(f"Limit reset task: Found {len(user_ids_to_reset)} users needing reset (TG IDs: {user_tg_ids_str}).")
-
-                update_stmt = (
-                    sql_update(User)
-                    .where(User.id.in_(user_ids_to_reset))
-                    .values(
-                        daily_message_count=0,
-                        last_message_reset=now # Use current time for reset
-                    )
-                    # Prevent setting values if they are already correct (optional optimization)
-                    .execution_options(synchronize_session="fetch")
-                )
-                result = db_session.execute(update_stmt)
-                db_session.commit()
-                updated_count = result.rowcount
-                logger.info(f"Limit reset task: Reset counts for {updated_count} users.")
-            else:
-                 logger.debug("Limit reset task: No users needed a reset.")
-    except (SQLAlchemyError, ProgrammingError) as e: # Catch schema errors too
-        logger.error(f"Error during daily limit reset: {e}", exc_info=True)
-    except Exception as e:
-        logger.error(f"Unexpected error during daily limit reset: {e}", exc_info=True)
-
 
 async def check_subscription_expiry_task(context: ContextTypes.DEFAULT_TYPE):
     if not isinstance(context.job.data, Application):

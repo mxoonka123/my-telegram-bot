@@ -371,13 +371,6 @@ async def post_init(application: Application):
 
     logger.info("Starting background tasks...")
     if application.job_queue:
-        # Run daily limit reset check more frequently initially, then less often
-        application.job_queue.run_repeating(
-            tasks.reset_daily_limits_task,
-            interval=timedelta(hours=1), # Check hourly
-            first=timedelta(seconds=15),
-            name="daily_limit_reset_check"
-        )
         # Run subscription check reasonably often
         application.job_queue.run_repeating(
             tasks.check_subscription_expiry_task,
