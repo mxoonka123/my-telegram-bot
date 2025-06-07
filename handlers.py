@@ -2154,7 +2154,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
                 persona_count = len(user.persona_configs) if user.persona_configs else 0
                 persona_limit_raw = f"{persona_count}/{user.persona_limit}"
-                message_limit_raw = f"{user.daily_message_count}/{user.message_limit}"
+                if user.is_active_subscriber:
+                    # Для премиум-пользователей показываем месячный лимит
+                    message_limit_raw = f"{user.monthly_message_count}/{config.PREMIUM_USER_MONTHLY_MESSAGE_LIMIT}"
+                else:
+                    # Для бесплатных пользователей показываем дневной лимит
+                    message_limit_raw = f"{user.daily_message_count}/{user.message_limit}"
 
                 start_text_md = (
                     f"привет\\! 👋 я бот для создания ai\\-собеседников \\(`@{escape_markdown_v2(context.bot.username)}`\\)\\.\n\n"
