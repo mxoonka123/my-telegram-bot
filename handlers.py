@@ -69,7 +69,7 @@ from db import (
     create_persona_config, get_personas_by_owner, get_persona_by_name_and_owner,
     get_persona_by_id_and_owner, check_and_update_user_limits, activate_subscription,
     create_bot_instance, link_bot_instance_to_chat, delete_persona_config,
-    delete_user_data_by_telegram_id, get_chat_bot_instance_by_id, get_all_active_chat_bot_instances,
+    get_chat_bot_instance_by_id, get_all_active_chat_bot_instances,
     User, PersonaConfig as DBPersonaConfig, BotInstance as DBBotInstance, ChatBotInstance as DBChatBotInstance, ChatContext, Subscription, func, get_db,
     DEFAULT_SYSTEM_PROMPT_TEMPLATE
 )
