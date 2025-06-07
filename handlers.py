@@ -1746,7 +1746,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
                     # 2. Формирование запроса к LLM
                     formatted_messages_for_llm = []
-                    p_config = persona.bot_instance_ref.persona_config # Correctly get PersonaConfig
+                    p_config = persona.config # Correctly get PersonaConfig from Persona wrapper
 
                     # Determine mood
                     if p_config.mood_prompt_active:
