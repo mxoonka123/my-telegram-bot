@@ -3341,7 +3341,16 @@ async def profile(update: Union[Update, CallbackQuery], context: ContextTypes.DE
 
             persona_count = len(user_db.persona_configs) if user_db.persona_configs is not None else 0
             persona_limit_raw = f"{persona_count}/{user_db.persona_limit}"
-            msg_limit_raw = f"{user_db.daily_message_count}/{user_db.message_limit}"
+            if user_db.is_active_subscriber:
+                # Для премиум-пользователей показываем месячный лимит
+                msg_limit_raw = f"{user_db.monthly_message_count}/{config.PREMIUM_USER_MONTHLY_MESSAGE_LIMIT}"
+                # Также изменим текст "сообщения сегодня" на "сообщения в этом месяце"
+                message_limit_label = "сообщения в этом месяце:"
+            else:
+                # Для бесплатных пользователей показываем дневной лимит
+                msg_limit_raw = f"{user_db.daily_message_count}/{user_db.message_limit}"
+                message_limit_label = "сообщения сегодня:"
+
             persona_limit_escaped = escape_markdown_v2(persona_limit_raw)
             msg_limit_escaped = escape_markdown_v2(msg_limit_raw)
 
@@ -3349,9 +3358,9 @@ async def profile(update: Union[Update, CallbackQuery], context: ContextTypes.DE
                 f"👤 *Твой профиль*\n\n"
                 f"*Статус:* {status_text_escaped}\n"
                 f"{expires_text_md}\n\n"
-                f"*Лимиты:*\n"
-                f"сообщения сегодня: `{msg_limit_escaped}`\n"
-                f"создано личностей: `{persona_limit_escaped}`\n\n"
+                f"**Лимиты:**\n"
+                f"{message_limit_label} {msg_limit_escaped}\n"
+                f"создано личностей: {persona_limit_escaped}\n\n"
             )
             promo_text_md = "🚀 хочешь больше\\? жми `/subscribe` или кнопку 'Подписка' в `/menu`\\!"
             promo_text_plain = "🚀 Хочешь больше? Жми /subscribe или кнопку 'Подписка' в /menu !"
