@@ -1558,14 +1558,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 if owner_user.is_active_subscriber or owner_user.telegram_id == config.ADMIN_USER_ID:
                     # Премиум-пользователь или Администратор
                     # 2a. Проверка лимита токенов на сообщение (только для премиум, админ тоже подпадает)
-                    message_tokens = count_gemini_tokens(message_text)
-                    if message_tokens > config.PREMIUM_USER_MESSAGE_TOKEN_LIMIT:
-                        logger.info(f"Premium user/Admin {owner_user.id} (TG: {owner_user.telegram_id}) exceeded token limit. Tokens: {message_tokens}, Limit: {config.PREMIUM_USER_MESSAGE_TOKEN_LIMIT}")
-                        await update.message.reply_text(
-                            f"❌ Ваше сообщение слишком длинное ({message_tokens} токенов). "
-                            f"Лимит на одно сообщение: {config.PREMIUM_USER_MESSAGE_TOKEN_LIMIT} токенов."
-                        )
-                        limit_checks_passed = False
+                    try:
+                        message_tokens = count_openai_compatible_tokens(message_text, config.OPENROUTER_MODEL_NAME)
+                        if message_tokens > config.PREMIUM_USER_MESSAGE_TOKEN_LIMIT:
+                            logger.info(f"Premium user/Admin {owner_user.id} (TG: {owner_user.telegram_id}) exceeded token limit. Tokens: {message_tokens}, Limit: {config.PREMIUM_USER_MESSAGE_TOKEN_LIMIT}")
+                            await update.message.reply_text(
+                                f"❌ Ваше сообщение слишком длинное ({message_tokens} токенов). "
+                                f"Лимит на одно сообщение: {config.PREMIUM_USER_MESSAGE_TOKEN_LIMIT} токенов.",
+                                parse_mode=None
+                            )
+                            limit_checks_passed = False
+                    except Exception as e_token_count_legacy:
+                        logger.error(f"Error counting tokens (legacy block for premium/admin) for user message (user {owner_user.id}): {e_token_count_legacy}", exc_info=True)
+                        await update.message.reply_text("Не удалось проверить длину вашего сообщения из-за внутренней ошибки. Попробуйте еще раз.", parse_mode=None)
+                        limit_checks_passed = False # Считаем, что проверка не пройдена, если не смогли посчитать
                     
                     if limit_checks_passed:
                         # 2b. Проверка месячного лимита сообщений
