@@ -49,7 +49,7 @@ from yookassa.domain.models.receipt import Receipt, ReceiptItem
 
 import config
 from config import (
-    LANGDOCK_API_KEY, LANGDOCK_BASE_URL, LANGDOCK_MODEL,
+    GEMINI_API_KEY, LANGDOCK_API_KEY, LANGDOCK_BASE_URL, LANGDOCK_MODEL,
     DEFAULT_MOOD_PROMPTS, YOOKASSA_SHOP_ID, YOOKASSA_SECRET_KEY,
     SUBSCRIPTION_PRICE_RUB, SUBSCRIPTION_CURRENCY, WEBHOOK_URL_BASE,
     SUBSCRIPTION_DURATION_DAYS, FREE_DAILY_MESSAGE_LIMIT, PAID_DAILY_MESSAGE_LIMIT,
@@ -508,243 +508,431 @@ def get_persona_and_context_with_owner(chat_id: Union[str, int], db: Session) ->
     return persona, context_list, owner_user
 
 
-async def send_to_langdock(system_prompt: str, messages: List[Dict[str, str]], image_data: Optional[bytes] = None, audio_data: Optional[bytes] = None) -> str:
-    """Sends the prompt and context to the Langdock API and returns the response."""
+async def send_to_gemini(system_prompt: str, messages: List[Dict[str, str]], image_data: Optional[bytes] = None, audio_data: Optional[bytes] = None) -> str:
+    """Sends the prompt and context to the Gemini API and returns the response."""
     
-    if not LANGDOCK_API_KEY:
-        logger.error("LANGDOCK_API_KEY is not set.")
-        return escape_markdown_v2("❌ ошибка: ключ api не настроен.")
+    if not config.GEMINI_API_KEY:
+        logger.error("GEMINI_API_KEY is not set.")
+        return escape_markdown_v2("❌ ошибка: ключ api gemini не настроен.")
 
     if not messages:
-        logger.error("send_to_langdock called with an empty messages list!")
+        logger.error("send_to_gemini called with an empty messages list!")
         return "ошибка: нет сообщений для отправки в ai."
 
+    api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={config.GEMINI_API_KEY}"
+    
     headers = {
-        "Authorization": f"Bearer {LANGDOCK_API_KEY}",
         "Content-Type": "application/json",
     }
-    # Берем последние N сообщений, как и раньше
-    messages_to_send = messages[-MAX_CONTEXT_MESSAGES_SENT_TO_LLM:].copy() # Используем .copy() для безопасного изменения
-    
-    last_user_message_index = -1
-    for i in range(len(messages_to_send) - 1, -1, -1):
-        if messages_to_send[i].get("role") == "user":
-            last_user_message_index = i
-            break
 
-    if last_user_message_index != -1:
-        original_user_content_field = messages_to_send[last_user_message_index].get("content", "")
+    # Transform messages to Gemini format
+    # Gemini expects a list of contents, where each content has role and parts.
+    # System prompt can be added to the first user message or as a separate turn.
+    gemini_contents = []
+    is_first_user_message = True
+
+    for msg in messages[-config.MAX_CONTEXT_MESSAGES_SENT_TO_LLM:]:
+        role = msg.get("role")
+        content_text = msg.get("content", "")
         
-        # Инициализируем new_content как массив. 
-        # Claude API ожидает массив для "content", если есть хотя бы один элемент не "text".
-        new_content_array = []
-
-        # 1. Добавляем текстовую часть
-        # original_user_content_field может быть строкой или уже массивом (если предыдущие шаги его так сформировали)
-        if isinstance(original_user_content_field, str):
-            if original_user_content_field: # Добавляем текст, только если он не пустой
-                new_content_array.append({"type": "text", "text": original_user_content_field})
-        elif isinstance(original_user_content_field, list): # Если это уже был список (маловероятно здесь)
-            new_content_array.extend(item for item in original_user_content_field if item.get("type") == "text") # Копируем только текстовые части
-
-        # 2. Добавляем изображение, если есть
-        if image_data:
+        # Gemini uses 'user' and 'model' roles.
+        gemini_role = "user" if role == "user" else "model"
+        
+        # Prepend system_prompt to the first user message's content
+        # Or, if the first message is not from user, create a synthetic user message with system prompt.
+        current_parts = []
+        if gemini_role == "user" and is_first_user_message:
+            full_text_for_first_user_message = f"{system_prompt}\n\n{content_text}"
+            current_parts.append({"text": full_text_for_first_user_message.strip()})
+            is_first_user_message = False
+        else:
+            current_parts.append({"text": content_text.strip()})
+        
+        # Handle image data for user messages if present
+        # Gemini expects image data in 'parts' alongside text for 'user' role.
+        if gemini_role == "user" and image_data:
             try:
                 import base64
                 image_base64 = base64.b64encode(image_data).decode('utf-8')
-                new_content_array.append(
-                    {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": image_base64}}
-                )
-                logger.info("Image data prepared for Langdock request.")
+                current_parts.append({
+                    "inline_data": {
+                        "mime_type": "image/jpeg", # Assuming JPEG, adjust if other types are used
+                        "data": image_base64
+                    }
+                })
+                logger.info("Image data prepared for Gemini request.")
+                image_data = None # Consume image data so it's only added once
             except Exception as e:
-                logger.error(f"Error encoding image data: {e}", exc_info=True)
+                logger.error(f"Error encoding image data for Gemini: {e}", exc_info=True)
         
-        # 3. Обработка аудио (пока что только плейсхолдер, так как прямая отправка не работает)
-        #    Если в будущем Langdock/Claude начнут поддерживать аудио, здесь будет логика его добавления.
-        #    Сейчас, если есть audio_data, мы не будем его добавлять в new_content_array в виде base64,
-        #    так как это вызывает ошибку. Вместо этого, текстовый плейсхолдер '[получено голосовое сообщение]'
-        #    уже должен быть в original_user_content_field (добавлен в handle_media).
-        
-        if audio_data:
-            # Логируем, что аудио было, но не добавляем его в запрос в формате base64, чтобы избежать ошибки.
-            # Промпт в persona.py должен быть настроен на реакцию на *факт* получения аудио.
-            logger.info("Audio data was received by send_to_langdock, but direct audio upload is likely not supported by the current API structure. Text placeholder should be used in prompt.")
-            # Если текстовый плейсхолдер для аудио не был добавлен ранее, его можно добавить здесь,
-            # но лучше это делать на более раннем этапе (в handle_media), что у тебя и сделано.
-            # Например, если new_content_array пуст и есть audio_data:
-            if not any(item.get("type") == "text" for item in new_content_array):
-                # Этого не должно происходить, если handle_media корректно добавляет плейсхолдер
-                logger.warning("Audio data present, but no text part found in new_content_array. Adding generic audio placeholder.")
-                new_content_array.append({"type": "text", "text": "[Пришло голосовое сообщение]"})
-        # Обновляем сообщение пользователя
-        messages_to_send[last_user_message_index]["content"] = new_content_array
-        
-        # Логирование (осторожно с base64 в логах)
-        try:
-            log_content_structure = messages_to_send[last_user_message_index]['content']
-            temp_logged_content_for_info = []
-            for item_val in log_content_structure:
-                if isinstance(item_val, dict) and item_val.get('type') == 'image' and \
-                   isinstance(item_val.get('source'), dict) and 'data' in item_val['source']:
-                    copied_item = item_val.copy()
-                    copied_item['source'] = item_val['source'].copy()
-                    copied_item['source']['data'] = f"[BASE64_TRUNCATED_FOR_LOG_LEN_{len(item_val['source']['data'])}]"
-                    temp_logged_content_for_info.append(copied_item)
-                else:
-                    temp_logged_content_for_info.append(item_val)
-            logger.info(f"Last user message content for API (media base64 truncated for log): {temp_logged_content_for_info}")
-        except Exception as log_ex:
-            logger.error(f"Error during f-string logging of modified message content: {log_ex}", exc_info=True)
-            logger.info(f"Last user message content for API was modified to include media (content logging failed).")
+        # Audio data handling - Gemini API might not directly support audio bytes in the same way as images.
+        # The text placeholder for audio (e.g., "[получено голосовое сообщение]") should already be in content_text.
+        if audio_data and gemini_role == "user":
+            logger.info("Audio data was present for Gemini, text placeholder should be used in prompt.")
+            # We don't add audio_data directly here, relying on the text placeholder.
+            audio_data = None # Consume audio data flag
 
-    else: # last_user_message_index == -1
-        logger.warning("No user message found to attach media to. This is unusual.")
+        if current_parts: # Only add if there's something to send
+             gemini_contents.append({"role": gemini_role, "parts": current_parts})
     
+    # If system_prompt wasn't prepended (e.g. no user messages or first message was assistant)
+    # add it as the very first user turn.
+    if is_first_user_message and system_prompt:
+        gemini_contents.insert(0, {"role": "user", "parts": [{"text": system_prompt.strip()}]})
+        if gemini_contents and len(gemini_contents) > 1 and gemini_contents[1]["role"] == "user":
+             # If the next message is also user, we need to insert a model (assistant) turn in between
+             # to maintain the user/model alternating sequence for Gemini.
+             # This is a simplified handling; complex scenarios might need more robust logic.
+             gemini_contents.insert(1, {"role": "model", "parts": [{"text": "Okay."}]}) # Placeholder response
+
     payload = {
-        "model": LANGDOCK_MODEL,
-        "system": system_prompt, 
-        "messages": messages_to_send,
-        "max_tokens": 2048, # Увеличиваем для более подробных ответов на медиа
-        "temperature": 0.6, # Можно немного поднять для более "живых" ответов на медиа
-        "stream": False
+        "contents": gemini_contents,
+        "generationConfig": {
+            # "temperature": 0.7, # Optional: Adjust as needed
+            # "topK": 1,          # Optional
+            # "topP": 1,          # Optional
+            # "maxOutputTokens": 2048, # Optional: Gemini Flash has a large context window
+        },
+        "safetySettings": [ # Optional: Adjust safety settings as needed
+            {
+                "category": "HARM_CATEGORY_HARASSMENT",
+                "threshold": "BLOCK_MEDIUM_AND_ABOVE"
+            },
+            {
+                "category": "HARM_CATEGORY_HATE_SPEECH",
+                "threshold": "BLOCK_MEDIUM_AND_ABOVE"
+            },
+            {
+                "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                "threshold": "BLOCK_MEDIUM_AND_ABOVE"
+            },
+            {
+                "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+                "threshold": "BLOCK_MEDIUM_AND_ABOVE"
+            }
+        ]
     }
-    url = f"{LANGDOCK_BASE_URL.rstrip('/')}/v1/messages" # Убедимся, что URL корректный
-    
-    # --- Детальное логирование запроса ---
-    # MODIFICATION START
-    payload_log_str = "[Payload logging failed or was skipped]"
-    try:
-        # Create a separate copy for logging to avoid modifying the original payload
-        payload_for_logging = payload.copy() # Shallow copy is fine for top level
-        if 'messages' in payload_for_logging:
-            # Deep copy messages if modification is needed (like truncation)
-            logged_messages_list = []
-            for original_msg_dict in payload_for_logging['messages']:
-                msg_copy_for_log = original_msg_dict.copy() # Shallow copy message dict
 
-                if isinstance(msg_copy_for_log.get('content'), list):
-                    # Deep copy content list and its items if modification is needed
-                    new_content_list_for_log = []
-                    for content_item_dict in msg_copy_for_log['content']:
-                        item_copy_for_log = content_item_dict.copy() # Shallow copy content item dict
-                        
-                        if isinstance(item_copy_for_log, dict) and \
-                           item_copy_for_log.get('type') == 'image' and \
-                           'source' in item_copy_for_log and \
-                           isinstance(item_copy_for_log.get('source'), dict) and \
-                           'data' in item_copy_for_log['source']:
-                            
-                            # Copy source dict before modifying 'data' for logging
-                            source_copy_for_log = item_copy_for_log['source'].copy()
-                            source_copy_for_log['data'] = '[BASE64_IMAGE_DATA_TRUNCATED]'
-                            item_copy_for_log['source'] = source_copy_for_log # Assign copied source to copied item
-                        
-                        new_content_list_for_log.append(item_copy_for_log)
-                    msg_copy_for_log['content'] = new_content_list_for_log # Assign new content list to copied message
-                logged_messages_list.append(msg_copy_for_log)
-            payload_for_logging['messages'] = logged_messages_list # Assign new messages list to logging payload
-
-        payload_log_str = json.dumps(payload_for_logging, ensure_ascii=False, indent=2)
-        
-        # These logs will now only appear if json.dumps was successful
-        logger.info(f"Sending request to Langdock. URL: {url}")
-        logger.debug(f"Langdock System Prompt: {system_prompt}")
-        logger.debug(f"Langdock Payload (image data truncated): {payload_log_str}")
-
-    except Exception as e_payload_log:
-        logger.error(f"!!! CRITICAL ERROR during payload_log preparation or json.dumps: {e_payload_log}", exc_info=True)
-        # Fallback logging if the detailed logging failed
-        logger.info(f"Sending request to Langdock (payload logging failed). URL: {url}")
-        logger.debug(f"Langdock System Prompt (payload logging failed): {system_prompt}")
-        # The payload_log_str will retain its default "[Payload logging failed...]" value
-    # MODIFICATION END
-    # --- Конец детального логирования ---
-
-    try:
-        async with httpx.AsyncClient(timeout=90.0) as client: # Увеличил таймаут
-             resp = await client.post(url, json=payload, headers=headers)
-        
-        logger.info(f"Langdock response status: {resp.status_code}")
-        # Логируем тело ответа ДО попытки парсинга JSON
-        raw_response_text = resp.text
-        logger.debug(f"Langdock raw response text (first 500 chars): {raw_response_text[:500]}")
-
-        resp.raise_for_status() # Вызовет исключение для 4xx/5xx
-        data = resp.json()
-
-        # --- Детальное логирование ответа ---
-        logger.debug(f"Langdock parsed JSON response: {json.dumps(data, ensure_ascii=False, indent=2)}")
-
-        input_tokens = data.get('usage', {}).get('input_tokens') # Claude 3.5 использует 'usage'
-        output_tokens = data.get('usage', {}).get('output_tokens')
-        stop_reason = data.get('stop_reason', 'unknown')
-        
-        # Если usage отсутствует, попробуем старый вариант (для обратной совместимости или других моделей)
-        if input_tokens is None: input_tokens = data.get('input_tokens', 0)
-        if output_tokens is None: output_tokens = data.get('output_tokens', 0)
-
-        logger.info(f"Langdock response stats: input_tokens={input_tokens}, output_tokens={output_tokens}, stop_reason={stop_reason}")
-        
-        full_response_text = ""
-        content_blocks = data.get("content")
-        
-        if isinstance(content_blocks, list) and content_blocks:
-            logger.debug(f"Response 'content' is a list with {len(content_blocks)} item(s).")
-            for block in content_blocks:
-                if isinstance(block, dict) and block.get("type") == "text":
-                    full_response_text += block.get("text", "")
-                    logger.debug(f"Extracted text block: '{block.get('text', '')[:100]}...'")
-                else:
-                    logger.warning(f"Non-text block found in content: {block}")
-        elif isinstance(content_blocks, str): # На случай, если API вернет просто строку в content
-             full_response_text = content_blocks
-             logger.debug(f"Response 'content' is a string: '{content_blocks[:100]}...'")
-        else:
-            logger.warning(f"Unexpected structure or empty 'content' in Langdock response. Content: {content_blocks}")
-
-        if not full_response_text.strip():
-            logger.warning(f"Extracted text from Langdock response is empty or whitespace. StopReason: {stop_reason}. Original data: {json.dumps(data, ensure_ascii=False)}")
-            # Проверяем, есть ли ошибка в ответе
-            if 'error' in data:
-                error_details = data['error']
-                logger.error(f"Langdock API returned an error: {error_details}")
-                error_message_to_user = f"AI сообщило об ошибке: {error_details.get('message', 'Неизвестная ошибка') if isinstance(error_details, dict) else error_details}"
-                return escape_markdown_v2(error_message_to_user)
-            return escape_markdown_v2("ai вернул пустой текстовый ответ 🤷")
-
-        return full_response_text.strip()
-
-    except httpx.ReadTimeout:
-         logger.error("Langdock API request timed out.")
-         return escape_markdown_v2("⏳ хм, кажется, я слишком долго думал... попробуй еще раз?")
-    except httpx.HTTPStatusError as e:
-        error_body = e.response.text
-        logger.error(f"Langdock API HTTP error: {e.response.status_code} - {error_body}", exc_info=False)
-        error_text_raw = f"ой, ошибка связи с ai ({e.response.status_code})"
+    max_retries = 3
+    for attempt in range(max_retries):
         try:
-             error_data = json.loads(error_body)
-             if isinstance(error_data.get('error'), dict) and 'message' in error_data['error']:
-                  api_error_msg = error_data['error']['message']
-                  logger.error(f"Langdock API Error Message: {api_error_msg}")
-                  error_text_raw += f": {api_error_msg}" # Добавляем деталей пользователю
-             elif isinstance(error_data.get('error'), str):
-                   logger.error(f"Langdock API Error Message: {error_data['error']}")
-                   error_text_raw += f": {error_data['error']}"
-        except json.JSONDecodeError:
-            logger.warning(f"Could not parse error body from Langdock as JSON: {error_body}")
-        except Exception: pass # Общий случай
-        return escape_markdown_v2(error_text_raw) # Экранируем финальное сообщение
-    except httpx.RequestError as e:
-        logger.error(f"Langdock API request error (network issue?): {e}", exc_info=True)
-        return escape_markdown_v2("❌ не могу связаться с ai сейчас (ошибка сети)...")
-    except json.JSONDecodeError as e:
-        # Используем raw_response_text с проверкой, что оно существует
-        raw_response_for_error_log = raw_response_text if 'raw_response_text' in locals() else "[Raw response text not captured]"
-        logger.error(f"Failed to parse Langdock JSON response: {e}. Raw response: {raw_response_for_error_log[:500]}", exc_info=True)
-        return escape_markdown_v2("❌ ошибка: не удалось обработать ответ от ai (неверный формат).")
-    except Exception as e:
-        logger.error(f"Unexpected error communicating with Langdock: {e}", exc_info=True)
-        return escape_markdown_v2("❌ произошла внутренняя ошибка при генерации ответа.")
+            async with httpx.AsyncClient(timeout=120.0) as client: # Increased timeout for potentially longer AI responses
+                logger.debug(f"Sending to Gemini. URL: {api_url}")
+                # logger.debug(f"Gemini Request Payload: {json.dumps(payload, indent=2, ensure_ascii=False)}") # Careful with logging PII
+                
+                response = await client.post(api_url, headers=headers, json=payload)
+                response.raise_for_status() # Raises HTTPStatusError for 4xx/5xx responses
+                
+                response_data = response.json()
+                # logger.debug(f"Gemini Raw Response: {json.dumps(response_data, indent=2, ensure_ascii=False)}")
+
+                if response_data.get("candidates") and response_data["candidates"][0].get("content") and response_data["candidates"][0]["content"].get("parts"):
+                    generated_text = response_data["candidates"][0]["content"]["parts"][0].get("text", "")
+                    if not generated_text and response_data["candidates"][0].get("finishReason") == "SAFETY":
+                        logger.warning("Gemini: Response blocked due to safety settings.")
+                        return escape_markdown_v2("❌ мой ответ был заблокирован из-за настроек безопасности.")
+                    if not generated_text and response_data["candidates"][0].get("finishReason") == "MAX_TOKENS":
+                        logger.warning("Gemini: Response stopped due to max tokens.")
+                        # return generated_text # Return whatever was generated before cutoff
+                    if not generated_text:
+                         logger.warning(f"Gemini: Empty text in response. Finish reason: {response_data['candidates'][0].get('finishReason')}. Full candidate: {response_data['candidates'][0]}")
+                         return escape_markdown_v2("❌ получен пустой ответ от ai (gemini). причина: " + response_data["candidates"][0].get("finishReason", "unknown"))
+                    return generated_text
+                elif response_data.get("promptFeedback") and response_data["promptFeedback"].get("blockReason"):
+                    block_reason = response_data["promptFeedback"]["blockReason"]
+                    logger.warning(f"Gemini: Prompt blocked due to {block_reason}.")
+                    return escape_markdown_v2(f"❌ ваш запрос был заблокирован (gemini): {block_reason.lower().replace('_', ' ')}.")
+                else:
+                    logger.error(f"Gemini: Unexpected response structure: {response_data}")
+                    return escape_markdown_v2("❌ ошибка: неожиданный формат ответа от ai (gemini).")
+
+        except httpx.HTTPStatusError as e:
+            logger.error(f"Gemini API request failed (attempt {attempt + 1}/{max_retries}) with status {e.response.status_code}: {e.response.text}", exc_info=True)
+            if e.response.status_code == 429: # Rate limit
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(5 * (attempt + 1)) # Exponential backoff
+                    continue
+                return escape_markdown_v2("❌ ошибка: превышен лимит запросов к ai (gemini). попробуйте позже.")
+            # For other client-side errors (4xx) or server-side (5xx), specific handling might be needed
+            # For now, a generic error message for non-rate-limit errors after retries or for unrecoverable client errors
+            error_detail = e.response.json().get("error", {}).get("message", e.response.text) if e.response.content else str(e)
+            return escape_markdown_v2(f"❌ ошибка api (gemini) {e.response.status_code}: {error_detail}")
+        except httpx.RequestError as e:
+            logger.error(f"Gemini API request failed (attempt {attempt + 1}/{max_retries}): {e}", exc_info=True)
+            if attempt < max_retries - 1:
+                await asyncio.sleep(3 * (attempt + 1))
+                continue
+            return escape_markdown_v2("❌ ошибка сети при обращении к ai (gemini). попробуйте позже.")
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to decode JSON response from Gemini (attempt {attempt + 1}/{max_retries}): {e}", exc_info=True)
+            # This is unlikely if raise_for_status() passed and API is stable, but good to have.
+            if attempt < max_retries - 1:
+                await asyncio.sleep(1)
+                continue
+            return escape_markdown_v2("❌ ошибка: неверный формат ответа от ai (gemini).")
+        except Exception as e:
+            logger.error(f"An unexpected error occurred in send_to_gemini (attempt {attempt + 1}/{max_retries}): {e}", exc_info=True)
+            if attempt < max_retries - 1:
+                await asyncio.sleep(1)
+                continue
+            return escape_markdown_v2("❌ неизвестная ошибка при обращении к ai (gemini).")
+    
+    return escape_markdown_v2("❌ исчерпаны все попытки обращения к ai (gemini).")
+
+
+# async def send_to_langdock(system_prompt: str, messages: List[Dict[str, str]], image_data: Optional[bytes] = None, audio_data: Optional[bytes] = None) -> str:
+#     """Sends the prompt and context to the Langdock API and returns the response."""
+#     
+#     if not LANGDOCK_API_KEY:
+#         logger.error("LANGDOCK_API_KEY is not set.")
+#         return escape_markdown_v2("❌ ошибка: ключ api не настроен.")
+# 
+#     if not messages:
+#         logger.error("send_to_langdock called with an empty messages list!")
+#         return "ошибка: нет сообщений для отправки в ai."
+# 
+#     headers = {
+#         "Authorization": f"Bearer {LANGDOCK_API_KEY}",
+#         "Content-Type": "application/json",
+#     }
+#     # Берем последние N сообщений, как и раньше
+#     messages_to_send = messages[-MAX_CONTEXT_MESSAGES_SENT_TO_LLM:].copy() # Используем .copy() для безопасного изменения
+#     
+#     last_user_message_index = -1
+#     for i in range(len(messages_to_send) - 1, -1, -1):
+#         if messages_to_send[i].get("role") == "user":
+#             last_user_message_index = i
+#             break
+# 
+#     if last_user_message_index != -1:
+#         original_user_content_field = messages_to_send[last_user_message_index].get("content", "")
+#         
+#         # Инициализируем new_content как массив. 
+#         # Claude API ожидает массив для "content", если есть хотя бы один элемент не "text".
+#         new_content_array = []
+# 
+#         # 1. Добавляем текстовую часть
+#         # original_user_content_field может быть строкой или уже массивом (если предыдущие шаги его так сформировали)
+#         if isinstance(original_user_content_field, str):
+#             if original_user_content_field: # Добавляем текст, только если он не пустой
+#                 new_content_array.append({"type": "text", "text": original_user_content_field})
+#         elif isinstance(original_user_content_field, list): # Если это уже был список (маловероятно здесь)
+#             new_content_array.extend(item for item in original_user_content_field if item.get("type") == "text") # Копируем только текстовые части
+# 
+#         # 2. Добавляем изображение, если есть
+#         if image_data:
+#             try:
+#                 import base64
+#                 image_base64 = base64.b64encode(image_data).decode('utf-8')
+#                 new_content_array.append(
+#                     {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": image_base64}}
+#                 )
+#                 logger.info("Image data prepared for Langdock request.")
+#             except Exception as e:
+#                 logger.error(f"Error encoding image data: {e}", exc_info=True)
+#         
+#         # 3. Обработка аудио (пока что только плейсхолдер, так как прямая отправка не работает)
+#         #    Если в будущем Langdock/Claude начнут поддерживать аудио, здесь будет логика его добавления.
+#         #    Сейчас, если есть audio_data, мы не будем его добавлять в new_content_array в виде base64,
+#         #    так как это вызывает ошибку. Вместо этого, текстовый плейсхолдер '[получено голосовое сообщение]'
+#         #    уже должен быть в original_user_content_field (добавлен в handle_media).
+#         
+#         if audio_data:
+#             # Логируем, что аудио было, но не добавляем его в запрос в формате base64, чтобы избежать ошибки.
+#             # Промпт в persona.py должен быть настроен на реакцию на *факт* получения аудио.
+#             logger.info("Audio data was received by send_to_langdock, but direct audio upload is likely not supported by the current API structure. Text placeholder should be used in prompt.")
+#             # Если текстовый плейсхолдер для аудио не был добавлен ранее, его можно добавить здесь,
+#             # но лучше это делать на более раннем этапе (в handle_media), что у тебя и сделано.
+#             # Например, если new_content_array пуст и есть audio_data:
+#             if not any(item.get("type") == "text" for item in new_content_array):
+#                 # Этого не должно происходить, если handle_media корректно добавляет плейсхолдер
+#                 new_content_array.append({"type": "text", "text": "[получено голосовое сообщение]"})
+#                 logger.warning("send_to_langdock: Added a fallback text placeholder for audio as new_content_array was empty.")
+# 
+#         # Если new_content_array все еще пуст (например, только аудио без текста и без плейсхолдера)
+#         # или если original_user_content_field был пустой строкой и не было медиа,
+#         # то messages_to_send[last_user_message_index]["content"] останется оригинальным (пустым или как было).
+#         # Если же new_content_array не пуст, то обновляем.
+#         if new_content_array:
+#             messages_to_send[last_user_message_index]["content"] = new_content_array
+#         elif not original_user_content_field and not image_data and not audio_data: # Если контент был пуст и нет медиа
+#             # Это может произойти, если пользователь отправил пустое сообщение, что маловероятно
+#             # или если логика формирования контента выше дала сбой.
+#             # В таком случае, чтобы не отправлять пустое "content", можно либо удалить сообщение из списка,
+#             # либо отправить как есть, API может это обработать или вернуть ошибку.
+#             # Для Claude, если content это массив, он не должен быть пустым.
+#             # Если content это строка, она может быть пустой.
+#             # Поскольку мы стремимся к формату массива для content, если он пуст, это проблема.
+#             # Лучше всего, если new_content_array пуст, а original_user_content_field был строкой,
+#             # оставить его строкой.
+#             pass # Оставляем messages_to_send[last_user_message_index]["content"] как есть (original_user_content_field)
+# 
+#     # Если система должна была добавить системный промпт, но не смогла (например, нет user сообщений)
+#     # Это маловероятно, т.к. messages не должен быть пустым.
+#     payload = {
+#         "model": LANGDOCK_MODEL,
+#         "messages": messages_to_send,
+#         "system": system_prompt,
+#         "max_tokens": 4096, # Максимальное количество токенов в ответе
+#         "temperature": 0.7, # Температура для генерации (0.0 - 1.0)
+#     }
+# 
+#     max_retries = 3
+#     for attempt in range(max_retries):
+#         try:
+#             async with httpx.AsyncClient(timeout=120.0) as client: # Увеличенный таймаут
+#                 logger.debug(f"Sending to Langdock. URL: {LANGDOCK_BASE_URL}")
+#                 # logger.debug(f"Langdock Request Payload: {json.dumps(payload, indent=2, ensure_ascii=False)}") # Осторожно с PII
+#                 
+#                 response = await client.post(LANGDOCK_BASE_URL, headers=headers, json=payload)
+#                 response.raise_for_status() # Вызовет исключение для 4xx/5xx ответов
+#                 
+#                 response_data = response.json()
+#                 # logger.debug(f"Langdock Raw Response: {json.dumps(response_data, indent=2, ensure_ascii=False)}")
+# 
+#                 if response_data.get("type") == "error":
+#                     error_message = response_data.get("error", {}).get("message", "unknown error from Langdock")
+#                     logger.error(f"Langdock API returned an error: {error_message}")
+#                     return escape_markdown_v2(f"❌ ошибка от ai (langdock): {error_message}")
+#                 
+#                 # Проверяем, есть ли 'content' и является ли он списком
+#                 content_list = response_data.get("content", [])
+#                 if not content_list or not isinstance(content_list, list):
+#                     logger.error(f"Langdock: 'content' is missing or not a list in response: {response_data}")
+#                     return escape_markdown_v2("❌ ошибка: неверный формат ответа от ai (langdock) \\- отсутствует content.")
+# 
+#                 # Ищем первый текстовый блок в 'content'
+#                 generated_text = ""
+#                 for item in content_list:
+#                     if item.get("type") == "text":
+#                         generated_text = item.get("text", "")
+#                         break
+#                 
+#                 if not generated_text:
+#                     # Если текстового блока нет, но есть другие (например, tool_use), это может быть специфичный ответ
+#                     # В данном случае, если нет текста, считаем это пустым ответом для нашего бота
+#                     logger.warning(f"Langdock: No text block found in response content. Full response: {response_data}")
+#                     # Проверим stop_reason, если есть
+#                     stop_reason = response_data.get("stop_reason")
+#                     if stop_reason == "max_tokens":
+#                         return escape_markdown_v2("⏳ хм, кажется, я немного увлекся и мой ответ был слишком длинным\\! попробуй еще раз, возможно, с более коротким запросом\\.")
+#                     elif stop_reason == "tool_use":
+#                         logger.info("Langdock response indicates tool_use without text. This is not handled yet.")
+#                         return escape_markdown_v2("⚠️ ai попытался использовать инструмент, но это пока не поддерживается\\.")
+#                     return escape_markdown_v2("ai вернул пустой ответ (langdock)\\.")
+# 
+#                 return generated_text
+# 
+#         except httpx.HTTPStatusError as e:
+#             logger.error(f"Langdock API request failed (attempt {attempt + 1}/{max_retries}) with status {e.response.status_code}: {e.response.text}", exc_info=True)
+#             if e.response.status_code == 429: # Rate limit
+#                 if attempt < max_retries - 1:
+#                     await asyncio.sleep(5 * (attempt + 1)) # Экспоненциальная задержка
+#                     continue
+#                 return escape_markdown_v2("❌ ошибка: превышен лимит запросов к ai (langdock)\\. попробуйте позже\\.")
+#             # Другие ошибки 4xx/5xx
+#             error_detail = e.response.json().get("error", {}).get("message", e.response.text) if e.response.content else str(e)
+#             return escape_markdown_v2(f"❌ ошибка api (langdock) {e.response.status_code}: {error_detail}")
+#         except httpx.RequestError as e:
+#             logger.error(f"Langdock API request failed (attempt {attempt + 1}/{max_retries}): {e}", exc_info=True)
+#             if attempt < max_retries - 1:
+#                 await asyncio.sleep(3 * (attempt + 1))
+#                 continue
+#             return escape_markdown_v2("❌ ошибка сети при обращении к ai (langdock)\\. попробуйте позже\\.")
+#         except json.JSONDecodeError as e:
+#             logger.error(f"Failed to decode JSON response from Langdock (attempt {attempt + 1}/{max_retries}): {e}", exc_info=True)
+#             if attempt < max_retries - 1:
+#                 await asyncio.sleep(1)
+#                 continue # Повторить попытку, если это временная проблема с ответом
+#             return escape_markdown_v2("❌ ошибка: неверный формат ответа от ai (langdock)\\.")
+#         except Exception as e:
+#             logger.error(f"An unexpected error occurred in send_to_langdock (attempt {attempt + 1}/{max_retries}): {e}", exc_info=True)
+#             if attempt < max_retries - 1:
+#                 await asyncio.sleep(1)
+#                 continue
+#             return escape_markdown_v2("❌ неизвестная ошибка при обращении к ai (langdock)\\.")
+#     
+#     return escape_markdown_v2("❌ исчерпаны все попытки обращения к ai (langdock)\\.")JSON
+#         raw_response_text = resp.text
+#         logger.debug(f"Langdock raw response text (first 500 chars): {raw_response_text[:500]}")
+# 
+#         resp.raise_for_status() # Вызовет исключение для 4xx/5xx
+#         data = resp.json()
+# {{ ... }}
+# 
+#         # --- Детальное логирование ответа ---
+#         logger.debug(f"Langdock parsed JSON response: {json.dumps(data, ensure_ascii=False, indent=2)}")
+# 
+#         input_tokens = data.get('usage', {}).get('input_tokens') # Claude 3.5 использует 'usage'
+#         output_tokens = data.get('usage', {}).get('output_tokens')
+#         stop_reason = data.get('stop_reason', 'unknown')
+#         
+#         # Если usage отсутствует, попробуем старый вариант (для обратной совместимости или других моделей)
+#         if input_tokens is None: input_tokens = data.get('input_tokens', 0)
+#         if output_tokens is None: output_tokens = data.get('output_tokens', 0)
+# 
+#         logger.info(f"Langdock response stats: input_tokens={input_tokens}, output_tokens={output_tokens}, stop_reason={stop_reason}")
+#         
+#         full_response_text = ""
+#         content_blocks = data.get("content")
+#         
+#         if isinstance(content_blocks, list) and content_blocks:
+#             logger.debug(f"Response 'content' is a list with {len(content_blocks)} item(s).")
+#             for block in content_blocks:
+#                 if isinstance(block, dict) and block.get("type") == "text":
+#                     full_response_text += block.get("text", "")
+#                     logger.debug(f"Extracted text block: '{block.get('text', '')[:100]}...'" )
+#                 else:
+#                     logger.warning(f"Non-text block found in content: {block}")
+#         elif isinstance(content_blocks, str): # На случай, если API вернет просто строку в content
+#              full_response_text = content_blocks
+#              logger.debug(f"Response 'content' is a string: '{content_blocks[:100]}...'" )
+#         else:
+#             logger.warning(f"Unexpected structure or empty 'content' in Langdock response. Content: {content_blocks}")
+# 
+#         if not full_response_text.strip():
+#             logger.warning(f"Extracted text from Langdock response is empty or whitespace. StopReason: {stop_reason}. Original data: {json.dumps(data, ensure_ascii=False)}")
+#             # Проверяем, есть ли ошибка в ответе
+#             if 'error' in data:
+#                 error_details = data['error']
+#                 logger.error(f"Langdock API returned an error: {error_details}")
+#                 error_message_to_user = f"AI сообщило об ошибке: {error_details.get('message', 'Неизвестная ошибка') if isinstance(error_details, dict) else error_details}"
+#                 return escape_markdown_v2(error_message_to_user)
+#             return escape_markdown_v2("ai вернул пустой текстовый ответ 🤷")
+# 
+#         return full_response_text.strip()
+# 
+#     except httpx.ReadTimeout:
+#          logger.error("Langdock API request timed out.")
+#          return escape_markdown_v2("⏳ хм, кажется, я слишком долго думал... попробуй еще раз?")
+#     except httpx.HTTPStatusError as e:
+#         error_body = e.response.text
+#         logger.error(f"Langdock API HTTP error: {e.response.status_code} - {error_body}", exc_info=False)
+#         error_text_raw = f"ой, ошибка связи с ai ({e.response.status_code})"
+#         try:
+#              error_data = json.loads(error_body)
+#              if isinstance(error_data.get('error'), dict) and 'message' in error_data['error']:
+#                   api_error_msg = error_data['error']['message']
+#                   logger.error(f"Langdock API Error Message: {api_error_msg}")
+#                   error_text_raw += f": {api_error_msg}" # Добавляем деталей пользователю
+#              elif isinstance(error_data.get('error'), str):
+#                    logger.error(f"Langdock API Error Message: {error_data['error']}")
+#                    error_text_raw += f": {error_data['error']}"
+#         except json.JSONDecodeError:
+#             logger.warning(f"Could not parse error body from Langdock as JSON: {error_body}")
+#         except Exception: pass # Общий случай
+#         return escape_markdown_v2(error_text_raw) # Экранируем финальное сообщение
+#     except httpx.RequestError as e:
+#         logger.error(f"Langdock API request error (network issue?): {e}", exc_info=True)
+#         return escape_markdown_v2("❌ не могу связаться с ai сейчас (ошибка сети)...")
+#     except json.JSONDecodeError as e:
+#         # Используем raw_response_text с проверкой, что оно существует
+#         raw_response_for_error_log = raw_response_text if 'raw_response_text' in locals() else "[Raw response text not captured]"
+#         logger.error(f"Failed to parse Langdock JSON response: {e}. Raw response: {raw_response_for_error_log[:500]}", exc_info=True)
+#         return escape_markdown_v2("❌ ошибка: не удалось обработать ответ от ai (неверный формат).")
+#     except Exception as e:
+#         logger.error(f"Unexpected error communicating with Langdock: {e}", exc_info=True)
+#         return escape_markdown_v2("❌ произошла внутренняя ошибка при генерации ответа.")
 
 
     logger.debug(f"Processing AI response for chat {chat_id}, persona {persona.name}. Raw length: {len(full_bot_response_text)}. ReplyTo: {reply_to_message_id}. IsFirstMsg: {is_first_message}")
@@ -1454,21 +1642,30 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     elif max_messages_setting == 0:  # random
                         system_prompt += "\n\nВАЖНО: Разбей свой ответ на 3-5 отдельных сообщений в формате JSON-массива."
                     
-                    logger.info(f"handle_message: Sending request to Langdock for persona '{persona.name}' in chat {chat_id_str}.")
-                    response_text = await send_to_langdock(system_prompt, context_for_ai)
+                    # Retrieve media bytes from context if handle_media put them there
+                    image_bytes_for_gemini = context.chat_data.pop('image_bytes_for_llm', None)
+                    voice_bytes_for_gemini = context.chat_data.pop('voice_bytes_for_llm', None)
+
+                    if image_bytes_for_gemini:
+                        logger.info("handle_message: Found image_bytes_for_llm in chat_data for Gemini call.")
+                    if voice_bytes_for_gemini:
+                        logger.info("handle_message: Found voice_bytes_for_llm in chat_data for Gemini call.")
+
+                    logger.info(f"handle_message: Sending request to Gemini for persona '{persona.name}' in chat {chat_id_str}.")
+                    response_text = await send_to_gemini(system_prompt, context_for_ai, image_data=image_bytes_for_gemini, audio_data=voice_bytes_for_gemini)
 
                     if response_text.startswith(("ошибка:", "ой, ошибка связи с ai", "⏳ хм, кажется", "ai вернул пустой ответ")):
-                        logger.error(f"handle_message: Langdock returned error/empty: '{response_text}'")
+                        logger.error(f"handle_message: Gemini returned error/empty: '{response_text}'")
                         try:
                             await update.message.reply_text(response_text, parse_mode=ParseMode.MARKDOWN_V2 if response_text.startswith("ai вернул") else None)
                         except Exception as send_err:
-                            logger.error(f"handle_message: Failed to send Langdock error message to user: {send_err}", exc_info=True)
+                            logger.error(f"handle_message: Failed to send Gemini error message to user: {send_err}", exc_info=True)
                         if limit_state_updated or context_user_msg_added:
                             try:
                                 db_session.commit()
-                                logger.debug("handle_message: Committed user context/limits after Langdock error.")
+                                logger.debug("handle_message: Committed user context/limits after Gemini error.")
                             except Exception as commit_err:
-                                logger.error(f"handle_message: Commit failed after Langdock error: {commit_err}", exc_info=True)
+                                logger.error(f"handle_message: Commit failed after Gemini error: {commit_err}", exc_info=True)
                                 db_session.rollback()
                         return
 
@@ -1569,6 +1766,7 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
                 context_text_placeholder = "[получено фото]"
                 # Вызываем format_photo_prompt с параметрами, аналогично format_voice_prompt
                 system_prompt = persona.format_photo_prompt(user_id=user_id, username=username, chat_id=chat_id_str)
+                # Note: Photo bytes are downloaded later in this function (around line 1910) and passed directly to send_to_gemini.
                 
             elif media_type == "voice":
                 # Для голосовых сообщений сначала попробуем транскрибировать
@@ -1578,6 +1776,8 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
                         voice_file_id = update.message.voice.file_id
                         voice_file = await context.bot.get_file(voice_file_id)
                         voice_bytes = await voice_file.download_as_bytearray()
+                        # Note: Voice bytes (as 'audio_data') are downloaded again later in this function (around line 1927) 
+                        # and passed directly to send_to_gemini. The 'voice_bytes' variable here is primarily for transcription.
                         
                         # Отправляем уведомление о начале обработки голосового сообщения
                         await context.bot.send_chat_action(chat_id=chat_id_str, action=ChatAction.TYPING)
@@ -1609,23 +1809,38 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
                                 # Сохраняем имя отправителя для лучшего контекста
                                 sender_name = update.effective_user.username or update.effective_user.first_name or str(update.effective_user.id)
                                 context_text_placeholder = f"{sender_name}: {transcribed_text}"
+                            else:
+                                logger.warning(f"Voice transcription failed or returned empty for chat {chat_id_str}.")
+                                context_text_placeholder = f"{username}: [получено голосовое сообщение (не удалось распознать)]"
+                        else: # VOSK_AVAILABLE is False or vosk_model is None
+                            logger.info(f"Vosk not available. Using placeholder for voice message in chat {chat_id_str}.")
+                            context_text_placeholder = f"{username}: [получено голосовое сообщение]"
+                    except Exception as e_voice:
+                        logger.error(f"handle_media: Error processing voice message for chat {chat_id_str}: {e_voice}", exc_info=True)
+                        context_text_placeholder = f"{username}: [ошибка обработки голосового сообщения]"
+                        # Ensure voice_bytes_for_llm is cleared if it was set before an error
+                        if 'voice_bytes_for_llm' in context.chat_data: # Check if key exists before popping
+                            context.chat_data.pop('voice_bytes_for_llm', None)
+#                else:
+#                    logger.warning(f"handle_media: Voice message type but no voice data found for chat {chat_id_str}.")
+#                    context_text_placeholder = f"{username}: [ошибка: нет аудио данных]"
                                 
                                 # Показываем распознанный текст премиум-пользователям
-                                if is_premium_user:
-                                    transcription_msg = f"🔈 Распознано: \"{transcribed_text}\""
-                                    await update.message.reply_text(transcription_msg, quote=True)
-                            else:
-                                logger.warning("Voice transcription failed or returned empty text")
-                                context_text_placeholder = "[получено голосовое сообщение, не удалось расшифровать]"
+#                                if is_premium_user:
+#                                    transcription_msg = f"🔈 Распознано: \"{transcribed_text}\""
+#                                    await update.message.reply_text(transcription_msg, quote=True)
+#                            else:
+#                                logger.warning("Voice transcription failed or returned empty text")
+#                                context_text_placeholder = "[получено голосовое сообщение, не удалось расшифровать]"
                                 # Уведомляем премиум-пользователей о неудаче
-                                if is_premium_user:
-                                    await update.message.reply_text("❌ Не удалось распознать голосовое сообщение")
-                        else:
-                            logger.warning("Vosk not available for transcription. Using placeholder.")
-                            context_text_placeholder = "[получено голосовое сообщение]"
+#                                if is_premium_user:
+#                                    await update.message.reply_text("❌ Не удалось распознать голосовое сообщение")
+#                        else:
+#                            logger.warning("Vosk not available for transcription. Using placeholder.")
+#                            context_text_placeholder = "[получено голосовое сообщение]"
                             # Уведомляем премиум-пользователей о недоступности Vosk
-                            if is_premium_user:
-                                await update.message.reply_text(f"{PREMIUM_STAR} Распознавание голоса временно недоступно")
+#                            if is_premium_user:
+#                                await update.message.reply_text(f"{PREMIUM_STAR} Распознавание голоса временно недоступно")
                     except Exception as e:
                         logger.error(f"Error processing voice message for transcription: {e}", exc_info=True)
                         context_text_placeholder = "[ошибка обработки голосового сообщения]"
@@ -1748,11 +1963,11 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
 
             # Отправляем данные медиа вместе с запросом (для фото), аудио уже превращено в текст
             # Аудиоданные не отправляем в Langdock API, так как они вызывают ошибку 400
-            response_text = await send_to_langdock(system_prompt, context_for_ai, image_data, None)
-            logger.debug(f"Received response from Langdock for {media_type}: {response_text[:100]}...")
+            ai_response_text = await send_to_gemini(system_prompt, context_for_ai, image_data=image_data, audio_data=audio_data)
+            logger.debug(f"Received response from Gemini for {media_type}: {ai_response_text[:100]}...")
 
             context_response_prepared = await process_and_send_response(
-                update, context, chat_id_str, persona, response_text, db, reply_to_message_id=message_id
+                update, context, chat_id_str, persona, ai_response_text, db, reply_to_message_id=message_id
             )
 
             db.commit()

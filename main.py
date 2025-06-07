@@ -1,3 +1,4 @@
+print("DEBUG: main.py - Script execution started")
 import logging
 import asyncio
 import os
@@ -222,6 +223,12 @@ logging.getLogger('waitress').setLevel(logging.INFO)
 logging.getLogger("utils").setLevel(logging.DEBUG) # Устанавливаем DEBUG для utils.py
 
 logger = logging.getLogger(__name__) # Logger for this module
+
+# --- Token Check (Railway Friendly) ---
+if config.TELEGRAM_TOKEN:
+    logger.info(f"DEBUG: TELEGRAM_TOKEN is loaded (partially masked): '{config.TELEGRAM_TOKEN[:5]}...{config.TELEGRAM_TOKEN[-5:] if len(config.TELEGRAM_TOKEN) > 10 else ''}'")
+else:
+    logger.critical("CRITICAL: TELEGRAM_TOKEN is missing or empty after config load! Bot will likely fail to initialize Application.")
 
 # --- Telegra.ph Setup ---
 async def setup_telegraph_page(application: Application):
@@ -579,6 +586,7 @@ def main():
 
     # --- Start Bot ---
     logger.info("Starting bot polling...")
+    print("DEBUG: main.py - Inside main(), before application.run_polling()")
     application.run_polling(
         allowed_updates=Update.ALL_TYPES,
         drop_pending_updates=True, # Good for development, consider False for production if needed
