@@ -45,6 +45,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy import func
 from sqlalchemy import delete
+from db import PersonaConfig as DBPersonaConfig # Added to fix NameError
 
 from yookassa import Configuration as YookassaConfig, Payment
 from yookassa.domain.models.currency import Currency
@@ -5120,7 +5121,7 @@ apply_menu_structure_fixes()
 
 # --- Mood Editing Functions (Adapted for Wizard Flow) ---
 
-async def edit_moods_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, persona_config: Optional[PersonaConfig] = None) -> int:
+async def edit_moods_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, persona_config: Optional[DBPersonaConfig] = None) -> int:
     """Displays the mood editing menu (list moods, add button)."""
     query = update.callback_query
     if not query: return ConversationHandler.END
