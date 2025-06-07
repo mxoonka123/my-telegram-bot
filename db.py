@@ -1,5 +1,7 @@
 import json
 import logging
+logging.basicConfig(level=logging.INFO) # Базовая конфигурация для этой проверки
+logging.getLogger("DB_PY_VERSION_CHECK").critical("!!! DB.PY MODULE LOADED - VERSION CHECK JUNE 08 02:28 AM UTC+3 !!!")
 from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, Boolean, ForeignKey, UniqueConstraint, func, BIGINT, select, update as sql_update, delete
 from sqlalchemy.orm import sessionmaker, relationship, Session, joinedload, selectinload
 from sqlalchemy.orm.attributes import flag_modified
@@ -190,6 +192,7 @@ class PersonaConfig(Base):
     # message_volume = Column(String(20), default="normal", nullable=False)  # short, normal, long, random
 
     system_prompt_template = Column(Text, nullable=False, default=DEFAULT_SYSTEM_PROMPT_TEMPLATE)
+    system_prompt_template_override = Column(Text, nullable=True)  # Пользовательский шаблон для системного промпта, если задан
     should_respond_prompt_template = Column(Text, nullable=True, default=DEFAULT_SHOULD_RESPOND_TEMPLATE)
     media_system_prompt_template = Column(Text, nullable=False, default=MEDIA_SYSTEM_PROMPT_TEMPLATE)
 
