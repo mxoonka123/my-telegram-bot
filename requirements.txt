@@ -21,3 +21,4 @@ vosk==0.3.45
 ffmpeg-python==0.2.0
 cffi>=1.0
 google-generativeai==0.7.1
+psycopg2-binary

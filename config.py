@@ -19,7 +19,16 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 # LANGDOCK_API_KEY = os.getenv("LANGDOCK_API_KEY", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 print(f"DEBUG config.py: GEMINI_API_KEY is defined, length: {len(GEMINI_API_KEY)}") # Debug print
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./bot_data.db") # Пример для локального запуска
+DATABASE_URL = os.getenv("DATABASE_URL")
+if not DATABASE_URL:
+    logger.critical("CRITICAL: Переменная окружения DATABASE_URL не установлена!")
+    # Для большей надежности в продакшене, можно раскомментировать следующую строку,
+    # чтобы бот падал, если DATABASE_URL не установлена.
+    # raise RuntimeError("CRITICAL: Переменная окружения DATABASE_URL не установлена. Бот не может запуститься.")
+else:
+    # Логируем только часть строки подключения для безопасности
+    db_url_log_display = DATABASE_URL[:DATABASE_URL.find('@') + 1 if '@' in DATABASE_URL else 30] + "..." if len(DATABASE_URL) > 30 else DATABASE_URL
+    logger.info(f"INFO: DATABASE_URL успешно загружена из окружения: {db_url_log_display}")
 
 YOOKASSA_SHOP_ID = os.getenv("YOOKASSA_SHOP_ID", "") # ID магазина
 YOOKASSA_SECRET_KEY = os.getenv("YOOKASSA_SECRET_KEY", "") # Секретный ключ
