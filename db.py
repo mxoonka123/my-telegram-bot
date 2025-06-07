@@ -187,7 +187,8 @@ class PersonaConfig(Base):
 
     mood_prompts_json = Column(Text, default=lambda: json.dumps(DEFAULT_MOOD_PROMPTS, ensure_ascii=False, sort_keys=True))
     mood_prompt_active = Column(Boolean, default=True, nullable=False)
-    temperature = Column(Float, nullable=True)  # Температура для LLM, может быть NULL  # Added to control mood prompt activation
+    temperature = Column(Float, nullable=True)  # Температура для LLM, может быть NULL
+    top_p = Column(Float, nullable=True)  # top_p для LLM, может быть NULL  # Added to control mood prompt activation
     max_response_messages = Column(Integer, default=3, nullable=False)
     # Временно закомментировано, пока миграция не применена
     # message_volume = Column(String(20), default="normal", nullable=False)  # short, normal, long, random
