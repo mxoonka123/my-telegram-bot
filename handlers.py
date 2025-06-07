@@ -5005,7 +5005,7 @@ error_db = "Ошибка базы данных при работе с настр
 
 def apply_menu_structure_fixes():
     """Улучшение структуры меню настроек персоны"""
-    async def fixed_show_edit_wizard_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, persona_config: PersonaConfig) -> int:
+    async def fixed_show_edit_wizard_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, persona_config: DBPersonaConfig) -> int:
         try:
             query = update.callback_query
             
