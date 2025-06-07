@@ -70,7 +70,7 @@ from db import (
     get_persona_by_id_and_owner, check_and_update_user_limits, activate_subscription,
     create_bot_instance, link_bot_instance_to_chat, delete_persona_config,
     get_all_active_chat_bot_instances,
-    User, PersonaConfig as DBPersonaConfig, BotInstance as DBBotInstance, ChatBotInstance as DBChatBotInstance, ChatContext, Subscription, func, get_db,
+    User, PersonaConfig as DBPersonaConfig, BotInstance as DBBotInstance, ChatBotInstance as DBChatBotInstance, ChatContext, func, get_db,
     DEFAULT_SYSTEM_PROMPT_TEMPLATE
 )
 from persona import Persona
