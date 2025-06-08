@@ -4577,7 +4577,7 @@ async def edit_description_received(update: Update, context: ContextTypes.DEFAUL
 
     try:
         with get_db() as db:
-            persona = db.query(PersonaConfig).filter(PersonaConfig.id == persona_id).with_for_update().first()
+            persona = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).with_for_update().first()
             if persona:
                 persona.description = new_desc
                 db.commit()
@@ -4593,7 +4593,7 @@ async def edit_description_received(update: Update, context: ContextTypes.DEFAUL
     except Exception as e:
         logger.error(f"Error updating persona description for {persona_id}: {e}")
         await update.message.reply_text(escape_markdown_v2("❌ Ошибка при сохранении описания."))
-        return await _try_return_to_wizard_menu(update, context, update.effective_user.id, persona_id)
+        return await _handle_back_to_wizard_menu(update, context, persona_id)
 
 # --- Edit Communication Style ---
 async def edit_comm_style_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
