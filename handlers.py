@@ -2,6 +2,7 @@ import asyncio
 import httpx
 import json
 import logging
+import re
 from datetime import datetime, timezone
 from openai import AsyncOpenAI, OpenAIError
 from utils import count_openai_compatible_tokens
@@ -1301,10 +1302,15 @@ async def process_and_send_response(
             logger.info(f"Финальное количество текстовых частей для отправки: {len(text_parts_to_send)} (настройка: {max_messages_setting_value})")
         # --- КОНЕЦ НОВОЙ ЕДИНОЙ ТОЧКИ ОГРАНИЧЕНИЯ ---
         
-        # 6. Последовательная отправка
-        logger.debug(f"process_and_send_response [JSON]: Step 4 - Sequentially sending. GIFs: {len(gif_links_to_send)}, Text Parts: {len(text_parts_to_send)}")
-        first_message_sent = False
-        chat_id_str = str(chat_id)
+        # NEW: Further parse parts if they contain markdown-wrapped JSON
+        processed_parts_for_sending = []
+        if text_parts_to_send: # Only if we have something to process
+            for text_part_candidate in text_parts_to_send:
+                stripped_candidate = text_part_candidate.strip()
+                # Attempt to find and parse markdown-wrapped JSON within this candidate part
+                match = re.search(r"^```json\s*(\[.*?\])\s*```$", stripped_candidate, re.DOTALL)
+                if match:
+                    inner_json_str = match.group(1)
         chat_type = update.effective_chat.type if update and update.effective_chat else None
 
         # Сначала GIF
