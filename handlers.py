@@ -10,8 +10,8 @@ import asyncio
 import random
 import logging
 from typing import Optional, Union, List, Dict, Tuple, Any
-from telegram import Update, ChatType, BadRequest
-from telegram.constants import ParseMode, ChatAction
+from telegram import Update, BadRequest
+from telegram.constants import ParseMode, ChatAction, ChatType
 from telegram.ext import ContextTypes
 from sqlalchemy.exc import SQLAlchemyError
 from openai import AsyncOpenAI, OpenAIError
