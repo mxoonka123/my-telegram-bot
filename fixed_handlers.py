@@ -1,7 +1,7 @@
 """
-Исправленные функции для Telegram бота (ФИНАЛЬНАЯ ВЕРСИЯ 2)
-- process_and_send_response - исправлена логика сохранения контекста.
-- handle_message - без изменений, передает "сырой" ответ.
+Исправленные функции для Telegram бота (ФИНАЛЬНАЯ ВЕРСИЯ 3)
+- handle_message - окончательно упрощен, передает "сырой" ответ от LLM.
+- process_and_send_response - содержит надежный парсер и исправленную логику сохранения контекста.
 """
 
 import asyncio
@@ -18,11 +18,13 @@ from telegram import Update
 from telegram.constants import ChatAction, ChatType, ParseMode
 from telegram.error import BadRequest
 from telegram.ext import ContextTypes
-
-from config import MAX_USER_MESSAGE_LENGTH_CHARS, OPENROUTER_API_KEY, OPENROUTER_API_BASE_URL, OPENROUTER_MODEL_NAME
-from db import get_db, get_persona_and_context_with_owner, add_message_to_context, MAX_CONTEXT_MESSAGES_SENT_TO_LLM
-from handlers import check_channel_subscription, send_subscription_required_message, send_limit_exceeded_message
 from openai import AsyncOpenAI, OpenAIError
+
+# Убедитесь, что все импорты на месте
+import config
+from db import get_db, get_persona_and_context_with_owner, add_message_to_context, MAX_CONTEXT_MESSAGES_SENT_TO_LLM
+# Эти функции должны быть определены в вашем файле handlers.py или импортированы
+from handlers import check_channel_subscription, send_subscription_required_message, send_limit_exceeded_message
 from persona import Persona
 from utils import escape_markdown_v2, extract_gif_links, postprocess_response
 
@@ -81,18 +83,18 @@ async def process_and_send_response(
 
     text_parts_to_send = _robust_json_parser(raw_llm_response)
     
-    # --- ИЗМЕНЕНИЕ: ЛОГИКА СОХРАНЕНИЯ В КОНТЕКСТ ---
+    # 2. Prepare content for DB and for sending
     content_to_save_in_db = ""
     if text_parts_to_send is not None:
-        # Успех парсинга! Сохраняем чистый, объединенный текст.
+        # Success parsing! Save clean, joined text to DB.
         content_to_save_in_db = "\n".join(text_parts_to_send)
         logger.info(f"Saving CLEAN response to context: '{content_to_save_in_db[:100]}...'")
     else:
-        # Парсинг не удался. Сохраняем "сырой" ответ, т.к. это, скорее всего, обычный текст.
+        # Parse failed. Save raw response to DB, assuming it's plain text.
         content_to_save_in_db = raw_llm_response
         logger.warning(f"JSON parse failed. Saving RAW response to context: '{content_to_save_in_db[:100]}...'")
         
-        # И генерируем части для отправки из этого сырого текста
+        # And generate parts for sending from this raw text.
         text_without_gifs = raw_llm_response
         gif_links = extract_gif_links(raw_llm_response)
         if gif_links:
@@ -101,12 +103,13 @@ async def process_and_send_response(
         text_without_gifs = re.sub(r'\s{2,}', ' ', text_without_gifs).strip()
         
         if text_without_gifs:
-            max_messages = persona.max_response_messages if persona.max_response_messages > 0 else 3
+            # Используем max_response_messages из настроек персоны, с fallback на 3
+            max_messages = persona.config.max_response_messages if persona.config and persona.config.max_response_messages > 0 else 3
             text_parts_to_send = postprocess_response(text_without_gifs, max_messages)
         else:
             text_parts_to_send = []
 
-    # Сохраняем выбранный контент (чистый или сырой) в БД
+    # 3. Save the prepared content (clean or raw) to the DB
     context_response_prepared = False
     if persona.chat_instance:
         try:
@@ -118,9 +121,7 @@ async def process_and_send_response(
     else:
         logger.error("Cannot add response to context, chat_instance is None.")
 
-    # --- КОНЕЦ ИЗМЕНЕНИЯ ---
-
-    # 3. Отправка сообщений (логика без изменений)
+    # 4. Sequentially send messages
     gif_links_to_send = extract_gif_links(raw_llm_response)
 
     if not text_parts_to_send and not gif_links_to_send:
@@ -131,6 +132,7 @@ async def process_and_send_response(
     chat_id_str = str(chat_id)
     chat_type = update.effective_chat.type if update and update.effective_chat else None
 
+    # Send GIFs
     for gif_url in gif_links_to_send:
         try:
             current_reply_id = reply_to_message_id if not first_message_sent else None
@@ -140,6 +142,7 @@ async def process_and_send_response(
         except Exception as e:
             logger.error(f"Error sending gif {gif_url} to chat {chat_id_str}: {e}", exc_info=True)
 
+    # Send Text
     for i, part in enumerate(text_parts_to_send):
         part_raw = part.strip()
         if not part_raw: continue
@@ -184,7 +187,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     """Handles incoming text messages. (v3 - Final)"""
     logger.info("!!! VERSION CHECK: Running with Context Fix (2024-06-09) !!!")
     if not update.message or not (update.message.text or update.message.caption):
-        logger.debug("handle_message: Exiting - No message or text/caption.")
         return
 
     chat_id_str = str(update.effective_chat.id)
@@ -193,7 +195,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     message_text = (update.message.text or update.message.caption or "").strip()
     message_id = update.message.message_id
 
-    if len(message_text) > MAX_USER_MESSAGE_LENGTH_CHARS:
+    if len(message_text) > config.MAX_USER_MESSAGE_LENGTH_CHARS:
         await update.message.reply_text("Ваше сообщение слишком длинное. Пожалуйста, попробуйте его сократить.")
         return
     
@@ -215,8 +217,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 return
             
             persona, initial_context_from_db, owner_user = persona_context_owner_tuple
-            logger.info(f"handle_message: Found active persona '{persona.name}' (ID: {persona.id}) owned by User ID {owner_user.id}.")
             
+            # ... (остальная логика: проверка лимитов, мьюта, группового чата) ...
+            # Весь код до блока LLM Request остается без изменений
             if persona.config.media_reaction in ["all_media_no_text", "photo_only", "voice_only", "none"]:
                 if not persona.chat_instance.is_muted:
                     try:
@@ -238,9 +241,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 await send_limit_exceeded_message(update, context, owner_user)
                 db_session.commit()
                 return
-
+            
             add_message_to_context(db_session, persona.chat_instance.id, "user", f"{username}: {message_text}")
-
+            
             if persona.chat_instance.is_muted:
                 db_session.commit()
                 return
@@ -260,6 +263,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 db_session.commit()
                 return
 
+            # --- LLM Request ---
             await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
             
             system_prompt = persona.format_system_prompt(user_id, username, message_text)
@@ -270,7 +274,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
             context_for_ai = initial_context_from_db + [{"role": "user", "content": f"{username}: {message_text}"}]
             
-            open_ai_client = AsyncOpenAI(api_key=OPENROUTER_API_KEY, base_url=OPENROUTER_API_BASE_URL)
+            open_ai_client = AsyncOpenAI(api_key=config.OPENROUTER_API_KEY, base_url=config.OPENROUTER_API_BASE_URL)
             assistant_response_text = None
             
             try:
@@ -280,31 +284,38 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     formatted_messages_for_llm.append({"role": role, "content": msg["content"]})
                 
                 llm_response = await open_ai_client.chat.completions.create(
-                    model=OPENROUTER_MODEL_NAME,
+                    model=config.OPENROUTER_MODEL_NAME,
                     messages=formatted_messages_for_llm,
                     temperature=persona.config.temperature if persona.config.temperature is not None else 0.7,
                     top_p=persona.config.top_p if persona.config.top_p is not None else 1.0,
                     max_tokens=2048
                 )
                 
+                # ---- ГЛАВНОЕ ИЗМЕНЕНИЕ ----
+                # Просто берем сырой ответ. Никаких проверок на JSON, никакого оборачивания.
                 assistant_response_text = llm_response.choices[0].message.content.strip()
                 logger.info(f"LLM Raw Response (CBI {persona.chat_instance.id}): '{assistant_response_text[:300]}...'")
 
             except OpenAIError as e:
+                # ... (обработка ошибок без изменений) ...
                 await update.message.reply_text("Произошла ошибка при обращении к нейросети. Попробуйте немного позже.")
                 db_session.commit()
                 return
 
+
             if not assistant_response_text:
+                # ... (обработка пустого ответа без изменений) ...
                 await update.message.reply_text("Модель не дала содержательного ответа. Попробуйте переформулировать запрос.")
                 db_session.commit()
                 return
 
+            # --- Process and Send Response ---
             context_response_prepared = await process_and_send_response(
                 update, context, chat_id_str, persona, assistant_response_text, db_session,
                 reply_to_message_id=message_id, is_first_message=(len(initial_context_from_db) == 0)
             )
 
+            # ... (инкремент счетчика и коммит без изменений) ...
             owner_user.monthly_message_count += 1
             db_session.add(owner_user)
             logger.info(f"Incremented monthly message count for user {owner_user.id} to {owner_user.monthly_message_count}")
@@ -312,13 +323,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             db_session.commit()
             logger.info(f"handle_message: Successfully processed message and committed changes for chat {chat_id_str}.")
 
+            
     except SQLAlchemyError as e:
+        # ... (обработка ошибок без изменений) ...
         logger.error(f"handle_message: SQLAlchemyError: {e}", exc_info=True)
         if update.effective_message:
             try: await update.effective_message.reply_text("❌ Ошибка базы данных. Попробуйте позже.")
             except Exception: pass
         if db_session: db_session.rollback()
+
     except Exception as e:
+        # ... (обработка ошибок без изменений) ...
         logger.error(f"handle_message: Unexpected Exception: {e}", exc_info=True)
         if update.effective_message:
             try: await update.effective_message.reply_text("❌ Произошла непредвиденная ошибка.")
