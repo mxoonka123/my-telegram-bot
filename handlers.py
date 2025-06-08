@@ -3165,11 +3165,11 @@ async def add_bot_to_chat(update: Update, context: ContextTypes.DEFAULT_TYPE, pe
                  await reply_target.reply_text(final_not_found_msg, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
                  return
 
-            existing_active_link = db.query(ChatBotInstance).options(
-                 selectinload(ChatBotInstance.bot_instance_ref).selectinload(BotInstance.persona_config)
+            existing_active_link = db.query(DBChatBotInstance).options(
+                 selectinload(DBChatBotInstance.bot_instance_ref).selectinload(DBBotInstance.persona_config)
             ).filter(
-                 ChatBotInstance.chat_id == chat_id_str,
-                 ChatBotInstance.active == True
+                 DBChatBotInstance.chat_id == chat_id_str,
+                 DBChatBotInstance.active == True
             ).first()
 
             if existing_active_link:
@@ -5764,10 +5764,10 @@ async def _start_delete_convo(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     try:
         with get_db() as db:
-            logger.debug(f"Fetching PersonaConfig {persona_id} for owner {user_id}...")
-            persona_config = db.query(PersonaConfig).options(selectinload(PersonaConfig.owner)).filter(
-                PersonaConfig.id == persona_id,
-                PersonaConfig.owner.has(User.telegram_id == user_id)
+            logger.debug(f"Fetching DBPersonaConfig {persona_id} for owner {user_id}...")
+            persona_config = db.query(DBPersonaConfig).options(selectinload(DBPersonaConfig.owner)).filter(
+                DBPersonaConfig.id == persona_id,
+                DBPersonaConfig.owner.has(User.telegram_id == user_id)
             ).first()
 
             if not persona_config:
