@@ -4599,7 +4599,7 @@ async def edit_description_received(update: Update, context: ContextTypes.DEFAUL
 async def edit_comm_style_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     persona_id = context.user_data.get('edit_persona_id')
     with get_db() as db:
-        current_style = db.query(PersonaConfig.communication_style).filter(PersonaConfig.id == persona_id).scalar() or "neutral"
+        current_style = db.query(DBPersonaConfig.communication_style).filter(DBPersonaConfig.id == persona_id).scalar() or "neutral"
     prompt_text = escape_markdown_v2(f"💬 Выберите стиль общения (текущий: {current_style}):")
     keyboard = [
         [InlineKeyboardButton(f"{'✅ ' if current_style == 'neutral' else ''}😐 Нейтральный", callback_data="set_comm_style_neutral")],
