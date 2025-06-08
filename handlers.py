@@ -5936,7 +5936,7 @@ async def delete_persona_confirmed(update: Update, context: ContextTypes.DEFAULT
                   return ConversationHandler.END
 
              # Попробуем получить имя перед удалением для сообщения
-             persona_before_delete = db.query(PersonaConfig.name).filter(PersonaConfig.id == persona_id_from_state, PersonaConfig.owner_id == user.id).scalar()
+             persona_before_delete = db.query(DBPersonaConfig.name).filter(DBPersonaConfig.id == persona_id_from_state, DBPersonaConfig.owner_id == user.id).scalar()
              if persona_before_delete:
                  persona_name_deleted = persona_before_delete # Обновляем имя для сообщения
 
