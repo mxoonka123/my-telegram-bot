@@ -55,7 +55,7 @@ PAID_PERSONA_LIMIT = 10
 FREE_USER_MONTHLY_MESSAGE_LIMIT = 50 # Бесплатные пользователи: 50 сообщений в месяц
 
 # Настройки контекста и ответов
-MAX_CONTEXT_MESSAGES_SENT_TO_LLM = 40 # Сколько последних сообщений отправлять в LLM
+MAX_CONTEXT_MESSAGES_SENT_TO_LLM = 10 # Сколько последних сообщений отправлять в LLM
 # DEFAULT_MAX_RESPONSE_MESSAGES = 3 # Это значение теперь в db.py как default для колонки
 
 # Messaging settings configuration automatically added per user request

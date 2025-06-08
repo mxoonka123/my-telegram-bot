@@ -1866,11 +1866,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                         if formatted_messages_for_llm:
                             logger.debug(f"Last message in prompt: role='{formatted_messages_for_llm[-1]['role']}', content='{str(formatted_messages_for_llm[-1]['content'])[:200]}...' ")
 
+                        target_max_tokens = 150 # Hardcoded max tokens for LLM response
+                        logger.debug(f"Set fixed target_max_tokens for LLM: {target_max_tokens}")
+
                         llm_response = await open_ai_client.chat.completions.create(
                             model=config.OPENROUTER_MODEL_NAME,
                             messages=formatted_messages_for_llm,
                             temperature=persona.config.temperature if persona.config.temperature is not None else 0.7,
                             top_p=persona.config.top_p if persona.config.top_p is not None else 1.0,
+                            max_tokens=target_max_tokens
                         )
                         raw_llm_output = llm_response.choices[0].message.content.strip()
                         
