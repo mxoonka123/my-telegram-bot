@@ -697,6 +697,2100 @@ async def send_to_gemini(system_prompt: str, messages: List[Dict[str, str]], ima
 
 
 # async def send_to_langdock(system_prompt: str, messages: List[Dict[str, str]], image_data: Optional[bytes] = None, audio_data: Optional[bytes] = None) -> str:
+import asyncio
+import httpx
+import json
+import logging
+import re
+from datetime import datetime, timezone
+from openai import AsyncOpenAI, OpenAIError
+from utils import count_openai_compatible_tokens
+# Ensure config is imported, it's likely already there but as a safeguard:
+import config
+import os
+import random
+import re
+import time
+import traceback
+import urllib.parse
+import uuid
+import wave
+import subprocess
+import asyncio
+
+# Константы для UI
+CHECK_MARK = "✅ "  # Unicode Check Mark Symbol
+PREMIUM_STAR = "⭐"  # Звездочка для премиум-функций
+
+# Импорты для работы с Vosk (будут использоваться после установки библиотеки)
+try:
+    from vosk import Model, KaldiRecognizer
+    VOSK_AVAILABLE = True
+except ImportError:
+    logger = logging.getLogger(__name__)
+    logger.warning("Vosk library not available. Voice transcription will not work.")
+    VOSK_AVAILABLE = False
+from datetime import datetime, timezone, timedelta
+from typing import List, Dict, Any, Optional, Union, Tuple
+
+from telegram import Update, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup, Chat as TgChat, CallbackQuery
+from telegram.constants import ChatAction, ParseMode, ChatMemberStatus, ChatType
+from telegram.error import BadRequest, Forbidden, TelegramError, TimedOut
+
+from telegram.ext import (
+    ContextTypes, ConversationHandler, CommandHandler, MessageHandler, filters, CallbackQueryHandler
+)
+from sqlalchemy.orm import Session, joinedload, selectinload
+from sqlalchemy.orm.attributes import flag_modified
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from sqlalchemy import func
+from sqlalchemy import delete
+from db import PersonaConfig as DBPersonaConfig # Added to fix NameError
+from db import get_active_chat_bot_instance_with_relations # Added to fix NameError
+from db import BotInstance as DBBotInstance
+from db import ChatBotInstance as DBChatBotInstance
+
+from yookassa import Configuration as YookassaConfig, Payment
+from yookassa.domain.models.currency import Currency
+from yookassa.domain.request.payment_request_builder import PaymentRequestBuilder
+from yookassa.domain.models.receipt import Receipt, ReceiptItem
+
+
+import config
+from config import (
+    OPENROUTER_API_KEY,
+    OPENROUTER_API_BASE_URL,
+    OPENROUTER_MODEL_NAME,
+    DEFAULT_MOOD_PROMPTS, YOOKASSA_SHOP_ID, YOOKASSA_SECRET_KEY,
+    SUBSCRIPTION_PRICE_RUB, SUBSCRIPTION_CURRENCY, WEBHOOK_URL_BASE,
+    SUBSCRIPTION_DURATION_DAYS,
+    FREE_PERSONA_LIMIT, PAID_PERSONA_LIMIT, MAX_CONTEXT_MESSAGES_SENT_TO_LLM,
+    ADMIN_USER_ID, CHANNEL_ID
+)
+from db import (
+    get_context_for_chat_bot, add_message_to_context,
+    set_mood_for_chat_bot, get_mood_for_chat_bot, get_or_create_user,
+    create_persona_config, get_personas_by_owner, get_persona_by_name_and_owner,
+    get_persona_by_id_and_owner, check_and_update_user_limits, activate_subscription,
+    create_bot_instance, link_bot_instance_to_chat, delete_persona_config,
+    get_all_active_chat_bot_instances,
+    User, PersonaConfig as DBPersonaConfig, BotInstance as DBBotInstance, ChatBotInstance as DBChatBotInstance, ChatContext, func, get_db,
+    DEFAULT_SYSTEM_PROMPT_TEMPLATE
+)
+from persona import Persona
+from utils import (
+    postprocess_response, 
+    extract_gif_links,
+    get_time_info,
+    escape_markdown_v2,
+    TELEGRAM_MAX_LEN
+)
+
+# Максимальная длина входящего сообщения от пользователя в символах
+MAX_USER_MESSAGE_LENGTH_CHARS = 600  # Примерно 150 токенов, можно настроить
+
+logger = logging.getLogger(__name__)
+
+# --- Vosk model setup ---
+# Путь к модели Vosk для русского языка
+# Нужно скачать модель с https://alphacephei.com/vosk/models и распаковать в эту папку
+VOSK_MODEL_PATH = "model_vosk_ru"
+vosk_model = None
+
+if VOSK_AVAILABLE:
+    try:
+        if os.path.exists(VOSK_MODEL_PATH):
+            vosk_model = Model(VOSK_MODEL_PATH)
+            logger.info(f"Vosk model loaded successfully from {VOSK_MODEL_PATH}")
+        else:
+            logger.warning(f"Vosk model path not found: {VOSK_MODEL_PATH}. Please download a model from https://alphacephei.com/vosk/models")
+    except Exception as e:
+        logger.error(f"Error loading Vosk model: {e}", exc_info=True)
+        vosk_model = None
+
+async def transcribe_audio_with_vosk(audio_data: bytes, original_mime_type: str) -> Optional[str]:
+    """
+    Транскрибирует аудиоданные с помощью Vosk.
+    Сначала конвертирует OGG в WAV PCM 16kHz моно.
+    """
+    global vosk_model
+    
+    if not VOSK_AVAILABLE:
+        logger.error("Vosk library not available. Cannot transcribe.")
+        return None
+        
+    if not vosk_model:
+        logger.error("Vosk model not loaded. Cannot transcribe.")
+        return None
+
+    # Имя временного входного файла (OGG)
+    temp_ogg_filename = f"temp_voice_{uuid.uuid4().hex}.ogg"
+    # Имя временного выходного файла (WAV)
+    temp_wav_filename = f"temp_voice_wav_{uuid.uuid4().hex}.wav"
+
+    try:
+        # 1. Сохраняем полученные аудиоданные во временный OGG файл
+        with open(temp_ogg_filename, "wb") as f_ogg:
+            f_ogg.write(audio_data)
+        logger.info(f"Saved temporary OGG file: {temp_ogg_filename}")
+
+        # 2. Конвертируем OGG в WAV (16kHz, моно, pcm_s16le) с помощью ffmpeg
+        #    -ac 1 (моно), -ar 16000 (частота дискретизации 16kHz)
+        #    -f wav (формат WAV), -c:a pcm_s16le (кодек PCM signed 16-bit little-endian)
+        command = [
+            "ffmpeg",
+            "-i", temp_ogg_filename,
+            "-ac", "1",
+            "-ar", "16000",
+            "-c:a", "pcm_s16le",
+            "-f", "wav",
+            temp_wav_filename,
+            "-y" # Перезаписывать выходной файл, если существует
+        ]
+        logger.info(f"Running ffmpeg command: {' '.join(command)}")
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await process.communicate()
+
+        if process.returncode != 0:
+            logger.error(f"ffmpeg conversion failed. Return code: {process.returncode}")
+            logger.error(f"ffmpeg stderr: {stderr.decode(errors='ignore')}")
+            logger.error(f"ffmpeg stdout: {stdout.decode(errors='ignore')}")
+            return None
+        logger.info(f"Successfully converted OGG to WAV: {temp_wav_filename}")
+
+        # 3. Транскрибируем WAV файл с помощью Vosk
+        wf = wave.open(temp_wav_filename, "rb")
+        if wf.getnchannels() != 1 or wf.getsampwidth() != 2 or wf.getcomptype() != "NONE" or wf.getframerate() != 16000:
+            logger.error(f"Audio file {temp_wav_filename} is not mono WAV 16kHz 16bit PCM. Details: CH={wf.getnchannels()}, SW={wf.getsampwidth()}, CT={wf.getcomptype()}, FR={wf.getframerate()}")
+            wf.close()
+            return None
+        
+        # Инициализируем KaldiRecognizer с частотой дискретизации аудиофайла
+        current_recognizer = KaldiRecognizer(vosk_model, wf.getframerate())
+        current_recognizer.SetWords(True) # Включить информацию о словах, если нужно
+
+        full_transcription = ""
+        while True:
+            data = wf.readframes(4000) # Читаем порциями
+            if len(data) == 0:
+                break
+            if current_recognizer.AcceptWaveform(data):
+                result = json.loads(current_recognizer.Result())
+                full_transcription += result.get("text", "") + " "
+        
+        # Получаем финальный результат
+        final_result_json = json.loads(current_recognizer.FinalResult())
+        full_transcription += final_result_json.get("text", "")
+        wf.close()
+        
+        transcribed_text = full_transcription.strip()
+        logger.info(f"Vosk transcription result: '{transcribed_text}'")
+        return transcribed_text if transcribed_text else None
+
+    except FileNotFoundError:
+        logger.error("ffmpeg not found. Please ensure ffmpeg is installed and in your system's PATH.")
+        return None
+    except Exception as e:
+        logger.error(f"Error during Vosk transcription: {e}", exc_info=True)
+        return None
+    finally:
+        # Удаляем временные файлы
+        for temp_file in [temp_ogg_filename, temp_wav_filename]:
+            if os.path.exists(temp_file):
+                try:
+                    os.remove(temp_file)
+                    logger.info(f"Removed temporary file: {temp_file}")
+                except Exception as e_remove:
+                    logger.error(f"Error removing temporary file {temp_file}: {e_remove}")
+
+# --- Helper Functions ---
+
+async def check_channel_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Checks if the user is subscribed to the required channel."""
+    if not CHANNEL_ID:
+        logger.warning("CHANNEL_ID not set in config. Skipping subscription check.")
+        return True # Skip check if no channel is configured
+
+    user_id = None
+    # Determine user ID from update or callback query
+    eff_user = getattr(update, 'effective_user', None)
+    cb_user = getattr(getattr(update, 'callback_query', None), 'from_user', None)
+
+    if eff_user:
+        user_id = eff_user.id
+    elif cb_user:
+        user_id = cb_user.id
+        logger.debug(f"Using user_id {user_id} from callback_query.")
+    else:
+        logger.warning("check_channel_subscription called without valid user information.")
+        return False # Cannot check without user ID
+
+    # Admin always passes
+    if is_admin(user_id):
+        return True
+
+    logger.debug(f"Checking subscription status for user {user_id} in channel {CHANNEL_ID}")
+    try:
+        member = await context.bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id, read_timeout=10)
+        # Check if user status is one of the allowed ones
+        allowed_statuses = [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]
+        logger.debug(f"User {user_id} status in {CHANNEL_ID}: {member.status}")
+        if member.status in allowed_statuses:
+            logger.debug(f"User {user_id} IS subscribed to {CHANNEL_ID} (status: {member.status})")
+            return True
+        else:
+            logger.info(f"User {user_id} is NOT subscribed to {CHANNEL_ID} (status: {member.status})")
+            return False
+    except TimedOut:
+        logger.warning(f"Timeout checking subscription for user {user_id} in channel {CHANNEL_ID}. Denying access.")
+        # Try to inform the user about the timeout
+        target_message = getattr(update, 'effective_message', None) or getattr(getattr(update, 'callback_query', None), 'message', None)
+        if target_message:
+            try:
+                await target_message.reply_text(
+                    escape_markdown_v2("⏳ не удалось проверить подписку на канал (таймаут). попробуйте еще раз позже."),
+                    parse_mode=ParseMode.MARKDOWN_V2
+                )
+            except Exception as send_err:
+                 logger.error(f"Failed to send 'Timeout' error message: {send_err}")
+        return False
+    except Forbidden as e:
+        logger.error(f"Forbidden error checking subscription for user {user_id} in channel {CHANNEL_ID}: {e}. Ensure bot is admin in the channel.")
+        # Try to inform the user about the permission issue
+        target_message = getattr(update, 'effective_message', None) or getattr(getattr(update, 'callback_query', None), 'message', None)
+        if target_message:
+            try:
+                await target_message.reply_text(
+                    escape_markdown_v2("❌ не удалось проверить подписку на канал. убедитесь, что бот добавлен в канал как администратор."),
+                    parse_mode=ParseMode.MARKDOWN_V2
+                )
+            except Exception as send_err:
+                 logger.error(f"Failed to send 'Forbidden' error message: {send_err}")
+        return False
+    except BadRequest as e:
+         error_message = str(e).lower()
+         logger.error(f"BadRequest checking subscription for user {user_id} in channel {CHANNEL_ID}: {e}")
+         reply_text_raw = "❌ произошла ошибка при проверке подписки (badrequest). попробуйте позже."
+         if "member list is inaccessible" in error_message:
+             logger.error(f"-> Specific BadRequest: Member list is inaccessible. Bot might lack permissions or channel privacy settings restrictive?")
+             reply_text_raw = "❌ не удается получить доступ к списку участников канала для проверки подписки. возможно, настройки канала не позволяют это сделать."
+         elif "user not found" in error_message:
+             logger.info(f"-> Specific BadRequest: User {user_id} not found in channel {CHANNEL_ID}.")
+             return False
+         elif "chat not found" in error_message:
+              logger.error(f"-> Specific BadRequest: Chat {CHANNEL_ID} not found. Check CHANNEL_ID config.")
+              reply_text_raw = "❌ ошибка: не удалось найти указанный канал для проверки подписки. проверьте настройки бота."
+
+         target_message = getattr(update, 'effective_message', None) or getattr(getattr(update, 'callback_query', None), 'message', None)
+         if target_message:
+             try: await target_message.reply_text(escape_markdown_v2(reply_text_raw), parse_mode=ParseMode.MARKDOWN_V2)
+             except Exception as send_err: logger.error(f"Failed to send 'BadRequest' error message: {send_err}")
+         return False
+    except TelegramError as e:
+        logger.error(f"Telegram error checking subscription for user {user_id} in channel {CHANNEL_ID}: {e}")
+        target_message = getattr(update, 'effective_message', None) or getattr(getattr(update, 'callback_query', None), 'message', None)
+        if target_message:
+            try: await target_message.reply_text(escape_markdown_v2("❌ произошла ошибка telegram при проверке подписки. попробуйте позже."), parse_mode=ParseMode.MARKDOWN_V2)
+            except Exception as send_err: logger.error(f"Failed to send 'TelegramError' message: {send_err}")
+        return False
+    except Exception as e:
+        logger.error(f"Unexpected error checking subscription for user {user_id} in channel {CHANNEL_ID}: {e}", exc_info=True)
+        return False
+
+async def send_subscription_required_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Sends a message asking the user to subscribe to the channel."""
+    target_message = getattr(update, 'effective_message', None) or getattr(getattr(update, 'callback_query', None), 'message', None)
+
+    if not target_message:
+         logger.warning("Cannot send subscription required message: no target message found.")
+         return
+
+    channel_username = None
+    if isinstance(CHANNEL_ID, str) and CHANNEL_ID.startswith('@'):
+        channel_username = CHANNEL_ID.lstrip('@')
+
+    error_msg_raw = "❌ произошла ошибка при получении ссылки на канал."
+    subscribe_text_raw = "❗ для использования бота необходимо подписаться на наш канал."
+    button_text = "➡️ перейти к каналу"
+    keyboard = None
+
+    if channel_username:
+        subscribe_text_raw = f"❗ для использования бота необходимо подписаться на канал @{channel_username}."
+        keyboard = [[InlineKeyboardButton(button_text, url=f"https://t.me/{channel_username}")]]
+    elif isinstance(CHANNEL_ID, int):
+         subscribe_text_raw = "❗ для использования бота необходимо подписаться на наш основной канал. пожалуйста, найдите канал в поиске или через описание бота."
+    else:
+         logger.error(f"Invalid CHANNEL_ID format: {CHANNEL_ID}. Cannot generate subscription message correctly.")
+         subscribe_text_raw = error_msg_raw
+
+    reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
+    escaped_text = escape_markdown_v2(subscribe_text_raw)
+    try:
+        await target_message.reply_text(escaped_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
+        if update.callback_query:
+             try: await update.callback_query.answer()
+             except: pass
+    except BadRequest as e:
+        logger.error(f"Failed sending subscription required message (BadRequest): {e} - Text Raw: '{subscribe_text_raw}' Escaped: '{escaped_text[:100]}...'")
+        try:
+            await target_message.reply_text(subscribe_text_raw, reply_markup=reply_markup, parse_mode=None)
+        except Exception as fallback_e:
+            logger.error(f"Failed sending plain subscription required message: {fallback_e}")
+    except Exception as e:
+         logger.error(f"Failed to send subscription required message: {e}")
+
+def is_admin(user_id: int) -> bool:
+    """Checks if the user ID belongs to the admin."""
+    return user_id == ADMIN_USER_ID
+
+# --- Conversation States ---
+# Edit Persona Wizard States
+(EDIT_WIZARD_MENU, # Main wizard menu
+ EDIT_NAME, EDIT_DESCRIPTION, EDIT_COMM_STYLE, EDIT_VERBOSITY,
+ EDIT_GROUP_REPLY, EDIT_MEDIA_REACTION,
+ EDIT_MOODS_ENTRY, # Entry point for mood sub-conversation
+ # Mood Editing Sub-Conversation States
+ EDIT_MOOD_CHOICE, EDIT_MOOD_NAME, EDIT_MOOD_PROMPT, DELETE_MOOD_CONFIRM,
+ # Delete Persona Conversation State
+ DELETE_PERSONA_CONFIRM,
+ EDIT_MAX_MESSAGES, EDIT_MESSAGE_VOLUME # <-- New states
+ ) = range(15) # Total 15 states
+
+# --- Terms of Service Text ---
+# (Assuming TOS_TEXT_RAW and TOS_TEXT are defined as before)
+TOS_TEXT_RAW = """
+📜 пользовательское соглашение сервиса @NunuAiBot
+
+привет! добро пожаловать в @NunuAiBot! мы рады, что ты с нами. это соглашение — документ, который объясняет правила использования нашего сервиса. прочитай его, пожалуйста.
+
+дата последнего обновления: 01.03.2025
+
+1. о чем это соглашение?
+1.1. это пользовательское соглашение (или просто "соглашение") — договор между тобой (далее – "пользователь" или "ты") и нами (владельцем telegram-бота @NunuAiBot, далее – "сервис" или "мы"). оно описывает условия использования сервиса.
+1.2. начиная использовать наш сервис (просто отправляя боту любое сообщение или команду), ты подтверждаешь, что прочитал, понял и согласен со всеми условиями этого соглашения. если ты не согласен хотя бы с одним пунктом, пожалуйста, прекрати использование сервиса.
+1.3. наш сервис предоставляет тебе интересную возможность создавать и общаться с виртуальными собеседниками на базе искусственного интеллекта (далее – "личности" или "ai-собеседники").
+
+2. про подписку и оплату
+2.1. мы предлагаем два уровня доступа: бесплатный и premium (платный). возможности и лимиты для каждого уровня подробно описаны внутри бота, например, в командах `/profile` и `/subscribe`.
+2.2. платная подписка дает тебе расширенные возможности и увеличенные лимиты на период в {subscription_duration} дней.
+2.3. стоимость подписки составляет {subscription_price} {subscription_currency} за {subscription_duration} дней.
+2.4. оплата проходит через безопасную платежную систему yookassa. важно: мы не получаем и не храним твои платежные данные (номер карты и т.п.). все безопасно.
+2.5. политика возвратов: покупая подписку, ты получаешь доступ к расширенным возможностям сервиса сразу же после оплаты. поскольку ты получаешь услугу немедленно, оплаченные средства за этот период доступа, к сожалению, не подлежат возврату.
+2.6. в редких случаях, если сервис окажется недоступен по нашей вине в течение длительного времени (более 7 дней подряд), и у тебя будет активная подписка, ты можешь написать нам в поддержку (контакт указан в биографии бота и в нашем telegram-канале). мы рассмотрим возможность продлить твою подписку на срок недоступности сервиса. решение принимается индивидуально.
+
+3. твои и наши права и обязанности
+3.1. что ожидается от тебя (твои обязанности):
+•   использовать сервис только в законных целях и не нарушать никакие законы при его использовании.
+•   не пытаться вмешаться в работу сервиса или получить несанкционированный доступ.
+•   не использовать сервис для рассылки спама, вредоносных программ или любой запрещенной информации.
+•   если требуется (например, для оплаты), предоставлять точную и правдивую информацию.
+•   поскольку у сервиса нет возрастных ограничений, ты подтверждаешь свою способность принять условия настоящего соглашения.
+3.2. что можем делать мы (наши права):
+•   мы можем менять условия этого соглашения. если это произойдет, мы уведомим тебя, опубликовав новую версию соглашения в нашем telegram-канале или иным доступным способом в рамках сервиса. твое дальнейшее использование сервиса будет означать согласие с изменениями.
+•   мы можем временно приостановить или полностью прекратить твой доступ к сервису, если ты нарушишь условия этого соглашения.
+•   мы можем изменять сам сервис: добавлять или убирать функции, менять лимиты или стоимость подписки.
+
+4. важное предупреждение об ограничении ответственности
+4.1. сервис предоставляется "как есть". это значит, что мы не можем гарантировать его идеальную работу без сбоев или ошибок. технологии иногда подводят, и мы не несем ответственности за возможные проблемы, возникшие не по нашей прямой вине.
+4.2. помни, личности — это искусственный интеллект. их ответы генерируются автоматически и могут быть неточными, неполными, странными или не соответствующими твоим ожиданиям или реальности. мы не несем никакой ответственности за содержание ответов, сгенерированных ai-собеседниками. не воспринимай их как истину в последней инстанции или профессиональный совет.
+4.3. мы не несем ответственности за любые прямые или косвенные убытки или ущерб, который ты мог понести в результате использования (или невозможности использования) сервиса.
+
+5. про твои данные (конфиденциальность)
+5.1. для работы сервиса нам приходится собирать и обрабатывать минимальные данные: твой telegram id (для идентификации аккаунта), имя пользователя telegram (username, если есть), информацию о твоей подписке, информацию о созданных тобой личностях, а также историю твоих сообщений с личностями (это нужно ai для поддержания контекста разговора).
+5.2. мы предпринимаем разумные шаги для защиты твоих данных, но, пожалуйста, помни, что передача информации через интернет никогда не может быть абсолютно безопасной.
+
+6. действие соглашения
+6.1. настоящее соглашение начинает действовать с момента, как ты впервые используешь сервис, и действует до момента, пока ты не перестанешь им пользоваться или пока сервис не прекратит свою работу.
+
+7. интеллектуальная собственность
+7.1. ты сохраняешь все права на контент (текст), который ты создаешь и вводишь в сервис в процессе взаимодействия с ai-собеседниками.
+7.2. ты предоставляешь нам неисключительную, безвозмездную, действующую по всему миру лицензию на использование твоего контента исключительно в целях предоставления, поддержания и улучшения работы сервиса (например, для обработки твоих запросов, сохранения контекста диалога, анонимного анализа для улучшения моделей, если применимо).
+7.3. все права на сам сервис (код бота, дизайн, название, графические элементы и т.д.) принадлежат владельцу сервиса.
+7.4. ответы, сгенерированные ai-собеседниками, являются результатом работы алгоритмов искусственного интеллекта. ты можешь использовать полученные ответы в личных некоммерческих целях, но признаешь, что они созданы машиной и не являются твоей или нашей интеллектуальной собственностью в традиционном понимании.
+
+8. заключительные положения
+8.1. все споры и разногласия решаются путем переговоров. если это не поможет, споры будут рассматриваться в соответствии с законодательством российской федерации.
+8.2. по всем вопросам, касающимся настоящего соглашения или работы сервиса, ты можешь обращаться к нам через контакты, указанные в биографии бота и в нашем telegram-канале.
+"""
+formatted_tos_text_for_bot = TOS_TEXT_RAW.format(
+    subscription_duration=config.SUBSCRIPTION_DURATION_DAYS,
+    subscription_price=f"{config.SUBSCRIPTION_PRICE_RUB:.0f}", # Format as integer
+    subscription_currency=config.SUBSCRIPTION_CURRENCY
+)
+TOS_TEXT = escape_markdown_v2(formatted_tos_text_for_bot)
+
+# --- Error Handler ---
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Log Errors caused by Updates."""
+    logger.error("Exception while handling an update:", exc_info=context.error)
+
+    if isinstance(context.error, Forbidden):
+         if CHANNEL_ID and str(CHANNEL_ID) in str(context.error):
+             logger.warning(f"Error handler caught Forbidden regarding channel {CHANNEL_ID}. Bot likely not admin or kicked.")
+             return
+         else:
+             logger.warning(f"Caught generic Forbidden error: {context.error}")
+             return
+
+    elif isinstance(context.error, BadRequest):
+        error_text = str(context.error).lower()
+        if "message is not modified" in error_text:
+            logger.info("Ignoring 'message is not modified' error.")
+            return
+        elif "can't parse entities" in error_text:
+            logger.error(f"MARKDOWN PARSE ERROR: {context.error}. Update: {update}")
+            if isinstance(update, Update) and update.effective_message:
+                try:
+                    await update.effective_message.reply_text("❌ произошла ошибка при форматировании ответа. пожалуйста, сообщите администратору.", parse_mode=None)
+                except Exception as send_err:
+                    logger.error(f"Failed to send 'Markdown parse error' message: {send_err}")
+            return
+        elif "chat member status is required" in error_text:
+             logger.warning(f"Error handler caught BadRequest likely related to missing channel membership check: {context.error}")
+             return
+        elif "chat not found" in error_text:
+             logger.error(f"BadRequest: Chat not found error: {context.error}")
+             return
+        elif "reply message not found" in error_text:
+            logger.warning(f"BadRequest: Reply message not found. Original message might have been deleted. Update: {update}")
+            return
+        else:
+             logger.error(f"Unhandled BadRequest error: {context.error}")
+
+    elif isinstance(context.error, TimedOut):
+         logger.warning(f"Telegram API request timed out: {context.error}")
+         return
+
+    elif isinstance(context.error, TelegramError):
+         logger.error(f"Generic Telegram API error: {context.error}")
+
+    error_message_raw = "упс... 😕 что-то пошло не так. попробуй еще раз позже."
+    escaped_error_message = escape_markdown_v2(error_message_raw)
+    if isinstance(update, Update) and update.effective_message:
+        try:
+            await update.effective_message.reply_text(escaped_error_message, parse_mode=ParseMode.MARKDOWN_V2)
+        except BadRequest as e_md:
+             if "can't parse entities" in str(e_md).lower():
+                 logger.error(f"Failed sending even basic Markdown error msg ({e_md}). Sending plain.")
+                 try: await update.effective_message.reply_text(error_message_raw, parse_mode=None)
+                 except Exception as final_e: logger.error(f"Failed even sending plain text error message: {final_e}")
+             else:
+                 logger.error(f"Failed sending error message (BadRequest, not parse): {e_md}")
+                 try: await update.effective_message.reply_text(error_message_raw, parse_mode=None)
+                 except Exception as final_e: logger.error(f"Failed even sending plain text error message: {final_e}")
+        except Exception as e:
+            logger.error(f"Failed to send error message to user: {e}")
+            try:
+                 await update.effective_message.reply_text(error_message_raw, parse_mode=None)
+            except Exception as final_e:
+                 logger.error(f"Failed even sending plain text error message: {final_e}")
+
+
+# --- Core Logic Helpers ---
+
+def get_persona_and_context_with_owner(chat_id: Union[str, int], db: Session) -> Optional[Tuple[Persona, List[Dict[str, str]], User]]:
+    """Fetches the active Persona, its context, and its owner User for a given chat."""
+    chat_id_str = str(chat_id)
+    chat_instance = get_active_chat_bot_instance_with_relations(db, chat_id_str)
+    if not chat_instance:
+        return None
+
+    bot_instance = chat_instance.bot_instance_ref
+    if not bot_instance:
+         logger.error(f"ChatBotInstance {chat_instance.id} for chat {chat_id_str} is missing linked BotInstance.")
+         return None
+    if not bot_instance.persona_config:
+         logger.error(f"BotInstance {bot_instance.id} (linked to chat {chat_id_str}) is missing linked PersonaConfig.")
+         return None
+    owner_user = bot_instance.owner or bot_instance.persona_config.owner
+    if not owner_user:
+         logger.error(f"Could not load Owner for BotInstance {bot_instance.id} (linked to chat {chat_id_str}).")
+         return None
+
+    persona_config = bot_instance.persona_config
+
+    try:
+        persona = Persona(persona_config, chat_instance)
+    except ValueError as e:
+         logger.error(f"Failed to initialize Persona for config {persona_config.id} in chat {chat_id_str}: {e}", exc_info=True)
+         return None
+
+    context_list = get_context_for_chat_bot(db, chat_instance.id)
+    return persona, context_list, owner_user
+
+
+async def send_to_gemini(system_prompt: str, messages: List[Dict[str, str]], image_data: Optional[bytes] = None, audio_data: Optional[bytes] = None) -> str:
+    """Sends the prompt and context to the Gemini API and returns the response."""
+    
+    if not config.GEMINI_API_KEY:
+        logger.error("GEMINI_API_KEY is not set.")
+        return escape_markdown_v2("❌ ошибка: ключ api gemini не настроен.")
+
+    if not messages:
+        logger.error("send_to_gemini called with an empty messages list!")
+        return "ошибка: нет сообщений для отправки в ai."
+
+    api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={config.GEMINI_API_KEY}"
+    
+    headers = {
+        "Content-Type": "application/json",
+    }
+
+    # Transform messages to Gemini format
+    # Gemini expects a list of contents, where each content has role and parts.
+    # System prompt can be added to the first user message or as a separate turn.
+    gemini_contents = []
+    is_first_user_message = True
+
+    for msg in messages[-config.MAX_CONTEXT_MESSAGES_SENT_TO_LLM:]:
+        role = msg.get("role")
+        content_text = msg.get("content", "")
+        
+        # Gemini uses 'user' and 'model' roles.
+        gemini_role = "user" if role == "user" else "model"
+        
+        # Prepend system_prompt to the first user message's content
+        # Or, if the first message is not from user, create a synthetic user message with system prompt.
+        current_parts = []
+        if gemini_role == "user" and is_first_user_message:
+            full_text_for_first_user_message = f"{system_prompt}\n\n{content_text}"
+            current_parts.append({"text": full_text_for_first_user_message.strip()})
+            is_first_user_message = False
+        else:
+            current_parts.append({"text": content_text.strip()})
+        
+        # Handle image data for user messages if present
+        # Gemini expects image data in 'parts' alongside text for 'user' role.
+        if gemini_role == "user" and image_data:
+            try:
+                import base64
+                image_base64 = base64.b64encode(image_data).decode('utf-8')
+                current_parts.append({
+                    "inline_data": {
+                        "mime_type": "image/jpeg", # Assuming JPEG, adjust if other types are used
+                        "data": image_base64
+                    }
+                })
+                logger.info("Image data prepared for Gemini request.")
+                image_data = None # Consume image data so it's only added once
+            except Exception as e:
+                logger.error(f"Error encoding image data for Gemini: {e}", exc_info=True)
+        
+        # Audio data handling - Gemini API might not directly support audio bytes in the same way as images.
+        # The text placeholder for audio (e.g., "[получено голосовое сообщение]") should already be in content_text.
+        if audio_data and gemini_role == "user":
+            logger.info("Audio data was present for Gemini, text placeholder should be used in prompt.")
+            # We don't add audio_data directly here, relying on the text placeholder.
+            audio_data = None # Consume audio data flag
+
+        if current_parts: # Only add if there's something to send
+             gemini_contents.append({"role": gemini_role, "parts": current_parts})
+    
+    # If system_prompt wasn't prepended (e.g. no user messages or first message was assistant)
+    # add it as the very first user turn.
+    if is_first_user_message and system_prompt:
+        gemini_contents.insert(0, {"role": "user", "parts": [{"text": system_prompt.strip()}]})
+        if gemini_contents and len(gemini_contents) > 1 and gemini_contents[1]["role"] == "user":
+             # If the next message is also user, we need to insert a model (assistant) turn in between
+             # to maintain the user/model alternating sequence for Gemini.
+             # This is a simplified handling; complex scenarios might need more robust logic.
+             gemini_contents.insert(1, {"role": "model", "parts": [{"text": "Okay."}]}) # Placeholder response
+
+    payload = {
+        "contents": gemini_contents,
+        "generationConfig": {
+            # "temperature": 0.7, # Optional: Adjust as needed
+            # "topK": 1,          # Optional
+            # "topP": 1,          # Optional
+            # "maxOutputTokens": 2048, # Optional: Gemini Flash has a large context window
+        },
+        "safetySettings": [ # Optional: Adjust safety settings as needed
+            {
+                "category": "HARM_CATEGORY_HARASSMENT",
+                "threshold": "BLOCK_MEDIUM_AND_ABOVE"
+            },
+            {
+                "category": "HARM_CATEGORY_HATE_SPEECH",
+                "threshold": "BLOCK_MEDIUM_AND_ABOVE"
+            },
+            {
+                "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                "threshold": "BLOCK_MEDIUM_AND_ABOVE"
+            },
+            {
+                "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+                "threshold": "BLOCK_MEDIUM_AND_ABOVE"
+            }
+        ]
+    }
+
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            async with httpx.AsyncClient(timeout=120.0) as client: # Increased timeout for potentially longer AI responses
+                logger.debug(f"Sending to Gemini. URL: {api_url}")
+                # logger.debug(f"Gemini Request Payload: {json.dumps(payload, indent=2, ensure_ascii=False)}") # Careful with logging PII
+                
+                response = await client.post(api_url, headers=headers, json=payload)
+                response.raise_for_status() # Raises HTTPStatusError for 4xx/5xx responses
+                
+                response_data = response.json()
+                # logger.debug(f"Gemini Raw Response: {json.dumps(response_data, indent=2, ensure_ascii=False)}")
+
+                if response_data.get("candidates") and response_data["candidates"][0].get("content") and response_data["candidates"][0]["content"].get("parts"):
+                    generated_text = response_data["candidates"][0]["content"]["parts"][0].get("text", "")
+                    if not generated_text and response_data["candidates"][0].get("finishReason") == "SAFETY":
+                        logger.warning("Gemini: Response blocked due to safety settings.")
+                        return escape_markdown_v2("❌ мой ответ был заблокирован из-за настроек безопасности.")
+                    if not generated_text and response_data["candidates"][0].get("finishReason") == "MAX_TOKENS":
+                        logger.warning("Gemini: Response stopped due to max tokens.")
+                        # return generated_text # Return whatever was generated before cutoff
+                    if not generated_text:
+                         logger.warning(f"Gemini: Empty text in response. Finish reason: {response_data['candidates'][0].get('finishReason')}. Full candidate: {response_data['candidates'][0]}")
+                         return escape_markdown_v2("❌ получен пустой ответ от ai (gemini). причина: " + response_data["candidates"][0].get("finishReason", "unknown"))
+                    return generated_text
+                elif response_data.get("promptFeedback") and response_data["promptFeedback"].get("blockReason"):
+                    block_reason = response_data["promptFeedback"]["blockReason"]
+                    logger.warning(f"Gemini: Prompt blocked due to {block_reason}.")
+                    return escape_markdown_v2(f"❌ ваш запрос был заблокирован (gemini): {block_reason.lower().replace('_', ' ')}.")
+                else:
+                    logger.error(f"Gemini: Unexpected response structure: {response_data}")
+                    return escape_markdown_v2("❌ ошибка: неожиданный формат ответа от ai (gemini).")
+
+        except httpx.HTTPStatusError as e:
+            logger.error(f"Gemini API request failed (attempt {attempt + 1}/{max_retries}) with status {e.response.status_code}: {e.response.text}", exc_info=True)
+            if e.response.status_code == 429: # Rate limit
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(5 * (attempt + 1)) # Exponential backoff
+                    continue
+                return escape_markdown_v2("❌ ошибка: превышен лимит запросов к ai (gemini). попробуйте позже.")
+            # For other client-side errors (4xx) or server-side (5xx), specific handling might be needed
+            # For now, a generic error message for non-rate-limit errors after retries or for unrecoverable client errors
+            error_detail = e.response.json().get("error", {}).get("message", e.response.text) if e.response.content else str(e)
+            return escape_markdown_v2(f"❌ ошибка api (gemini) {e.response.status_code}: {error_detail}")
+        except httpx.RequestError as e:
+            logger.error(f"Gemini API request failed (attempt {attempt + 1}/{max_retries}): {e}", exc_info=True)
+            if attempt < max_retries - 1:
+                await asyncio.sleep(3 * (attempt + 1))
+                continue
+            return escape_markdown_v2("❌ ошибка сети при обращении к ai (gemini). попробуйте позже.")
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to decode JSON response from Gemini (attempt {attempt + 1}/{max_retries}): {e}", exc_info=True)
+            # This is unlikely if raise_for_status() passed and API is stable, but good to have.
+            if attempt < max_retries - 1:
+                await asyncio.sleep(1)
+                continue
+            return escape_markdown_v2("❌ ошибка: неверный формат ответа от ai (gemini).")
+        except Exception as e:
+            logger.error(f"An unexpected error occurred in send_to_gemini (attempt {attempt + 1}/{max_retries}): {e}", exc_info=True)
+            if attempt < max_retries - 1:
+                await asyncio.sleep(1)
+                continue
+            return escape_markdown_v2("❌ неизвестная ошибка при обращении к ai (gemini).")
+    
+    return escape_markdown_v2("❌ исчерпаны все попытки обращения к ai (gemini).")
+import asyncio
+import httpx
+import json
+import logging
+import re
+from datetime import datetime, timezone
+from openai import AsyncOpenAI, OpenAIError
+from utils import count_openai_compatible_tokens
+# Ensure config is imported, it's likely already there but as a safeguard:
+import config
+import os
+import random
+import re
+import time
+import traceback
+import urllib.parse
+import uuid
+import wave
+import subprocess
+import asyncio
+
+# Константы для UI
+CHECK_MARK = "✅ "  # Unicode Check Mark Symbol
+PREMIUM_STAR = "⭐"  # Звездочка для премиум-функций
+
+# Импорты для работы с Vosk (будут использоваться после установки библиотеки)
+try:
+    from vosk import Model, KaldiRecognizer
+    VOSK_AVAILABLE = True
+except ImportError:
+    logger = logging.getLogger(__name__)
+    logger.warning("Vosk library not available. Voice transcription will not work.")
+    VOSK_AVAILABLE = False
+from datetime import datetime, timezone, timedelta
+from typing import List, Dict, Any, Optional, Union, Tuple
+
+from telegram import Update, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup, Chat as TgChat, CallbackQuery
+from telegram.constants import ChatAction, ParseMode, ChatMemberStatus, ChatType
+from telegram.error import BadRequest, Forbidden, TelegramError, TimedOut
+
+from telegram.ext import (
+    ContextTypes, ConversationHandler, CommandHandler, MessageHandler, filters, CallbackQueryHandler
+)
+from sqlalchemy.orm import Session, joinedload, selectinload
+from sqlalchemy.orm.attributes import flag_modified
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from sqlalchemy import func
+from sqlalchemy import delete
+from db import PersonaConfig as DBPersonaConfig # Added to fix NameError
+from db import get_active_chat_bot_instance_with_relations # Added to fix NameError
+from db import BotInstance as DBBotInstance
+from db import ChatBotInstance as DBChatBotInstance
+
+from yookassa import Configuration as YookassaConfig, Payment
+from yookassa.domain.models.currency import Currency
+from yookassa.domain.request.payment_request_builder import PaymentRequestBuilder
+from yookassa.domain.models.receipt import Receipt, ReceiptItem
+
+
+import config
+from config import (
+    OPENROUTER_API_KEY,
+    OPENROUTER_API_BASE_URL,
+    OPENROUTER_MODEL_NAME,
+    DEFAULT_MOOD_PROMPTS, YOOKASSA_SHOP_ID, YOOKASSA_SECRET_KEY,
+    SUBSCRIPTION_PRICE_RUB, SUBSCRIPTION_CURRENCY, WEBHOOK_URL_BASE,
+    SUBSCRIPTION_DURATION_DAYS,
+    FREE_PERSONA_LIMIT, PAID_PERSONA_LIMIT, MAX_CONTEXT_MESSAGES_SENT_TO_LLM,
+    ADMIN_USER_ID, CHANNEL_ID
+)
+from db import (
+    get_context_for_chat_bot, add_message_to_context,
+    set_mood_for_chat_bot, get_mood_for_chat_bot, get_or_create_user,
+    create_persona_config, get_personas_by_owner, get_persona_by_name_and_owner,
+    get_persona_by_id_and_owner, check_and_update_user_limits, activate_subscription,
+    create_bot_instance, link_bot_instance_to_chat, delete_persona_config,
+    get_all_active_chat_bot_instances,
+    User, PersonaConfig as DBPersonaConfig, BotInstance as DBBotInstance, ChatBotInstance as DBChatBotInstance, ChatContext, func, get_db,
+    DEFAULT_SYSTEM_PROMPT_TEMPLATE
+)
+from persona import Persona
+from utils import (
+    postprocess_response, 
+    extract_gif_links,
+    get_time_info,
+    escape_markdown_v2,
+    TELEGRAM_MAX_LEN
+)
+
+# Максимальная длина входящего сообщения от пользователя в символах
+MAX_USER_MESSAGE_LENGTH_CHARS = 600  # Примерно 150 токенов, можно настроить
+
+logger = logging.getLogger(__name__)
+
+# --- Vosk model setup ---
+# Путь к модели Vosk для русского языка
+# Нужно скачать модель с https://alphacephei.com/vosk/models и распаковать в эту папку
+VOSK_MODEL_PATH = "model_vosk_ru"
+vosk_model = None
+
+if VOSK_AVAILABLE:
+    try:
+        if os.path.exists(VOSK_MODEL_PATH):
+            vosk_model = Model(VOSK_MODEL_PATH)
+            logger.info(f"Vosk model loaded successfully from {VOSK_MODEL_PATH}")
+        else:
+            logger.warning(f"Vosk model path not found: {VOSK_MODEL_PATH}. Please download a model from https://alphacephei.com/vosk/models")
+    except Exception as e:
+        logger.error(f"Error loading Vosk model: {e}", exc_info=True)
+        vosk_model = None
+
+async def transcribe_audio_with_vosk(audio_data: bytes, original_mime_type: str) -> Optional[str]:
+    """
+    Транскрибирует аудиоданные с помощью Vosk.
+    Сначала конвертирует OGG в WAV PCM 16kHz моно.
+    """
+    global vosk_model
+    
+    if not VOSK_AVAILABLE:
+        logger.error("Vosk library not available. Cannot transcribe.")
+        return None
+        
+    if not vosk_model:
+        logger.error("Vosk model not loaded. Cannot transcribe.")
+        return None
+
+    # Имя временного входного файла (OGG)
+    temp_ogg_filename = f"temp_voice_{uuid.uuid4().hex}.ogg"
+    # Имя временного выходного файла (WAV)
+    temp_wav_filename = f"temp_voice_wav_{uuid.uuid4().hex}.wav"
+
+    try:
+        # 1. Сохраняем полученные аудиоданные во временный OGG файл
+        with open(temp_ogg_filename, "wb") as f_ogg:
+            f_ogg.write(audio_data)
+        logger.info(f"Saved temporary OGG file: {temp_ogg_filename}")
+
+        # 2. Конвертируем OGG в WAV (16kHz, моно, pcm_s16le) с помощью ffmpeg
+        #    -ac 1 (моно), -ar 16000 (частота дискретизации 16kHz)
+        #    -f wav (формат WAV), -c:a pcm_s16le (кодек PCM signed 16-bit little-endian)
+        command = [
+            "ffmpeg",
+            "-i", temp_ogg_filename,
+            "-ac", "1",
+            "-ar", "16000",
+            "-c:a", "pcm_s16le",
+            "-f", "wav",
+            temp_wav_filename,
+            "-y" # Перезаписывать выходной файл, если существует
+        ]
+        logger.info(f"Running ffmpeg command: {' '.join(command)}")
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await process.communicate()
+
+        if process.returncode != 0:
+            logger.error(f"ffmpeg conversion failed. Return code: {process.returncode}")
+            logger.error(f"ffmpeg stderr: {stderr.decode(errors='ignore')}")
+            logger.error(f"ffmpeg stdout: {stdout.decode(errors='ignore')}")
+            return None
+        logger.info(f"Successfully converted OGG to WAV: {temp_wav_filename}")
+
+        # 3. Транскрибируем WAV файл с помощью Vosk
+        wf = wave.open(temp_wav_filename, "rb")
+        if wf.getnchannels() != 1 or wf.getsampwidth() != 2 or wf.getcomptype() != "NONE" or wf.getframerate() != 16000:
+            logger.error(f"Audio file {temp_wav_filename} is not mono WAV 16kHz 16bit PCM. Details: CH={wf.getnchannels()}, SW={wf.getsampwidth()}, CT={wf.getcomptype()}, FR={wf.getframerate()}")
+            wf.close()
+            return None
+        
+        # Инициализируем KaldiRecognizer с частотой дискретизации аудиофайла
+        current_recognizer = KaldiRecognizer(vosk_model, wf.getframerate())
+        current_recognizer.SetWords(True) # Включить информацию о словах, если нужно
+
+        full_transcription = ""
+        while True:
+            data = wf.readframes(4000) # Читаем порциями
+            if len(data) == 0:
+                break
+            if current_recognizer.AcceptWaveform(data):
+                result = json.loads(current_recognizer.Result())
+                full_transcription += result.get("text", "") + " "
+        
+        # Получаем финальный результат
+        final_result_json = json.loads(current_recognizer.FinalResult())
+        full_transcription += final_result_json.get("text", "")
+        wf.close()
+        
+        transcribed_text = full_transcription.strip()
+        logger.info(f"Vosk transcription result: '{transcribed_text}'")
+        return transcribed_text if transcribed_text else None
+
+    except FileNotFoundError:
+        logger.error("ffmpeg not found. Please ensure ffmpeg is installed and in your system's PATH.")
+        return None
+    except Exception as e:
+        logger.error(f"Error during Vosk transcription: {e}", exc_info=True)
+        return None
+    finally:
+        # Удаляем временные файлы
+        for temp_file in [temp_ogg_filename, temp_wav_filename]:
+            if os.path.exists(temp_file):
+                try:
+                    os.remove(temp_file)
+                    logger.info(f"Removed temporary file: {temp_file}")
+                except Exception as e_remove:
+                    logger.error(f"Error removing temporary file {temp_file}: {e_remove}")
+
+# --- Helper Functions ---
+
+async def check_channel_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Checks if the user is subscribed to the required channel."""
+    if not CHANNEL_ID:
+        logger.warning("CHANNEL_ID not set in config. Skipping subscription check.")
+        return True # Skip check if no channel is configured
+
+    user_id = None
+    # Determine user ID from update or callback query
+    eff_user = getattr(update, 'effective_user', None)
+    cb_user = getattr(getattr(update, 'callback_query', None), 'from_user', None)
+
+    if eff_user:
+        user_id = eff_user.id
+    elif cb_user:
+        user_id = cb_user.id
+        logger.debug(f"Using user_id {user_id} from callback_query.")
+    else:
+        logger.warning("check_channel_subscription called without valid user information.")
+        return False # Cannot check without user ID
+
+    # Admin always passes
+    if is_admin(user_id):
+        return True
+
+    logger.debug(f"Checking subscription status for user {user_id} in channel {CHANNEL_ID}")
+    try:
+        member = await context.bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id, read_timeout=10)
+        # Check if user status is one of the allowed ones
+        allowed_statuses = [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]
+        logger.debug(f"User {user_id} status in {CHANNEL_ID}: {member.status}")
+        if member.status in allowed_statuses:
+            logger.debug(f"User {user_id} IS subscribed to {CHANNEL_ID} (status: {member.status})")
+            return True
+        else:
+            logger.info(f"User {user_id} is NOT subscribed to {CHANNEL_ID} (status: {member.status})")
+            return False
+    except TimedOut:
+        logger.warning(f"Timeout checking subscription for user {user_id} in channel {CHANNEL_ID}. Denying access.")
+        # Try to inform the user about the timeout
+        target_message = getattr(update, 'effective_message', None) or getattr(getattr(update, 'callback_query', None), 'message', None)
+        if target_message:
+            try:
+                await target_message.reply_text(
+                    escape_markdown_v2("⏳ не удалось проверить подписку на канал (таймаут). попробуйте еще раз позже."),
+                    parse_mode=ParseMode.MARKDOWN_V2
+                )
+            except Exception as send_err:
+                 logger.error(f"Failed to send 'Timeout' error message: {send_err}")
+        return False
+    except Forbidden as e:
+        logger.error(f"Forbidden error checking subscription for user {user_id} in channel {CHANNEL_ID}: {e}. Ensure bot is admin in the channel.")
+        # Try to inform the user about the permission issue
+        target_message = getattr(update, 'effective_message', None) or getattr(getattr(update, 'callback_query', None), 'message', None)
+        if target_message:
+            try:
+                await target_message.reply_text(
+                    escape_markdown_v2("❌ не удалось проверить подписку на канал. убедитесь, что бот добавлен в канал как администратор."),
+                    parse_mode=ParseMode.MARKDOWN_V2
+                )
+            except Exception as send_err:
+                 logger.error(f"Failed to send 'Forbidden' error message: {send_err}")
+        return False
+    except BadRequest as e:
+         error_message = str(e).lower()
+         logger.error(f"BadRequest checking subscription for user {user_id} in channel {CHANNEL_ID}: {e}")
+         reply_text_raw = "❌ произошла ошибка при проверке подписки (badrequest). попробуйте позже."
+         if "member list is inaccessible" in error_message:
+             logger.error(f"-> Specific BadRequest: Member list is inaccessible. Bot might lack permissions or channel privacy settings restrictive?")
+             reply_text_raw = "❌ не удается получить доступ к списку участников канала для проверки подписки. возможно, настройки канала не позволяют это сделать."
+         elif "user not found" in error_message:
+             logger.info(f"-> Specific BadRequest: User {user_id} not found in channel {CHANNEL_ID}.")
+             return False
+         elif "chat not found" in error_message:
+              logger.error(f"-> Specific BadRequest: Chat {CHANNEL_ID} not found. Check CHANNEL_ID config.")
+              reply_text_raw = "❌ ошибка: не удалось найти указанный канал для проверки подписки. проверьте настройки бота."
+
+         target_message = getattr(update, 'effective_message', None) or getattr(getattr(update, 'callback_query', None), 'message', None)
+         if target_message:
+             try: await target_message.reply_text(escape_markdown_v2(reply_text_raw), parse_mode=ParseMode.MARKDOWN_V2)
+             except Exception as send_err: logger.error(f"Failed to send 'BadRequest' error message: {send_err}")
+         return False
+    except TelegramError as e:
+        logger.error(f"Telegram error checking subscription for user {user_id} in channel {CHANNEL_ID}: {e}")
+        target_message = getattr(update, 'effective_message', None) or getattr(getattr(update, 'callback_query', None), 'message', None)
+        if target_message:
+            try: await target_message.reply_text(escape_markdown_v2("❌ произошла ошибка telegram при проверке подписки. попробуйте позже."), parse_mode=ParseMode.MARKDOWN_V2)
+            except Exception as send_err: logger.error(f"Failed to send 'TelegramError' message: {send_err}")
+        return False
+    except Exception as e:
+        logger.error(f"Unexpected error checking subscription for user {user_id} in channel {CHANNEL_ID}: {e}", exc_info=True)
+        return False
+
+async def send_subscription_required_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Sends a message asking the user to subscribe to the channel."""
+    target_message = getattr(update, 'effective_message', None) or getattr(getattr(update, 'callback_query', None), 'message', None)
+
+    if not target_message:
+         logger.warning("Cannot send subscription required message: no target message found.")
+         return
+
+    channel_username = None
+    if isinstance(CHANNEL_ID, str) and CHANNEL_ID.startswith('@'):
+        channel_username = CHANNEL_ID.lstrip('@')
+
+    error_msg_raw = "❌ произошла ошибка при получении ссылки на канал."
+    subscribe_text_raw = "❗ для использования бота необходимо подписаться на наш канал."
+    button_text = "➡️ перейти к каналу"
+    keyboard = None
+
+    if channel_username:
+        subscribe_text_raw = f"❗ для использования бота необходимо подписаться на канал @{channel_username}."
+        keyboard = [[InlineKeyboardButton(button_text, url=f"https://t.me/{channel_username}")]]
+    elif isinstance(CHANNEL_ID, int):
+         subscribe_text_raw = "❗ для использования бота необходимо подписаться на наш основной канал. пожалуйста, найдите канал в поиске или через описание бота."
+    else:
+         logger.error(f"Invalid CHANNEL_ID format: {CHANNEL_ID}. Cannot generate subscription message correctly.")
+         subscribe_text_raw = error_msg_raw
+
+    reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
+    escaped_text = escape_markdown_v2(subscribe_text_raw)
+    try:
+        await target_message.reply_text(escaped_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
+        if update.callback_query:
+             try: await update.callback_query.answer()
+             except: pass
+    except BadRequest as e:
+        logger.error(f"Failed sending subscription required message (BadRequest): {e} - Text Raw: '{subscribe_text_raw}' Escaped: '{escaped_text[:100]}...'")
+        try:
+            await target_message.reply_text(subscribe_text_raw, reply_markup=reply_markup, parse_mode=None)
+        except Exception as fallback_e:
+            logger.error(f"Failed sending plain subscription required message: {fallback_e}")
+    except Exception as e:
+         logger.error(f"Failed to send subscription required message: {e}")
+
+def is_admin(user_id: int) -> bool:
+    """Checks if the user ID belongs to the admin."""
+    return user_id == ADMIN_USER_ID
+
+# --- Conversation States ---
+# Edit Persona Wizard States
+(EDIT_WIZARD_MENU, # Main wizard menu
+ EDIT_NAME, EDIT_DESCRIPTION, EDIT_COMM_STYLE, EDIT_VERBOSITY,
+ EDIT_GROUP_REPLY, EDIT_MEDIA_REACTION,
+ EDIT_MOODS_ENTRY, # Entry point for mood sub-conversation
+ # Mood Editing Sub-Conversation States
+ EDIT_MOOD_CHOICE, EDIT_MOOD_NAME, EDIT_MOOD_PROMPT, DELETE_MOOD_CONFIRM,
+ # Delete Persona Conversation State
+ DELETE_PERSONA_CONFIRM,
+ EDIT_MAX_MESSAGES, EDIT_MESSAGE_VOLUME # <-- New states
+ ) = range(15) # Total 15 states
+
+# --- Terms of Service Text ---
+# (Assuming TOS_TEXT_RAW and TOS_TEXT are defined as before)
+TOS_TEXT_RAW = """
+📜 пользовательское соглашение сервиса @NunuAiBot
+
+привет! добро пожаловать в @NunuAiBot! мы рады, что ты с нами. это соглашение — документ, который объясняет правила использования нашего сервиса. прочитай его, пожалуйста.
+
+дата последнего обновления: 01.03.2025
+
+1. о чем это соглашение?
+1.1. это пользовательское соглашение (или просто "соглашение") — договор между тобой (далее – "пользователь" или "ты") и нами (владельцем telegram-бота @NunuAiBot, далее – "сервис" или "мы"). оно описывает условия использования сервиса.
+1.2. начиная использовать наш сервис (просто отправляя боту любое сообщение или команду), ты подтверждаешь, что прочитал, понял и согласен со всеми условиями этого соглашения. если ты не согласен хотя бы с одним пунктом, пожалуйста, прекрати использование сервиса.
+1.3. наш сервис предоставляет тебе интересную возможность создавать и общаться с виртуальными собеседниками на базе искусственного интеллекта (далее – "личности" или "ai-собеседники").
+
+2. про подписку и оплату
+2.1. мы предлагаем два уровня доступа: бесплатный и premium (платный). возможности и лимиты для каждого уровня подробно описаны внутри бота, например, в командах `/profile` и `/subscribe`.
+2.2. платная подписка дает тебе расширенные возможности и увеличенные лимиты на период в {subscription_duration} дней.
+2.3. стоимость подписки составляет {subscription_price} {subscription_currency} за {subscription_duration} дней.
+2.4. оплата проходит через безопасную платежную систему yookassa. важно: мы не получаем и не храним твои платежные данные (номер карты и т.п.). все безопасно.
+2.5. политика возвратов: покупая подписку, ты получаешь доступ к расширенным возможностям сервиса сразу же после оплаты. поскольку ты получаешь услугу немедленно, оплаченные средства за этот период доступа, к сожалению, не подлежат возврату.
+2.6. в редких случаях, если сервис окажется недоступен по нашей вине в течение длительного времени (более 7 дней подряд), и у тебя будет активная подписка, ты можешь написать нам в поддержку (контакт указан в биографии бота и в нашем telegram-канале). мы рассмотрим возможность продлить твою подписку на срок недоступности сервиса. решение принимается индивидуально.
+
+3. твои и наши права и обязанности
+3.1. что ожидается от тебя (твои обязанности):
+•   использовать сервис только в законных целях и не нарушать никакие законы при его использовании.
+•   не пытаться вмешаться в работу сервиса или получить несанкционированный доступ.
+•   не использовать сервис для рассылки спама, вредоносных программ или любой запрещенной информации.
+•   если требуется (например, для оплаты), предоставлять точную и правдивую информацию.
+•   поскольку у сервиса нет возрастных ограничений, ты подтверждаешь свою способность принять условия настоящего соглашения.
+3.2. что можем делать мы (наши права):
+•   мы можем менять условия этого соглашения. если это произойдет, мы уведомим тебя, опубликовав новую версию соглашения в нашем telegram-канале или иным доступным способом в рамках сервиса. твое дальнейшее использование сервиса будет означать согласие с изменениями.
+•   мы можем временно приостановить или полностью прекратить твой доступ к сервису, если ты нарушишь условия этого соглашения.
+•   мы можем изменять сам сервис: добавлять или убирать функции, менять лимиты или стоимость подписки.
+
+4. важное предупреждение об ограничении ответственности
+4.1. сервис предоставляется "как есть". это значит, что мы не можем гарантировать его идеальную работу без сбоев или ошибок. технологии иногда подводят, и мы не несем ответственности за возможные проблемы, возникшие не по нашей прямой вине.
+4.2. помни, личности — это искусственный интеллект. их ответы генерируются автоматически и могут быть неточными, неполными, странными или не соответствующими твоим ожиданиям или реальности. мы не несем никакой ответственности за содержание ответов, сгенерированных ai-собеседниками. не воспринимай их как истину в последней инстанции или профессиональный совет.
+4.3. мы не несем ответственности за любые прямые или косвенные убытки или ущерб, который ты мог понести в результате использования (или невозможности использования) сервиса.
+
+5. про твои данные (конфиденциальность)
+5.1. для работы сервиса нам приходится собирать и обрабатывать минимальные данные: твой telegram id (для идентификации аккаунта), имя пользователя telegram (username, если есть), информацию о твоей подписке, информацию о созданных тобой личностях, а также историю твоих сообщений с личностями (это нужно ai для поддержания контекста разговора).
+5.2. мы предпринимаем разумные шаги для защиты твоих данных, но, пожалуйста, помни, что передача информации через интернет никогда не может быть абсолютно безопасной.
+
+6. действие соглашения
+6.1. настоящее соглашение начинает действовать с момента, как ты впервые используешь сервис, и действует до момента, пока ты не перестанешь им пользоваться или пока сервис не прекратит свою работу.
+
+7. интеллектуальная собственность
+7.1. ты сохраняешь все права на контент (текст), который ты создаешь и вводишь в сервис в процессе взаимодействия с ai-собеседниками.
+7.2. ты предоставляешь нам неисключительную, безвозмездную, действующую по всему миру лицензию на использование твоего контента исключительно в целях предоставления, поддержания и улучшения работы сервиса (например, для обработки твоих запросов, сохранения контекста диалога, анонимного анализа для улучшения моделей, если применимо).
+7.3. все права на сам сервис (код бота, дизайн, название, графические элементы и т.д.) принадлежат владельцу сервиса.
+7.4. ответы, сгенерированные ai-собеседниками, являются результатом работы алгоритмов искусственного интеллекта. ты можешь использовать полученные ответы в личных некоммерческих целях, но признаешь, что они созданы машиной и не являются твоей или нашей интеллектуальной собственностью в традиционном понимании.
+
+8. заключительные положения
+8.1. все споры и разногласия решаются путем переговоров. если это не поможет, споры будут рассматриваться в соответствии с законодательством российской федерации.
+8.2. по всем вопросам, касающимся настоящего соглашения или работы сервиса, ты можешь обращаться к нам через контакты, указанные в биографии бота и в нашем telegram-канале.
+"""
+formatted_tos_text_for_bot = TOS_TEXT_RAW.format(
+    subscription_duration=config.SUBSCRIPTION_DURATION_DAYS,
+    subscription_price=f"{config.SUBSCRIPTION_PRICE_RUB:.0f}", # Format as integer
+    subscription_currency=config.SUBSCRIPTION_CURRENCY
+)
+TOS_TEXT = escape_markdown_v2(formatted_tos_text_for_bot)
+
+# --- Error Handler ---
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Log Errors caused by Updates."""
+    logger.error("Exception while handling an update:", exc_info=context.error)
+
+    if isinstance(context.error, Forbidden):
+         if CHANNEL_ID and str(CHANNEL_ID) in str(context.error):
+             logger.warning(f"Error handler caught Forbidden regarding channel {CHANNEL_ID}. Bot likely not admin or kicked.")
+             return
+         else:
+             logger.warning(f"Caught generic Forbidden error: {context.error}")
+             return
+
+    elif isinstance(context.error, BadRequest):
+        error_text = str(context.error).lower()
+        if "message is not modified" in error_text:
+            logger.info("Ignoring 'message is not modified' error.")
+            return
+        elif "can't parse entities" in error_text:
+            logger.error(f"MARKDOWN PARSE ERROR: {context.error}. Update: {update}")
+            if isinstance(update, Update) and update.effective_message:
+                try:
+                    await update.effective_message.reply_text("❌ произошла ошибка при форматировании ответа. пожалуйста, сообщите администратору.", parse_mode=None)
+                except Exception as send_err:
+                    logger.error(f"Failed to send 'Markdown parse error' message: {send_err}")
+            return
+        elif "chat member status is required" in error_text:
+             logger.warning(f"Error handler caught BadRequest likely related to missing channel membership check: {context.error}")
+             return
+        elif "chat not found" in error_text:
+             logger.error(f"BadRequest: Chat not found error: {context.error}")
+             return
+        elif "reply message not found" in error_text:
+            logger.warning(f"BadRequest: Reply message not found. Original message might have been deleted. Update: {update}")
+            return
+        else:
+             logger.error(f"Unhandled BadRequest error: {context.error}")
+
+    elif isinstance(context.error, TimedOut):
+         logger.warning(f"Telegram API request timed out: {context.error}")
+         return
+
+    elif isinstance(context.error, TelegramError):
+         logger.error(f"Generic Telegram API error: {context.error}")
+
+    error_message_raw = "упс... 😕 что-то пошло не так. попробуй еще раз позже."
+    escaped_error_message = escape_markdown_v2(error_message_raw)
+    if isinstance(update, Update) and update.effective_message:
+        try:
+            await update.effective_message.reply_text(escaped_error_message, parse_mode=ParseMode.MARKDOWN_V2)
+        except BadRequest as e_md:
+             if "can't parse entities" in str(e_md).lower():
+                 logger.error(f"Failed sending even basic Markdown error msg ({e_md}). Sending plain.")
+                 try: await update.effective_message.reply_text(error_message_raw, parse_mode=None)
+                 except Exception as final_e: logger.error(f"Failed even sending plain text error message: {final_e}")
+             else:
+                 logger.error(f"Failed sending error message (BadRequest, not parse): {e_md}")
+                 try: await update.effective_message.reply_text(error_message_raw, parse_mode=None)
+                 except Exception as final_e: logger.error(f"Failed even sending plain text error message: {final_e}")
+        except Exception as e:
+            logger.error(f"Failed to send error message to user: {e}")
+            try:
+                 await update.effective_message.reply_text(error_message_raw, parse_mode=None)
+            except Exception as final_e:
+                 logger.error(f"Failed even sending plain text error message: {final_e}")
+
+
+# --- Core Logic Helpers ---
+
+def get_persona_and_context_with_owner(chat_id: Union[str, int], db: Session) -> Optional[Tuple[Persona, List[Dict[str, str]], User]]:
+    """Fetches the active Persona, its context, and its owner User for a given chat."""
+    chat_id_str = str(chat_id)
+    chat_instance = get_active_chat_bot_instance_with_relations(db, chat_id_str)
+    if not chat_instance:
+        return None
+
+    bot_instance = chat_instance.bot_instance_ref
+    if not bot_instance:
+         logger.error(f"ChatBotInstance {chat_instance.id} for chat {chat_id_str} is missing linked BotInstance.")
+         return None
+    if not bot_instance.persona_config:
+         logger.error(f"BotInstance {bot_instance.id} (linked to chat {chat_id_str}) is missing linked PersonaConfig.")
+         return None
+    owner_user = bot_instance.owner or bot_instance.persona_config.owner
+    if not owner_user:
+         logger.error(f"Could not load Owner for BotInstance {bot_instance.id} (linked to chat {chat_id_str}).")
+         return None
+
+    persona_config = bot_instance.persona_config
+
+    try:
+        persona = Persona(persona_config, chat_instance)
+    except ValueError as e:
+         logger.error(f"Failed to initialize Persona for config {persona_config.id} in chat {chat_id_str}: {e}", exc_info=True)
+         return None
+
+    context_list = get_context_for_chat_bot(db, chat_instance.id)
+    return persona, context_list, owner_user
+
+
+async def send_to_gemini(system_prompt: str, messages: List[Dict[str, str]], image_data: Optional[bytes] = None, audio_data: Optional[bytes] = None) -> str:
+    """Sends the prompt and context to the Gemini API and returns the response."""
+    
+    if not config.GEMINI_API_KEY:
+        logger.error("GEMINI_API_KEY is not set.")
+        return escape_markdown_v2("❌ ошибка: ключ api gemini не настроен.")
+
+    if not messages:
+        logger.error("send_to_gemini called with an empty messages list!")
+        return "ошибка: нет сообщений для отправки в ai."
+
+    api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={config.GEMINI_API_KEY}"
+    
+    headers = {
+        "Content-Type": "application/json",
+    }
+
+    # Transform messages to Gemini format
+    # Gemini expects a list of contents, where each content has role and parts.
+    # System prompt can be added to the first user message or as a separate turn.
+    gemini_contents = []
+    is_first_user_message = True
+
+    for msg in messages[-config.MAX_CONTEXT_MESSAGES_SENT_TO_LLM:]:
+        role = msg.get("role")
+        content_text = msg.get("content", "")
+        
+        # Gemini uses 'user' and 'model' roles.
+        gemini_role = "user" if role == "user" else "model"
+        
+        # Prepend system_prompt to the first user message's content
+        # Or, if the first message is not from user, create a synthetic user message with system prompt.
+        current_parts = []
+        if gemini_role == "user" and is_first_user_message:
+            full_text_for_first_user_message = f"{system_prompt}\n\n{content_text}"
+            current_parts.append({"text": full_text_for_first_user_message.strip()})
+            is_first_user_message = False
+        else:
+            current_parts.append({"text": content_text.strip()})
+        
+        # Handle image data for user messages if present
+        # Gemini expects image data in 'parts' alongside text for 'user' role.
+        if gemini_role == "user" and image_data:
+            try:
+                import base64
+                image_base64 = base64.b64encode(image_data).decode('utf-8')
+                current_parts.append({
+                    "inline_data": {
+                        "mime_type": "image/jpeg", # Assuming JPEG, adjust if other types are used
+                        "data": image_base64
+                    }
+                })
+                logger.info("Image data prepared for Gemini request.")
+                image_data = None # Consume image data so it's only added once
+            except Exception as e:
+                logger.error(f"Error encoding image data for Gemini: {e}", exc_info=True)
+        
+        # Audio data handling - Gemini API might not directly support audio bytes in the same way as images.
+        # The text placeholder for audio (e.g., "[получено голосовое сообщение]") should already be in content_text.
+        if audio_data and gemini_role == "user":
+            logger.info("Audio data was present for Gemini, text placeholder should be used in prompt.")
+            # We don't add audio_data directly here, relying on the text placeholder.
+            audio_data = None # Consume audio data flag
+
+        if current_parts: # Only add if there's something to send
+             gemini_contents.append({"role": gemini_role, "parts": current_parts})
+    
+    # If system_prompt wasn't prepended (e.g. no user messages or first message was assistant)
+    # add it as the very first user turn.
+    if is_first_user_message and system_prompt:
+        gemini_contents.insert(0, {"role": "user", "parts": [{"text": system_prompt.strip()}]})
+        if gemini_contents and len(gemini_contents) > 1 and gemini_contents[1]["role"] == "user":
+             # If the next message is also user, we need to insert a model (assistant) turn in between
+             # to maintain the user/model alternating sequence for Gemini.
+             # This is a simplified handling; complex scenarios might need more robust logic.
+             gemini_contents.insert(1, {"role": "model", "parts": [{"text": "Okay."}]}) # Placeholder response
+
+    payload = {
+        "contents": gemini_contents,
+        "generationConfig": {
+            # "temperature": 0.7, # Optional: Adjust as needed
+            # "topK": 1,          # Optional
+            # "topP": 1,          # Optional
+            # "maxOutputTokens": 2048, # Optional: Gemini Flash has a large context window
+        },
+        "safetySettings": [ # Optional: Adjust safety settings as needed
+            {
+                "category": "HARM_CATEGORY_HARASSMENT",
+                "threshold": "BLOCK_MEDIUM_AND_ABOVE"
+            },
+            {
+                "category": "HARM_CATEGORY_HATE_SPEECH",
+                "threshold": "BLOCK_MEDIUM_AND_ABOVE"
+            },
+            {
+                "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                "threshold": "BLOCK_MEDIUM_AND_ABOVE"
+            },
+            {
+                "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+                "threshold": "BLOCK_MEDIUM_AND_ABOVE"
+            }
+        ]
+    }
+
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            async with httpx.AsyncClient(timeout=120.0) as client: # Increased timeout for potentially longer AI responses
+                logger.debug(f"Sending to Gemini. URL: {api_url}")
+                # logger.debug(f"Gemini Request Payload: {json.dumps(payload, indent=2, ensure_ascii=False)}") # Careful with logging PII
+                
+                response = await client.post(api_url, headers=headers, json=payload)
+                response.raise_for_status() # Raises HTTPStatusError for 4xx/5xx responses
+                
+                response_data = response.json()
+                # logger.debug(f"Gemini Raw Response: {json.dumps(response_data, indent=2, ensure_ascii=False)}")
+
+                if response_data.get("candidates") and response_data["candidates"][0].get("content") and response_data["candidates"][0]["content"].get("parts"):
+                    generated_text = response_data["candidates"][0]["content"]["parts"][0].get("text", "")
+                    if not generated_text and response_data["candidates"][0].get("finishReason") == "SAFETY":
+                        logger.warning("Gemini: Response blocked due to safety settings.")
+                        return escape_markdown_v2("❌ мой ответ был заблокирован из-за настроек безопасности.")
+                    if not generated_text and response_data["candidates"][0].get("finishReason") == "MAX_TOKENS":
+                        logger.warning("Gemini: Response stopped due to max tokens.")
+                        # return generated_text # Return whatever was generated before cutoff
+                    if not generated_text:
+                         logger.warning(f"Gemini: Empty text in response. Finish reason: {response_data['candidates'][0].get('finishReason')}. Full candidate: {response_data['candidates'][0]}")
+                         return escape_markdown_v2("❌ получен пустой ответ от ai (gemini). причина: " + response_data["candidates"][0].get("finishReason", "unknown"))
+                    return generated_text
+                elif response_data.get("promptFeedback") and response_data["promptFeedback"].get("blockReason"):
+                    block_reason = response_data["promptFeedback"]["blockReason"]
+                    logger.warning(f"Gemini: Prompt blocked due to {block_reason}.")
+                    return escape_markdown_v2(f"❌ ваш запрос был заблокирован (gemini): {block_reason.lower().replace('_', ' ')}.")
+                else:
+                    logger.error(f"Gemini: Unexpected response structure: {response_data}")
+                    return escape_markdown_v2("❌ ошибка: неожиданный формат ответа от ai (gemini).")
+
+        except httpx.HTTPStatusError as e:
+            logger.error(f"Gemini API request failed (attempt {attempt + 1}/{max_retries}) with status {e.response.status_code}: {e.response.text}", exc_info=True)
+            if e.response.status_code == 429: # Rate limit
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(5 * (attempt + 1)) # Exponential backoff
+                    continue
+                return escape_markdown_v2("❌ ошибка: превышен лимит запросов к ai (gemini). попробуйте позже.")
+            # For other client-side errors (4xx) or server-side (5xx), specific handling might be needed
+            # For now, a generic error message for non-rate-limit errors after retries or for unrecoverable client errors
+            error_detail = e.response.json().get("error", {}).get("message", e.response.text) if e.response.content else str(e)
+            return escape_markdown_v2(f"❌ ошибка api (gemini) {e.response.status_code}: {error_detail}")
+        except httpx.RequestError as e:
+            logger.error(f"Gemini API request failed (attempt {attempt + 1}/{max_retries}): {e}", exc_info=True)
+            if attempt < max_retries - 1:
+                await asyncio.sleep(3 * (attempt + 1))
+                continue
+            return escape_markdown_v2("❌ ошибка сети при обращении к ai (gemini). попробуйте позже.")
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to decode JSON response from Gemini (attempt {attempt + 1}/{max_retries}): {e}", exc_info=True)
+            # This is unlikely if raise_for_status() passed and API is stable, but good to have.
+            if attempt < max_retries - 1:
+                await asyncio.sleep(1)
+                continue
+            return escape_markdown_v2("❌ ошибка: неверный формат ответа от ai (gemini).")
+        except Exception as e:
+            logger.error(f"An unexpected error occurred in send_to_gemini (attempt {attempt + 1}/{max_retries}): {e}", exc_info=True)
+            if attempt < max_retries - 1:
+                await asyncio.sleep(1)
+                continue
+            return escape_markdown_v2("❌ неизвестная ошибка при обращении к ai (gemini).")
+    
+    return escape_markdown_v2("❌ исчерпаны все попытки обращения к ai (gemini).")
+
+
+# async def send_to_langdock(system_prompt: str, messages: List[Dict[str, str]], image_data: Optional[bytes] = None, audio_data: Optional[bytes] = None) -> str:
+import asyncio
+import httpx
+import json
+import logging
+import re
+from datetime import datetime, timezone
+from openai import AsyncOpenAI, OpenAIError
+from utils import count_openai_compatible_tokens
+# Ensure config is imported, it's likely already there but as a safeguard:
+import config
+import os
+import random
+import re
+import time
+import traceback
+import urllib.parse
+import uuid
+import wave
+import subprocess
+import asyncio
+
+# Константы для UI
+CHECK_MARK = "✅ "  # Unicode Check Mark Symbol
+PREMIUM_STAR = "⭐"  # Звездочка для премиум-функций
+
+# Импорты для работы с Vosk (будут использоваться после установки библиотеки)
+try:
+    from vosk import Model, KaldiRecognizer
+    VOSK_AVAILABLE = True
+except ImportError:
+    logger = logging.getLogger(__name__)
+    logger.warning("Vosk library not available. Voice transcription will not work.")
+    VOSK_AVAILABLE = False
+from datetime import datetime, timezone, timedelta
+from typing import List, Dict, Any, Optional, Union, Tuple
+
+from telegram import Update, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup, Chat as TgChat, CallbackQuery
+from telegram.constants import ChatAction, ParseMode, ChatMemberStatus, ChatType
+from telegram.error import BadRequest, Forbidden, TelegramError, TimedOut
+
+from telegram.ext import (
+    ContextTypes, ConversationHandler, CommandHandler, MessageHandler, filters, CallbackQueryHandler
+)
+from sqlalchemy.orm import Session, joinedload, selectinload
+from sqlalchemy.orm.attributes import flag_modified
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from sqlalchemy import func
+from sqlalchemy import delete
+from db import PersonaConfig as DBPersonaConfig # Added to fix NameError
+from db import get_active_chat_bot_instance_with_relations # Added to fix NameError
+from db import BotInstance as DBBotInstance
+from db import ChatBotInstance as DBChatBotInstance
+
+from yookassa import Configuration as YookassaConfig, Payment
+from yookassa.domain.models.currency import Currency
+from yookassa.domain.request.payment_request_builder import PaymentRequestBuilder
+from yookassa.domain.models.receipt import Receipt, ReceiptItem
+
+
+import config
+from config import (
+    OPENROUTER_API_KEY,
+    OPENROUTER_API_BASE_URL,
+    OPENROUTER_MODEL_NAME,
+    DEFAULT_MOOD_PROMPTS, YOOKASSA_SHOP_ID, YOOKASSA_SECRET_KEY,
+    SUBSCRIPTION_PRICE_RUB, SUBSCRIPTION_CURRENCY, WEBHOOK_URL_BASE,
+    SUBSCRIPTION_DURATION_DAYS,
+    FREE_PERSONA_LIMIT, PAID_PERSONA_LIMIT, MAX_CONTEXT_MESSAGES_SENT_TO_LLM,
+    ADMIN_USER_ID, CHANNEL_ID
+)
+from db import (
+    get_context_for_chat_bot, add_message_to_context,
+    set_mood_for_chat_bot, get_mood_for_chat_bot, get_or_create_user,
+    create_persona_config, get_personas_by_owner, get_persona_by_name_and_owner,
+    get_persona_by_id_and_owner, check_and_update_user_limits, activate_subscription,
+    create_bot_instance, link_bot_instance_to_chat, delete_persona_config,
+    get_all_active_chat_bot_instances,
+    User, PersonaConfig as DBPersonaConfig, BotInstance as DBBotInstance, ChatBotInstance as DBChatBotInstance, ChatContext, func, get_db,
+    DEFAULT_SYSTEM_PROMPT_TEMPLATE
+)
+from persona import Persona
+from utils import (
+    postprocess_response, 
+    extract_gif_links,
+    get_time_info,
+    escape_markdown_v2,
+    TELEGRAM_MAX_LEN
+)
+
+# Максимальная длина входящего сообщения от пользователя в символах
+MAX_USER_MESSAGE_LENGTH_CHARS = 600  # Примерно 150 токенов, можно настроить
+
+logger = logging.getLogger(__name__)
+
+# --- Vosk model setup ---
+# Путь к модели Vosk для русского языка
+# Нужно скачать модель с https://alphacephei.com/vosk/models и распаковать в эту папку
+VOSK_MODEL_PATH = "model_vosk_ru"
+vosk_model = None
+
+if VOSK_AVAILABLE:
+    try:
+        if os.path.exists(VOSK_MODEL_PATH):
+            vosk_model = Model(VOSK_MODEL_PATH)
+            logger.info(f"Vosk model loaded successfully from {VOSK_MODEL_PATH}")
+        else:
+            logger.warning(f"Vosk model path not found: {VOSK_MODEL_PATH}. Please download a model from https://alphacephei.com/vosk/models")
+    except Exception as e:
+        logger.error(f"Error loading Vosk model: {e}", exc_info=True)
+        vosk_model = None
+
+async def transcribe_audio_with_vosk(audio_data: bytes, original_mime_type: str) -> Optional[str]:
+    """
+    Транскрибирует аудиоданные с помощью Vosk.
+    Сначала конвертирует OGG в WAV PCM 16kHz моно.
+    """
+    global vosk_model
+    
+    if not VOSK_AVAILABLE:
+        logger.error("Vosk library not available. Cannot transcribe.")
+        return None
+        
+    if not vosk_model:
+        logger.error("Vosk model not loaded. Cannot transcribe.")
+        return None
+
+    # Имя временного входного файла (OGG)
+    temp_ogg_filename = f"temp_voice_{uuid.uuid4().hex}.ogg"
+    # Имя временного выходного файла (WAV)
+    temp_wav_filename = f"temp_voice_wav_{uuid.uuid4().hex}.wav"
+
+    try:
+        # 1. Сохраняем полученные аудиоданные во временный OGG файл
+        with open(temp_ogg_filename, "wb") as f_ogg:
+            f_ogg.write(audio_data)
+        logger.info(f"Saved temporary OGG file: {temp_ogg_filename}")
+
+        # 2. Конвертируем OGG в WAV (16kHz, моно, pcm_s16le) с помощью ffmpeg
+        #    -ac 1 (моно), -ar 16000 (частота дискретизации 16kHz)
+        #    -f wav (формат WAV), -c:a pcm_s16le (кодек PCM signed 16-bit little-endian)
+        command = [
+            "ffmpeg",
+            "-i", temp_ogg_filename,
+            "-ac", "1",
+            "-ar", "16000",
+            "-c:a", "pcm_s16le",
+            "-f", "wav",
+            temp_wav_filename,
+            "-y" # Перезаписывать выходной файл, если существует
+        ]
+        logger.info(f"Running ffmpeg command: {' '.join(command)}")
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await process.communicate()
+
+        if process.returncode != 0:
+            logger.error(f"ffmpeg conversion failed. Return code: {process.returncode}")
+            logger.error(f"ffmpeg stderr: {stderr.decode(errors='ignore')}")
+            logger.error(f"ffmpeg stdout: {stdout.decode(errors='ignore')}")
+            return None
+        logger.info(f"Successfully converted OGG to WAV: {temp_wav_filename}")
+
+        # 3. Транскрибируем WAV файл с помощью Vosk
+        wf = wave.open(temp_wav_filename, "rb")
+        if wf.getnchannels() != 1 or wf.getsampwidth() != 2 or wf.getcomptype() != "NONE" or wf.getframerate() != 16000:
+            logger.error(f"Audio file {temp_wav_filename} is not mono WAV 16kHz 16bit PCM. Details: CH={wf.getnchannels()}, SW={wf.getsampwidth()}, CT={wf.getcomptype()}, FR={wf.getframerate()}")
+            wf.close()
+            return None
+        
+        # Инициализируем KaldiRecognizer с частотой дискретизации аудиофайла
+        current_recognizer = KaldiRecognizer(vosk_model, wf.getframerate())
+        current_recognizer.SetWords(True) # Включить информацию о словах, если нужно
+
+        full_transcription = ""
+        while True:
+            data = wf.readframes(4000) # Читаем порциями
+            if len(data) == 0:
+                break
+            if current_recognizer.AcceptWaveform(data):
+                result = json.loads(current_recognizer.Result())
+                full_transcription += result.get("text", "") + " "
+        
+        # Получаем финальный результат
+        final_result_json = json.loads(current_recognizer.FinalResult())
+        full_transcription += final_result_json.get("text", "")
+        wf.close()
+        
+        transcribed_text = full_transcription.strip()
+        logger.info(f"Vosk transcription result: '{transcribed_text}'")
+        return transcribed_text if transcribed_text else None
+
+    except FileNotFoundError:
+        logger.error("ffmpeg not found. Please ensure ffmpeg is installed and in your system's PATH.")
+        return None
+    except Exception as e:
+        logger.error(f"Error during Vosk transcription: {e}", exc_info=True)
+        return None
+    finally:
+        # Удаляем временные файлы
+        for temp_file in [temp_ogg_filename, temp_wav_filename]:
+            if os.path.exists(temp_file):
+                try:
+                    os.remove(temp_file)
+                    logger.info(f"Removed temporary file: {temp_file}")
+                except Exception as e_remove:
+                    logger.error(f"Error removing temporary file {temp_file}: {e_remove}")
+
+# --- Helper Functions ---
+
+async def check_channel_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Checks if the user is subscribed to the required channel."""
+    if not CHANNEL_ID:
+        logger.warning("CHANNEL_ID not set in config. Skipping subscription check.")
+        return True # Skip check if no channel is configured
+
+    user_id = None
+    # Determine user ID from update or callback query
+    eff_user = getattr(update, 'effective_user', None)
+    cb_user = getattr(getattr(update, 'callback_query', None), 'from_user', None)
+
+    if eff_user:
+        user_id = eff_user.id
+    elif cb_user:
+        user_id = cb_user.id
+        logger.debug(f"Using user_id {user_id} from callback_query.")
+    else:
+        logger.warning("check_channel_subscription called without valid user information.")
+        return False # Cannot check without user ID
+
+    # Admin always passes
+    if is_admin(user_id):
+        return True
+
+    logger.debug(f"Checking subscription status for user {user_id} in channel {CHANNEL_ID}")
+    try:
+        member = await context.bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id, read_timeout=10)
+        # Check if user status is one of the allowed ones
+        allowed_statuses = [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]
+        logger.debug(f"User {user_id} status in {CHANNEL_ID}: {member.status}")
+        if member.status in allowed_statuses:
+            logger.debug(f"User {user_id} IS subscribed to {CHANNEL_ID} (status: {member.status})")
+            return True
+        else:
+            logger.info(f"User {user_id} is NOT subscribed to {CHANNEL_ID} (status: {member.status})")
+            return False
+    except TimedOut:
+        logger.warning(f"Timeout checking subscription for user {user_id} in channel {CHANNEL_ID}. Denying access.")
+        # Try to inform the user about the timeout
+        target_message = getattr(update, 'effective_message', None) or getattr(getattr(update, 'callback_query', None), 'message', None)
+        if target_message:
+            try:
+                await target_message.reply_text(
+                    escape_markdown_v2("⏳ не удалось проверить подписку на канал (таймаут). попробуйте еще раз позже."),
+                    parse_mode=ParseMode.MARKDOWN_V2
+                )
+            except Exception as send_err:
+                 logger.error(f"Failed to send 'Timeout' error message: {send_err}")
+        return False
+    except Forbidden as e:
+        logger.error(f"Forbidden error checking subscription for user {user_id} in channel {CHANNEL_ID}: {e}. Ensure bot is admin in the channel.")
+        # Try to inform the user about the permission issue
+        target_message = getattr(update, 'effective_message', None) or getattr(getattr(update, 'callback_query', None), 'message', None)
+        if target_message:
+            try:
+                await target_message.reply_text(
+                    escape_markdown_v2("❌ не удалось проверить подписку на канал. убедитесь, что бот добавлен в канал как администратор."),
+                    parse_mode=ParseMode.MARKDOWN_V2
+                )
+            except Exception as send_err:
+                 logger.error(f"Failed to send 'Forbidden' error message: {send_err}")
+        return False
+    except BadRequest as e:
+         error_message = str(e).lower()
+         logger.error(f"BadRequest checking subscription for user {user_id} in channel {CHANNEL_ID}: {e}")
+         reply_text_raw = "❌ произошла ошибка при проверке подписки (badrequest). попробуйте позже."
+         if "member list is inaccessible" in error_message:
+             logger.error(f"-> Specific BadRequest: Member list is inaccessible. Bot might lack permissions or channel privacy settings restrictive?")
+             reply_text_raw = "❌ не удается получить доступ к списку участников канала для проверки подписки. возможно, настройки канала не позволяют это сделать."
+         elif "user not found" in error_message:
+             logger.info(f"-> Specific BadRequest: User {user_id} not found in channel {CHANNEL_ID}.")
+             return False
+         elif "chat not found" in error_message:
+              logger.error(f"-> Specific BadRequest: Chat {CHANNEL_ID} not found. Check CHANNEL_ID config.")
+              reply_text_raw = "❌ ошибка: не удалось найти указанный канал для проверки подписки. проверьте настройки бота."
+
+         target_message = getattr(update, 'effective_message', None) or getattr(getattr(update, 'callback_query', None), 'message', None)
+         if target_message:
+             try: await target_message.reply_text(escape_markdown_v2(reply_text_raw), parse_mode=ParseMode.MARKDOWN_V2)
+             except Exception as send_err: logger.error(f"Failed to send 'BadRequest' error message: {send_err}")
+         return False
+    except TelegramError as e:
+        logger.error(f"Telegram error checking subscription for user {user_id} in channel {CHANNEL_ID}: {e}")
+        target_message = getattr(update, 'effective_message', None) or getattr(getattr(update, 'callback_query', None), 'message', None)
+        if target_message:
+            try: await target_message.reply_text(escape_markdown_v2("❌ произошла ошибка telegram при проверке подписки. попробуйте позже."), parse_mode=ParseMode.MARKDOWN_V2)
+            except Exception as send_err: logger.error(f"Failed to send 'TelegramError' message: {send_err}")
+        return False
+    except Exception as e:
+        logger.error(f"Unexpected error checking subscription for user {user_id} in channel {CHANNEL_ID}: {e}", exc_info=True)
+        return False
+
+async def send_subscription_required_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Sends a message asking the user to subscribe to the channel."""
+    target_message = getattr(update, 'effective_message', None) or getattr(getattr(update, 'callback_query', None), 'message', None)
+
+    if not target_message:
+         logger.warning("Cannot send subscription required message: no target message found.")
+         return
+
+    channel_username = None
+    if isinstance(CHANNEL_ID, str) and CHANNEL_ID.startswith('@'):
+        channel_username = CHANNEL_ID.lstrip('@')
+
+    error_msg_raw = "❌ произошла ошибка при получении ссылки на канал."
+    subscribe_text_raw = "❗ для использования бота необходимо подписаться на наш канал."
+    button_text = "➡️ перейти к каналу"
+    keyboard = None
+
+    if channel_username:
+        subscribe_text_raw = f"❗ для использования бота необходимо подписаться на канал @{channel_username}."
+        keyboard = [[InlineKeyboardButton(button_text, url=f"https://t.me/{channel_username}")]]
+    elif isinstance(CHANNEL_ID, int):
+         subscribe_text_raw = "❗ для использования бота необходимо подписаться на наш основной канал. пожалуйста, найдите канал в поиске или через описание бота."
+    else:
+         logger.error(f"Invalid CHANNEL_ID format: {CHANNEL_ID}. Cannot generate subscription message correctly.")
+         subscribe_text_raw = error_msg_raw
+
+    reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
+    escaped_text = escape_markdown_v2(subscribe_text_raw)
+    try:
+        await target_message.reply_text(escaped_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
+        if update.callback_query:
+             try: await update.callback_query.answer()
+             except: pass
+    except BadRequest as e:
+        logger.error(f"Failed sending subscription required message (BadRequest): {e} - Text Raw: '{subscribe_text_raw}' Escaped: '{escaped_text[:100]}...'")
+        try:
+            await target_message.reply_text(subscribe_text_raw, reply_markup=reply_markup, parse_mode=None)
+        except Exception as fallback_e:
+            logger.error(f"Failed sending plain subscription required message: {fallback_e}")
+    except Exception as e:
+         logger.error(f"Failed to send subscription required message: {e}")
+
+def is_admin(user_id: int) -> bool:
+    """Checks if the user ID belongs to the admin."""
+    return user_id == ADMIN_USER_ID
+
+# --- Conversation States ---
+# Edit Persona Wizard States
+(EDIT_WIZARD_MENU, # Main wizard menu
+ EDIT_NAME, EDIT_DESCRIPTION, EDIT_COMM_STYLE, EDIT_VERBOSITY,
+ EDIT_GROUP_REPLY, EDIT_MEDIA_REACTION,
+ EDIT_MOODS_ENTRY, # Entry point for mood sub-conversation
+ # Mood Editing Sub-Conversation States
+ EDIT_MOOD_CHOICE, EDIT_MOOD_NAME, EDIT_MOOD_PROMPT, DELETE_MOOD_CONFIRM,
+ # Delete Persona Conversation State
+ DELETE_PERSONA_CONFIRM,
+ EDIT_MAX_MESSAGES, EDIT_MESSAGE_VOLUME # <-- New states
+ ) = range(15) # Total 15 states
+
+# --- Terms of Service Text ---
+# (Assuming TOS_TEXT_RAW and TOS_TEXT are defined as before)
+TOS_TEXT_RAW = """
+📜 пользовательское соглашение сервиса @NunuAiBot
+
+привет! добро пожаловать в @NunuAiBot! мы рады, что ты с нами. это соглашение — документ, который объясняет правила использования нашего сервиса. прочитай его, пожалуйста.
+
+дата последнего обновления: 01.03.2025
+
+1. о чем это соглашение?
+1.1. это пользовательское соглашение (или просто "соглашение") — договор между тобой (далее – "пользователь" или "ты") и нами (владельцем telegram-бота @NunuAiBot, далее – "сервис" или "мы"). оно описывает условия использования сервиса.
+1.2. начиная использовать наш сервис (просто отправляя боту любое сообщение или команду), ты подтверждаешь, что прочитал, понял и согласен со всеми условиями этого соглашения. если ты не согласен хотя бы с одним пунктом, пожалуйста, прекрати использование сервиса.
+1.3. наш сервис предоставляет тебе интересную возможность создавать и общаться с виртуальными собеседниками на базе искусственного интеллекта (далее – "личности" или "ai-собеседники").
+
+2. про подписку и оплату
+2.1. мы предлагаем два уровня доступа: бесплатный и premium (платный). возможности и лимиты для каждого уровня подробно описаны внутри бота, например, в командах `/profile` и `/subscribe`.
+2.2. платная подписка дает тебе расширенные возможности и увеличенные лимиты на период в {subscription_duration} дней.
+2.3. стоимость подписки составляет {subscription_price} {subscription_currency} за {subscription_duration} дней.
+2.4. оплата проходит через безопасную платежную систему yookassa. важно: мы не получаем и не храним твои платежные данные (номер карты и т.п.). все безопасно.
+2.5. политика возвратов: покупая подписку, ты получаешь доступ к расширенным возможностям сервиса сразу же после оплаты. поскольку ты получаешь услугу немедленно, оплаченные средства за этот период доступа, к сожалению, не подлежат возврату.
+2.6. в редких случаях, если сервис окажется недоступен по нашей вине в течение длительного времени (более 7 дней подряд), и у тебя будет активная подписка, ты можешь написать нам в поддержку (контакт указан в биографии бота и в нашем telegram-канале). мы рассмотрим возможность продлить твою подписку на срок недоступности сервиса. решение принимается индивидуально.
+
+3. твои и наши права и обязанности
+3.1. что ожидается от тебя (твои обязанности):
+•   использовать сервис только в законных целях и не нарушать никакие законы при его использовании.
+•   не пытаться вмешаться в работу сервиса или получить несанкционированный доступ.
+•   не использовать сервис для рассылки спама, вредоносных программ или любой запрещенной информации.
+•   если требуется (например, для оплаты), предоставлять точную и правдивую информацию.
+•   поскольку у сервиса нет возрастных ограничений, ты подтверждаешь свою способность принять условия настоящего соглашения.
+3.2. что можем делать мы (наши права):
+•   мы можем менять условия этого соглашения. если это произойдет, мы уведомим тебя, опубликовав новую версию соглашения в нашем telegram-канале или иным доступным способом в рамках сервиса. твое дальнейшее использование сервиса будет означать согласие с изменениями.
+•   мы можем временно приостановить или полностью прекратить твой доступ к сервису, если ты нарушишь условия этого соглашения.
+•   мы можем изменять сам сервис: добавлять или убирать функции, менять лимиты или стоимость подписки.
+
+4. важное предупреждение об ограничении ответственности
+4.1. сервис предоставляется "как есть". это значит, что мы не можем гарантировать его идеальную работу без сбоев или ошибок. технологии иногда подводят, и мы не несем ответственности за возможные проблемы, возникшие не по нашей прямой вине.
+4.2. помни, личности — это искусственный интеллект. их ответы генерируются автоматически и могут быть неточными, неполными, странными или не соответствующими твоим ожиданиям или реальности. мы не несем никакой ответственности за содержание ответов, сгенерированных ai-собеседниками. не воспринимай их как истину в последней инстанции или профессиональный совет.
+4.3. мы не несем ответственности за любые прямые или косвенные убытки или ущерб, который ты мог понести в результате использования (или невозможности использования) сервиса.
+
+5. про твои данные (конфиденциальность)
+5.1. для работы сервиса нам приходится собирать и обрабатывать минимальные данные: твой telegram id (для идентификации аккаунта), имя пользователя telegram (username, если есть), информацию о твоей подписке, информацию о созданных тобой личностях, а также историю твоих сообщений с личностями (это нужно ai для поддержания контекста разговора).
+5.2. мы предпринимаем разумные шаги для защиты твоих данных, но, пожалуйста, помни, что передача информации через интернет никогда не может быть абсолютно безопасной.
+
+6. действие соглашения
+6.1. настоящее соглашение начинает действовать с момента, как ты впервые используешь сервис, и действует до момента, пока ты не перестанешь им пользоваться или пока сервис не прекратит свою работу.
+
+7. интеллектуальная собственность
+7.1. ты сохраняешь все права на контент (текст), который ты создаешь и вводишь в сервис в процессе взаимодействия с ai-собеседниками.
+7.2. ты предоставляешь нам неисключительную, безвозмездную, действующую по всему миру лицензию на использование твоего контента исключительно в целях предоставления, поддержания и улучшения работы сервиса (например, для обработки твоих запросов, сохранения контекста диалога, анонимного анализа для улучшения моделей, если применимо).
+7.3. все права на сам сервис (код бота, дизайн, название, графические элементы и т.д.) принадлежат владельцу сервиса.
+7.4. ответы, сгенерированные ai-собеседниками, являются результатом работы алгоритмов искусственного интеллекта. ты можешь использовать полученные ответы в личных некоммерческих целях, но признаешь, что они созданы машиной и не являются твоей или нашей интеллектуальной собственностью в традиционном понимании.
+
+8. заключительные положения
+8.1. все споры и разногласия решаются путем переговоров. если это не поможет, споры будут рассматриваться в соответствии с законодательством российской федерации.
+8.2. по всем вопросам, касающимся настоящего соглашения или работы сервиса, ты можешь обращаться к нам через контакты, указанные в биографии бота и в нашем telegram-канале.
+"""
+formatted_tos_text_for_bot = TOS_TEXT_RAW.format(
+    subscription_duration=config.SUBSCRIPTION_DURATION_DAYS,
+    subscription_price=f"{config.SUBSCRIPTION_PRICE_RUB:.0f}", # Format as integer
+    subscription_currency=config.SUBSCRIPTION_CURRENCY
+)
+TOS_TEXT = escape_markdown_v2(formatted_tos_text_for_bot)
+
+# --- Error Handler ---
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Log Errors caused by Updates."""
+    logger.error("Exception while handling an update:", exc_info=context.error)
+
+    if isinstance(context.error, Forbidden):
+         if CHANNEL_ID and str(CHANNEL_ID) in str(context.error):
+             logger.warning(f"Error handler caught Forbidden regarding channel {CHANNEL_ID}. Bot likely not admin or kicked.")
+             return
+         else:
+             logger.warning(f"Caught generic Forbidden error: {context.error}")
+             return
+
+    elif isinstance(context.error, BadRequest):
+        error_text = str(context.error).lower()
+        if "message is not modified" in error_text:
+            logger.info("Ignoring 'message is not modified' error.")
+            return
+        elif "can't parse entities" in error_text:
+            logger.error(f"MARKDOWN PARSE ERROR: {context.error}. Update: {update}")
+            if isinstance(update, Update) and update.effective_message:
+                try:
+                    await update.effective_message.reply_text("❌ произошла ошибка при форматировании ответа. пожалуйста, сообщите администратору.", parse_mode=None)
+                except Exception as send_err:
+                    logger.error(f"Failed to send 'Markdown parse error' message: {send_err}")
+            return
+        elif "chat member status is required" in error_text:
+             logger.warning(f"Error handler caught BadRequest likely related to missing channel membership check: {context.error}")
+             return
+        elif "chat not found" in error_text:
+             logger.error(f"BadRequest: Chat not found error: {context.error}")
+             return
+        elif "reply message not found" in error_text:
+            logger.warning(f"BadRequest: Reply message not found. Original message might have been deleted. Update: {update}")
+            return
+        else:
+             logger.error(f"Unhandled BadRequest error: {context.error}")
+
+    elif isinstance(context.error, TimedOut):
+         logger.warning(f"Telegram API request timed out: {context.error}")
+         return
+
+    elif isinstance(context.error, TelegramError):
+         logger.error(f"Generic Telegram API error: {context.error}")
+
+    error_message_raw = "упс... 😕 что-то пошло не так. попробуй еще раз позже."
+    escaped_error_message = escape_markdown_v2(error_message_raw)
+    if isinstance(update, Update) and update.effective_message:
+        try:
+            await update.effective_message.reply_text(escaped_error_message, parse_mode=ParseMode.MARKDOWN_V2)
+        except BadRequest as e_md:
+             if "can't parse entities" in str(e_md).lower():
+                 logger.error(f"Failed sending even basic Markdown error msg ({e_md}). Sending plain.")
+                 try: await update.effective_message.reply_text(error_message_raw, parse_mode=None)
+                 except Exception as final_e: logger.error(f"Failed even sending plain text error message: {final_e}")
+             else:
+                 logger.error(f"Failed sending error message (BadRequest, not parse): {e_md}")
+                 try: await update.effective_message.reply_text(error_message_raw, parse_mode=None)
+                 except Exception as final_e: logger.error(f"Failed even sending plain text error message: {final_e}")
+        except Exception as e:
+            logger.error(f"Failed to send error message to user: {e}")
+            try:
+                 await update.effective_message.reply_text(error_message_raw, parse_mode=None)
+            except Exception as final_e:
+                 logger.error(f"Failed even sending plain text error message: {final_e}")
+
+
+# --- Core Logic Helpers ---
+
+def get_persona_and_context_with_owner(chat_id: Union[str, int], db: Session) -> Optional[Tuple[Persona, List[Dict[str, str]], User]]:
+    """Fetches the active Persona, its context, and its owner User for a given chat."""
+    chat_id_str = str(chat_id)
+    chat_instance = get_active_chat_bot_instance_with_relations(db, chat_id_str)
+    if not chat_instance:
+        return None
+
+    bot_instance = chat_instance.bot_instance_ref
+    if not bot_instance:
+         logger.error(f"ChatBotInstance {chat_instance.id} for chat {chat_id_str} is missing linked BotInstance.")
+         return None
+    if not bot_instance.persona_config:
+         logger.error(f"BotInstance {bot_instance.id} (linked to chat {chat_id_str}) is missing linked PersonaConfig.")
+         return None
+    owner_user = bot_instance.owner or bot_instance.persona_config.owner
+    if not owner_user:
+         logger.error(f"Could not load Owner for BotInstance {bot_instance.id} (linked to chat {chat_id_str}).")
+         return None
+
+    persona_config = bot_instance.persona_config
+
+    try:
+        persona = Persona(persona_config, chat_instance)
+    except ValueError as e:
+         logger.error(f"Failed to initialize Persona for config {persona_config.id} in chat {chat_id_str}: {e}", exc_info=True)
+         return None
+
+    context_list = get_context_for_chat_bot(db, chat_instance.id)
+    return persona, context_list, owner_user
+
+
+async def send_to_gemini(system_prompt: str, messages: List[Dict[str, str]], image_data: Optional[bytes] = None, audio_data: Optional[bytes] = None) -> str:
+    """Sends the prompt and context to the Gemini API and returns the response."""
+    
+    if not config.GEMINI_API_KEY:
+        logger.error("GEMINI_API_KEY is not set.")
+        return escape_markdown_v2("❌ ошибка: ключ api gemini не настроен.")
+
+    if not messages:
+        logger.error("send_to_gemini called with an empty messages list!")
+        return "ошибка: нет сообщений для отправки в ai."
+
+    api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={config.GEMINI_API_KEY}"
+    
+    headers = {
+        "Content-Type": "application/json",
+    }
+
+    # Transform messages to Gemini format
+    # Gemini expects a list of contents, where each content has role and parts.
+    # System prompt can be added to the first user message or as a separate turn.
+    gemini_contents = []
+    is_first_user_message = True
+
+    for msg in messages[-config.MAX_CONTEXT_MESSAGES_SENT_TO_LLM:]:
+        role = msg.get("role")
+        content_text = msg.get("content", "")
+        
+        # Gemini uses 'user' and 'model' roles.
+        gemini_role = "user" if role == "user" else "model"
+        
+        # Prepend system_prompt to the first user message's content
+        # Or, if the first message is not from user, create a synthetic user message with system prompt.
+        current_parts = []
+        if gemini_role == "user" and is_first_user_message:
+            full_text_for_first_user_message = f"{system_prompt}\n\n{content_text}"
+            current_parts.append({"text": full_text_for_first_user_message.strip()})
+            is_first_user_message = False
+        else:
+            current_parts.append({"text": content_text.strip()})
+        
+        # Handle image data for user messages if present
+        # Gemini expects image data in 'parts' alongside text for 'user' role.
+        if gemini_role == "user" and image_data:
+            try:
+                import base64
+                image_base64 = base64.b64encode(image_data).decode('utf-8')
+                current_parts.append({
+                    "inline_data": {
+                        "mime_type": "image/jpeg", # Assuming JPEG, adjust if other types are used
+                        "data": image_base64
+                    }
+                })
+                logger.info("Image data prepared for Gemini request.")
+                image_data = None # Consume image data so it's only added once
+            except Exception as e:
+                logger.error(f"Error encoding image data for Gemini: {e}", exc_info=True)
+        
+        # Audio data handling - Gemini API might not directly support audio bytes in the same way as images.
+        # The text placeholder for audio (e.g., "[получено голосовое сообщение]") should already be in content_text.
+        if audio_data and gemini_role == "user":
+            logger.info("Audio data was present for Gemini, text placeholder should be used in prompt.")
+            # We don't add audio_data directly here, relying on the text placeholder.
+            audio_data = None # Consume audio data flag
+
+        if current_parts: # Only add if there's something to send
+             gemini_contents.append({"role": gemini_role, "parts": current_parts})
+    
+    # If system_prompt wasn't prepended (e.g. no user messages or first message was assistant)
+    # add it as the very first user turn.
+    if is_first_user_message and system_prompt:
+        gemini_contents.insert(0, {"role": "user", "parts": [{"text": system_prompt.strip()}]})
+        if gemini_contents and len(gemini_contents) > 1 and gemini_contents[1]["role"] == "user":
+             # If the next message is also user, we need to insert a model (assistant) turn in between
+             # to maintain the user/model alternating sequence for Gemini.
+             # This is a simplified handling; complex scenarios might need more robust logic.
+             gemini_contents.insert(1, {"role": "model", "parts": [{"text": "Okay."}]}) # Placeholder response
+
+    payload = {
+        "contents": gemini_contents,
+        "generationConfig": {
+            # "temperature": 0.7, # Optional: Adjust as needed
+            # "topK": 1,          # Optional
+            # "topP": 1,          # Optional
+            # "maxOutputTokens": 2048, # Optional: Gemini Flash has a large context window
+        },
+        "safetySettings": [ # Optional: Adjust safety settings as needed
+            {
+                "category": "HARM_CATEGORY_HARASSMENT",
+                "threshold": "BLOCK_MEDIUM_AND_ABOVE"
+            },
+            {
+                "category": "HARM_CATEGORY_HATE_SPEECH",
+                "threshold": "BLOCK_MEDIUM_AND_ABOVE"
+            },
+            {
+                "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                "threshold": "BLOCK_MEDIUM_AND_ABOVE"
+            },
+            {
+                "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+                "threshold": "BLOCK_MEDIUM_AND_ABOVE"
+            }
+        ]
+    }
+
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            async with httpx.AsyncClient(timeout=120.0) as client: # Increased timeout for potentially longer AI responses
+                logger.debug(f"Sending to Gemini. URL: {api_url}")
+                # logger.debug(f"Gemini Request Payload: {json.dumps(payload, indent=2, ensure_ascii=False)}") # Careful with logging PII
+                
+                response = await client.post(api_url, headers=headers, json=payload)
+                response.raise_for_status() # Raises HTTPStatusError for 4xx/5xx responses
+                
+                response_data = response.json()
+                # logger.debug(f"Gemini Raw Response: {json.dumps(response_data, indent=2, ensure_ascii=False)}")
+
+                if response_data.get("candidates") and response_data["candidates"][0].get("content") and response_data["candidates"][0]["content"].get("parts"):
+                    generated_text = response_data["candidates"][0]["content"]["parts"][0].get("text", "")
+                    if not generated_text and response_data["candidates"][0].get("finishReason") == "SAFETY":
+                        logger.warning("Gemini: Response blocked due to safety settings.")
+                        return escape_markdown_v2("❌ мой ответ был заблокирован из-за настроек безопасности.")
+                    if not generated_text and response_data["candidates"][0].get("finishReason") == "MAX_TOKENS":
+                        logger.warning("Gemini: Response stopped due to max tokens.")
+                        # return generated_text # Return whatever was generated before cutoff
+                    if not generated_text:
+                         logger.warning(f"Gemini: Empty text in response. Finish reason: {response_data['candidates'][0].get('finishReason')}. Full candidate: {response_data['candidates'][0]}")
+                         return escape_markdown_v2("❌ получен пустой ответ от ai (gemini). причина: " + response_data["candidates"][0].get("finishReason", "unknown"))
+                    return generated_text
+                elif response_data.get("promptFeedback") and response_data["promptFeedback"].get("blockReason"):
+                    block_reason = response_data["promptFeedback"]["blockReason"]
+                    logger.warning(f"Gemini: Prompt blocked due to {block_reason}.")
+                    return escape_markdown_v2(f"❌ ваш запрос был заблокирован (gemini): {block_reason.lower().replace('_', ' ')}.")
+                else:
+                    logger.error(f"Gemini: Unexpected response structure: {response_data}")
+                    return escape_markdown_v2("❌ ошибка: неожиданный формат ответа от ai (gemini).")
+
+        except httpx.HTTPStatusError as e:
+            logger.error(f"Gemini API request failed (attempt {attempt + 1}/{max_retries}) with status {e.response.status_code}: {e.response.text}", exc_info=True)
+            if e.response.status_code == 429: # Rate limit
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(5 * (attempt + 1)) # Exponential backoff
+                    continue
+                return escape_markdown_v2("❌ ошибка: превышен лимит запросов к ai (gemini). попробуйте позже.")
+            # For other client-side errors (4xx) or server-side (5xx), specific handling might be needed
+            # For now, a generic error message for non-rate-limit errors after retries or for unrecoverable client errors
+            error_detail = e.response.json().get("error", {}).get("message", e.response.text) if e.response.content else str(e)
+            return escape_markdown_v2(f"❌ ошибка api (gemini) {e.response.status_code}: {error_detail}")
+        except httpx.RequestError as e:
+            logger.error(f"Gemini API request failed (attempt {attempt + 1}/{max_retries}): {e}", exc_info=True)
+            if attempt < max_retries - 1:
+                await asyncio.sleep(3 * (attempt + 1))
+                continue
+            return escape_markdown_v2("❌ ошибка сети при обращении к ai (gemini). попробуйте позже.")
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to decode JSON response from Gemini (attempt {attempt + 1}/{max_retries}): {e}", exc_info=True)
+            # This is unlikely if raise_for_status() passed and API is stable, but good to have.
+            if attempt < max_retries - 1:
+                await asyncio.sleep(1)
+                continue
+            return escape_markdown_v2("❌ ошибка: неверный формат ответа от ai (gemini).")
+        except Exception as e:
+            logger.error(f"An unexpected error occurred in send_to_gemini (attempt {attempt + 1}/{max_retries}): {e}", exc_info=True)
+            if attempt < max_retries - 1:
+                await asyncio.sleep(1)
+                continue
+            return escape_markdown_v2("❌ неизвестная ошибка при обращении к ai (gemini).")
+    
+    return escape_markdown_v2("❌ исчерпаны все попытки обращения к ai (gemini).")
+
+
+# async def send_to_langdock(system_prompt: str, messages: List[Dict[str, str]], image_data: Optional[bytes] = None, audio_data: Optional[bytes] = None) -> str:
 #     """Sends the prompt and context to the Langdock API and returns the response."""
 #     
 #     if not LANGDOCK_API_KEY:

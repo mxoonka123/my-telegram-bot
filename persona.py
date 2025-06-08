@@ -349,26 +349,24 @@ class Persona:
             
             media_instruction += default_transcription_note
             
-            # Use the media system prompt template specifically for voice messages
-            template = DEFAULT_MEDIA_SYSTEM_PROMPT_TEMPLATE
-            if self.media_system_prompt_template:
-                template = self.media_system_prompt_template
+            # Use the media system prompt template from the config, or the default from db.py as a fallback
+            template = self.config.media_system_prompt_template or MEDIA_SYSTEM_PROMPT_TEMPLATE
         
         elif media_type_text == "фото":
-            # Для фото используем специальный шаблон
-            template = PHOTO_SYSTEM_PROMPT_TEMPLATE_FALLBACK
-            # Если в конфиге персоны есть специальный шаблон для фото, используем его
-            if hasattr(self, 'photo_system_prompt_template') and self.photo_system_prompt_template:
-                template = self.photo_system_prompt_template
-            
+            # Для фото используем специальный шаблон из конфига, или fallback
+            template = getattr(self.config, 'photo_system_prompt_template', None) or PHOTO_SYSTEM_PROMPT_TEMPLATE_FALLBACK
             # Для фото не нужна дополнительная инструкция, так как она уже включена в шаблон
             media_instruction = ""
             
-        else:
-            # For other media types, we format a simpler prompt
-            template = f"""{self.name} ({self.description}), {self.communication_style}, {self.verbosity_level}, настроение: {self.mood['name']} - {self.mood['prompt']}
+        else: # Fallback for other media types (sticker, gif, etc.)
+            style_text = self.communication_style
+            verbosity_text = self.verbosity_level
+            mood_name_text = self.current_mood
+            mood_prompt_text = self.get_mood_prompt_snippet()
+            
+            template = f"""{self.name} ({self.description}), стиль: {style_text}, разговорчивость: {verbosity_text}, настроение: {mood_name_text} - {mood_prompt_text}
 
-Пользователь прислал {media_type_text}. Опиши что на нем и отреагируй на это как персонаж, сохраняя контекст диалога."""
+Пользователь прислал {media_type_text}. Отреагируй на это как персонаж, сохраняя контекст диалога."""
             formatted_prompt = template
             logger.debug(f"Persona {self.id} ({self.name}) WILL react to '{media_type_text}' with setting '{react_setting}'. Prompt generated: {formatted_prompt[:200]}...")
             return formatted_prompt
@@ -380,8 +378,8 @@ class Persona:
             'communication_style': self.communication_style,
             'verbosity_level': self.verbosity_level,
             'media_interaction_instruction': media_instruction,
-            'mood_name': self.mood['name'],
-            'mood_prompt': self.mood['prompt'],
+            'mood_name': self.current_mood,
+            'mood_prompt': self.get_mood_prompt_snippet(),
             'user_id': user_id,
             'username': username,
             'chat_id': chat_id
@@ -390,12 +388,15 @@ class Persona:
         try:
             formatted_prompt = template.format(**template_vars)
         except KeyError as e:
-            logger.error(f"Error formatting media system prompt for persona {self.id}: {str(e)}")
-            # Fallback to default template based on media type
-            if media_type_text == "голосовое сообщение":
-                formatted_prompt = DEFAULT_MEDIA_SYSTEM_PROMPT_TEMPLATE.format(**template_vars)
-            else:  # фото
-                formatted_prompt = PHOTO_SYSTEM_PROMPT_TEMPLATE_FALLBACK.format(**template_vars)
+            logger.error(f"Error formatting media system prompt for persona {self.id}: Missing key {e}")
+            # Fallback to default template with available vars
+            fallback_template = PHOTO_SYSTEM_PROMPT_TEMPLATE_FALLBACK if media_type_text == "фото" else MEDIA_SYSTEM_PROMPT_TEMPLATE
+            try:
+                formatted_prompt = fallback_template.format(**template_vars)
+                logger.warning(f"Using fallback template for media prompt due to KeyError.")
+            except KeyError as fallback_e:
+                logger.error(f"FATAL: Fallback media prompt also failed with KeyError: {fallback_e}")
+                return None
 
         logger.debug(f"Persona {self.id} ({self.name}) WILL react to '{media_type_text}' with setting '{react_setting}'. Prompt generated: {formatted_prompt[:200]}...")
         return formatted_prompt

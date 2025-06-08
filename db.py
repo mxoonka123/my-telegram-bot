@@ -453,42 +453,6 @@ def get_or_create_user(db: Session, telegram_id: int, username: str = None) -> U
          raise
     return user
 
-def check_and_update_user_limits(db: Session, user: User) -> bool:
-    """Checks user message limits, resets daily count if needed, increments count. DOES NOT COMMIT OR FLUSH."""
-    if user.telegram_id == ADMIN_USER_ID:
-        return True
-
-    now = datetime.now(timezone.utc)
-    last_reset = user.last_message_reset
-    if last_reset and last_reset.tzinfo is None:
-         last_reset = last_reset.replace(tzinfo=timezone.utc)
-
-    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    reset_needed = (last_reset is None) or (last_reset < today_start)
-    updated = False
-
-    if reset_needed:
-        logger.info(f"Resetting daily message count for user {user.telegram_id} (Previous: {user.daily_message_count}, Last reset: {last_reset}).")
-        user.daily_message_count = 0
-        user.last_message_reset = now
-        updated = True
-
-    can_send = user.daily_message_count < user.message_limit
-
-    if can_send:
-        user.daily_message_count += 1
-        logger.debug(f"User {user.telegram_id} message count incremented to {user.daily_message_count}/{user.message_limit}.")
-        updated = True
-    else:
-         logger.info(f"User {user.telegram_id} message limit reached ({user.daily_message_count}/{user.message_limit}).")
-
-    if updated:
-        flag_modified(user, "daily_message_count")
-        flag_modified(user, "last_message_reset")
-        logger.debug(f"User {user.telegram_id} limits state modified. Pending commit.")
-
-    return can_send
-
 def activate_subscription(db: Session, user_id: int) -> bool:
     """Activates subscription for a user based on internal DB ID and commits."""
     user = None
@@ -537,10 +501,10 @@ def create_persona_config(db: Session, owner_id: int, name: str, description: st
             group_reply_preference="mentioned_or_contextual",
             media_reaction="text_only",
             mood_prompts_json=default_moods,
-            max_response_messages=3,  # Устанавливаем числовое значение по умолчанию
-            # message_volume удалено, т.к. нет такого поля в модели PersonaConfig
+            max_response_messages=3,
             system_prompt_template=DEFAULT_SYSTEM_PROMPT_TEMPLATE,
-            should_respond_prompt_template=DEFAULT_SHOULD_RESPOND_TEMPLATE
+            should_respond_prompt_template=DEFAULT_SHOULD_RESPOND_TEMPLATE,
+            media_system_prompt_template=MEDIA_SYSTEM_PROMPT_TEMPLATE
         )
         db.add(new_persona)
         db.commit()
@@ -816,50 +780,6 @@ def unlink_bot_instance_from_chat(db: Session, chat_id: Union[str, int], bot_ins
             db.rollback()
             return False
 
-def get_active_chat_bot_instance_with_relations(db: Session, chat_id: Union[str, int]) -> Optional[ChatBotInstance]:
-    """Fetches the active ChatBotInstance for a chat, loading related objects efficiently."""
-    chat_id_str = str(chat_id)
-    logger.debug(f"[get_active_chat_bot_instance] Searching for instance in chat_id='{chat_id_str}'")
-    instance = None
-    try:
-        # --- ИЗМЕНЕНИЯ ТОЛЬКО ВНУТРИ .options() ---
-        instance = db.query(ChatBotInstance)\
-            .options(
-                selectinload(ChatBotInstance.bot_instance_ref) # Оставляем selectinload
-                .selectinload(BotInstance.persona_config)      # Оставляем selectinload
-                .joinedload(PersonaConfig.owner),           # <-- ИЗМЕНЕНО НА joinedload
-                selectinload(ChatBotInstance.bot_instance_ref) # Оставляем selectinload (хотя вторая ветка может быть избыточна, но оставим для мин. изменений)
-                .joinedload(BotInstance.owner)              # <-- ИЗМЕНЕНО НА joinedload
-            )\
-            .filter(ChatBotInstance.chat_id == chat_id_str, ChatBotInstance.active == True)\
-            .first()
-        # --- КОНЕЦ ИЗМЕНЕНИЙ ВНУТРИ .options() ---
-
-        if instance:
-            logger.debug(f"[get_active_chat_bot_instance] Found ACTIVE instance (with options): ID={instance.id}, BotInstanceID={instance.bot_instance_id}, PersonaID={instance.bot_instance_ref.persona_config_id if instance.bot_instance_ref and instance.bot_instance_ref.persona_config else 'N/A'}")
-            # Проверка, загрузился ли владелец (для отладки)
-            owner_loaded = (instance.bot_instance_ref and instance.bot_instance_ref.owner) or \
-                           (instance.bot_instance_ref and instance.bot_instance_ref.persona_config and instance.bot_instance_ref.persona_config.owner)
-            logger.debug(f"[get_active_chat_bot_instance] Owner object loaded via joinedload: {'Yes' if owner_loaded else 'No'}")
-        else:
-             logger.warning(f"[get_active_chat_bot_instance] No active instance found for chat_id='{chat_id_str}'.") # Изменено с debug на warning
-             # Попробуем найти неактивную для диагностики
-             any_instance = db.query(ChatBotInstance).filter(ChatBotInstance.chat_id == chat_id_str).first()
-             if any_instance:
-                  logger.warning(f"[get_active_chat_bot_instance] Found INACTIVE instance (ID: {any_instance.id}). This might be the issue.")
-
-        return instance
-    except (SQLAlchemyError, ProgrammingError) as e: # Обрабатываем и ProgrammingError
-        if isinstance(e, ProgrammingError) and "does not exist" in str(e).lower():
-             logger.error(f"Database schema error getting active chatbot instance for chat {chat_id_str}: {e}. Columns missing!")
-        elif "operator does not exist" in str(e).lower() and ("character varying = bigint" in str(e).lower() or "bigint = character varying" in str(e).lower()):
-             logger.error(f"Type mismatch error querying ChatBotInstance for chat_id '{chat_id_str}': {e}. Check model and DB schema for chat_id.", exc_info=False)
-        elif isinstance(e, ProgrammingError) and "prepared statement" in str(e).lower() and "already exists" in str(e).lower():
-             logger.error(f"Duplicate PreparedStatement error during instance fetch for chat {chat_id_str}: {e}", exc_info=True) # Логируем конкретно
-        else:
-             logger.error(f"DB error getting active chatbot instance for chat {chat_id_str}: {e}", exc_info=True)
-        return None
-
 # --- Context Operations ---
 
 def get_context_for_chat_bot(db: Session, chat_bot_instance_id: int) -> List[Dict[str, str]]:
@@ -960,23 +880,6 @@ def set_mood_for_chat_bot(db: Session, chat_bot_instance_id: int, mood: str):
     except SQLAlchemyError as e:
         logger.error(f"Failed to commit mood change for {chat_bot_instance_id}: {e}", exc_info=True)
         db.rollback()
-
-def get_active_chat_bot_instance_with_relations(db: Session, chat_id: str) -> Optional[ChatBotInstance]:
-    """Gets a specific active ChatBotInstance by chat_id with its relations."""
-    try:
-        return db.query(ChatBotInstance)\
-            .filter(ChatBotInstance.chat_id == chat_id)\
-            .filter(ChatBotInstance.active == True)\
-            .options(
-                selectinload(ChatBotInstance.bot_instance_ref)
-                .selectinload(BotInstance.persona_config)
-                .selectinload(PersonaConfig.owner),
-                selectinload(ChatBotInstance.bot_instance_ref)
-                .selectinload(BotInstance.owner)
-            ).one_or_none()
-    except SQLAlchemyError as e:
-        logger.error(f"DB error getting active ChatBotInstance for chat_id {chat_id}: {e}", exc_info=True)
-        return None
 
 # --- Bulk Operations / Tasks ---
 

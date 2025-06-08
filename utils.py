@@ -178,16 +178,23 @@ _builtins_module._split_aggressively = _split_aggressively
 
 # --- V13: Improved Splitting ---
 def postprocess_response(response: str, max_messages: int, message_volume: str = "normal") -> List[str]:
-    # Оригинальная обработка ответа
+    """
+    Processes the response, splitting it into messages and ensuring the final count
+    does not exceed max_messages.
+    """
+    # 1. Get the parts from the main splitting logic
     parts = _split_response_to_messages(response, max_messages, message_volume)
     
-    # Дополнительная проверка ограничения сообщений
+    # 2. Final, definitive check on the message count
     if len(parts) > max_messages:
         logger.warning(
-            f"Postprocess returned {len(parts)} parts, exceeding requested {max_messages}. Truncating."
+            f"Post-processing resulted in {len(parts)} parts, which is more than the requested {max_messages}. "
+            f"The result will be truncated."
         )
+        # Truncate the list to the maximum allowed number of messages
         parts = parts[:max_messages]
     
+    logger.info(f"Final post-processed message count: {len(parts)} (Target was {max_messages})")
     return parts
 
 def _split_response_to_messages(response: str, max_messages: int, message_volume: str = "normal") -> List[str]:
