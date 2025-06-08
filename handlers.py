@@ -1220,32 +1220,57 @@ async def process_and_send_response(
             is_json_parsed = False
 
         if is_json_parsed:
-            # NEW: Further process parts if they are markdown-wrapped JSON
-            truly_final_parts = []
-            for part_str in text_parts_to_send:
-                if isinstance(part_str, str) and part_str.startswith("```json") and part_str.endswith("```"):
-                    # Extract content within the markdown code block
-                    actual_json_payload = part_str[len("```json"): -len("```")].strip()
-                    logger.info(f"process_and_send_response [JSON]: Found markdown-wrapped JSON payload: '{actual_json_payload[:100]}...' Attempting to parse it.")
-                    try:
-                        inner_data = json.loads(actual_json_payload)
-                        if isinstance(inner_data, list) and all(isinstance(item, str) for item in inner_data):
-                            # This is what we want: the list of actual message strings
-                            truly_final_parts.extend([item.strip() for item in inner_data if item.strip()])
-                            logger.info(f"process_and_send_response [JSON]: Successfully unwrapped and parsed {len(inner_data)} inner message(s) from markdown payload.")
-                        else:
-                            # The content of markdown was not a list of strings, keep original part
-                            logger.warning(f"process_and_send_response [JSON]: Markdown-wrapped payload was not a list of strings (Type: {type(inner_data)}). Keeping as is: {part_str[:100]}")
-                            truly_final_parts.append(part_str) 
-                    except json.JSONDecodeError as e_inner:
-                        # Failed to parse the content of the markdown block, keep original part
-                        logger.warning(f"process_and_send_response [JSON]: Failed to parse markdown-wrapped JSON payload: {e_inner}. Keeping as is: {part_str[:100]}")
-                        truly_final_parts.append(part_str)
-                else:
-                    # This part is not a markdown-wrapped JSON, so keep it as is
-                    truly_final_parts.append(part_str)
+            # Revised unwrapping logic to handle nested JSON/markdown
+            processed_parts = []
+            MAX_RECURSION_DEPTH = 5  # Max depth for unwrapping
+
+            def unwrap_json_string(json_str_candidate, current_depth):
+                if current_depth >= MAX_RECURSION_DEPTH:
+                    logger.warning(f"Max recursion depth {MAX_RECURSION_DEPTH} reached while unwrapping. Keeping as is: {str(json_str_candidate)[:200]}")
+                    return [str(json_str_candidate)]
+
+                if not isinstance(json_str_candidate, str):
+                    if isinstance(json_str_candidate, list):
+                        final_sub_parts = []
+                        for item_in_list in json_str_candidate:
+                            final_sub_parts.extend(unwrap_json_string(item_in_list, current_depth + 1))
+                        return final_sub_parts
+                    else: # int, bool, dict etc.
+                        return [str(json_str_candidate)]
+
+                # Candidate is a string
+                # 1. Check for markdown ```json ... ```
+                if json_str_candidate.startswith("```json") and json_str_candidate.endswith("```"):
+                    content_inside_markdown = json_str_candidate[len("```json"):-len("```")].strip()
+                    logger.debug(f"Depth {current_depth}: Unwrapping markdown content: {content_inside_markdown[:200]}")
+                    return unwrap_json_string(content_inside_markdown, current_depth + 1)
+
+                # 2. Check if the string itself is a parsable JSON
+                try:
+                    potential_inner_data = json.loads(json_str_candidate)
+                    # If json.loads results in the exact same string, and it's not a list that needs further iteration,
+                    # it means it wasn't really "stringified" JSON that needs unwrapping.
+                    if potential_inner_data == json_str_candidate and not isinstance(potential_inner_data, list):
+                        logger.debug(f"Depth {current_depth}: JSON parsing did not change string and not a list. Keeping: {json_str_candidate[:200]}")
+                        return [json_str_candidate]
+                    
+                    logger.debug(f"Depth {current_depth}: Unwrapping string-encoded JSON: {str(potential_inner_data)[:200]}")
+                    return unwrap_json_string(potential_inner_data, current_depth + 1)
+                except json.JSONDecodeError:
+                    logger.debug(f"Depth {current_depth}: String is not markdown or parsable JSON. Keeping: {json_str_candidate[:200]}")
+                    return [json_str_candidate]
+                except Exception as e_unwrap: # Catch any other unexpected error during unwrap
+                    logger.error(f"Depth {current_depth}: Unexpected error during unwrap_json_string for '{str(json_str_candidate)[:50]}': {e_unwrap}", exc_info=True)
+                    return [str(json_str_candidate)]
+
+            for part_to_unwrap in text_parts_to_send:
+                try:
+                    processed_parts.extend(unwrap_json_string(part_to_unwrap, 0))
+                except Exception as e_loop_unwrap:
+                    logger.error(f"Error processing part '{str(part_to_unwrap)[:50]}' in unwrap loop: {e_loop_unwrap}", exc_info=True)
+                    processed_parts.append(str(part_to_unwrap))
             
-            text_parts_to_send = truly_final_parts
+            text_parts_to_send = [p.strip() for p in processed_parts if p and p.strip()]
 
             if not text_parts_to_send:
                 logger.warning("process_and_send_response [JSON]: After potential unwrapping, no valid text parts remain. Falling back to sentence splitting.")
