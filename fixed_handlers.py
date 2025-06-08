@@ -1,7 +1,7 @@
 """
-Исправленные функции для Telegram бота
-- handle_message - обновленная версия с улучшенной обработкой LLM ответов
-- process_and_send_response - обновленная версия с надежным разбором JSON
+Исправленные функции для Telegram бота (ФИНАЛЬНАЯ ВЕРСИЯ)
+- handle_message - окончательно упрощен, передает "сырой" ответ от LLM
+- process_and_send_response - содержит надежный парсер для вложенных JSON и fallback
 """
 
 import asyncio
@@ -9,24 +9,25 @@ import json
 import logging
 import random
 import re
+from datetime import datetime, timezone
 from typing import Optional, Union, List
 
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import SQLAlchemyError
 from telegram import Update
 from telegram.constants import ChatAction, ChatType, ParseMode
 from telegram.error import BadRequest
 from telegram.ext import ContextTypes
 
 from config import MAX_USER_MESSAGE_LENGTH_CHARS, OPENROUTER_API_KEY, OPENROUTER_API_BASE_URL, OPENROUTER_MODEL_NAME
-from db import get_db, get_persona_and_context_with_owner, add_message_to_context
-from handlers_helpers import check_channel_subscription, send_subscription_required_message, send_limit_exceeded_message # Предполагается, что эти хелперы существуют
+from db import get_db, get_persona_and_context_with_owner, add_message_to_context, MAX_CONTEXT_MESSAGES_SENT_TO_LLM
+from handlers import check_channel_subscription, send_subscription_required_message, send_limit_exceeded_message
 from openai import AsyncOpenAI, OpenAIError
 from persona import Persona
 from utils import escape_markdown_v2, extract_gif_links, postprocess_response
-from sqlalchemy.exc import SQLAlchemyError
-
 
 logger = logging.getLogger(__name__)
+
 
 async def process_and_send_response(
     update: Optional[Update],
@@ -194,50 +195,173 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     username = update.effective_user.username or f"user_{user_id}"
     message_text = (update.message.text or update.message.caption or "").strip()
     message_id = update.message.message_id
+
+    if len(message_text) > MAX_USER_MESSAGE_LENGTH_CHARS:
+        logger.info(f"User {user_id} in chat {chat_id_str} sent a message exceeding {MAX_USER_MESSAGE_LENGTH_CHARS} chars.")
+        await update.message.reply_text("Ваше сообщение слишком длинное. Пожалуйста, попробуйте его сократить.", parse_mode=None)
+        return
     
-    # ... other handle_message code ...
+    if not message_text:
+        logger.debug(f"handle_message: Exiting - Empty message text from user {user_id} in chat {chat_id_str}.")
+        return
+
+    logger.info(f"MSG < User {user_id} ({username}) in Chat {chat_id_str} (MsgID: {message_id}): '{message_text[:100]}'")
     
-    # --- LLM Request ---
-    open_ai_client = AsyncOpenAI(api_key=OPENROUTER_API_KEY, base_url=OPENROUTER_API_BASE_URL)
-    assistant_response_text = None
-    llm_call_succeeded = False
-    
+    # --- Subscription Check ---
+    if not await check_channel_subscription(update, context):
+        logger.info(f"handle_message: User {user_id} failed channel subscription check.")
+        await send_subscription_required_message(update, context)
+        return
+
+    db_session = None
     try:
-        # Construct messages for OpenAI compatible API
-        # ... your context formation code here ...
-        
-        # Example:
-        # formatted_messages_for_llm = [{"role": "system", "content": system_prompt}]
-        # formatted_messages_for_llm.extend(context_for_ai)
+        with get_db() as db:
+            db_session = db
+            persona_context_owner_tuple = get_persona_and_context_with_owner(chat_id_str, db_session)
+            if not persona_context_owner_tuple:
+                logger.debug(f"handle_message: No active persona found for chat {chat_id_str}.")
+                return
+            
+            persona, initial_context_from_db, owner_user = persona_context_owner_tuple
+            logger.info(f"handle_message: Found active persona '{persona.name}' (ID: {persona.id}) owned by User ID {owner_user.id} (TG: {owner_user.telegram_id}).")
+            
+            # --- Check text reaction settings ---
+            if persona.config.media_reaction in ["all_media_no_text", "photo_only", "voice_only", "none"]:
+                logger.info(f"handle_message: Persona '{persona.name}' configured not to react to TEXT. Context will be saved if not muted.")
+                if not persona.chat_instance.is_muted:
+                    try:
+                        add_message_to_context(db_session, persona.chat_instance.id, "user", f"{username}: {message_text}")
+                        db_session.commit()
+                    except Exception as e_ctx_text_ignore:
+                        logger.error(f"handle_message: Error saving context for ignored text response: {e_ctx_text_ignore}", exc_info=True)
+                        db_session.rollback()
+                return
 
-        llm_response = await open_ai_client.chat.completions.create(
-            model=OPENROUTER_MODEL_NAME,
-            messages=formatted_messages_for_llm, # Make sure this is correctly populated
-            temperature=persona.config.temperature if persona.config.temperature is not None else 0.7,
-            top_p=persona.config.top_p if persona.config.top_p is not None else 1.0,
-            max_tokens=2048 # Generous limit
-        )
-        
-        # *** CHANGE HERE ***
-        # Simply take the raw response from the LLM. No json.dumps or json.loads.
-        assistant_response_text = llm_response.choices[0].message.content.strip()
-        
-        llm_call_succeeded = True
-        logger.info(f"LLM Raw Response (CBI {persona.chat_instance.id}): '{assistant_response_text[:300]}...'")
+            # --- Check user limits ---
+            now_utc = datetime.now(timezone.utc)
+            current_month_start = now_utc.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
-    except OpenAIError as e:
-        logger.error(f"OpenRouter API error (CBI {persona.chat_instance.id}): {e}", exc_info=True)
-        error_message_to_user = "Произошла ошибка при обращении к нейросети. Попробуйте немного позже."
-        await update.message.reply_text(error_message_to_user, parse_mode=None)
-        # db_session.commit() # Commit context and limit changes even on API failure
-        return
-    
-    # ... rest of handle_message code ...
+            if owner_user.message_count_reset_at is None or owner_user.message_count_reset_at < current_month_start:
+                logger.info(f"Resetting monthly message count for user {owner_user.id} (TG: {owner_user.telegram_id}).")
+                owner_user.monthly_message_count = 0
+                owner_user.message_count_reset_at = current_month_start
+                db_session.add(owner_user)
 
-    if not llm_call_succeeded or not assistant_response_text:
-        logger.warning(f"handle_message: LLM call failed or returned empty text. Not processing response. CBI: {persona.chat_instance.id}")
-        # db_session.commit() # Commit changes even if response is not sent
-        return
-        
-    # Process and send the response using the new robust function
-    # ... and so on ...
+            limit_exceeded = owner_user.monthly_message_count >= owner_user.message_limit
+            if limit_exceeded:
+                logger.info(f"User {owner_user.id} (TG: {owner_user.telegram_id}) monthly limit exceeded. Count: {owner_user.monthly_message_count}/{owner_user.message_limit}")
+                await send_limit_exceeded_message(update, context, owner_user)
+                db_session.commit() # Save potential counter reset
+                return
+
+            # --- Add user message to context ---
+            context_user_msg_added = False
+            try:
+                add_message_to_context(db_session, persona.chat_instance.id, "user", f"{username}: {message_text}")
+                context_user_msg_added = True
+            except Exception as e_ctx:
+                logger.error(f"handle_message: Error preparing user message context: {e_ctx}", exc_info=True)
+                await update.message.reply_text(escape_markdown_v2("❌ ошибка при сохранении вашего сообщения."), parse_mode=ParseMode.MARKDOWN_V2)
+                db_session.rollback()
+                return
+
+            if persona.chat_instance.is_muted:
+                logger.info(f"handle_message: Persona '{persona.name}' is muted. Saving context and exiting.")
+                db_session.commit()
+                return
+
+            # --- Group reply logic ---
+            should_ai_respond = True
+            if update.effective_chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
+                reply_pref = persona.group_reply_preference
+                bot_username = context.bot_data.get('bot_username', "NunuAiBot")
+                is_mentioned = f"@{bot_username}".lower() in message_text.lower()
+                is_reply_to_bot = update.message.reply_to_message and update.message.reply_to_message.from_user.id == context.bot.id
+                contains_persona_name = bool(re.search(rf'(?i)\b{re.escape(persona.name.lower())}\b', message_text))
+
+                if reply_pref == "never": should_ai_respond = False
+                elif reply_pref == "mentioned_only" and not (is_mentioned or is_reply_to_bot or contains_persona_name): should_ai_respond = False
+            
+            if not should_ai_respond:
+                logger.info("Decision: Not responding in group chat based on preferences.")
+                db_session.commit()
+                return
+
+            # --- LLM Request ---
+            await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+            
+            system_prompt = persona.format_system_prompt(user_id, username, message_text)
+            if not system_prompt:
+                logger.error(f"handle_message: System prompt formatting failed for persona {persona.id}.")
+                await update.message.reply_text(escape_markdown_v2("❌ ошибка при подготовке системного сообщения."), parse_mode=ParseMode.MARKDOWN_V2)
+                db_session.rollback()
+                return
+
+            context_for_ai = initial_context_from_db + [{"role": "user", "content": f"{username}: {message_text}"}]
+            
+            open_ai_client = AsyncOpenAI(api_key=OPENROUTER_API_KEY, base_url=OPENROUTER_API_BASE_URL)
+            assistant_response_text = None
+            llm_call_succeeded = False
+            
+            try:
+                # Construct messages for OpenAI compatible API
+                formatted_messages_for_llm = [{"role": "system", "content": system_prompt}]
+                for msg in context_for_ai[-MAX_CONTEXT_MESSAGES_SENT_TO_LLM:]:
+                    # OpenRouter expects 'assistant', not 'bot' or other roles
+                    role = "assistant" if msg["role"] != "user" else "user"
+                    formatted_messages_for_llm.append({"role": role, "content": msg["content"]})
+                
+                llm_response = await open_ai_client.chat.completions.create(
+                    model=OPENROUTER_MODEL_NAME,
+                    messages=formatted_messages_for_llm,
+                    temperature=persona.config.temperature if persona.config.temperature is not None else 0.7,
+                    top_p=persona.config.top_p if persona.config.top_p is not None else 1.0,
+                    max_tokens=2048 # Generous limit
+                )
+                
+                # --- ИСПРАВЛЕНИЕ ---
+                # Просто берем сырой ответ от LLM и передаем его дальше.
+                # Никаких json.dumps() или json.loads() здесь.
+                assistant_response_text = llm_response.choices[0].message.content.strip()
+                llm_call_succeeded = True
+                logger.info(f"LLM Raw Response (CBI {persona.chat_instance.id}): '{assistant_response_text[:300]}...'")
+
+            except OpenAIError as e:
+                logger.error(f"OpenRouter API error (CBI {persona.chat_instance.id}): {e}", exc_info=True)
+                error_message_to_user = "Произошла ошибка при обращении к нейросети. Попробуйте немного позже."
+                await update.message.reply_text(error_message_to_user, parse_mode=None)
+                db_session.commit() # Commit context and limit changes even on API failure
+                return
+
+            if not llm_call_succeeded or not assistant_response_text:
+                logger.warning(f"LLM call did not produce a usable response for CBI {persona.chat_instance.id}.")
+                await update.message.reply_text("Модель не дала содержательного ответа. Попробуйте переформулировать запрос.", parse_mode=None)
+                db_session.commit()
+                return
+
+            # --- Process and Send Response ---
+            context_response_prepared = await process_and_send_response(
+                update, context, chat_id_str, persona, assistant_response_text, db_session,
+                reply_to_message_id=message_id, is_first_message=(len(initial_context_from_db) == 0)
+            )
+
+            # --- Final Commit ---
+            owner_user.monthly_message_count += 1
+            db_session.add(owner_user)
+            logger.info(f"Incremented monthly message count for user {owner_user.id} to {owner_user.monthly_message_count}")
+            
+            db_session.commit()
+            logger.info(f"handle_message: Successfully processed message and committed changes for chat {chat_id_str}.")
+
+    except SQLAlchemyError as e:
+        logger.error(f"handle_message: SQLAlchemyError: {e}", exc_info=True)
+        if update.effective_message:
+            try: await update.effective_message.reply_text("❌ Ошибка базы данных. Попробуйте позже.", parse_mode=None)
+            except Exception: pass
+        if db_session: db_session.rollback()
+    except Exception as e:
+        logger.error(f"handle_message: Unexpected Exception: {e}", exc_info=True)
+        if update.effective_message:
+            try: await update.effective_message.reply_text("❌ Произошла непредвиденная ошибка.", parse_mode=None)
+            except Exception: pass
+        if db_session: db_session.rollback()
