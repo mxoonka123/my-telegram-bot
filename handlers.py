@@ -48,6 +48,8 @@ from sqlalchemy import func
 from sqlalchemy import delete
 from db import PersonaConfig as DBPersonaConfig # Added to fix NameError
 from db import get_active_chat_bot_instance_with_relations # Added to fix NameError
+from db import BotInstance as DBBotInstance
+from db import ChatBotInstance as DBChatBotInstance
 
 from yookassa import Configuration as YookassaConfig, Payment
 from yookassa.domain.models.currency import Currency
@@ -3201,8 +3203,8 @@ async def add_bot_to_chat(update: Update, context: ContextTypes.DEFAULT_TYPE, pe
                     db.flush()
 
             user = persona.owner
-            bot_instance = db.query(BotInstance).filter(
-                BotInstance.persona_config_id == local_persona_id
+            bot_instance = db.query(DBBotInstance).filter(
+                DBBotInstance.persona_config_id == local_persona_id
             ).first()
 
             if not bot_instance:
@@ -3212,12 +3214,13 @@ async def add_bot_to_chat(update: Update, context: ContextTypes.DEFAULT_TYPE, pe
                  except (IntegrityError, SQLAlchemyError) as create_err:
                       logger.error(f"Failed to create BotInstance ({create_err}), possibly due to concurrent request. Retrying fetch.")
                       db.rollback()
-                      bot_instance = db.query(BotInstance).filter(BotInstance.persona_config_id == local_persona_id).first()
+                      bot_instance = db.query(DBBotInstance).filter(DBBotInstance.persona_config_id == local_persona_id).first()
                       if not bot_instance:
                            logger.error("Failed to fetch BotInstance even after retry.")
                            raise SQLAlchemyError("Failed to create or fetch BotInstance")
 
             chat_link = link_bot_instance_to_chat(db, bot_instance.id, chat_id_str)
+{{ ... }}
 
             if chat_link:
                  final_success_msg = success_added_structure_raw.format(
