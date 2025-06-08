@@ -4045,9 +4045,9 @@ async def _start_edit_convo(update: Update, context: ContextTypes.DEFAULT_TYPE, 
 
     try:
         with get_db() as db:
-            persona_config = db.query(PersonaConfig).options(selectinload(PersonaConfig.owner)).filter(
-                PersonaConfig.id == persona_id,
-                PersonaConfig.owner.has(User.telegram_id == user_id) # Проверка владения
+            persona_config = db.query(DBPersonaConfig).options(selectinload(DBPersonaConfig.owner)).filter(
+                DBPersonaConfig.id == persona_id,
+                DBPersonaConfig.owner.has(User.telegram_id == user_id) # Проверка владения
             ).first()
 
             if not persona_config:
