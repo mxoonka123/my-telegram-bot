@@ -11,7 +11,7 @@ ADMIN_USER_ID = 1324596928 # Замените на ваш реальный ID а
 CHANNEL_ID = "@NuNuAiChannel" # ID или юзернейм вашего канала
 
 # Premium User Limits
-PREMIUM_USER_MONTHLY_MESSAGE_LIMIT = 1500
+PREMIUM_USER_MONTHLY_MESSAGE_LIMIT = 1000
 PREMIUM_USER_MESSAGE_TOKEN_LIMIT = 120
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 
@@ -52,7 +52,7 @@ SUBSCRIPTION_CURRENCY = "RUB"
 SUBSCRIPTION_DURATION_DAYS = 30
 FREE_PERSONA_LIMIT = 1
 PAID_PERSONA_LIMIT = 10
-FREE_USER_MONTHLY_MESSAGE_LIMIT = 50 # Бесплатные пользователи: 50 сообщений в месяц
+FREE_USER_MONTHLY_MESSAGE_LIMIT = 30 # Бесплатные пользователи: 50 сообщений в месяц
 
 # Настройки контекста и ответов
 MAX_CONTEXT_MESSAGES_SENT_TO_LLM = 30 # Сколько последних сообщений отправлять в LLM
