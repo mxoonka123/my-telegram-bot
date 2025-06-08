@@ -4334,7 +4334,7 @@ async def edit_wizard_menu_handler(update: Update, context: ContextTypes.DEFAULT
             
     if data == "edit_wizard_moods":
         with get_db() as db_session:
-            persona_for_moods = db_session.query(PersonaConfig).options(selectinload(PersonaConfig.owner)).filter(PersonaConfig.id == persona_id).first()
+            persona_for_moods = db_session.query(DBPersonaConfig).options(selectinload(DBPersonaConfig.owner)).filter(DBPersonaConfig.id == persona_id).first()
             if not persona_for_moods:
                 if query.message: await query.edit_message_text("", reply_markup=None)
                 return ConversationHandler.END
