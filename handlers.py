@@ -19,7 +19,7 @@ from openai import AsyncOpenAI, OpenAIError
 from datetime import datetime, timezone
 
 import config
-from db import Session, get_db, PersonaConfig as Persona, User
+from db import Session, get_db, PersonaConfig as Persona, User, add_message_to_context
 from utils import (
     escape_markdown_v2, 
     extract_gif_links, 
