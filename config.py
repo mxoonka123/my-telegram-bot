@@ -18,7 +18,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 # OpenRouter Settings
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 OPENROUTER_API_BASE_URL = "https://openrouter.ai/api/v1"
-OPENROUTER_MODEL_NAME = "google/gemini-2.0-flash-exp:free"
+OPENROUTER_MODEL_NAME = "google/gemini-2.0-flash-001"
 
 if not OPENROUTER_API_KEY:
     logger.warning("WARNING: Переменная окружения OPENROUTER_API_KEY не установлена!")
