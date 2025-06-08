@@ -4,6 +4,35 @@
 - process_and_send_response - обновленная версия с надежным разбором JSON
 """
 
+import json
+import re
+import asyncio
+import random
+import logging
+from typing import Optional, Union, List, Dict, Tuple, Any
+from telegram import Update, ChatAction, ParseMode, ChatType, BadRequest
+from telegram.ext import ContextTypes
+from sqlalchemy.exc import SQLAlchemyError
+from openai import AsyncOpenAI, OpenAIError
+from datetime import datetime, timezone
+
+import config
+from db import Session, get_db
+from models import Persona, User
+from utils import (
+    escape_markdown_v2, 
+    extract_gif_links, 
+    postprocess_response, 
+    add_message_to_context
+)
+
+# Константы
+MAX_USER_MESSAGE_LENGTH_CHARS = 4000
+MAX_CONTEXT_MESSAGES_SENT_TO_LLM = 15
+FREE_USER_MONTHLY_MESSAGE_LIMIT = 200
+
+logger = logging.getLogger(__name__)
+
 async def process_and_send_response(
     update: Optional[Update],
     context: ContextTypes.DEFAULT_TYPE,
