@@ -23,8 +23,7 @@ from db import Session, get_db, PersonaConfig as Persona, User, add_message_to_c
 from utils import (
     escape_markdown_v2, 
     extract_gif_links, 
-    postprocess_response, 
-    add_message_to_context
+    postprocess_response
 )
 
 # Константы
