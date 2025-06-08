@@ -3314,10 +3314,10 @@ async def process_and_send_response(
             is_json_parsed = False
 
         if is_json_parsed:
-            # Revised unwrapping logic to handle nested JSON/markdown
+            # Усовершенствованная логика для обработки вложенных JSON/markdown
             processed_parts = []
-            MAX_RECURSION_DEPTH = 5  # Max depth for unwrapping
-
+            MAX_RECURSION_DEPTH = 5  # Максимальная глубина для распаковки
+            
             def unwrap_json_string(json_str_candidate, current_depth):
                 if current_depth >= MAX_RECURSION_DEPTH:
                     logger.warning(f"Max recursion depth {MAX_RECURSION_DEPTH} reached while unwrapping. Keeping as is: {str(json_str_candidate)[:200]}")
@@ -3332,30 +3332,44 @@ async def process_and_send_response(
                     else: # int, bool, dict etc.
                         return [str(json_str_candidate)]
 
-                # Candidate is a string
-                # 1. Check for markdown ```json ... ```
-                if json_str_candidate.startswith("```json") and json_str_candidate.endswith("```"):
-                    content_inside_markdown = json_str_candidate[len("```json"):-len("```")].strip()
-                    logger.debug(f"Depth {current_depth}: Unwrapping markdown content: {content_inside_markdown[:200]}")
+                # Проверяем, является ли строка закодированным JSON или markdown блоком
+                
+                # 1. Обработка блоков markdown ```json ... ```
+                markdown_pattern = r'```json\s*(.*?)\s*```'
+                markdown_match = re.search(markdown_pattern, json_str_candidate, re.DOTALL)
+                if markdown_match:
+                    content_inside_markdown = markdown_match.group(1).strip()
+                    logger.debug(f"Depth {current_depth}: Unwrapping markdown content: {content_inside_markdown[:100]}...")
                     return unwrap_json_string(content_inside_markdown, current_depth + 1)
-
-                # 2. Check if the string itself is a parsable JSON
-                try:
-                    potential_inner_data = json.loads(json_str_candidate)
-                    # If json.loads results in the exact same string, and it's not a list that needs further iteration,
-                    # it means it wasn't really "stringified" JSON that needs unwrapping.
-                    if potential_inner_data == json_str_candidate and not isinstance(potential_inner_data, list):
-                        logger.debug(f"Depth {current_depth}: JSON parsing did not change string and not a list. Keeping: {json_str_candidate[:200]}")
-                        return [json_str_candidate]
-                    
-                    logger.debug(f"Depth {current_depth}: Unwrapping string-encoded JSON: {str(potential_inner_data)[:200]}")
-                    return unwrap_json_string(potential_inner_data, current_depth + 1)
-                except json.JSONDecodeError:
-                    logger.debug(f"Depth {current_depth}: String is not markdown or parsable JSON. Keeping: {json_str_candidate[:200]}")
-                    return [json_str_candidate]
-                except Exception as e_unwrap: # Catch any other unexpected error during unwrap
-                    logger.error(f"Depth {current_depth}: Unexpected error during unwrap_json_string for '{str(json_str_candidate)[:50]}': {e_unwrap}", exc_info=True)
-                    return [str(json_str_candidate)]
+                
+                # 2. Проверка, начинается ли строка с "[" и заканчивается на "]" (потенциальный JSON массив)
+                if json_str_candidate.strip().startswith("[") and json_str_candidate.strip().endswith("]"):
+                    try:
+                        potential_inner_data = json.loads(json_str_candidate)
+                        if isinstance(potential_inner_data, list):
+                            logger.debug(f"Depth {current_depth}: Successfully parsed JSON array with {len(potential_inner_data)} items")
+                            result_parts = []
+                            for item in potential_inner_data:
+                                result_parts.extend(unwrap_json_string(item, current_depth + 1))
+                            return result_parts
+                    except json.JSONDecodeError:
+                        # Не удалось распарсить как JSON
+                        pass
+                
+                # 3. Проверка на экранированные unicode последовательности (вроде \u0447\u0442\u043e)
+                if "\\u" in json_str_candidate:
+                    try:
+                        # Пытаемся декодировать экранированные unicode последовательности
+                        decoded_str = json_str_candidate.encode().decode('unicode_escape')
+                        # Если строка изменилась после декодирования, возвращаем декодированную версию
+                        if decoded_str != json_str_candidate:
+                            logger.debug(f"Depth {current_depth}: Decoded Unicode escape sequences: {decoded_str[:100]}...")
+                            return [decoded_str]
+                    except Exception as e_decode:
+                        logger.error(f"Error decoding Unicode escape sequences: {e_decode}")
+                
+                # Если никакие специальные случаи не обработаны, возвращаем исходную строку
+                return [json_str_candidate]
 
             for part_to_unwrap in text_parts_to_send:
                 try:
@@ -3364,6 +3378,7 @@ async def process_and_send_response(
                     logger.error(f"Error processing part '{str(part_to_unwrap)[:50]}' in unwrap loop: {e_loop_unwrap}", exc_info=True)
                     processed_parts.append(str(part_to_unwrap))
             
+            # Удаляем пустые строки и обрезаем пробелы
             text_parts_to_send = [p.strip() for p in processed_parts if p and p.strip()]
 
             if not text_parts_to_send:
