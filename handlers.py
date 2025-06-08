@@ -4153,7 +4153,7 @@ async def _handle_back_to_wizard_menu(update: Update, context: ContextTypes.DEFA
     query = update.callback_query
     
     with get_db() as db:
-        persona = db.query(PersonaConfig).filter(PersonaConfig.id == persona_id).first()
+        persona = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
         if not persona:
             await query.answer("Ошибка: личность не найдена")
             return ConversationHandler.END
