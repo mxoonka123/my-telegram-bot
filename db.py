@@ -943,3 +943,11 @@ def get_active_chat_bot_instance_with_relations(db: Session, chat_id: str) -> Op
         return None
     _, chat_instance, _ = result
     return chat_instance
+
+def check_and_update_user_limits(db: Session, user: User) -> bool:
+    """УСТАРЕВШАЯ ФУНКЦИЯ для обратной совместимости.
+    Заменена на прямую проверку и обновление monthly_message_count.
+    """
+    logger.warning(f"Deprecated function check_and_update_user_limits called for user {user.id}")
+    # Всегда возвращаем True, так как реальная проверка теперь делается непосредственно в обработчиках
+    return True
