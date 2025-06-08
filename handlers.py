@@ -4792,7 +4792,7 @@ async def edit_max_messages_received(update: Update, context: ContextTypes.DEFAU
 async def edit_verbosity_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     persona_id = context.user_data.get('edit_persona_id')
     with get_db() as db:
-        current = db.query(PersonaConfig.verbosity_level).filter(PersonaConfig.id == persona_id).scalar() or "medium"
+        current = db.query(DBPersonaConfig.verbosity_level).filter(DBPersonaConfig.id == persona_id).scalar() or "medium"
     prompt_text = escape_markdown_v2(f"🗣️ Выберите разговорчивость (текущая: {current}):")
     keyboard = [
         [InlineKeyboardButton(f"{'✅ ' if current == 'concise' else ''}🤏 Лаконичный", callback_data="set_verbosity_concise")],
@@ -4999,7 +4999,7 @@ async def edit_moods_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     user_id = query.from_user.id
 
     with get_db() as db:
-        owner = db.query(User).join(PersonaConfig).filter(PersonaConfig.id == persona_id).first()
+        owner = db.query(User).join(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
         if not owner or not (owner.is_active_subscriber or is_admin(user_id)):
             await query.answer("⭐ Доступно по подписке", show_alert=True)
             persona = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
