@@ -541,6 +541,7 @@ def main():
     application.add_handler(CommandHandler("start", handlers.start))
     application.add_handler(CommandHandler("help", handlers.help_command))
     application.add_handler(CommandHandler("menu", handlers.menu_command))
+    # application.add_handler(CommandHandler('editpersona', handlers.edit_persona_start))
     application.add_handler(CommandHandler("profile", handlers.profile))
     application.add_handler(CommandHandler("subscribe", handlers.subscribe))
     # --- REMOVED placeholders command ---
