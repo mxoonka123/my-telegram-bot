@@ -908,7 +908,7 @@ def get_persona_and_context_with_owner(chat_id: str, db: Session) -> Optional[Tu
         # Находим активный экземпляр бота для этого чата
         chat_bot_instance = db.query(ChatBotInstance).filter(
             ChatBotInstance.chat_id == chat_id,
-            ChatBotInstance.is_active == True
+            ChatBotInstance.active == True
         ).options(
             # Жадно загружаем связанный экземпляр бота
             joinedload(ChatBotInstance.bot_instance_ref).joinedload(BotInstance.persona_config),
