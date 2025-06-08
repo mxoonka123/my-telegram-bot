@@ -4446,7 +4446,7 @@ async def _send_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE, text:
 async def edit_name_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     persona_id = context.user_data.get('edit_persona_id')
     with get_db() as db:
-        current_name = db.query(PersonaConfig.name).filter(PersonaConfig.id == persona_id).scalar() or "N/A"
+        current_name = db.query(DBPersonaConfig.name).filter(DBPersonaConfig.id == persona_id).scalar() or "N/A"
     prompt_text = escape_markdown_v2(f"✏️ Введите новое имя (текущее: '{current_name}', 2-50 симв.):")
     keyboard = [[InlineKeyboardButton("⬅️ Назад", callback_data="back_to_wizard_menu")]]
     await _send_prompt(update, context, prompt_text, InlineKeyboardMarkup(keyboard))
@@ -4463,11 +4463,11 @@ async def edit_name_received(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     try:
         with get_db() as db:
-            owner_id = db.query(PersonaConfig.owner_id).filter(PersonaConfig.id == persona_id).scalar()
-            existing = db.query(PersonaConfig.id).filter(
-                PersonaConfig.owner_id == owner_id,
-                func.lower(PersonaConfig.name) == new_name.lower(),
-                PersonaConfig.id != persona_id
+            owner_id = db.query(DBPersonaConfig.owner_id).filter(DBPersonaConfig.id == persona_id).scalar()
+            existing = db.query(DBPersonaConfig.id).filter(
+                DBPersonaConfig.owner_id == owner_id,
+                func.lower(DBPersonaConfig.name) == new_name.lower(),
+                DBPersonaConfig.id != persona_id
             ).first()
             if existing:
                 await update.message.reply_text(escape_markdown_v2(f"❌ Имя '{new_name}' уже занято. Введите другое:"))
@@ -4497,7 +4497,7 @@ async def edit_description_prompt(update: Update, context: ContextTypes.DEFAULT_
     """Отображает форму редактирования описания без использования Markdown разметки."""
     persona_id = context.user_data.get('edit_persona_id')
     with get_db() as db:
-        current_desc = db.query(PersonaConfig.description).filter(PersonaConfig.id == persona_id).scalar() or "(пусто)"
+        current_desc = db.query(DBPersonaConfig.description).filter(DBPersonaConfig.id == persona_id).scalar() or "(пусто)"
     
     # Подготавливаем предпросмотр текущего описания
     current_desc_preview = (current_desc[:100] + '...') if len(current_desc) > 100 else current_desc
