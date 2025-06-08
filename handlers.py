@@ -3353,7 +3353,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             new_value_str = data.replace("set_max_msgs_", "")
             
             with get_db() as db:
-                persona = db.query(PersonaConfig).filter(PersonaConfig.id == persona_id).first()
+                persona = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
                 if persona:
                     # Устанавливаем новое значение
                     if new_value_str == "few":
@@ -4329,7 +4329,7 @@ async def edit_wizard_menu_handler(update: Update, context: ContextTypes.DEFAULT
     if data == "edit_wizard_message_volume": # Временно отключено
         await query.answer("Функция 'Объем сообщений' временно недоступна.", show_alert=True)
         with get_db() as db_session:
-            persona_config = db_session.query(PersonaConfig).filter(PersonaConfig.id == persona_id).first()
+            persona_config = db_session.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
             return await _show_edit_wizard_menu(update, context, persona_config) if persona_config else ConversationHandler.END
             
     if data == "edit_wizard_moods":
@@ -4366,7 +4366,7 @@ async def edit_wizard_menu_handler(update: Update, context: ContextTypes.DEFAULT
                 logger.warning(f"edit_wizard_menu_handler (back_to_wizard_menu): Failed to delete specific prompt message {last_prompt_message_id} in chat {chat_id_for_delete}: {e_del_prompt}")
         
         with get_db() as db_session:
-            persona_config = db_session.query(PersonaConfig).filter(PersonaConfig.id == persona_id).first()
+            persona_config = db_session.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
             # _show_edit_wizard_menu will handle editing/sending the main menu
             return await _show_edit_wizard_menu(update, context, persona_config) if persona_config else ConversationHandler.END
 
@@ -4394,7 +4394,7 @@ async def edit_wizard_menu_handler(update: Update, context: ContextTypes.DEFAULT
                 logger.error(f"Error in fallback direct set_max_msgs for {persona_id}: {e_direct_set}")
         
         with get_db() as db_session: # Fallback to re-render menu
-            persona_config = db_session.query(PersonaConfig).filter(PersonaConfig.id == persona_id).first()
+            persona_config = db_session.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
             return await _show_edit_wizard_menu(update, context, persona_config) if persona_config else ConversationHandler.END
 
     logger.warning(f"Unhandled wizard menu callback: {data} for persona {persona_id}")
@@ -4625,7 +4625,7 @@ async def edit_comm_style_received(update: Update, context: ContextTypes.DEFAULT
         new_style = data.replace("set_comm_style_", "")
         try:
             with get_db() as db:
-                persona = db.query(PersonaConfig).filter(PersonaConfig.id == persona_id).with_for_update().first()
+                persona = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).with_for_update().first()
                 if persona:
                     persona.communication_style = new_style
                     db.commit()
@@ -4727,7 +4727,7 @@ async def edit_max_messages_received(update: Update, context: ContextTypes.DEFAU
     # Обработка кнопки "Назад"
     if data == "back_to_wizard_menu":
         with get_db() as db_session:
-            persona_config = db_session.query(PersonaConfig).filter(PersonaConfig.id == persona_id).first()
+            persona_config = db_session.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
             if not persona_config: # На всякий случай
                 if query.message: await query.edit_message_text("Ошибка: личность не найдена.", reply_markup=None)
                 return ConversationHandler.END
@@ -4764,7 +4764,7 @@ async def edit_max_messages_received(update: Update, context: ContextTypes.DEFAU
                     await edit_max_messages_prompt(update, context)
                     return EDIT_MAX_MESSAGES
                 
-                persona = db.query(PersonaConfig).filter(PersonaConfig.id == persona_id).first()
+                persona = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
                 if persona:
                     persona.max_response_messages = numeric_value
                     db.commit()
@@ -4811,14 +4811,14 @@ async def edit_verbosity_received(update: Update, context: ContextTypes.DEFAULT_
 
     if data == "back_to_wizard_menu":
         with get_db() as db:
-            persona = db.query(PersonaConfig).filter(PersonaConfig.id == persona_id).first()
+            persona = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
             return await _show_edit_wizard_menu(update, context, persona)
 
     if data.startswith("set_verbosity_"):
         new_value = data.replace("set_verbosity_", "")
         try:
             with get_db() as db:
-                persona = db.query(PersonaConfig).filter(PersonaConfig.id == persona_id).with_for_update().first()
+                persona = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).with_for_update().first()
                 if persona:
                     persona.verbosity_level = new_value
                     db.commit()
@@ -4859,14 +4859,14 @@ async def edit_group_reply_received(update: Update, context: ContextTypes.DEFAUL
 
     if data == "back_to_wizard_menu":
         with get_db() as db:
-            persona = db.query(PersonaConfig).filter(PersonaConfig.id == persona_id).first()
+            persona = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
             return await _show_edit_wizard_menu(update, context, persona)
 
     if data.startswith("set_group_reply_"):
         new_value = data.replace("set_group_reply_", "")
         try:
             with get_db() as db:
-                persona = db.query(PersonaConfig).filter(PersonaConfig.id == persona_id).with_for_update().first()
+                persona = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).with_for_update().first()
                 if persona:
                     persona.group_reply_preference = new_value
                     db.commit()
@@ -4952,7 +4952,7 @@ async def edit_media_reaction_received(update: Update, context: ContextTypes.DEF
 
     if data == "back_to_wizard_menu":
         with get_db() as db:
-            persona = db.query(PersonaConfig).filter(PersonaConfig.id == persona_id).first()
+            persona = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
             return await _show_edit_wizard_menu(update, context, persona)
 
     if data.startswith("set_media_react_"):
@@ -4974,7 +4974,7 @@ async def edit_media_reaction_received(update: Update, context: ContextTypes.DEF
                     await edit_media_reaction_prompt(update, context)
                     return EDIT_MEDIA_REACTION
                 
-                persona = db.query(PersonaConfig).filter(PersonaConfig.id == persona_id).with_for_update().first()
+                persona = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).with_for_update().first()
                 if persona:
                     persona.media_reaction = new_value
                     db.commit()
@@ -5002,7 +5002,7 @@ async def edit_moods_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         owner = db.query(User).join(PersonaConfig).filter(PersonaConfig.id == persona_id).first()
         if not owner or not (owner.is_active_subscriber or is_admin(user_id)):
             await query.answer("⭐ Доступно по подписке", show_alert=True)
-            persona = db.query(PersonaConfig).filter(PersonaConfig.id == persona_id).first()
+            persona = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
             return await _show_edit_wizard_menu(update, context, persona)
 
     logger.info(f"User {user_id} entering mood editing for persona {persona_id}.")
@@ -6185,7 +6185,7 @@ async def edit_message_volume_received(update: Update, context: ContextTypes.DEF
                 await query.edit_message_text(escape_markdown_v2(f"✅ Объем сообщений установлен: {display_value}"))
                 
                 # Return to wizard menu
-                persona = db.query(PersonaConfig).filter(PersonaConfig.id == persona_id).first()
+                persona = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
                 return await _show_edit_wizard_menu(update, context, persona)
         except Exception as e:
             logger.error(f"Error setting message_volume for {persona_id}: {e}")
