@@ -87,6 +87,9 @@ from utils import (
     TELEGRAM_MAX_LEN
 )
 
+# Максимальная длина входящего сообщения от пользователя в символах
+MAX_USER_MESSAGE_LENGTH_CHARS = 600  # Примерно 150 токенов, можно настроить
+
 logger = logging.getLogger(__name__)
 
 # --- Vosk model setup ---
@@ -1531,6 +1534,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         username = update.effective_user.username or f"user_{user_id}"
         message_text = (update.message.text or update.message.caption or "").strip()
         message_id = update.message.message_id
+
+        # Проверка длины входящего сообщения
+        if len(message_text) > MAX_USER_MESSAGE_LENGTH_CHARS:
+            logger.info(f"User {user_id} in chat {chat_id_str} sent a message exceeding {MAX_USER_MESSAGE_LENGTH_CHARS} chars. Length: {len(message_text)}")
+            await update.message.reply_text("Ваше сообщение слишком длинное. Пожалуйста, попробуйте его сократить.", parse_mode=None)
+            return
         
         if not message_text:
             logger.debug(f"handle_message: Exiting - Empty message text from user {user_id} in chat {chat_id_str}.")
