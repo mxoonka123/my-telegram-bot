@@ -1301,6 +1301,9 @@ async def process_and_send_response(
             
             logger.info(f"Финальное количество текстовых частей для отправки: {len(text_parts_to_send)} (настройка: {max_messages_setting_value})")
         # --- КОНЕЦ НОВОЙ ЕДИНОЙ ТОЧКИ ОГРАНИЧЕНИЯ ---
+
+        first_message_sent = False
+        chat_id_str = str(chat_id)
         
         # NEW: Further parse parts if they contain markdown-wrapped JSON
         processed_parts_for_sending = []
