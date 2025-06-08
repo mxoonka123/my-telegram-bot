@@ -1214,6 +1214,43 @@ async def process_and_send_response(
             logger.error(f"process_and_send_response [JSON]: Unexpected error during JSON parsing: {parse_err}", exc_info=True)
             is_json_parsed = False
 
+        if is_json_parsed:
+            # NEW: Further process parts if they are markdown-wrapped JSON
+            truly_final_parts = []
+            for part_str in text_parts_to_send:
+                if isinstance(part_str, str) and part_str.startswith("```json") and part_str.endswith("```"):
+                    # Extract content within the markdown code block
+                    actual_json_payload = part_str[len("```json"): -len("```")].strip()
+                    logger.info(f"process_and_send_response [JSON]: Found markdown-wrapped JSON payload: '{actual_json_payload[:100]}...' Attempting to parse it.")
+                    try:
+                        inner_data = json.loads(actual_json_payload)
+                        if isinstance(inner_data, list) and all(isinstance(item, str) for item in inner_data):
+                            # This is what we want: the list of actual message strings
+                            truly_final_parts.extend([item.strip() for item in inner_data if item.strip()])
+                            logger.info(f"process_and_send_response [JSON]: Successfully unwrapped and parsed {len(inner_data)} inner message(s) from markdown payload.")
+                        else:
+                            # The content of markdown was not a list of strings, keep original part
+                            logger.warning(f"process_and_send_response [JSON]: Markdown-wrapped payload was not a list of strings (Type: {type(inner_data)}). Keeping as is: {part_str[:100]}")
+                            truly_final_parts.append(part_str) 
+                    except json.JSONDecodeError as e_inner:
+                        # Failed to parse the content of the markdown block, keep original part
+                        logger.warning(f"process_and_send_response [JSON]: Failed to parse markdown-wrapped JSON payload: {e_inner}. Keeping as is: {part_str[:100]}")
+                        truly_final_parts.append(part_str)
+                else:
+                    # This part is not a markdown-wrapped JSON, so keep it as is
+                    truly_final_parts.append(part_str)
+            
+            text_parts_to_send = truly_final_parts
+
+            if not text_parts_to_send:
+                logger.warning("process_and_send_response [JSON]: After potential unwrapping, no valid text parts remain. Falling back to sentence splitting.")
+                is_json_parsed = False 
+            elif any(isinstance(p, str) and p.startswith("```json") for p in text_parts_to_send):
+                 logger.warning("process_and_send_response [JSON]: After unwrap attempt, parts still contain markdown JSON. Treating as JSON parse failure to avoid sending raw markdown.")
+                 is_json_parsed = False # This will trigger fallback to sentence splitting of the original raw_llm_response
+            else:
+                logger.info(f"process_and_send_response [JSON]: Final text_parts_to_send after potential unwrap: {text_parts_to_send}")
+
         # 3. Fallback: Если JSON не сработал - простое деление по предложениям
         if not is_json_parsed:
             logger.info("process_and_send_response [JSON]: Fallback - Splitting by sentences.")
