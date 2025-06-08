@@ -4660,7 +4660,7 @@ async def edit_max_messages_prompt(update: Update, context: ContextTypes.DEFAULT
 
     current_value_str = "normal" # Значение по умолчанию
     with get_db() as db:
-        persona_config = db.query(PersonaConfig).filter(PersonaConfig.id == persona_id).first()
+        persona_config = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
         if not persona_config:
             await query.answer("Ошибка: личность не найдена.", show_alert=True)
             return ConversationHandler.END
@@ -4839,7 +4839,7 @@ async def edit_verbosity_received(update: Update, context: ContextTypes.DEFAULT_
 async def edit_group_reply_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     persona_id = context.user_data.get('edit_persona_id')
     with get_db() as db:
-        current = db.query(PersonaConfig.group_reply_preference).filter(PersonaConfig.id == persona_id).scalar() or "mentioned_or_contextual"
+        current = db.query(DBPersonaConfig.group_reply_preference).filter(DBPersonaConfig.id == persona_id).scalar() or "mentioned_or_contextual"
     prompt_text = escape_markdown_v2(f"👥 Как отвечать в группах (текущее: {current}):")
     keyboard = [
         [InlineKeyboardButton(f"{'✅ ' if current == 'always' else ''}📢 Всегда", callback_data="set_group_reply_always")],
@@ -4890,7 +4890,7 @@ async def edit_media_reaction_prompt(update: Update, context: ContextTypes.DEFAU
     user_id = query.from_user.id if query else update.effective_user.id # Получаем user_id для проверки подписки
     
     with get_db() as db:
-        current_config = db.query(PersonaConfig).filter(PersonaConfig.id == persona_id).first()
+        current_config = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
         if not current_config:
             # Обработка случая, если личность не найдена
             if update.callback_query:
@@ -5008,7 +5008,7 @@ async def edit_moods_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     logger.info(f"User {user_id} entering mood editing for persona {persona_id}.")
     # Pass control to the mood menu function
     with get_db() as db:
-        persona_config = db.query(PersonaConfig).filter(PersonaConfig.id == persona_id).first()
+        persona_config = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
         if persona_config:
             return await edit_moods_menu(update, context, persona_config=persona_config)
         else: # Should not happen if check passed
