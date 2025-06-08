@@ -1790,8 +1790,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     formatted_messages_for_llm.append({"role": "system", "content": final_system_prompt_content})
 
                     for ctx_msg in initial_context_from_db:
-                        role = "user" if ctx_msg.role == "user" else "assistant"
-                        content = ctx_msg.content
+                        role = "user" if ctx_msg['role'] == "user" else "assistant"
+                        content = ctx_msg['content']
                         actual_content = content
                         if role == "user" and ": " in content: # Basic username stripping
                             parts = content.split(": ", 1)
