@@ -898,3 +898,64 @@ def get_all_active_chat_bot_instances(db: Session) -> List[ChatBotInstance]:
     except SQLAlchemyError as e:
         logger.error(f"DB error getting all active instances: {e}", exc_info=True)
         return []
+
+def get_persona_and_context_with_owner(chat_id: str, db: Session) -> Optional[Tuple[Persona, DBChatBotInstance, User]]:
+    """Returns a tuple of (Persona, ChatBotInstance, User) for the active bot in the given chat."""
+    try:
+        # Находим активный экземпляр бота для этого чата
+        chat_bot_instance = db.query(ChatBotInstance).filter(
+            ChatBotInstance.chat_id == chat_id,
+            ChatBotInstance.is_active == True
+        ).options(
+            # Жадно загружаем связанный экземпляр бота
+            joinedload(ChatBotInstance.bot_instance_ref).joinedload(BotInstance.persona_config),
+            # И его владельца
+            joinedload(ChatBotInstance.bot_instance_ref).joinedload(BotInstance.owner)
+        ).first()
+
+        if not chat_bot_instance or not chat_bot_instance.bot_instance_ref:
+            return None
+        
+        bot_instance = chat_bot_instance.bot_instance_ref
+        persona_config = bot_instance.persona_config
+        owner = bot_instance.owner
+        
+        if not persona_config or not owner:
+            return None
+        
+        # Создаем экземпляр Persona с загруженными данными
+        persona = Persona(
+            id=persona_config.id,
+            name=persona_config.name,
+            communication_style=persona_config.communication_style,
+            verbosity_level=persona_config.verbosity_level,
+            group_reply_preference=persona_config.group_reply_preference,
+            media_reaction=persona_config.media_reaction,
+            mood_prompts=json.loads(persona_config.mood_prompts_json) if persona_config.mood_prompts_json else {},
+            system_prompt_template=persona_config.system_prompt_template,
+            default_personality_seed=persona_config.default_personality_seed,
+            max_response_messages=persona_config.max_response_messages,
+            should_remember_conversation=persona_config.should_remember_conversation,
+            description=persona_config.description,
+            chat_instance=chat_bot_instance
+        )
+        
+        # Устанавливаем текущее настроение (если сохранено)
+        current_mood = get_mood_for_chat_bot(db, chat_bot_instance.id)
+        if current_mood:
+            persona.current_mood = current_mood
+            
+        return (persona, chat_bot_instance, owner)
+    except Exception as e:
+        logger.error(f"Error in get_persona_and_context_with_owner for chat {chat_id}: {e}", exc_info=True)
+        return None
+
+def get_active_chat_bot_instance_with_relations(db: Session, chat_id: str) -> Optional[ChatBotInstance]:
+    """Функция-обертка для обратной совместимости. 
+    Использует get_persona_and_context_with_owner и возвращает только chat_instance."""
+    logger.debug(f"Using compatibility wrapper for get_active_chat_bot_instance_with_relations({chat_id})")
+    result = get_persona_and_context_with_owner(chat_id, db)
+    if not result:
+        return None
+    _, chat_instance, _ = result
+    return chat_instance
