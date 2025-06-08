@@ -3249,8 +3249,7 @@ async def process_and_send_response(
     is_first_message: bool = False
 ) -> bool:
     """
-    Processes LLM response expecting JSON array of strings (v15 - JSON Attempt).
-    Falls back to simple sentence splitting if JSON fails.
+    Processes LLM response, robustly handling JSON and fallbacks. (v2)
     Sends parts sequentially. Adds original FULL response to context.
     """
     logger.info(f"process_and_send_response [JSON]: --- ENTER --- ChatID: {chat_id}, Persona: '{persona.name}'")
@@ -3656,196 +3655,91 @@ async def send_limit_exceeded_message(update: Update, context: ContextTypes.DEFA
 
 # --- Message Handlers ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handles incoming text messages."""
-    logger.info("!!! VERSION CHECK: Running with FORCED message limit for 'few' mode (2025-05-08) !!!")
-    try:
-        if not update.message or not (update.message.text or update.message.caption):
-            logger.debug("handle_message: Exiting - No message or text/caption.")
-            return
+    """Handles incoming text messages. (v2 - Simplified LLM response handling)"""
+    logger.info("!!! VERSION CHECK: Running with Simplified JSON response handling (2024-06-08) !!!")
+    if not update.message or not (update.message.text or update.message.caption):
+        logger.debug("handle_message: Exiting - No message or text/caption.")
+        return
 
-        chat_id_str = str(update.effective_chat.id)
-        user_id = update.effective_user.id
-        username = update.effective_user.username or f"user_{user_id}"
-        message_text = (update.message.text or update.message.caption or "").strip()
-        message_id = update.message.message_id
+    chat_id_str = str(update.effective_chat.id)
+    user_id = update.effective_user.id
+    username = update.effective_user.username or f"user_{user_id}"
+    message_text = (update.message.text or update.message.caption or "").strip()
+    message_id = update.message.message_id
 
-        # Проверка длины входящего сообщения
-        if len(message_text) > MAX_USER_MESSAGE_LENGTH_CHARS:
-            logger.info(f"User {user_id} in chat {chat_id_str} sent a message exceeding {MAX_USER_MESSAGE_LENGTH_CHARS} chars. Length: {len(message_text)}")
-            await update.message.reply_text("Ваше сообщение слишком длинное. Пожалуйста, попробуйте его сократить.", parse_mode=None)
-            return
-        
-        if not message_text:
-            logger.debug(f"handle_message: Exiting - Empty message text from user {user_id} in chat {chat_id_str}.")
-            return
-
-        # Остальная логика функции здесь...
+    if len(message_text) > MAX_USER_MESSAGE_LENGTH_CHARS:
+        logger.info(f"User {user_id} in chat {chat_id_str} sent a message exceeding {MAX_USER_MESSAGE_LENGTH_CHARS} chars.")
+        await update.message.reply_text("Ваше сообщение слишком длинное. Пожалуйста, попробуйте его сократить.", parse_mode=None)
+        return
+    
+    if not message_text:
+        logger.debug(f"handle_message: Exiting - Empty message text from user {user_id} in chat {chat_id_str}.")
+        return
 
         logger.info(f"MSG < User {user_id} ({username}) in Chat {chat_id_str} (MsgID: {message_id}): '{message_text[:100]}'")
-        limit_state_changed = False  # Initialize flag for DB commit based on limit changes
+    
+    # --- Subscription Check ---
+    if not await check_channel_subscription(update, context):
+        logger.info(f"handle_message: User {user_id} failed channel subscription check.")
+        await send_subscription_required_message(update, context)
+        return
 
-        # --- Проверка подписки ---
-        if not await check_channel_subscription(update, context):
-            logger.info(f"handle_message: User {user_id} failed channel subscription check.")
-            await send_subscription_required_message(update, context)
-            return
-
-        # --- Основной блок с БД ---
-        db_session = None
-        try:
-            with get_db() as db:
-                db_session = db
-                logger.debug("handle_message: DB session acquired.")
-
-                # --- Получение персоны и владельца ---
-                persona_context_owner_tuple = get_persona_and_context_with_owner(chat_id_str, db_session)
-                if not persona_context_owner_tuple:
-                    logger.warning(f"handle_message: No active persona found for chat {chat_id_str}.")
-                    return
-                
-                persona, initial_context_from_db, owner_user = persona_context_owner_tuple
-                logger.info(f"handle_message: Found active persona '{persona.name}' (ID: {persona.id}) owned by User ID {owner_user.id} (TG: {owner_user.telegram_id}).")
-
-                # --- Проверка настроек реакции на текст ---
-                if persona.config.media_reaction in ["all_media_no_text", "photo_only", "voice_only", "none"]:
-                    logger.info(f"handle_message: Persona '{persona.name}' (ID: {persona.id}) is configured with media_reaction='{persona.config.media_reaction}', so it will not respond to this text message. Message will still be added to context if not muted.")
-                    # If muted, the existing mute check later will handle not saving context.
-                    # If not muted, context will be saved, but no LLM call.
-                    # We need to ensure limit_state_updated and context_user_msg_added are committed if true.
-                    
-                    # Add user message to context IF NOT MUTED (mute check is later but this avoids LLM call)
-                    if not persona.chat_instance.is_muted:
-                        current_user_message_content = f"{username}: {message_text}"
-                        try:
-                            add_message_to_context(db_session, persona.chat_instance.id, "user", current_user_message_content)
-                            context_user_msg_added = True # Mark for commit
-                        except (SQLAlchemyError, Exception) as e_ctx_text_ignore:
-                            logger.error(f"handle_message: Error preparing user message context (for ignored text response) for CBI {persona.chat_instance.id}: {e_ctx_text_ignore}", exc_info=True)
-                            # Don't send error to user, as bot is intentionally not responding with text.
-                    
-                    if limit_state_updated or context_user_msg_added:
-                        try:
-                            db_session.commit()
-                            logger.debug("handle_message: Committed owner limit/context state (text response ignored due to media_reaction).")
-                        except Exception as commit_err:
-                            logger.error(f"handle_message: Commit failed (text response ignored): {commit_err}", exc_info=True)
-                            db_session.rollback()
-                    return # Exit handler as no text response is needed.
-
-                # --- Логика лимитов для всех пользователей ---
-                limit_checks_passed = True
-                limit_state_changed = False # Флаг, что состояние лимитов пользователя изменилось
-
-                # 1. Проверка и сброс месячного счетчика (для всех пользователей)
-                now_utc = datetime.now(timezone.utc)
-                # Определяем начало текущего месяца
-                current_month_start = now_utc.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-
-                if owner_user.message_count_reset_at is None or owner_user.message_count_reset_at < current_month_start:
-                    logger.info(f"Resetting monthly message count for user {owner_user.id} (TG: {owner_user.telegram_id}). Old count: {owner_user.monthly_message_count}, old reset_at: {owner_user.message_count_reset_at}. New reset_at: {current_month_start}")
-                    owner_user.monthly_message_count = 0
-                    owner_user.message_count_reset_at = current_month_start # Сброс на начало текущего месяца
-                    db_session.add(owner_user) 
-                    limit_state_changed = True
-
-                # 2. Проверка лимитов в зависимости от типа пользователя
-                if owner_user.is_active_subscriber or owner_user.telegram_id == config.ADMIN_USER_ID:
-                    # Премиум-пользователь или Администратор
-                    # 2a. Проверка лимита токенов на сообщение (только для премиум, админ тоже подпадает)
+    db_session = None
+    try:
+        with get_db() as db:
+            db_session = db
+            persona_context_owner_tuple = get_persona_and_context_with_owner(chat_id_str, db_session)
+            if not persona_context_owner_tuple:
+                logger.debug(f"handle_message: No active persona found for chat {chat_id_str}.")
+                return
+            
+            persona, initial_context_from_db, owner_user = persona_context_owner_tuple
+            logger.info(f"handle_message: Found active persona '{persona.name}' (ID: {persona.id}) owned by User ID {owner_user.id} (TG: {owner_user.telegram_id}).")
+            
+            # --- Check text reaction settings ---
+            if persona.config.media_reaction in ["all_media_no_text", "photo_only", "voice_only", "none"]:
+                logger.info(f"handle_message: Persona '{persona.name}' configured not to react to TEXT. Context will be saved if not muted.")
+                if not persona.chat_instance.is_muted:
                     try:
-                        message_tokens = count_openai_compatible_tokens(message_text, config.OPENROUTER_MODEL_NAME)
-                        if message_tokens > config.PREMIUM_USER_MESSAGE_TOKEN_LIMIT:
-                            logger.info(f"Premium user/Admin {owner_user.id} (TG: {owner_user.telegram_id}) exceeded token limit. Tokens: {message_tokens}, Limit: {config.PREMIUM_USER_MESSAGE_TOKEN_LIMIT}")
-                            await update.message.reply_text(
-                                f"❌ Ваше сообщение слишком длинное ({message_tokens} токенов). "
-                                f"Лимит на одно сообщение: {config.PREMIUM_USER_MESSAGE_TOKEN_LIMIT} токенов.",
-                                parse_mode=None
-                            )
-                            limit_checks_passed = False
-                    except Exception as e_token_count_legacy:
-                        logger.error(f"Error counting tokens (legacy block for premium/admin) for user message (user {owner_user.id}): {e_token_count_legacy}", exc_info=True)
-                        await update.message.reply_text("Не удалось проверить длину вашего сообщения из-за внутренней ошибки. Попробуйте еще раз.", parse_mode=None)
-                        limit_checks_passed = False # Считаем, что проверка не пройдена, если не смогли посчитать
-                    
-                    if limit_checks_passed:
-                        # 2b. Проверка месячного лимита сообщений
-                        if owner_user.monthly_message_count >= config.PREMIUM_USER_MONTHLY_MESSAGE_LIMIT:
-                            logger.info(f"Premium user/Admin {owner_user.id} (TG: {owner_user.telegram_id}) exceeded monthly message limit. Count: {owner_user.monthly_message_count}, Limit: {config.PREMIUM_USER_MONTHLY_MESSAGE_LIMIT}")
-                            # Расчет даты следующего сброса (первое число следующего месяца)
-                            next_reset_month = current_month_start.month % 12 + 1
-                            next_reset_year = current_month_start.year + (1 if current_month_start.month == 12 else 0)
-                            next_reset_date_obj = datetime(next_reset_year, next_reset_month, 1, tzinfo=timezone.utc)
-                            months_ru = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"]
-                            next_reset_date_str = f"{next_reset_date_obj.day} {months_ru[next_reset_date_obj.month - 1]} {next_reset_date_obj.year} г."
-                            await update.message.reply_text(
-                                f"😔 Вы исчерпали свой месячный лимит сообщений ({config.PREMIUM_USER_MONTHLY_MESSAGE_LIMIT}).\n"
-                                f"Новый лимит будет доступен {next_reset_date_str}."
-                            )
-                            limit_checks_passed = False
-                else:
-                    # Бесплатный пользователь
-                    if owner_user.monthly_message_count >= config.FREE_USER_MONTHLY_MESSAGE_LIMIT:
-                        logger.info(f"Free user {owner_user.id} (TG: {owner_user.telegram_id}) exceeded monthly message limit. Count: {owner_user.monthly_message_count}, Limit: {config.FREE_USER_MONTHLY_MESSAGE_LIMIT}")
-                        # Расчет даты следующего сброса
-                        next_reset_month = current_month_start.month % 12 + 1
-                        next_reset_year = current_month_start.year + (1 if current_month_start.month == 12 else 0)
-                        next_reset_date_obj = datetime(next_reset_year, next_reset_month, 1, tzinfo=timezone.utc)
-                        months_ru = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"]
-                        next_reset_date_str = f"{next_reset_date_obj.day} {months_ru[next_reset_date_obj.month - 1]} {next_reset_date_obj.year} г."
-                        await update.message.reply_text(
-                            f"😔 Вы исчерпали свой месячный лимит сообщений ({config.FREE_USER_MONTHLY_MESSAGE_LIMIT}).\n"
-                            f"Для увеличения лимита вы можете перейти на премиум-подписку (/subscribe).\n"
-                            f"Новый лимит будет доступен {next_reset_date_str}."
-                        )
-                        limit_checks_passed = False
-
-                # 3. Если лимиты не пройдены, сохранить изменения счетчика (если были) и выйти
-                if not limit_checks_passed:
-                    if limit_state_changed: # Если был сброс счетчика, его нужно сохранить
-                        try:
-                            db_session.commit()
-                            logger.info(f"Committed monthly count reset for user {owner_user.id} before exiting due to limit exceeded.")
-                        except Exception as e_commit_limit_exit:
-                            logger.error(f"Error committing monthly count reset for user {owner_user.id} on limit exit: {e_commit_limit_exit}", exc_info=True)
-                            db_session.rollback()
-                    return # Выход из handle_message, если лимиты не пройдены
-
-                # Место для инкремента owner_user.monthly_message_count ПОСЛЕ успешного ответа от Gemini
-                # Старая логика проверки дневных лимитов удалена.
-
-
-                # --- Добавление сообщения пользователя в контекст ---
-                current_user_message_content = f"{username}: {message_text}"
-                current_user_message_dict = {"role": "user", "content": current_user_message_content}
-                context_user_msg_added = False
-                
-                if persona.chat_instance:
-                    try:
-                        add_message_to_context(db_session, persona.chat_instance.id, "user", current_user_message_content)
-                        context_user_msg_added = True
-                        logger.debug(f"handle_message: User message for CBI {persona.chat_instance.id} prepared for context (pending commit).")
-                    except (SQLAlchemyError, Exception) as e_ctx:
-                        logger.error(f"handle_message: Error preparing user message context for CBI {persona.chat_instance.id}: {e_ctx}", exc_info=True)
-                        await update.message.reply_text(escape_markdown_v2("❌ ошибка при сохранении вашего сообщения."), parse_mode=ParseMode.MARKDOWN_V2)
+                        add_message_to_context(db_session, persona.chat_instance.id, "user", f"{username}: {message_text}")
+                        db_session.commit()
+                    except Exception as e_ctx_text_ignore:
+                        logger.error(f"handle_message: Error saving context for ignored text response: {e_ctx_text_ignore}", exc_info=True)
                         db_session.rollback()
-                        return
-                else:
-                    logger.error("handle_message: Cannot add user message context, persona.chat_instance is None unexpectedly.")
-                    await update.message.reply_text(escape_markdown_v2("❌ системная ошибка: не удалось связать сообщение с личностью."), parse_mode=ParseMode.MARKDOWN_V2)
-                    db_session.rollback()
-                    return
+                return
 
-                # --- Проверка Mute ---
-                if persona.chat_instance.is_muted:
-                    logger.info(f"handle_message: Persona '{persona.name}' is muted in chat {chat_id_str}. Saving context and exiting.")
-                    if limit_state_updated or context_user_msg_added:
-                        try:
-                            db_session.commit()
-                            logger.debug("handle_message: Committed DB changes for muted bot (limits/user context).")
-                        except Exception as commit_err:
-                            logger.error(f"handle_message: Commit failed for muted bot context save: {commit_err}", exc_info=True)
-                            db_session.rollback()
-                    return
+            # --- Check user limits ---
+            now_utc = datetime.now(timezone.utc)
+            current_month_start = now_utc.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+            if owner_user.message_count_reset_at is None or owner_user.message_count_reset_at < current_month_start:
+                logger.info(f"Resetting monthly message count for user {owner_user.id} (TG: {owner_user.telegram_id}).")
+                owner_user.monthly_message_count = 0
+                owner_user.message_count_reset_at = current_month_start
+                db_session.add(owner_user)
+
+            limit_exceeded = owner_user.monthly_message_count >= owner_user.message_limit
+            if limit_exceeded:
+                logger.info(f"User {owner_user.id} (TG: {owner_user.telegram_id}) monthly limit exceeded. Count: {owner_user.monthly_message_count}/{owner_user.message_limit}")
+                await send_limit_exceeded_message(update, context, owner_user)
+                db_session.commit() # Save potential counter reset
+                return
+
+            # --- Add user message to context ---
+            context_user_msg_added = False
+            try:
+                add_message_to_context(db_session, persona.chat_instance.id, "user", f"{username}: {message_text}")
+                context_user_msg_added = True
+            except Exception as e_ctx:
+                logger.error(f"handle_message: Error preparing user message context: {e_ctx}", exc_info=True)
+                await update.message.reply_text(escape_markdown_v2("❌ ошибка при сохранении вашего сообщения."), parse_mode=ParseMode.MARKDOWN_V2)
+                db_session.rollback()
+                return
+
+            if persona.chat_instance.is_muted:
+                logger.info(f"handle_message: Persona '{persona.name}' is muted. Saving context and exiting.")
+                db_session.commit()
+                return
 
                 # --- Логика ответа в группе ---
                 should_ai_respond = True
