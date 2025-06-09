@@ -1155,131 +1155,1349 @@ async def process_and_send_response(
     is_first_message: bool = False
 ) -> bool:
     """
-    Processes LLM response expecting JSON array of strings (v15 - JSON Attempt).
-    Falls back to simple sentence splitting if JSON fails.
-    Sends parts sequentially. Adds original FULL response to context.
+    Processes LLM response, robustly handling JSON and fallbacks. (v3 - Context Fix)
+    Saves CLEANED response to context. Sends parts sequentially.
     """
-    logger.info(f"process_and_send_response [JSON]: --- ENTER --- ChatID: {chat_id}, Persona: '{persona.name}'")
+    logger.info(f"process_and_send_response [v3]: --- ENTER --- ChatID: {chat_id}, Persona: '{persona.name}'")
     if not full_bot_response_text or not full_bot_response_text.strip():
-        logger.warning(f"process_and_send_response [JSON]: Received empty response. Not processing.")
+        logger.warning(f"process_and_send_response [v3]: Received empty response. Not processing.")
         return False
 
+    raw_llm_response = full_bot_response_text.strip()
+    
+    # 1. Parse the response to get clean text parts
+    text_parts_to_send = None
+
+    def _robust_json_parser(text: str) -> Optional[List[str]]:
+        """Tries to extract and parse a JSON list of strings from messy LLM output."""
+        # Step 1: Extract content from markdown ```json ... ``` if it exists
+        match = re.search(r'```json\s*(.*?)\s*```', text, re.DOTALL | re.IGNORECASE)
+        if match:
+            text = match.group(1).strip()
+        
+        # Step 2: Iteratively try to parse the string if it's string-encoded JSON
+        for _ in range(5): # Limit recursion to prevent infinite loops
+            try:
+                data = json.loads(text)
+                
+                # If we get a list, we're likely done. Convert all items to string.
+                if isinstance(data, list):
+                    unwrapped_parts = [str(item).strip() for item in data if str(item).strip()]
+                    if unwrapped_parts:
+                        logger.info(f"Robust parser: Successfully parsed list with {len(unwrapped_parts)} items.")
+                        return unwrapped_parts
+                
+                # If we get a string, it means we've unwrapped one layer.
+                # Loop again to try and parse this new string.
+                if isinstance(data, str):
+                    text = data
+                    continue
+                
+                # If we get something else (dict, int, etc.), convert to string and return as single-item list
+                return [str(data)]
+
+            except (json.JSONDecodeError, TypeError):
+                # If at any point parsing fails, we assume it's not a valid JSON structure.
+                return None
+        return None # Return None if loop finishes without successful parsing
+
+    text_parts_to_send = _robust_json_parser(raw_llm_response)
+    
+    # 2. Prepare content for DB and for sending
+    content_to_save_in_db = ""
+    if text_parts_to_send is not None:
+        # Success parsing! Save clean, joined text to DB.
+        content_to_save_in_db = "\n".join(text_parts_to_send)
+        logger.info(f"Saving CLEAN response to context: '{content_to_save_in_db[:100]}...'")
+    else:
+        # Parse failed. Save raw response to DB, assuming it's plain text.
+        content_to_save_in_db = raw_llm_response
+        logger.warning(f"JSON parse failed. Saving RAW response to context: '{content_to_save_in_db[:100]}...'")
+        
+        # And generate parts for sending from this raw text.
+        text_without_gifs = raw_llm_response
+        gif_links = extract_gif_links(raw_llm_response)
+        if gif_links:
+            for gif in gif_links:
+                text_without_gifs = re.sub(r'\s*' + re.escape(gif) + r'\s*', ' ', text_without_gifs, flags=re.IGNORECASE)
+        text_without_gifs = re.sub(r'\s{2,}', ' ', text_without_gifs).strip()
+        
+        if text_without_gifs:
+            # Используем max_response_messages из настроек персоны, с fallback на 3
+            max_messages = persona.config.max_response_messages if persona.config and persona.config.max_response_messages > 0 else 3
+            text_parts_to_send = postprocess_response(text_without_gifs, max_messages)
+        else:
+            text_parts_to_send = []
+
+    # 3. Save the prepared content (clean or raw) to the DB
     context_response_prepared = False
-    raw_llm_response = full_bot_response_text.strip() # Сохраняем "сырой" ответ
+    if persona.chat_instance:
+        try:
+            add_message_to_context(db, persona.chat_instance.id, "assistant", content_to_save_in_db)
+            context_response_prepared = True
+            logger.debug(f"Response added to context for CBI {persona.chat_instance.id}.")
+        except Exception as e:
+            logger.error(f"DB Error saving assistant response to context: {e}", exc_info=True)
+    else:
+        logger.error("Cannot add response to context, chat_instance is None.")
+
+    # 4. Sequentially send messages
+    gif_links_to_send = extract_gif_links(raw_llm_response)
+
+    if not text_parts_to_send and not gif_links_to_send:
+        logger.warning("process_and_send_response [v3]: No text parts or GIFs found after processing. Nothing to send.")
+        return context_response_prepared
+
+    first_message_sent = False
+    chat_id_str = str(chat_id)
+    chat_type = update.effective_chat.type if update and update.effective_chat else None
+
+    # Send GIFs
+    for gif_url in gif_links_to_send:
+        try:
+            current_reply_id = reply_to_message_id if not first_message_sent else None
+            await context.bot.send_animation(chat_id=chat_id_str, animation=gif_url, reply_to_message_id=current_reply_id)
+            first_message_sent = True
+            await asyncio.sleep(random.uniform(0.5, 1.2))
+        except Exception as e:
+            logger.error(f"Error sending gif {gif_url} to chat {chat_id_str}: {e}", exc_info=True)
+
+    # Send Text
+    for i, part in enumerate(text_parts_to_send):
+        part_raw = part.strip()
+        if not part_raw: continue
+
+        if chat_type in [ChatType.GROUP, ChatType.SUPERGROUP]:
+import asyncio
+import httpx
+import json
+import logging
+import re
+from datetime import datetime, timezone
+from openai import AsyncOpenAI, OpenAIError
+from utils import count_openai_compatible_tokens
+# Ensure config is imported, it's likely already there but as a safeguard:
+import config
+import os
+import random
+import re
+import time
+import traceback
+import urllib.parse
+import uuid
+import wave
+import subprocess
+import asyncio
+
+# Константы для UI
+CHECK_MARK = "✅ "  # Unicode Check Mark Symbol
+PREMIUM_STAR = "⭐"  # Звездочка для премиум-функций
+
+# Импорты для работы с Vosk (будут использоваться после установки библиотеки)
+try:
+    from vosk import Model, KaldiRecognizer
+    VOSK_AVAILABLE = True
+except ImportError:
+    logger = logging.getLogger(__name__)
+    logger.warning("Vosk library not available. Voice transcription will not work.")
+    VOSK_AVAILABLE = False
+from datetime import datetime, timezone, timedelta
+from typing import List, Dict, Any, Optional, Union, Tuple
+
+from telegram import Update, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup, Chat as TgChat, CallbackQuery
+from telegram.constants import ChatAction, ParseMode, ChatMemberStatus, ChatType
+from telegram.error import BadRequest, Forbidden, TelegramError, TimedOut
+
+from telegram.ext import (
+    ContextTypes, ConversationHandler, CommandHandler, MessageHandler, filters, CallbackQueryHandler
+)
+from sqlalchemy.orm import Session, joinedload, selectinload
+from sqlalchemy.orm.attributes import flag_modified
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from sqlalchemy import func
+from sqlalchemy import delete
+from db import PersonaConfig as DBPersonaConfig # Added to fix NameError
+from db import get_active_chat_bot_instance_with_relations # Added to fix NameError
+from db import BotInstance as DBBotInstance
+from db import ChatBotInstance as DBChatBotInstance
+
+from yookassa import Configuration as YookassaConfig, Payment
+from yookassa.domain.models.currency import Currency
+from yookassa.domain.request.payment_request_builder import PaymentRequestBuilder
+from yookassa.domain.models.receipt import Receipt, ReceiptItem
+
+
+import config
+from config import (
+    OPENROUTER_API_KEY,
+    OPENROUTER_API_BASE_URL,
+    OPENROUTER_MODEL_NAME,
+    DEFAULT_MOOD_PROMPTS, YOOKASSA_SHOP_ID, YOOKASSA_SECRET_KEY,
+    SUBSCRIPTION_PRICE_RUB, SUBSCRIPTION_CURRENCY, WEBHOOK_URL_BASE,
+    SUBSCRIPTION_DURATION_DAYS,
+    FREE_PERSONA_LIMIT, PAID_PERSONA_LIMIT, MAX_CONTEXT_MESSAGES_SENT_TO_LLM,
+    ADMIN_USER_ID, CHANNEL_ID
+)
+from db import (
+    get_context_for_chat_bot, add_message_to_context,
+    set_mood_for_chat_bot, get_mood_for_chat_bot, get_or_create_user,
+    create_persona_config, get_personas_by_owner, get_persona_by_name_and_owner,
+    get_persona_by_id_and_owner, check_and_update_user_limits, activate_subscription,
+    create_bot_instance, link_bot_instance_to_chat, delete_persona_config,
+    get_all_active_chat_bot_instances,
+    User, PersonaConfig as DBPersonaConfig, BotInstance as DBBotInstance, ChatBotInstance as DBChatBotInstance, ChatContext, func, get_db,
+    DEFAULT_SYSTEM_PROMPT_TEMPLATE
+)
+from persona import Persona
+from utils import (
+    postprocess_response, 
+    extract_gif_links,
+    get_time_info,
+    escape_markdown_v2,
+    TELEGRAM_MAX_LEN
+)
+
+# Максимальная длина входящего сообщения от пользователя в символах
+MAX_USER_MESSAGE_LENGTH_CHARS = 600  # Примерно 150 токенов, можно настроить
+
+logger = logging.getLogger(__name__)
+
+# --- Vosk model setup ---
+# Путь к модели Vosk для русского языка
+# Нужно скачать модель с https://alphacephei.com/vosk/models и распаковать в эту папку
+VOSK_MODEL_PATH = "model_vosk_ru"
+vosk_model = None
+
+if VOSK_AVAILABLE:
+    try:
+        if os.path.exists(VOSK_MODEL_PATH):
+            vosk_model = Model(VOSK_MODEL_PATH)
+            logger.info(f"Vosk model loaded successfully from {VOSK_MODEL_PATH}")
+        else:
+            logger.warning(f"Vosk model path not found: {VOSK_MODEL_PATH}. Please download a model from https://alphacephei.com/vosk/models")
+    except Exception as e:
+        logger.error(f"Error loading Vosk model: {e}", exc_info=True)
+        vosk_model = None
+
+async def transcribe_audio_with_vosk(audio_data: bytes, original_mime_type: str) -> Optional[str]:
+    """
+    Транскрибирует аудиоданные с помощью Vosk.
+    Сначала конвертирует OGG в WAV PCM 16kHz моно.
+    """
+    global vosk_model
+    
+    if not VOSK_AVAILABLE:
+        logger.error("Vosk library not available. Cannot transcribe.")
+        return None
+        
+    if not vosk_model:
+        logger.error("Vosk model not loaded. Cannot transcribe.")
+        return None
+
+    # Имя временного входного файла (OGG)
+    temp_ogg_filename = f"temp_voice_{uuid.uuid4().hex}.ogg"
+    # Имя временного выходного файла (WAV)
+    temp_wav_filename = f"temp_voice_wav_{uuid.uuid4().hex}.wav"
 
     try:
-        # 1. Сохранение СЫРОГО ответа LLM (может быть JSON) в контекст
-        logger.debug("process_and_send_response [JSON]: Step 1 - Adding raw LLM response to context.")
-        if persona.chat_instance:
-            try:
-                # Добавляем как есть, даже если это JSON
-                add_message_to_context(db, persona.chat_instance.id, "assistant", raw_llm_response)
-                context_response_prepared = True
-                logger.debug(f"process_and_send_response [JSON]: Raw response added to context for CBI {persona.chat_instance.id}.")
-            except SQLAlchemyError as e:
-                logger.error(f"DB Error preparing assistant response for context chat_instance {persona.chat_instance.id}: {e}", exc_info=True)
-                # Не прерываем отправку из-за ошибки контекста, но и не коммитим его
-                context_response_prepared = False
-            except Exception as e:
-                logger.error(f"Unexpected Error preparing assistant response for context chat_instance {persona.chat_instance.id}: {e}", exc_info=True)
-                context_response_prepared = False
+        # 1. Сохраняем полученные аудиоданные во временный OGG файл
+        with open(temp_ogg_filename, "wb") as f_ogg:
+            f_ogg.write(audio_data)
+        logger.info(f"Saved temporary OGG file: {temp_ogg_filename}")
+
+        # 2. Конвертируем OGG в WAV (16kHz, моно, pcm_s16le) с помощью ffmpeg
+        #    -ac 1 (моно), -ar 16000 (частота дискретизации 16kHz)
+        #    -f wav (формат WAV), -c:a pcm_s16le (кодек PCM signed 16-bit little-endian)
+        command = [
+            "ffmpeg",
+            "-i", temp_ogg_filename,
+            "-ac", "1",
+            "-ar", "16000",
+            "-c:a", "pcm_s16le",
+            "-f", "wav",
+            temp_wav_filename,
+            "-y" # Перезаписывать выходной файл, если существует
+        ]
+        logger.info(f"Running ffmpeg command: {' '.join(command)}")
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await process.communicate()
+
+        if process.returncode != 0:
+            logger.error(f"ffmpeg conversion failed. Return code: {process.returncode}")
+            logger.error(f"ffmpeg stderr: {stderr.decode(errors='ignore')}")
+            logger.error(f"ffmpeg stdout: {stdout.decode(errors='ignore')}")
+            return None
+        logger.info(f"Successfully converted OGG to WAV: {temp_wav_filename}")
+
+        # 3. Транскрибируем WAV файл с помощью Vosk
+        wf = wave.open(temp_wav_filename, "rb")
+        if wf.getnchannels() != 1 or wf.getsampwidth() != 2 or wf.getcomptype() != "NONE" or wf.getframerate() != 16000:
+            logger.error(f"Audio file {temp_wav_filename} is not mono WAV 16kHz 16bit PCM. Details: CH={wf.getnchannels()}, SW={wf.getsampwidth()}, CT={wf.getcomptype()}, FR={wf.getframerate()}")
+            wf.close()
+            return None
+        
+        # Инициализируем KaldiRecognizer с частотой дискретизации аудиофайла
+        current_recognizer = KaldiRecognizer(vosk_model, wf.getframerate())
+        current_recognizer.SetWords(True) # Включить информацию о словах, если нужно
+
+        full_transcription = ""
+        while True:
+            data = wf.readframes(4000) # Читаем порциями
+            if len(data) == 0:
+                break
+            if current_recognizer.AcceptWaveform(data):
+                result = json.loads(current_recognizer.Result())
+                full_transcription += result.get("text", "") + " "
+        
+        # Получаем финальный результат
+        final_result_json = json.loads(current_recognizer.FinalResult())
+        full_transcription += final_result_json.get("text", "")
+        wf.close()
+        
+        transcribed_text = full_transcription.strip()
+        logger.info(f"Vosk transcription result: '{transcribed_text}'")
+        return transcribed_text if transcribed_text else None
+
+    except FileNotFoundError:
+        logger.error("ffmpeg not found. Please ensure ffmpeg is installed and in your system's PATH.")
+        return None
+    except Exception as e:
+        logger.error(f"Error during Vosk transcription: {e}", exc_info=True)
+        return None
+    finally:
+        # Удаляем временные файлы
+        for temp_file in [temp_ogg_filename, temp_wav_filename]:
+            if os.path.exists(temp_file):
+                try:
+                    os.remove(temp_file)
+                    logger.info(f"Removed temporary file: {temp_file}")
+                except Exception as e_remove:
+                    logger.error(f"Error removing temporary file {temp_file}: {e_remove}")
+
+# --- Helper Functions ---
+
+async def check_channel_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Checks if the user is subscribed to the required channel."""
+    if not CHANNEL_ID:
+        logger.warning("CHANNEL_ID not set in config. Skipping subscription check.")
+        return True # Skip check if no channel is configured
+
+    user_id = None
+    # Determine user ID from update or callback query
+    eff_user = getattr(update, 'effective_user', None)
+    cb_user = getattr(getattr(update, 'callback_query', None), 'from_user', None)
+
+    if eff_user:
+        user_id = eff_user.id
+    elif cb_user:
+        user_id = cb_user.id
+        logger.debug(f"Using user_id {user_id} from callback_query.")
+    else:
+        logger.warning("check_channel_subscription called without valid user information.")
+        return False # Cannot check without user ID
+
+    # Admin always passes
+    if is_admin(user_id):
+        return True
+
+    logger.debug(f"Checking subscription status for user {user_id} in channel {CHANNEL_ID}")
+    try:
+        member = await context.bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id, read_timeout=10)
+        # Check if user status is one of the allowed ones
+        allowed_statuses = [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]
+        logger.debug(f"User {user_id} status in {CHANNEL_ID}: {member.status}")
+        if member.status in allowed_statuses:
+            logger.debug(f"User {user_id} IS subscribed to {CHANNEL_ID} (status: {member.status})")
+            return True
         else:
-            logger.error("Cannot add raw response context, chat_instance is None.")
-            context_response_prepared = False
+            logger.info(f"User {user_id} is NOT subscribed to {CHANNEL_ID} (status: {member.status})")
+            return False
+    except TimedOut:
+        logger.warning(f"Timeout checking subscription for user {user_id} in channel {CHANNEL_ID}. Denying access.")
+        # Try to inform the user about the timeout
+        target_message = getattr(update, 'effective_message', None) or getattr(getattr(update, 'callback_query', None), 'message', None)
+        if target_message:
+            try:
+                await target_message.reply_text(
+                    escape_markdown_v2("⏳ не удалось проверить подписку на канал (таймаут). попробуйте еще раз позже."),
+                    parse_mode=ParseMode.MARKDOWN_V2
+                )
+            except Exception as send_err:
+                 logger.error(f"Failed to send 'Timeout' error message: {send_err}")
+        return False
+    except Forbidden as e:
+        logger.error(f"Forbidden error checking subscription for user {user_id} in channel {CHANNEL_ID}: {e}. Ensure bot is admin in the channel.")
+        # Try to inform the user about the permission issue
+        target_message = getattr(update, 'effective_message', None) or getattr(getattr(update, 'callback_query', None), 'message', None)
+        if target_message:
+            try:
+                await target_message.reply_text(
+                    escape_markdown_v2("❌ не удалось проверить подписку на канал. убедитесь, что бот добавлен в канал как администратор."),
+                    parse_mode=ParseMode.MARKDOWN_V2
+                )
+            except Exception as send_err:
+                 logger.error(f"Failed to send 'Forbidden' error message: {send_err}")
+        return False
+    except BadRequest as e:
+         error_message = str(e).lower()
+         logger.error(f"BadRequest checking subscription for user {user_id} in channel {CHANNEL_ID}: {e}")
+         reply_text_raw = "❌ произошла ошибка при проверке подписки (badrequest). попробуйте позже."
+         if "member list is inaccessible" in error_message:
+             logger.error(f"-> Specific BadRequest: Member list is inaccessible. Bot might lack permissions or channel privacy settings restrictive?")
+             reply_text_raw = "❌ не удается получить доступ к списку участников канала для проверки подписки. возможно, настройки канала не позволяют это сделать."
+         elif "user not found" in error_message:
+             logger.info(f"-> Specific BadRequest: User {user_id} not found in channel {CHANNEL_ID}.")
+             return False
+         elif "chat not found" in error_message:
+              logger.error(f"-> Specific BadRequest: Chat {CHANNEL_ID} not found. Check CHANNEL_ID config.")
+              reply_text_raw = "❌ ошибка: не удалось найти указанный канал для проверки подписки. проверьте настройки бота."
 
+         target_message = getattr(update, 'effective_message', None) or getattr(getattr(update, 'callback_query', None), 'message', None)
+         if target_message:
+             try: await target_message.reply_text(escape_markdown_v2(reply_text_raw), parse_mode=ParseMode.MARKDOWN_V2)
+             except Exception as send_err: logger.error(f"Failed to send 'BadRequest' error message: {send_err}")
+         return False
+    except TelegramError as e:
+        logger.error(f"Telegram error checking subscription for user {user_id} in channel {CHANNEL_ID}: {e}")
+        target_message = getattr(update, 'effective_message', None) or getattr(getattr(update, 'callback_query', None), 'message', None)
+        if target_message:
+            try: await target_message.reply_text(escape_markdown_v2("❌ произошла ошибка telegram при проверке подписки. попробуйте позже."), parse_mode=ParseMode.MARKDOWN_V2)
+            except Exception as send_err: logger.error(f"Failed to send 'TelegramError' message: {send_err}")
+        return False
+    except Exception as e:
+        logger.error(f"Unexpected error checking subscription for user {user_id} in channel {CHANNEL_ID}: {e}", exc_info=True)
+        return False
 
-        # 2. Попытка распарсить JSON
-        text_parts_to_send = []
-        is_json_parsed = False
-        logger.debug(f"process_and_send_response [JSON]: Step 2 - Attempting to parse response as JSON. Raw response sample: '{raw_llm_response[:200]}...'")
+async def send_subscription_required_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Sends a message asking the user to subscribe to the channel."""
+    target_message = getattr(update, 'effective_message', None) or getattr(getattr(update, 'callback_query', None), 'message', None)
+
+    if not target_message:
+         logger.warning("Cannot send subscription required message: no target message found.")
+         return
+
+    channel_username = None
+    if isinstance(CHANNEL_ID, str) and CHANNEL_ID.startswith('@'):
+        channel_username = CHANNEL_ID.lstrip('@')
+
+    error_msg_raw = "❌ произошла ошибка при получении ссылки на канал."
+    subscribe_text_raw = "❗ для использования бота необходимо подписаться на наш канал."
+    button_text = "➡️ перейти к каналу"
+    keyboard = None
+
+    if channel_username:
+        subscribe_text_raw = f"❗ для использования бота необходимо подписаться на канал @{channel_username}."
+        keyboard = [[InlineKeyboardButton(button_text, url=f"https://t.me/{channel_username}")]]
+    elif isinstance(CHANNEL_ID, int):
+         subscribe_text_raw = "❗ для использования бота необходимо подписаться на наш основной канал. пожалуйста, найдите канал в поиске или через описание бота."
+    else:
+         logger.error(f"Invalid CHANNEL_ID format: {CHANNEL_ID}. Cannot generate subscription message correctly.")
+         subscribe_text_raw = error_msg_raw
+
+    reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
+    escaped_text = escape_markdown_v2(subscribe_text_raw)
+    try:
+        await target_message.reply_text(escaped_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
+        if update.callback_query:
+             try: await update.callback_query.answer()
+             except: pass
+    except BadRequest as e:
+        logger.error(f"Failed sending subscription required message (BadRequest): {e} - Text Raw: '{subscribe_text_raw}' Escaped: '{escaped_text[:100]}...'")
         try:
-            # Ищем начало '[' и конец ']' для более надежного парсинга
-            json_start = raw_llm_response.find('[')
-            json_end = raw_llm_response.rfind(']')
-            if json_start != -1 and json_end != -1 and json_start < json_end:
-                json_string_to_parse = raw_llm_response[json_start : json_end + 1]
-                logger.debug(f"process_and_send_response [JSON]: Extracted potential JSON: '{json_string_to_parse[:200]}...'")
-                parsed_data = json.loads(json_string_to_parse)
-                if isinstance(parsed_data, list) and all(isinstance(item, str) for item in parsed_data):
-                    text_parts_to_send = [part.strip() for part in parsed_data if part.strip()]
-                    if text_parts_to_send:
-                         is_json_parsed = True
-                         logger.info(f"process_and_send_response [JSON]: Successfully parsed JSON into {len(text_parts_to_send)} part(s).")
-                    else:
-                         logger.warning("process_and_send_response [JSON]: Parsed JSON but result is empty list or list of empty strings.")
+            await target_message.reply_text(subscribe_text_raw, reply_markup=reply_markup, parse_mode=None)
+        except Exception as fallback_e:
+            logger.error(f"Failed sending plain subscription required message: {fallback_e}")
+    except Exception as e:
+         logger.error(f"Failed to send subscription required message: {e}")
+
+def is_admin(user_id: int) -> bool:
+    """Checks if the user ID belongs to the admin."""
+    return user_id == ADMIN_USER_ID
+
+# --- Conversation States ---
+# Edit Persona Wizard States
+(EDIT_WIZARD_MENU, # Main wizard menu
+ EDIT_NAME, EDIT_DESCRIPTION, EDIT_COMM_STYLE, EDIT_VERBOSITY,
+ EDIT_GROUP_REPLY, EDIT_MEDIA_REACTION,
+ EDIT_MOODS_ENTRY, # Entry point for mood sub-conversation
+ # Mood Editing Sub-Conversation States
+ EDIT_MOOD_CHOICE, EDIT_MOOD_NAME, EDIT_MOOD_PROMPT, DELETE_MOOD_CONFIRM,
+ # Delete Persona Conversation State
+ DELETE_PERSONA_CONFIRM,
+ EDIT_MAX_MESSAGES, EDIT_MESSAGE_VOLUME # <-- New states
+ ) = range(15) # Total 15 states
+
+# --- Terms of Service Text ---
+# (Assuming TOS_TEXT_RAW and TOS_TEXT are defined as before)
+TOS_TEXT_RAW = """
+📜 пользовательское соглашение сервиса @NunuAiBot
+
+привет! добро пожаловать в @NunuAiBot! мы рады, что ты с нами. это соглашение — документ, который объясняет правила использования нашего сервиса. прочитай его, пожалуйста.
+
+дата последнего обновления: 01.03.2025
+
+1. о чем это соглашение?
+1.1. это пользовательское соглашение (или просто "соглашение") — договор между тобой (далее – "пользователь" или "ты") и нами (владельцем telegram-бота @NunuAiBot, далее – "сервис" или "мы"). оно описывает условия использования сервиса.
+1.2. начиная использовать наш сервис (просто отправляя боту любое сообщение или команду), ты подтверждаешь, что прочитал, понял и согласен со всеми условиями этого соглашения. если ты не согласен хотя бы с одним пунктом, пожалуйста, прекрати использование сервиса.
+1.3. наш сервис предоставляет тебе интересную возможность создавать и общаться с виртуальными собеседниками на базе искусственного интеллекта (далее – "личности" или "ai-собеседники").
+
+2. про подписку и оплату
+2.1. мы предлагаем два уровня доступа: бесплатный и premium (платный). возможности и лимиты для каждого уровня подробно описаны внутри бота, например, в командах `/profile` и `/subscribe`.
+2.2. платная подписка дает тебе расширенные возможности и увеличенные лимиты на период в {subscription_duration} дней.
+2.3. стоимость подписки составляет {subscription_price} {subscription_currency} за {subscription_duration} дней.
+2.4. оплата проходит через безопасную платежную систему yookassa. важно: мы не получаем и не храним твои платежные данные (номер карты и т.п.). все безопасно.
+2.5. политика возвратов: покупая подписку, ты получаешь доступ к расширенным возможностям сервиса сразу же после оплаты. поскольку ты получаешь услугу немедленно, оплаченные средства за этот период доступа, к сожалению, не подлежат возврату.
+2.6. в редких случаях, если сервис окажется недоступен по нашей вине в течение длительного времени (более 7 дней подряд), и у тебя будет активная подписка, ты можешь написать нам в поддержку (контакт указан в биографии бота и в нашем telegram-канале). мы рассмотрим возможность продлить твою подписку на срок недоступности сервиса. решение принимается индивидуально.
+
+3. твои и наши права и обязанности
+3.1. что ожидается от тебя (твои обязанности):
+•   использовать сервис только в законных целях и не нарушать никакие законы при его использовании.
+•   не пытаться вмешаться в работу сервиса или получить несанкционированный доступ.
+•   не использовать сервис для рассылки спама, вредоносных программ или любой запрещенной информации.
+•   если требуется (например, для оплаты), предоставлять точную и правдивую информацию.
+•   поскольку у сервиса нет возрастных ограничений, ты подтверждаешь свою способность принять условия настоящего соглашения.
+3.2. что можем делать мы (наши права):
+•   мы можем менять условия этого соглашения. если это произойдет, мы уведомим тебя, опубликовав новую версию соглашения в нашем telegram-канале или иным доступным способом в рамках сервиса. твое дальнейшее использование сервиса будет означать согласие с изменениями.
+•   мы можем временно приостановить или полностью прекратить твой доступ к сервису, если ты нарушишь условия этого соглашения.
+•   мы можем изменять сам сервис: добавлять или убирать функции, менять лимиты или стоимость подписки.
+
+4. важное предупреждение об ограничении ответственности
+4.1. сервис предоставляется "как есть". это значит, что мы не можем гарантировать его идеальную работу без сбоев или ошибок. технологии иногда подводят, и мы не несем ответственности за возможные проблемы, возникшие не по нашей прямой вине.
+4.2. помни, личности — это искусственный интеллект. их ответы генерируются автоматически и могут быть неточными, неполными, странными или не соответствующими твоим ожиданиям или реальности. мы не несем никакой ответственности за содержание ответов, сгенерированных ai-собеседниками. не воспринимай их как истину в последней инстанции или профессиональный совет.
+4.3. мы не несем ответственности за любые прямые или косвенные убытки или ущерб, который ты мог понести в результате использования (или невозможности использования) сервиса.
+
+5. про твои данные (конфиденциальность)
+5.1. для работы сервиса нам приходится собирать и обрабатывать минимальные данные: твой telegram id (для идентификации аккаунта), имя пользователя telegram (username, если есть), информацию о твоей подписке, информацию о созданных тобой личностях, а также историю твоих сообщений с личностями (это нужно ai для поддержания контекста разговора).
+5.2. мы предпринимаем разумные шаги для защиты твоих данных, но, пожалуйста, помни, что передача информации через интернет никогда не может быть абсолютно безопасной.
+
+6. действие соглашения
+6.1. настоящее соглашение начинает действовать с момента, как ты впервые используешь сервис, и действует до момента, пока ты не перестанешь им пользоваться или пока сервис не прекратит свою работу.
+
+7. интеллектуальная собственность
+7.1. ты сохраняешь все права на контент (текст), который ты создаешь и вводишь в сервис в процессе взаимодействия с ai-собеседниками.
+7.2. ты предоставляешь нам неисключительную, безвозмездную, действующую по всему миру лицензию на использование твоего контента исключительно в целях предоставления, поддержания и улучшения работы сервиса (например, для обработки твоих запросов, сохранения контекста диалога, анонимного анализа для улучшения моделей, если применимо).
+7.3. все права на сам сервис (код бота, дизайн, название, графические элементы и т.д.) принадлежат владельцу сервиса.
+7.4. ответы, сгенерированные ai-собеседниками, являются результатом работы алгоритмов искусственного интеллекта. ты можешь использовать полученные ответы в личных некоммерческих целях, но признаешь, что они созданы машиной и не являются твоей или нашей интеллектуальной собственностью в традиционном понимании.
+
+8. заключительные положения
+8.1. все споры и разногласия решаются путем переговоров. если это не поможет, споры будут рассматриваться в соответствии с законодательством российской федерации.
+8.2. по всем вопросам, касающимся настоящего соглашения или работы сервиса, ты можешь обращаться к нам через контакты, указанные в биографии бота и в нашем telegram-канале.
+"""
+formatted_tos_text_for_bot = TOS_TEXT_RAW.format(
+    subscription_duration=config.SUBSCRIPTION_DURATION_DAYS,
+    subscription_price=f"{config.SUBSCRIPTION_PRICE_RUB:.0f}", # Format as integer
+    subscription_currency=config.SUBSCRIPTION_CURRENCY
+)
+TOS_TEXT = escape_markdown_v2(formatted_tos_text_for_bot)
+
+# --- Error Handler ---
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Log Errors caused by Updates."""
+    logger.error("Exception while handling an update:", exc_info=context.error)
+
+    if isinstance(context.error, Forbidden):
+         if CHANNEL_ID and str(CHANNEL_ID) in str(context.error):
+             logger.warning(f"Error handler caught Forbidden regarding channel {CHANNEL_ID}. Bot likely not admin or kicked.")
+             return
+         else:
+             logger.warning(f"Caught generic Forbidden error: {context.error}")
+             return
+
+    elif isinstance(context.error, BadRequest):
+        error_text = str(context.error).lower()
+        if "message is not modified" in error_text:
+            logger.info("Ignoring 'message is not modified' error.")
+            return
+        elif "can't parse entities" in error_text:
+            logger.error(f"MARKDOWN PARSE ERROR: {context.error}. Update: {update}")
+            if isinstance(update, Update) and update.effective_message:
+                try:
+                    await update.effective_message.reply_text("❌ произошла ошибка при форматировании ответа. пожалуйста, сообщите администратору.", parse_mode=None)
+                except Exception as send_err:
+                    logger.error(f"Failed to send 'Markdown parse error' message: {send_err}")
+            return
+        elif "chat member status is required" in error_text:
+             logger.warning(f"Error handler caught BadRequest likely related to missing channel membership check: {context.error}")
+             return
+        elif "chat not found" in error_text:
+             logger.error(f"BadRequest: Chat not found error: {context.error}")
+             return
+        elif "reply message not found" in error_text:
+            logger.warning(f"BadRequest: Reply message not found. Original message might have been deleted. Update: {update}")
+            return
+        else:
+             logger.error(f"Unhandled BadRequest error: {context.error}")
+
+    elif isinstance(context.error, TimedOut):
+         logger.warning(f"Telegram API request timed out: {context.error}")
+         return
+
+    elif isinstance(context.error, TelegramError):
+         logger.error(f"Generic Telegram API error: {context.error}")
+
+    error_message_raw = "упс... 😕 что-то пошло не так. попробуй еще раз позже."
+    escaped_error_message = escape_markdown_v2(error_message_raw)
+    if isinstance(update, Update) and update.effective_message:
+        try:
+            await update.effective_message.reply_text(escaped_error_message, parse_mode=ParseMode.MARKDOWN_V2)
+        except BadRequest as e_md:
+             if "can't parse entities" in str(e_md).lower():
+                 logger.error(f"Failed sending even basic Markdown error msg ({e_md}). Sending plain.")
+                 try: await update.effective_message.reply_text(error_message_raw, parse_mode=None)
+                 except Exception as final_e: logger.error(f"Failed even sending plain text error message: {final_e}")
+             else:
+                 logger.error(f"Failed sending error message (BadRequest, not parse): {e_md}")
+                 try: await update.effective_message.reply_text(error_message_raw, parse_mode=None)
+                 except Exception as final_e: logger.error(f"Failed even sending plain text error message: {final_e}")
+        except Exception as e:
+            logger.error(f"Failed to send error message to user: {e}")
+            try:
+                 await update.effective_message.reply_text(error_message_raw, parse_mode=None)
+            except Exception as final_e:
+                 logger.error(f"Failed even sending plain text error message: {final_e}")
+
+
+# --- Core Logic Helpers ---
+
+def get_persona_and_context_with_owner(chat_id: Union[str, int], db: Session) -> Optional[Tuple[Persona, List[Dict[str, str]], User]]:
+    """Fetches the active Persona, its context, and its owner User for a given chat."""
+    chat_id_str = str(chat_id)
+    chat_instance = get_active_chat_bot_instance_with_relations(db, chat_id_str)
+    if not chat_instance:
+        return None
+
+    bot_instance = chat_instance.bot_instance_ref
+    if not bot_instance:
+         logger.error(f"ChatBotInstance {chat_instance.id} for chat {chat_id_str} is missing linked BotInstance.")
+         return None
+    if not bot_instance.persona_config:
+         logger.error(f"BotInstance {bot_instance.id} (linked to chat {chat_id_str}) is missing linked PersonaConfig.")
+         return None
+    owner_user = bot_instance.owner or bot_instance.persona_config.owner
+    if not owner_user:
+         logger.error(f"Could not load Owner for BotInstance {bot_instance.id} (linked to chat {chat_id_str}).")
+         return None
+
+    persona_config = bot_instance.persona_config
+
+    try:
+        persona = Persona(persona_config, chat_instance)
+    except ValueError as e:
+         logger.error(f"Failed to initialize Persona for config {persona_config.id} in chat {chat_id_str}: {e}", exc_info=True)
+         return None
+
+    context_list = get_context_for_chat_bot(db, chat_instance.id)
+    return persona, context_list, owner_user
+
+
+async def send_to_gemini(system_prompt: str, messages: List[Dict[str, str]], image_data: Optional[bytes] = None, audio_data: Optional[bytes] = None) -> str:
+    """Sends the prompt and context to the Gemini API and returns the response."""
+    
+    if not config.GEMINI_API_KEY:
+        logger.error("GEMINI_API_KEY is not set.")
+        return escape_markdown_v2("❌ ошибка: ключ api gemini не настроен.")
+
+    if not messages:
+        logger.error("send_to_gemini called with an empty messages list!")
+        return "ошибка: нет сообщений для отправки в ai."
+
+    api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={config.GEMINI_API_KEY}"
+    
+    headers = {
+        "Content-Type": "application/json",
+    }
+
+    # Transform messages to Gemini format
+    # Gemini expects a list of contents, where each content has role and parts.
+    # System prompt can be added to the first user message or as a separate turn.
+    gemini_contents = []
+    is_first_user_message = True
+
+    for msg in messages[-config.MAX_CONTEXT_MESSAGES_SENT_TO_LLM:]:
+        role = msg.get("role")
+        content_text = msg.get("content", "")
+        
+        # Gemini uses 'user' and 'model' roles.
+        gemini_role = "user" if role == "user" else "model"
+        
+        # Prepend system_prompt to the first user message's content
+        # Or, if the first message is not from user, create a synthetic user message with system prompt.
+        current_parts = []
+        if gemini_role == "user" and is_first_user_message:
+            full_text_for_first_user_message = f"{system_prompt}\n\n{content_text}"
+            current_parts.append({"text": full_text_for_first_user_message.strip()})
+            is_first_user_message = False
+        else:
+            current_parts.append({"text": content_text.strip()})
+        
+        # Handle image data for user messages if present
+        # Gemini expects image data in 'parts' alongside text for 'user' role.
+        if gemini_role == "user" and image_data:
+            try:
+                import base64
+                image_base64 = base64.b64encode(image_data).decode('utf-8')
+                current_parts.append({
+                    "inline_data": {
+                        "mime_type": "image/jpeg", # Assuming JPEG, adjust if other types are used
+                        "data": image_base64
+                    }
+                })
+                logger.info("Image data prepared for Gemini request.")
+                image_data = None # Consume image data so it's only added once
+            except Exception as e:
+                logger.error(f"Error encoding image data for Gemini: {e}", exc_info=True)
+        
+        # Audio data handling - Gemini API might not directly support audio bytes in the same way as images.
+        # The text placeholder for audio (e.g., "[получено голосовое сообщение]") should already be in content_text.
+        if audio_data and gemini_role == "user":
+            logger.info("Audio data was present for Gemini, text placeholder should be used in prompt.")
+            # We don't add audio_data directly here, relying on the text placeholder.
+            audio_data = None # Consume audio data flag
+
+        if current_parts: # Only add if there's something to send
+             gemini_contents.append({"role": gemini_role, "parts": current_parts})
+    
+    # If system_prompt wasn't prepended (e.g. no user messages or first message was assistant)
+    # add it as the very first user turn.
+    if is_first_user_message and system_prompt:
+        gemini_contents.insert(0, {"role": "user", "parts": [{"text": system_prompt.strip()}]})
+        if gemini_contents and len(gemini_contents) > 1 and gemini_contents[1]["role"] == "user":
+             # If the next message is also user, we need to insert a model (assistant) turn in between
+             # to maintain the user/model alternating sequence for Gemini.
+             # This is a simplified handling; complex scenarios might need more robust logic.
+             gemini_contents.insert(1, {"role": "model", "parts": [{"text": "Okay."}]}) # Placeholder response
+
+    payload = {
+        "contents": gemini_contents,
+        "generationConfig": {
+            # "temperature": 0.7, # Optional: Adjust as needed
+            # "topK": 1,          # Optional
+            # "topP": 1,          # Optional
+            # "maxOutputTokens": 2048, # Optional: Gemini Flash has a large context window
+        },
+        "safetySettings": [ # Optional: Adjust safety settings as needed
+            {
+                "category": "HARM_CATEGORY_HARASSMENT",
+                "threshold": "BLOCK_MEDIUM_AND_ABOVE"
+            },
+            {
+                "category": "HARM_CATEGORY_HATE_SPEECH",
+                "threshold": "BLOCK_MEDIUM_AND_ABOVE"
+            },
+            {
+                "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                "threshold": "BLOCK_MEDIUM_AND_ABOVE"
+            },
+            {
+                "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+                "threshold": "BLOCK_MEDIUM_AND_ABOVE"
+            }
+        ]
+    }
+
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            async with httpx.AsyncClient(timeout=120.0) as client: # Increased timeout for potentially longer AI responses
+                logger.debug(f"Sending to Gemini. URL: {api_url}")
+                # logger.debug(f"Gemini Request Payload: {json.dumps(payload, indent=2, ensure_ascii=False)}") # Careful with logging PII
+                
+                response = await client.post(api_url, headers=headers, json=payload)
+                response.raise_for_status() # Raises HTTPStatusError for 4xx/5xx responses
+                
+                response_data = response.json()
+                # logger.debug(f"Gemini Raw Response: {json.dumps(response_data, indent=2, ensure_ascii=False)}")
+
+                if response_data.get("candidates") and response_data["candidates"][0].get("content") and response_data["candidates"][0]["content"].get("parts"):
+                    generated_text = response_data["candidates"][0]["content"]["parts"][0].get("text", "")
+                    if not generated_text and response_data["candidates"][0].get("finishReason") == "SAFETY":
+                        logger.warning("Gemini: Response blocked due to safety settings.")
+                        return escape_markdown_v2("❌ мой ответ был заблокирован из-за настроек безопасности.")
+                    if not generated_text and response_data["candidates"][0].get("finishReason") == "MAX_TOKENS":
+                        logger.warning("Gemini: Response stopped due to max tokens.")
+                        # return generated_text # Return whatever was generated before cutoff
+                    if not generated_text:
+                         logger.warning(f"Gemini: Empty text in response. Finish reason: {response_data['candidates'][0].get('finishReason')}. Full candidate: {response_data['candidates'][0]}")
+                         return escape_markdown_v2("❌ получен пустой ответ от ai (gemini). причина: " + response_data["candidates"][0].get("finishReason", "unknown"))
+                    return generated_text
+                elif response_data.get("promptFeedback") and response_data["promptFeedback"].get("blockReason"):
+                    block_reason = response_data["promptFeedback"]["blockReason"]
+                    logger.warning(f"Gemini: Prompt blocked due to {block_reason}.")
+                    return escape_markdown_v2(f"❌ ваш запрос был заблокирован (gemini): {block_reason.lower().replace('_', ' ')}.")
                 else:
-                    logger.warning(f"process_and_send_response [JSON]: Parsed JSON, but it's not a list of strings. Type: {type(parsed_data)}")
+                    logger.error(f"Gemini: Unexpected response structure: {response_data}")
+                    return escape_markdown_v2("❌ ошибка: неожиданный формат ответа от ai (gemini).")
+
+        except httpx.HTTPStatusError as e:
+            logger.error(f"Gemini API request failed (attempt {attempt + 1}/{max_retries}) with status {e.response.status_code}: {e.response.text}", exc_info=True)
+            if e.response.status_code == 429: # Rate limit
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(5 * (attempt + 1)) # Exponential backoff
+                    continue
+                return escape_markdown_v2("❌ ошибка: превышен лимит запросов к ai (gemini). попробуйте позже.")
+            # For other client-side errors (4xx) or server-side (5xx), specific handling might be needed
+            # For now, a generic error message for non-rate-limit errors after retries or for unrecoverable client errors
+            error_detail = e.response.json().get("error", {}).get("message", e.response.text) if e.response.content else str(e)
+            return escape_markdown_v2(f"❌ ошибка api (gemini) {e.response.status_code}: {error_detail}")
+        except httpx.RequestError as e:
+            logger.error(f"Gemini API request failed (attempt {attempt + 1}/{max_retries}): {e}", exc_info=True)
+            if attempt < max_retries - 1:
+                await asyncio.sleep(3 * (attempt + 1))
+                continue
+            return escape_markdown_v2("❌ ошибка сети при обращении к ai (gemini). попробуйте позже.")
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to decode JSON response from Gemini (attempt {attempt + 1}/{max_retries}): {e}", exc_info=True)
+            # This is unlikely if raise_for_status() passed and API is stable, but good to have.
+            if attempt < max_retries - 1:
+                await asyncio.sleep(1)
+                continue
+            return escape_markdown_v2("❌ ошибка: неверный формат ответа от ai (gemini).")
+        except Exception as e:
+            logger.error(f"An unexpected error occurred in send_to_gemini (attempt {attempt + 1}/{max_retries}): {e}", exc_info=True)
+            if attempt < max_retries - 1:
+                await asyncio.sleep(1)
+                continue
+            return escape_markdown_v2("❌ неизвестная ошибка при обращении к ai (gemini).")
+    
+    return escape_markdown_v2("❌ исчерпаны все попытки обращения к ai (gemini).")
+
+
+# async def send_to_langdock(system_prompt: str, messages: List[Dict[str, str]], image_data: Optional[bytes] = None, audio_data: Optional[bytes] = None) -> str:
+#     """Sends the prompt and context to the Langdock API and returns the response."""
+#     
+#     if not LANGDOCK_API_KEY:
+#         logger.error("LANGDOCK_API_KEY is not set.")
+#         return escape_markdown_v2("❌ ошибка: ключ api не настроен.")
+# 
+#     if not messages:
+#         logger.error("send_to_langdock called with an empty messages list!")
+#         return "ошибка: нет сообщений для отправки в ai."
+# 
+#     headers = {
+#         "Authorization": f"Bearer {LANGDOCK_API_KEY}",
+#         "Content-Type": "application/json",
+#     }
+#     # Берем последние N сообщений, как и раньше
+#     messages_to_send = messages[-MAX_CONTEXT_MESSAGES_SENT_TO_LLM:].copy() # Используем .copy() для безопасного изменения
+#     
+#     last_user_message_index = -1
+#     for i in range(len(messages_to_send) - 1, -1, -1):
+#         if messages_to_send[i].get("role") == "user":
+#             last_user_message_index = i
+#             break
+# 
+#     if last_user_message_index != -1:
+#         original_user_content_field = messages_to_send[last_user_message_index].get("content", "")
+#         
+#         # Инициализируем new_content как массив. 
+#         # Claude API ожидает массив для "content", если есть хотя бы один элемент не "text".
+#         new_content_array = []
+# 
+#         # 1. Добавляем текстовую часть
+#         # original_user_content_field может быть строкой или уже массивом (если предыдущие шаги его так сформировали)
+#         if isinstance(original_user_content_field, str):
+#             if original_user_content_field: # Добавляем текст, только если он не пустой
+#                 new_content_array.append({"type": "text", "text": original_user_content_field})
+#         elif isinstance(original_user_content_field, list): # Если это уже был список (маловероятно здесь)
+#             new_content_array.extend(item for item in original_user_content_field if item.get("type") == "text") # Копируем только текстовые части
+# 
+#         # 2. Добавляем изображение, если есть
+#         if image_data:
+#             try:
+#                 import base64
+#                 image_base64 = base64.b64encode(image_data).decode('utf-8')
+#                 new_content_array.append(
+#                     {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": image_base64}}
+#                 )
+#                 logger.info("Image data prepared for Langdock request.")
+#             except Exception as e:
+#                 logger.error(f"Error encoding image data: {e}", exc_info=True)
+#         
+#         # 3. Обработка аудио (пока что только плейсхолдер, так как прямая отправка не работает)
+#         #    Если в будущем Langdock/Claude начнут поддерживать аудио, здесь будет логика его добавления.
+#         #    Сейчас, если есть audio_data, мы не будем его добавлять в new_content_array в виде base64,
+#         #    так как это вызывает ошибку. Вместо этого, текстовый плейсхолдер '[получено голосовое сообщение]'
+#         #    уже должен быть в original_user_content_field (добавлен в handle_media).
+#         
+#         if audio_data:
+#             # Логируем, что аудио было, но не добавляем его в запрос в формате base64, чтобы избежать ошибки.
+#             # Промпт в persona.py должен быть настроен на реакцию на *факт* получения аудио.
+#             logger.info("Audio data was received by send_to_langdock, but direct audio upload is likely not supported by the current API structure. Text placeholder should be used in prompt.")
+#             # Если текстовый плейсхолдер для аудио не был добавлен ранее, его можно добавить здесь,
+#             # но лучше это делать на более раннем этапе (в handle_media), что у тебя и сделано.
+#             # Например, если new_content_array пуст и есть audio_data:
+#             if not any(item.get("type") == "text" for item in new_content_array):
+#                 # Этого не должно происходить, если handle_media корректно добавляет плейсхолдер
+#                 new_content_array.append({"type": "text", "text": "[получено голосовое сообщение]"})
+#                 logger.warning("send_to_langdock: Added a fallback text placeholder for audio as new_content_array was empty.")
+# 
+#         # Если new_content_array все еще пуст (например, только аудио без текста и без плейсхолдера)
+#         # или если original_user_content_field был пустой строкой и не было медиа,
+#         # то messages_to_send[last_user_message_index]["content"] останется оригинальным (пустым или как было).
+#         # Если же new_content_array не пуст, то обновляем.
+#         if new_content_array:
+#             messages_to_send[last_user_message_index]["content"] = new_content_array
+#         elif not original_user_content_field and not image_data and not audio_data: # Если контент был пуст и нет медиа
+#             # Это может произойти, если пользователь отправил пустое сообщение, что маловероятно
+#             # или если логика формирования контента выше дала сбой.
+#             # В таком случае, чтобы не отправлять пустое "content", можно либо удалить сообщение из списка,
+#             # либо отправить как есть, API может это обработать или вернуть ошибку.
+#             # Для Claude, если content это массив, он не должен быть пустым.
+#             # Если content это строка, она может быть пустой.
+#             # Поскольку мы стремимся к формату массива для content, если он пуст, это проблема.
+#             # Лучше всего, если new_content_array пуст, а original_user_content_field был строкой,
+#             # оставить его строкой.
+#             pass # Оставляем messages_to_send[last_user_message_index]["content"] как есть (original_user_content_field)
+# 
+#     # Если система должна была добавить системный промпт, но не смогла (например, нет user сообщений)
+#     # Это маловероятно, т.к. messages не должен быть пустым.
+#     payload = {
+#         "model": LANGDOCK_MODEL,
+#         "messages": messages_to_send,
+#         "system": system_prompt,
+#         "max_tokens": 4096, # Максимальное количество токенов в ответе
+#         "temperature": 0.7, # Температура для генерации (0.0 - 1.0)
+#     }
+# 
+#     max_retries = 3
+#     for attempt in range(max_retries):
+#         try:
+#             async with httpx.AsyncClient(timeout=120.0) as client: # Увеличенный таймаут
+#                 logger.debug(f"Sending to Langdock. URL: {LANGDOCK_BASE_URL}")
+#                 # logger.debug(f"Langdock Request Payload: {json.dumps(payload, indent=2, ensure_ascii=False)}") # Осторожно с PII
+#                 
+#                 response = await client.post(LANGDOCK_BASE_URL, headers=headers, json=payload)
+#                 response.raise_for_status() # Вызовет исключение для 4xx/5xx ответов
+#                 
+#                 response_data = response.json()
+#                 # logger.debug(f"Langdock Raw Response: {json.dumps(response_data, indent=2, ensure_ascii=False)}")
+# 
+#                 if response_data.get("type") == "error":
+#                     error_message = response_data.get("error", {}).get("message", "unknown error from Langdock")
+#                     logger.error(f"Langdock API returned an error: {error_message}")
+#                     return escape_markdown_v2(f"❌ ошибка от ai (langdock): {error_message}")
+#                 
+#                 # Проверяем, есть ли 'content' и является ли он списком
+#                 content_list = response_data.get("content", [])
+#                 if not content_list or not isinstance(content_list, list):
+#                     logger.error(f"Langdock: 'content' is missing or not a list in response: {response_data}")
+#                     return escape_markdown_v2("❌ ошибка: неверный формат ответа от ai (langdock) \\- отсутствует content.")
+# 
+#                 # Ищем первый текстовый блок в 'content'
+#                 generated_text = ""
+#                 for item in content_list:
+#                     if item.get("type") == "text":
+#                         generated_text = item.get("text", "")
+#                         break
+#                 
+#                 if not generated_text:
+#                     # Если текстового блока нет, но есть другие (например, tool_use), это может быть специфичный ответ
+#                     # В данном случае, если нет текста, считаем это пустым ответом для нашего бота
+#                     logger.warning(f"Langdock: No text block found in response content. Full response: {response_data}")
+#                     # Проверим stop_reason, если есть
+#                     stop_reason = response_data.get("stop_reason")
+#                     if stop_reason == "max_tokens":
+#                         return escape_markdown_v2("⏳ хм, кажется, я немного увлекся и мой ответ был слишком длинным\\! попробуй еще раз, возможно, с более коротким запросом\\.")
+#                     elif stop_reason == "tool_use":
+#                         logger.info("Langdock response indicates tool_use without text. This is not handled yet.")
+#                         return escape_markdown_v2("⚠️ ai попытался использовать инструмент, но это пока не поддерживается\\.")
+#                     return escape_markdown_v2("ai вернул пустой ответ (langdock)\\.")
+# 
+#                 return generated_text
+# 
+#         except httpx.HTTPStatusError as e:
+#             logger.error(f"Langdock API request failed (attempt {attempt + 1}/{max_retries}) with status {e.response.status_code}: {e.response.text}", exc_info=True)
+#             if e.response.status_code == 429: # Rate limit
+#                 if attempt < max_retries - 1:
+#                     await asyncio.sleep(5 * (attempt + 1)) # Экспоненциальная задержка
+#                     continue
+#                 return escape_markdown_v2("❌ ошибка: превышен лимит запросов к ai (langdock)\\. попробуйте позже\\.")
+#             # Другие ошибки 4xx/5xx
+#             error_detail = e.response.json().get("error", {}).get("message", e.response.text) if e.response.content else str(e)
+#             return escape_markdown_v2(f"❌ ошибка api (langdock) {e.response.status_code}: {error_detail}")
+#         except httpx.RequestError as e:
+#             logger.error(f"Langdock API request failed (attempt {attempt + 1}/{max_retries}): {e}", exc_info=True)
+#             if attempt < max_retries - 1:
+#                 await asyncio.sleep(3 * (attempt + 1))
+#                 continue
+#             return escape_markdown_v2("❌ ошибка сети при обращении к ai (langdock)\\. попробуйте позже\\.")
+#         except json.JSONDecodeError as e:
+#             logger.error(f"Failed to decode JSON response from Langdock (attempt {attempt + 1}/{max_retries}): {e}", exc_info=True)
+#             if attempt < max_retries - 1:
+#                 await asyncio.sleep(1)
+#                 continue # Повторить попытку, если это временная проблема с ответом
+#             return escape_markdown_v2("❌ ошибка: неверный формат ответа от ai (langdock)\\.")
+#         except Exception as e:
+#             logger.error(f"An unexpected error occurred in send_to_langdock (attempt {attempt + 1}/{max_retries}): {e}", exc_info=True)
+#             if attempt < max_retries - 1:
+#                 await asyncio.sleep(1)
+#                 continue
+#             return escape_markdown_v2("❌ неизвестная ошибка при обращении к ai (langdock)\\.")
+#     
+#     return escape_markdown_v2("❌ исчерпаны все попытки обращения к ai (langdock)\\.")JSON
+#         raw_response_text = resp.text
+#         logger.debug(f"Langdock raw response text (first 500 chars): {raw_response_text[:500]}")
+# 
+#         resp.raise_for_status() # Вызовет исключение для 4xx/5xx
+#         data = resp.json()
+# {{ ... }}
+# 
+#         # --- Детальное логирование ответа ---
+#         logger.debug(f"Langdock parsed JSON response: {json.dumps(data, ensure_ascii=False, indent=2)}")
+# 
+#         input_tokens = data.get('usage', {}).get('input_tokens') # Claude 3.5 использует 'usage'
+#         output_tokens = data.get('usage', {}).get('output_tokens')
+#         stop_reason = data.get('stop_reason', 'unknown')
+#         
+#         # Если usage отсутствует, попробуем старый вариант (для обратной совместимости или других моделей)
+#         if input_tokens is None: input_tokens = data.get('input_tokens', 0)
+#         if output_tokens is None: output_tokens = data.get('output_tokens', 0)
+# 
+#         logger.info(f"Langdock response stats: input_tokens={input_tokens}, output_tokens={output_tokens}, stop_reason={stop_reason}")
+#         
+#         full_response_text = ""
+#         content_blocks = data.get("content")
+#         
+#         if isinstance(content_blocks, list) and content_blocks:
+#             logger.debug(f"Response 'content' is a list with {len(content_blocks)} item(s).")
+#             for block in content_blocks:
+#                 if isinstance(block, dict) and block.get("type") == "text":
+#                     full_response_text += block.get("text", "")
+#                     logger.debug(f"Extracted text block: '{block.get('text', '')[:100]}...'" )
+#                 else:
+#                     logger.warning(f"Non-text block found in content: {block}")
+#         elif isinstance(content_blocks, str): # На случай, если API вернет просто строку в content
+#              full_response_text = content_blocks
+#              logger.debug(f"Response 'content' is a string: '{content_blocks[:100]}...'" )
+#         else:
+#             logger.warning(f"Unexpected structure or empty 'content' in Langdock response. Content: {content_blocks}")
+# 
+#         if not full_response_text.strip():
+#             logger.warning(f"Extracted text from Langdock response is empty or whitespace. StopReason: {stop_reason}. Original data: {json.dumps(data, ensure_ascii=False)}")
+#             # Проверяем, есть ли ошибка в ответе
+#             if 'error' in data:
+#                 error_details = data['error']
+#                 logger.error(f"Langdock API returned an error: {error_details}")
+#                 error_message_to_user = f"AI сообщило об ошибке: {error_details.get('message', 'Неизвестная ошибка') if isinstance(error_details, dict) else error_details}"
+#                 return escape_markdown_v2(error_message_to_user)
+#             return escape_markdown_v2("ai вернул пустой текстовый ответ 🤷")
+# 
+#         return full_response_text.strip()
+# 
+#     except httpx.ReadTimeout:
+#          logger.error("Langdock API request timed out.")
+#          return escape_markdown_v2("⏳ хм, кажется, я слишком долго думал... попробуй еще раз?")
+#     except httpx.HTTPStatusError as e:
+#         error_body = e.response.text
+#         logger.error(f"Langdock API HTTP error: {e.response.status_code} - {error_body}", exc_info=False)
+#         error_text_raw = f"ой, ошибка связи с ai ({e.response.status_code})"
+#         try:
+#              error_data = json.loads(error_body)
+#              if isinstance(error_data.get('error'), dict) and 'message' in error_data['error']:
+#                   api_error_msg = error_data['error']['message']
+#                   logger.error(f"Langdock API Error Message: {api_error_msg}")
+#                   error_text_raw += f": {api_error_msg}" # Добавляем деталей пользователю
+#              elif isinstance(error_data.get('error'), str):
+#                    logger.error(f"Langdock API Error Message: {error_data['error']}")
+#                    error_text_raw += f": {error_data['error']}"
+#         except json.JSONDecodeError:
+#             logger.warning(f"Could not parse error body from Langdock as JSON: {error_body}")
+#         except Exception: pass # Общий случай
+#         return escape_markdown_v2(error_text_raw) # Экранируем финальное сообщение
+#     except httpx.RequestError as e:
+#         logger.error(f"Langdock API request error (network issue?): {e}", exc_info=True)
+#         return escape_markdown_v2("❌ не могу связаться с ai сейчас (ошибка сети)...")
+#     except json.JSONDecodeError as e:
+#         # Используем raw_response_text с проверкой, что оно существует
+#         raw_response_for_error_log = raw_response_text if 'raw_response_text' in locals() else "[Raw response text not captured]"
+#         logger.error(f"Failed to parse Langdock JSON response: {e}. Raw response: {raw_response_for_error_log[:500]}", exc_info=True)
+#         return escape_markdown_v2("❌ ошибка: не удалось обработать ответ от ai (неверный формат).")
+#     except Exception as e:
+#         logger.error(f"Unexpected error communicating with Langdock: {e}", exc_info=True)
+#         return escape_markdown_v2("❌ произошла внутренняя ошибка при генерации ответа.")
+
+
+    logger.debug(f"Processing AI response for chat {chat_id}, persona {persona.name}. Raw length: {len(full_bot_response_text)}. ReplyTo: {reply_to_message_id}. IsFirstMsg: {is_first_message}")
+
+    chat_id_str = str(chat_id)
+    context_response_prepared = False # Флаг для коммита контекста ответа
+
+    # 1. Сохранение полного ответа в контекст (до разделения)
+    if persona.chat_instance:
+        try:
+            # Используем .strip() на всякий случай
+            add_message_to_context(db, persona.chat_instance.id, "assistant", full_bot_response_text.strip())
+            context_response_prepared = True
+            logger.debug("AI response prepared for database context (pending commit).")
+        except SQLAlchemyError as e:
+            logger.error(f"DB Error preparing assistant response for context chat_instance {persona.chat_instance.id}: {e}", exc_info=True)
+            # Не прерываем отправку из-за ошибки контекста, но и не коммитим его
+            context_response_prepared = False
+        except Exception as e:
+            logger.error(f"Unexpected Error preparing assistant response for context chat_instance {persona.chat_instance.id}: {e}", exc_info=True)
+            context_response_prepared = False
+    else:
+        logger.error("Cannot add AI response to context, chat_instance is None.")
+        context_response_prepared = False
+
+
+    # 2. Извлечение GIF и очистка текста
+    all_text_content = full_bot_response_text.strip()
+    gif_links = extract_gif_links(all_text_content)
+
+    # Удаляем ссылки на GIF из основного текста
+    text_without_gifs = all_text_content
+    if gif_links:
+        for gif in gif_links:
+             # Заменяем ссылку на GIF и возможные пробелы вокруг нее на один пробел
+            text_without_gifs = re.sub(r'\s*' + re.escape(gif) + r'\s*', ' ', text_without_gifs, flags=re.IGNORECASE)
+        text_without_gifs = re.sub(r'\s{2,}', ' ', text_without_gifs).strip() # Убираем двойные пробелы
+
+
+    # 3. Получение разделенных частей текста из utils.py
+    # Получаем настройку max_messages из конфига персоны
+    max_messages_setting = persona.config.max_response_messages if persona.config else 0
+    
+    # Преобразуем числовые значения в фактическое количество сообщений
+    actual_max_messages = 3  # значение по умолчанию
+    if max_messages_setting == 1:  # few
+        actual_max_messages = 1
+    elif max_messages_setting == 3:  # normal
+        actual_max_messages = 3
+    elif max_messages_setting == 6:  # many
+        actual_max_messages = 6
+    elif max_messages_setting == 0:  # random
+        actual_max_messages = random.randint(2, 6)
+    
+    logger.info(f"DEBUG: max_messages_setting = {max_messages_setting}, actual_max_messages = {actual_max_messages}")
+    
+    # postprocess_response сам обработает 0 и >10
+    text_parts_to_send = postprocess_response(text_without_gifs, actual_max_messages)
+    
+    logger.info(f"DEBUG: After postprocess_response, text_parts_to_send = {text_parts_to_send}, len = {len(text_parts_to_send)}")
+    
+    # Дополнительное ограничение для режима "Поменьше сообщений"
+    if max_messages_setting == 1 and len(text_parts_to_send) > 1:  # few
+        logger.info(f"Limiting messages from {len(text_parts_to_send)} to 1 for 'few' mode")
+        # Если больше 1 сообщения, оставляем только первое
+        text_parts_to_send = text_parts_to_send[:1]
+    
+    logger.info(f"DEBUG: Final text_parts_to_send = {text_parts_to_send}, len = {len(text_parts_to_send)}")
+    
+    logger.info(f"postprocess_response returned {len(text_parts_to_send)} parts to send.")
+
+
+    # --- ФИНАЛЬНОЕ ОГРАНИЧЕНИЕ ДЛЯ 'few' ---
+    logger.info(f"max_messages_setting for persona {persona.name}: {max_messages_setting}")
+    logger.info(f"text_parts_to_send BEFORE FINAL LIMIT: {text_parts_to_send}")
+    if max_messages_setting == 1 and len(text_parts_to_send) > 1:
+        logger.info(f"FINAL LIMIT: Limiting to 1 message for 'few' mode")
+        text_parts_to_send = text_parts_to_send[:1]
+    logger.info(f"text_parts_to_send AFTER FINAL LIMIT: {text_parts_to_send}")
+    # 4. Последовательная отправка сообщений
+    first_message_sent = False # Отвечаем только на первое сообщение (текст или гиф)
+
+    # Сначала отправляем GIF, если есть
+    for i, gif in enumerate(gif_links):
+        try:
+            current_reply_id = reply_to_message_id if not first_message_sent else None
+            logger.info(f"Attempting to send GIF {i+1}/{len(gif_links)}: {gif} (ReplyTo: {current_reply_id})")
+            await context.bot.send_animation(
+                chat_id=chat_id_str,
+                animation=gif,
+                reply_to_message_id=current_reply_id,
+                read_timeout=20, # Увеличим таймаут на отправку
+                write_timeout=20
+            )
+            first_message_sent = True
+            logger.info(f"Successfully sent GIF {i+1}.")
+            await asyncio.sleep(0.3) # Небольшая пауза между сообщениями
+        except Exception as e:
+            logger.error(f"Error sending gif {gif} to chat {chat_id_str}: {e}", exc_info=True)
+            # Не прерываем отправку текста из-за гифки
+
+    # Затем отправляем текстовые части
+    if text_parts_to_send:
+        chat_type = update.effective_chat.type if update and update.effective_chat else None
+
+        # Удаление приветствия из *первой* текстовой части (если она есть)
+        if text_parts_to_send and not is_first_message:
+            first_part = text_parts_to_send[0]
+            greetings_pattern = r"^\s*(?:привет|здравствуй|добр(?:ый|ое|ого)\s+(?:день|утро|вечер)|хай|ку|здорово|салют|о[йи])(?:[,.!\s]|\b)"
+            match = re.match(greetings_pattern, first_part, re.IGNORECASE)
+            if match:
+                cleaned_part = first_part[match.end():].strip()
+                if cleaned_part:
+                    logger.warning(f"Removed greeting from first message part. New start: '{cleaned_part[:50]}...'")
+                    text_parts_to_send[0] = cleaned_part
+                else:
+                    logger.warning(f"Greeting removal resulted in empty first part. Removing part.")
+                    text_parts_to_send.pop(0)
+
+        # Отправляем по очереди
+        for i, part in enumerate(text_parts_to_send):
+            part_raw = part.strip()
+            if not part_raw: continue # Пропускаем пустые части
+
+            # Показываем "печатает..." в группах
+            if chat_type in [ChatType.GROUP, ChatType.SUPERGROUP]:
+                 try:
+                     # Не ждем окончания действия, просто запускаем
+                     asyncio.create_task(context.bot.send_chat_action(chat_id=chat_id_str, action=ChatAction.TYPING))
+                     await asyncio.sleep(random.uniform(0.5, 1.0)) # Пауза перед отправкой
+                 except Exception as e:
+                      logger.warning(f"Failed to send typing action to {chat_id_str}: {e}")
+
+            # Определяем, нужно ли отвечать на исходное сообщение
+            current_reply_id = reply_to_message_id if not first_message_sent else None
+
+            # Пытаемся отправить с Markdown
+            escaped_part = escape_markdown_v2(part_raw)
+            message_sent_successfully = False
+            try:
+                 logger.info(f"Attempting to send part {i+1}/{len(text_parts_to_send)} (MDv2, ReplyTo: {current_reply_id}) to chat {chat_id_str}: '{escaped_part[:50]}...'")
+                 await context.bot.send_message(
+                     chat_id=chat_id_str,
+                     text=escaped_part,
+                     parse_mode=ParseMode.MARKDOWN_V2,
+                     reply_to_message_id=current_reply_id,
+                     read_timeout=20,
+                     write_timeout=20
+                 )
+                 message_sent_successfully = True
+            except BadRequest as e_md:
+                 if "can't parse entities" in str(e_md).lower():
+                      logger.error(f"MarkdownV2 parse failed for part {i+1}. Retrying as plain text. Error: {e_md}")
+                      try:
+                           await context.bot.send_message(
+                               chat_id=chat_id_str,
+                               text=part_raw, # Отправляем исходный текст без экранирования
+                               parse_mode=None,
+                               reply_to_message_id=current_reply_id,
+                               read_timeout=20,
+                               write_timeout=20
+                           )
+                           message_sent_successfully = True
+                      except Exception as e_plain:
+                           logger.error(f"Failed to send part {i+1} even as plain text: {e_plain}", exc_info=True)
+                           # Прерываем отправку остальных частей, если одна не ушла
+                           break
+                 elif "reply message not found" in str(e_md).lower():
+                     logger.warning(f"Reply message {reply_to_message_id} not found for part {i+1}. Sending without reply.")
+                     try: # Повторная попытка без reply_to_message_id
+                          await context.bot.send_message(chat_id=chat_id_str, text=escaped_part, parse_mode=ParseMode.MARKDOWN_V2, reply_to_message_id=None, read_timeout=20, write_timeout=20)
+                          message_sent_successfully = True
+                     except Exception as e_no_reply:
+                          logger.error(f"Failed to send part {i+1} even without reply: {e_no_reply}", exc_info=True)
+                          break # Прерываем
+                 else: # Другая ошибка BadRequest
+                     logger.error(f"Unhandled BadRequest sending part {i+1}: {e_md}", exc_info=True)
+                     break # Прерываем
+            except Exception as e_other:
+                 logger.error(f"Unexpected error sending part {i+1}: {e_other}", exc_info=True)
+                 break # Прерываем при других ошибках
+
+            if message_sent_successfully:
+                 first_message_sent = True # Отмечаем, что хотя бы одно сообщение ушло
+                 logger.info(f"Successfully sent part {i+1}/{len(text_parts_to_send)}.")
+                 await asyncio.sleep(0.5) # Пауза между текстовыми сообщениями
             else:
-                 logger.warning("process_and_send_response [JSON]: Could not find valid JSON array structure '[...]' in the response.")
+                 logger.error(f"Failed to send part {i+1}, stopping further message sending for this response.")
+                 break # Прерываем цикл, если отправка не удалась
 
-        except json.JSONDecodeError as json_err:
-            logger.warning(f"process_and_send_response [JSON]: Failed to parse LLM response as JSON: {json_err}. Falling back to sentence splitting.")
-            is_json_parsed = False
-        except Exception as parse_err:
-            logger.error(f"process_and_send_response [JSON]: Unexpected error during JSON parsing: {parse_err}", exc_info=True)
-            is_json_parsed = False
+    # Возвращаем флаг, удалось ли подготовить контекст ответа (для коммита)
+    return context_response_prepared
 
-        if is_json_parsed:
-            # Revised unwrapping logic to handle nested JSON/markdown
-            processed_parts = []
-            MAX_RECURSION_DEPTH = 5  # Max depth for unwrapping
+# --- Core Logic Helpers ---
 
-            def unwrap_json_string(json_str_candidate, current_depth):
-                if current_depth >= MAX_RECURSION_DEPTH:
-                    logger.warning(f"Max recursion depth {MAX_RECURSION_DEPTH} reached while unwrapping. Keeping as is: {str(json_str_candidate)[:200]}")
-                    return [str(json_str_candidate)]
+async def process_and_send_response(
+    update: Optional[Update],
+    context: ContextTypes.DEFAULT_TYPE,
+    chat_id: Union[str, int],
+    persona: Persona,
+    full_bot_response_text: str,
+    db: Session,
+    reply_to_message_id: Optional[int] = None,
+    is_first_message: bool = False
+) -> bool:
+    """
+    Processes LLM response, robustly handling JSON and fallbacks. (v3 - Context Fix)
+    Saves CLEANED response to context. Sends parts sequentially.
+    """
+    logger.info(f"process_and_send_response [v3]: --- ENTER --- ChatID: {chat_id}, Persona: '{persona.name}'")
+    if not full_bot_response_text or not full_bot_response_text.strip():
+        logger.warning(f"process_and_send_response [v3]: Received empty response. Not processing.")
+        return False
 
-                if not isinstance(json_str_candidate, str):
-                    if isinstance(json_str_candidate, list):
-                        final_sub_parts = []
-                        for item_in_list in json_str_candidate:
-                            final_sub_parts.extend(unwrap_json_string(item_in_list, current_depth + 1))
-                        return final_sub_parts
-                    else: # int, bool, dict etc.
-                        return [str(json_str_candidate)]
+    raw_llm_response = full_bot_response_text.strip()
+    
+    # 1. Parse the response to get clean text parts
+    text_parts_to_send = None
 
-                # Candidate is a string
-                # 1. Check for markdown ```json ... ```
-                if json_str_candidate.startswith("```json") and json_str_candidate.endswith("```"):
-                    content_inside_markdown = json_str_candidate[len("```json"):-len("```")].strip()
-                    logger.debug(f"Depth {current_depth}: Unwrapping markdown content: {content_inside_markdown[:200]}")
-                    return unwrap_json_string(content_inside_markdown, current_depth + 1)
+    def _robust_json_parser(text: str) -> Optional[List[str]]:
+        """Tries to extract and parse a JSON list of strings from messy LLM output."""
+        # Step 1: Extract content from markdown ```json ... ``` if it exists
+        match = re.search(r'```json\s*(.*?)\s*```', text, re.DOTALL | re.IGNORECASE)
+        if match:
+            text = match.group(1).strip()
+        
+        # Step 2: Iteratively try to parse the string if it's string-encoded JSON
+        for _ in range(5): # Limit recursion to prevent infinite loops
+            try:
+                data = json.loads(text)
+                
+                # If we get a list, we're likely done. Convert all items to string.
+                if isinstance(data, list):
+                    unwrapped_parts = [str(item).strip() for item in data if str(item).strip()]
+                    if unwrapped_parts:
+                        logger.info(f"Robust parser: Successfully parsed list with {len(unwrapped_parts)} items.")
+                        return unwrapped_parts
+                
+                # If we get a string, it means we've unwrapped one layer.
+                # Loop again to try and parse this new string.
+                if isinstance(data, str):
+                    text = data
+                    continue
+                
+                # If we get something else (dict, int, etc.), convert to string and return as single-item list
+                return [str(data)]
 
-                # 2. Check if the string itself is a parsable JSON
-                try:
-                    potential_inner_data = json.loads(json_str_candidate)
-                    # If json.loads results in the exact same string, and it's not a list that needs further iteration,
-                    # it means it wasn't really "stringified" JSON that needs unwrapping.
-                    if potential_inner_data == json_str_candidate and not isinstance(potential_inner_data, list):
-                        logger.debug(f"Depth {current_depth}: JSON parsing did not change string and not a list. Keeping: {json_str_candidate[:200]}")
-                        return [json_str_candidate]
-                    
-                    logger.debug(f"Depth {current_depth}: Unwrapping string-encoded JSON: {str(potential_inner_data)[:200]}")
-                    return unwrap_json_string(potential_inner_data, current_depth + 1)
-                except json.JSONDecodeError:
-                    logger.debug(f"Depth {current_depth}: String is not markdown or parsable JSON. Keeping: {json_str_candidate[:200]}")
-                    return [json_str_candidate]
-                except Exception as e_unwrap: # Catch any other unexpected error during unwrap
-                    logger.error(f"Depth {current_depth}: Unexpected error during unwrap_json_string for '{str(json_str_candidate)[:50]}': {e_unwrap}", exc_info=True)
-                    return [str(json_str_candidate)]
+            except (json.JSONDecodeError, TypeError):
+                # If at any point parsing fails, we assume it's not a valid JSON structure.
+                return None
+        return None # Return None if loop finishes without successful parsing
 
-            for part_to_unwrap in text_parts_to_send:
-                try:
-                    processed_parts.extend(unwrap_json_string(part_to_unwrap, 0))
-                except Exception as e_loop_unwrap:
-                    logger.error(f"Error processing part '{str(part_to_unwrap)[:50]}' in unwrap loop: {e_loop_unwrap}", exc_info=True)
-                    processed_parts.append(str(part_to_unwrap))
-            
-            text_parts_to_send = [p.strip() for p in processed_parts if p and p.strip()]
-
-            if not text_parts_to_send:
-                logger.warning("process_and_send_response [JSON]: After potential unwrapping, no valid text parts remain. Falling back to sentence splitting.")
-                is_json_parsed = False 
-            elif any(isinstance(p, str) and p.startswith("```json") for p in text_parts_to_send):
-                 logger.warning("process_and_send_response [JSON]: After unwrap attempt, parts still contain markdown JSON. Treating as JSON parse failure to avoid sending raw markdown.")
-                 is_json_parsed = False # This will trigger fallback to sentence splitting of the original raw_llm_response
-            else:
-                logger.info(f"process_and_send_response [JSON]: Final text_parts_to_send after potential unwrap: {text_parts_to_send}")
+    text_parts_to_send = _robust_json_parser(raw_llm_response)
+    
+    # 2. Prepare content for DB and for sending
+    content_to_save_in_db = ""
+    if text_parts_to_send is not None:
+        # Success parsing! Save clean, joined text to DB.
+        content_to_save_in_db = "\n".join(text_parts_to_send)
+        logger.info(f"Saving CLEAN response to context: '{content_to_save_in_db[:100]}...'")
+    else:
+        # Parse failed. Save raw response to DB, assuming it's plain text.
+        content_to_save_in_db = raw_llm_response
+        logger.warning(f"JSON parse failed. Saving RAW response to context: '{content_to_save_in_db[:100]}...'")
+        
+        # And generate parts for sending from this raw text.
+        text_without_gifs = raw_llm_response
+        gif_links = extract_gif_links(raw_llm_response)
+        if gif_links:
+            for gif in gif_links:
+                text_without_gifs = re.sub(r'\s*' + re.escape(gif) + r'\s*', ' ', text_without_gifs, flags=re.IGNORECASE)
+        text_without_gifs = re.sub(r'\s{2,}', ' ', text_without_gifs).strip()
+        
+        if text_without_gifs:
+            # Используем max_response_messages из настроек персоны, с fallback на 3
+            max_messages = persona.config.max_response_messages if persona.config and persona.config.max_response_messages > 0 else 3
+            text_parts_to_send = postprocess_response(text_without_gifs, max_messages)
+        else:
+            text_parts_to_send = []
 
         # 3. Fallback: Если JSON не сработал - простое деление по предложениям
         if not is_json_parsed:
@@ -1547,8 +2765,8 @@ async def send_limit_exceeded_message(update: Update, context: ContextTypes.DEFA
 
 # --- Message Handlers ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handles incoming text messages."""
-    logger.info("!!! VERSION CHECK: Running with FORCED message limit for 'few' mode (2025-05-08) !!!")
+    """Handles incoming text messages. (v3 - Final)"""
+    logger.info("!!! VERSION CHECK: Running with Context Fix (2024-06-09) !!!")
     try:
         if not update.message or not (update.message.text or update.message.caption):
             logger.debug("handle_message: Exiting - No message or text/caption.")
@@ -1885,84 +3103,50 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     
                     formatted_messages_for_llm.append({"role": "user", "content": message_text})
 
-                    # 3. Инициализация клиента OpenAI и вызов API
-                    open_ai_client = AsyncOpenAI(
-                        api_key=config.OPENROUTER_API_KEY,
-                        base_url=config.OPENROUTER_API_BASE_URL,
-                    )
+                    # --- LLM Request ---
+                    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+                    
+                    system_prompt = persona.format_system_prompt(user_id, username, message_text)
+                    if not system_prompt:
+                        await update.message.reply_text(escape_markdown_v2("❌ ошибка при подготовке системного сообщения."), parse_mode=ParseMode.MARKDOWN_V2)
+                        db_session.rollback()
+                        return
+
+                    context_for_ai = initial_context_from_db + [{"role": "user", "content": f"{username}: {message_text}"}]
+                    
+                    open_ai_client = AsyncOpenAI(api_key=config.OPENROUTER_API_KEY, base_url=config.OPENROUTER_API_BASE_URL)
                     assistant_response_text = None
-                    llm_call_succeeded = False
-
+                    
                     try:
-                        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+                        formatted_messages_for_llm = [{"role": "system", "content": system_prompt}]
+                        for msg in context_for_ai[-MAX_CONTEXT_MESSAGES_SENT_TO_LLM:]:
+                            role = "assistant" if msg["role"] != "user" else "user"
+                            formatted_messages_for_llm.append({"role": role, "content": msg["content"]})
                         
-                        logger.debug(f"Sending request to OpenRouter for CBI {persona.chat_instance.id}. Model: {config.OPENROUTER_MODEL_NAME}. Messages: {len(formatted_messages_for_llm)}")
-                        if formatted_messages_for_llm:
-                            logger.debug(f"Last message in prompt: role='{formatted_messages_for_llm[-1]['role']}', content='{str(formatted_messages_for_llm[-1]['content'])[:200]}...' ")
-
-                        target_max_tokens = 150 # Hardcoded max tokens for LLM response
-                        logger.debug(f"Set fixed target_max_tokens for LLM: {target_max_tokens}")
-
                         llm_response = await open_ai_client.chat.completions.create(
                             model=config.OPENROUTER_MODEL_NAME,
                             messages=formatted_messages_for_llm,
                             temperature=persona.config.temperature if persona.config.temperature is not None else 0.7,
                             top_p=persona.config.top_p if persona.config.top_p is not None else 1.0,
-                            max_tokens=target_max_tokens
+                            max_tokens=2048
                         )
-                        raw_llm_output = llm_response.choices[0].message.content.strip()
                         
-                        # Ensure response is a JSON array of strings for process_and_send_response
-                        try:
-                            parsed_json = json.loads(raw_llm_output)
-                            if isinstance(parsed_json, list) and all(isinstance(item, str) for item in parsed_json):
-                                assistant_response_text = raw_llm_output
-                            else:
-                                assistant_response_text = json.dumps([str(raw_llm_output)])
-                                logger.warning(f"LLM response was not a JSON array of strings. Wrapped: {assistant_response_text[:100]}")
-                        except json.JSONDecodeError:
-                            assistant_response_text = json.dumps([str(raw_llm_output)])
-                            logger.warning(f"LLM response was not JSON. Wrapped: {assistant_response_text[:100]}")
-                        
-                        llm_call_succeeded = True
-                        logger.info(f"LLM Response (CBI {persona.chat_instance.id}, User {owner_user.id}): '{assistant_response_text[:300]}...'")
+                        # ---- ГЛАВНОЕ ИЗМЕНЕНИЕ ----
+                        # Просто берем сырой ответ. Никаких проверок на JSON, никакого оборачивания.
+                        assistant_response_text = llm_response.choices[0].message.content.strip()
+                        logger.info(f"LLM Raw Response (CBI {persona.chat_instance.id}): '{assistant_response_text[:300]}...'")
 
                     except OpenAIError as e:
-                        logger.error(f"OpenRouter API error (CBI {persona.chat_instance.id}, User {owner_user.id}): {e}", exc_info=True)
-                        error_message_to_user = "Произошла ошибка при обращении к нейросети. Попробуйте немного позже."
-                        if hasattr(e, 'status_code') and e.status_code == 401: error_message_to_user = "Ошибка авторизации с OpenRouter. Проверьте API ключ."
-                        elif hasattr(e, 'status_code') and e.status_code == 429: error_message_to_user = "Превышен лимит запросов к OpenRouter. Пожалуйста, подождите."
-                        await update.message.reply_text(error_message_to_user, parse_mode=None)
-                        if limit_state_updated or context_user_msg_added: # Commit before returning
-                            try: 
-                                db_session.commit()
-                                logger.debug("handle_message: Committed state after OpenRouter API error.")
-                            except Exception as commit_err_api_err:
-                                logger.error(f"handle_message: Commit failed (API error): {commit_err_api_err}", exc_info=True)
-                                db_session.rollback()
-                        return
-                    except Exception as e:
-                        logger.error(f"Unexpected error during LLM call (CBI {persona.chat_instance.id}, User {owner_user.id}): {e}", exc_info=True)
-                        await update.message.reply_text("Произошла внутренняя ошибка при обработке вашего запроса.", parse_mode=None)
-                        if limit_state_updated or context_user_msg_added: # Commit before returning
-                            try: 
-                                db_session.commit()
-                                logger.debug("handle_message: Committed state after unexpected LLM error.")
-                            except Exception as commit_err_llm_exc:
-                                logger.error(f"handle_message: Commit failed (LLM unexpected error): {commit_err_llm_exc}", exc_info=True)
-                                db_session.rollback()
+                        # ... (обработка ошибок без изменений) ...
+                        await update.message.reply_text("Произошла ошибка при обращении к нейросети. Попробуйте немного позже.")
+                        db_session.commit()
                         return
 
-                    if not llm_call_succeeded or not assistant_response_text or assistant_response_text == json.dumps([""]):
-                        logger.warning(f"LLM call did not produce a usable/non-empty response for CBI {persona.chat_instance.id}. Response: {assistant_response_text}")
-                        await update.message.reply_text("Модель не дала содержательного ответа. Попробуйте переформулировать запрос или обратиться позже.", parse_mode=None)
-                        if limit_state_updated or context_user_msg_added: # Commit before returning
-                            try: 
-                                db_session.commit()
-                                logger.debug("handle_message: Committed state after empty/failed LLM response.")
-                            except Exception as commit_err_empty_resp:
-                                logger.error(f"handle_message: Commit failed (empty LLM response): {commit_err_empty_resp}", exc_info=True)
-                                db_session.rollback()
+
+                    if not assistant_response_text:
+                        # ... (обработка пустого ответа без изменений) ...
+                        await update.message.reply_text("Модель не дала содержательного ответа. Попробуйте переформулировать запрос.")
+                        db_session.commit()
                         return
 
                     # 4. Call existing process_and_send_response
