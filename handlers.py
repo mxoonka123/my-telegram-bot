@@ -7017,13 +7017,14 @@ async def _start_delete_convo(update: Update, context: ContextTypes.DEFAULT_TYPE
 
             logger.debug(f"Sending confirmation message for persona {persona_id}.")
             
-            # Поскольку сообщение с кнопкой "Удалить" уже было удалено в delete_persona_button_callback,
-            # мы всегда будем отправлять новое сообщение для подтверждения.
+            # --- ИСПРАВЛЕННЫЙ БЛОК ---
             if is_callback and update.callback_query:
                 try:
-                    await update.callback_query.answer() # Просто отвечаем на коллбэк
+                    # Просто отвечаем на коллбэк, чтобы убрать "часики" на кнопке
+                    await update.callback_query.answer()
                 except Exception as ans_err:
                     logger.warning(f"Could not answer callback in _start_delete_convo: {ans_err}")
+            # --- КОНЕЦ ИСПРАВЛЕННОГО БЛОКА ---
             
             sent_message = await context.bot.send_message(chat_id_for_action, msg_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
             context.user_data['delete_confirm_message_id'] = sent_message.message_id
