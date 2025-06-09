@@ -2496,7 +2496,7 @@ async def process_and_send_response(
             # Используем max_response_messages из настроек персоны, с fallback на 3
             max_messages = persona.config.max_response_messages if persona.config and persona.config.max_response_messages > 0 else 3
             text_parts_to_send = postprocess_response(text_without_gifs, max_messages)
-        else:
+            else:
             text_parts_to_send = []
 
         # 3. Fallback: Если JSON не сработал - простое деление по предложениям
@@ -3104,8 +3104,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     formatted_messages_for_llm.append({"role": "user", "content": message_text})
 
                     # --- LLM Request ---
-                    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
-                    
+                        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+                        
                     system_prompt = persona.format_system_prompt(user_id, username, message_text)
                     if not system_prompt:
                         await update.message.reply_text(escape_markdown_v2("❌ ошибка при подготовке системного сообщения."), parse_mode=ParseMode.MARKDOWN_V2)
@@ -3122,7 +3122,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                         for msg in context_for_ai[-MAX_CONTEXT_MESSAGES_SENT_TO_LLM:]:
                             role = "assistant" if msg["role"] != "user" else "user"
                             formatted_messages_for_llm.append({"role": role, "content": msg["content"]})
-                        
+
                         llm_response = await open_ai_client.chat.completions.create(
                             model=config.OPENROUTER_MODEL_NAME,
                             messages=formatted_messages_for_llm,
@@ -3139,14 +3139,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     except OpenAIError as e:
                         # ... (обработка ошибок без изменений) ...
                         await update.message.reply_text("Произошла ошибка при обращении к нейросети. Попробуйте немного позже.")
-                        db_session.commit()
+                                db_session.commit()
                         return
 
 
                     if not assistant_response_text:
                         # ... (обработка пустого ответа без изменений) ...
                         await update.message.reply_text("Модель не дала содержательного ответа. Попробуйте переформулировать запрос.")
-                        db_session.commit()
+                                db_session.commit()
                         return
 
                     # 4. Call existing process_and_send_response
