@@ -2485,9 +2485,9 @@ async def process_and_send_response(
         logger.info("process_and_send_response [JSON]: --- EXIT --- Returning context_prepared_status: " + str(context_response_prepared))
         return context_response_prepared
 
-    except Exception as e_main_process:
-        logger.error(f"process_and_send_response [JSON]: CRITICAL UNEXPECTED ERROR in main block: {e_main_process}", exc_info=True)
-        return context_response_prepared # Возвращаем статус контекста
+        except Exception as e_main_process:
+            logger.error(f"process_and_send_response [JSON]: CRITICAL UNEXPECTED ERROR in main block: {e_main_process}", exc_info=True)
+            return context_response_prepared # Возвращаем статус контекста
 
 async def send_limit_exceeded_message(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User):
     """Sends the 'limit exceeded' message with a subscribe prompt."""
