@@ -2388,7 +2388,7 @@ async def send_to_gemini(system_prompt: str, messages: List[Dict[str, str]], ima
         try:
             # Сначала GIF
             if gif_links_to_send:
-            for i, gif_url_send in enumerate(gif_links_to_send):
+                for i, gif_url_send in enumerate(gif_links_to_send):
                 try:
                     current_reply_id_gif = reply_to_message_id if not first_message_sent else None
                     logger.info(f"process_and_send_response [JSON]: Attempting to send GIF {i+1}/{len(gif_links_to_send)}: {gif_url_send} (ReplyTo: {current_reply_id_gif})")
