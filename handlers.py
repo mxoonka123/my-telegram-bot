@@ -2241,20 +2241,7 @@ async def send_to_gemini(system_prompt: str, messages: List[Dict[str, str]], ima
 
 # --- Core Logic Helpers ---
 
-async def process_and_send_response(
-    update: Optional[Update],
-    context: ContextTypes.DEFAULT_TYPE,
-    chat_id: Union[str, int],
-    persona: Persona,
-    full_bot_response_text: str,
-    db: Session,
-    reply_to_message_id: Optional[int] = None,
-    is_first_message: bool = False
-) -> bool:
-    """
-    Processes LLM response, robustly handling JSON and fallbacks. (v3 - Context Fix)
-    Saves CLEANED response to context. Sends parts sequentially.
-    """
+
     logger.info(f"process_and_send_response [v3]: --- ENTER --- ChatID: {chat_id}, Persona: '{persona.name}'")
     if not full_bot_response_text or not full_bot_response_text.strip():
         logger.warning(f"process_and_send_response [v3]: Received empty response. Not processing.")
@@ -2398,8 +2385,9 @@ async def process_and_send_response(
                     inner_json_str = match.group(1)
         chat_type = update.effective_chat.type if update and update.effective_chat else None
 
-        # Сначала GIF
-        if gif_links_to_send:
+        try:
+            # Сначала GIF
+            if gif_links_to_send:
             for i, gif_url_send in enumerate(gif_links_to_send):
                 try:
                     current_reply_id_gif = reply_to_message_id if not first_message_sent else None
@@ -2484,9 +2472,10 @@ async def process_and_send_response(
 
         except Exception as e_main_process:
             logger.error(f"process_and_send_response [JSON]: CRITICAL UNEXPECTED ERROR in main block: {e_main_process}", exc_info=True)
-
-        logger.info("process_and_send_response [JSON]: --- EXIT --- Returning context_prepared_status: " + str(context_response_prepared))
-        return context_response_prepared
+        
+        finally:
+            logger.info("process_and_send_response [JSON]: --- EXIT --- Returning context_prepared_status: " + str(context_response_prepared))
+            return context_response_prepared
 
 async def send_limit_exceeded_message(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User):
     """Sends the 'limit exceeded' message with a subscribe prompt."""
@@ -2506,7 +2495,17 @@ async def send_limit_exceeded_message(update: Update, context: ContextTypes.DEFA
             f"✅ полная настройка поведения и настроений\n\n"
             f"👇 жми /subscribe или кнопку ниже!"
         )
-        text_to_send = escape_markdown_v2(text_raw)
+
+        keyboard = [[InlineKeyboardButton("✨ Подписаться", callback_data='subscribe')]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        if update.message:
+            await update.message.reply_text(text_raw, reply_markup=reply_markup)
+        elif update.callback_query and update.callback_query.message:
+            await context.bot.send_message(chat_id=user.id, text=text_raw, reply_markup=reply_markup)
+
+    except Exception as e:
+        logger.error(f"Error in send_limit_exceeded_message for user {user.id}: {e}")
 
         keyboard = [[InlineKeyboardButton("🚀 получить подписку!", callback_data="subscribe_info")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
