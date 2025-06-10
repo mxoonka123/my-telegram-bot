@@ -2323,49 +2323,19 @@ async def process_and_send_response(
             # Используем max_response_messages из настроек персоны, с fallback на 3
             max_messages = persona.config.max_response_messages if persona.config and persona.config.max_response_messages > 0 else 3
             text_parts_to_send = postprocess_response(text_without_gifs, max_messages)
-            else:
+        else:
             text_parts_to_send = []
 
-        # 3. Fallback: Если JSON не сработал - простое деление по предложениям
-        if not is_json_parsed:
-            logger.info("process_and_send_response [JSON]: Fallback - Splitting by sentences.")
-            # Используем текст *без* потенциальных GIF-ссылок для деления
-            gif_links = extract_gif_links(raw_llm_response) # Ищем GIF в сыром ответе
-            text_without_gifs = raw_llm_response
-            if gif_links:
-                 for gif_url in gif_links:
-                     text_without_gifs = re.sub(r'\s*' + re.escape(gif_url) + r'\s*', ' ', text_without_gifs, flags=re.IGNORECASE)
-                 text_without_gifs = re.sub(r'\s{2,}', ' ', text_without_gifs).strip()
-            
-            if not text_without_gifs:
-                 logger.warning("process_and_send_response [JSON Fallback]: No text content left after removing GIFs. Cannot split.")
-                 # Если были только гифки, они отправятся ниже
-                 text_parts_to_send = [] 
-            else:
-                # Используем postprocess_response из utils.py, который уже учитывает max_messages
-                max_messages_target_for_utils = persona.config.max_response_messages if persona.config else 3 # default 3
-                if max_messages_target_for_utils == 0: # random
-                    # utils.postprocess_response не умеет обрабатывать 0 (random) сам по себе
-                    # Для fallback установим "normal" (3), если настройка была "random" (0)
-                    logger.info(f"Fallback split: persona setting is 'random' (0), using target of 3 for postprocess_response.")
-                    max_messages_target_for_utils = 3 
-                elif max_messages_target_for_utils not in [1, 3, 6]: # Неожиданное значение
-                    logger.warning(f"Fallback split: Unexpected max_response_messages value {max_messages_target_for_utils}. Defaulting to 3.")
-                    max_messages_target_for_utils = 3
+    # 4. Извлечение GIF (из СЫРОГО ответа, т.к. они могли быть вне JSON)
+    gif_links_to_send = extract_gif_links(raw_llm_response)
+    if gif_links_to_send:
+         logger.info(f"process_and_send_response [JSON]: Found {len(gif_links_to_send)} GIF(s) to send: {gif_links_to_send}")
 
-                logger.info(f"Fallback split: Calling utils.postprocess_response with target messages: {max_messages_target_for_utils}")
-                text_parts_to_send = postprocess_response(text_without_gifs, max_messages_target_for_utils)
-                logger.info(f"process_and_send_response [JSON Fallback]: utils.postprocess_response returned {len(text_parts_to_send)} part(s).")
+    # Проверка, есть ли что отправлять
+    if not gif_links_to_send and not text_parts_to_send:
+        logger.warning("process_and_send_response [JSON]: No GIFs and no text parts after processing. Nothing to send.")
+        return context_response_prepared
 
-        # 4. Извлечение GIF (из СЫРОГО ответа, т.к. они могли быть вне JSON)
-        gif_links_to_send = extract_gif_links(raw_llm_response)
-        if gif_links_to_send:
-             logger.info(f"process_and_send_response [JSON]: Found {len(gif_links_to_send)} GIF(s) to send: {gif_links_to_send}")
-
-        # Проверка, есть ли что отправлять
-        if not gif_links_to_send and not text_parts_to_send:
-            logger.warning("process_and_send_response [JSON]: No GIFs and no text parts after processing. Nothing to send.")
-            return context_response_prepared
 
         # 5. Удаление приветствия из ПЕРВОЙ текстовой части (если есть)
         if text_parts_to_send and not is_first_message:
