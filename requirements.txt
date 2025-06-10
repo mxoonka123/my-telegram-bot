@@ -22,4 +22,3 @@ ffmpeg-python==0.2.0
 cffi>=1.0
 openai>=1.0.0,<2.0.0
 tiktoken
-psycopg2-binary

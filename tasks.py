@@ -18,7 +18,7 @@ from db import (
 )
 from persona import Persona
 from utils import postprocess_response, extract_gif_links, escape_markdown_v2
-from config import FREE_PERSONA_LIMIT, PAID_PERSONA_LIMIT
+from config import FREE_PERSONA_LIMIT, PAID_PERSONA_LIMIT, FREE_USER_MONTHLY_MESSAGE_LIMIT # <-- ИСПРАВЛЕННЫЙ ИМПОРТ
 
 logger = logging.getLogger(__name__)
 
@@ -92,16 +92,18 @@ async def check_subscription_expiry_task(context: ContextTypes.DEFAULT_TYPE):
             try:
                  # Prepare notification message
                  persona_limit_str = escape_markdown_v2(f"{user_info['persona_count']}/{FREE_PERSONA_LIMIT}")
-                 # Show current count against the NEW free limit
-                 daily_limit_str = escape_markdown_v2(f"{user_info['daily_count']}/{FREE_DAILY_MESSAGE_LIMIT}")
+                 # --- ИСПРАВЛЕННЫЙ БЛОК ---
+                 # Используем месячный лимит, а не несуществующий дневной
+                 monthly_limit_str = escape_markdown_v2(f"ранее использовано: {user_info['daily_count']}/{FREE_USER_MONTHLY_MESSAGE_LIMIT}")
 
                  text_to_send = (
                      escape_markdown_v2("⏳ ваша премиум подписка истекла\\.\n\n") +
                      f"*Текущие лимиты \\(Free\\):*\n" +
-                     f"Сообщения: `{daily_limit_str}`\n" +
+                     f"Сообщения \\(в мес\\.\\): `{monthly_limit_str}`\n" + # <-- ИЗМЕНЕНА СТРОКА
                      f"Личности: `{persona_limit_str}`\n\n" +
-                     escape_markdown_v2("Чтобы продолжить пользоваться всеми возможностями, вы можете снова оформить подписку командой `/subscribe`")
+                     escape_markdown_v2("Чтобы продолжить пользоваться всеми возможностями, вы можете снова оформить подписку командой `/subscribe`\\.")
                  )
+                 # --- КОНЕЦ ИСПРАВЛЕННОГО БЛОКА ---
                  await application.bot.send_message(
                      chat_id=telegram_id,
                      text=text_to_send,

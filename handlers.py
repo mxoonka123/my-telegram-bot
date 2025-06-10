@@ -3,70 +3,54 @@ import httpx
 import json
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from openai import AsyncOpenAI, OpenAIError
-from utils import count_openai_compatible_tokens
-# Ensure config is imported, it's likely already there but as a safeguard:
-import config
 import os
 import random
-import re
 import time
 import traceback
 import urllib.parse
 import uuid
 import wave
 import subprocess
-import asyncio
+from typing import List, Dict, Any, Optional, Union, Tuple
 
 # Константы для UI
 CHECK_MARK = "✅ "  # Unicode Check Mark Symbol
 PREMIUM_STAR = "⭐"  # Звездочка для премиум-функций
 
-# Импорты для работы с Vosk (будут использоваться после установки библиотеки)
+# Импорты для работы с Vosk
 try:
     from vosk import Model, KaldiRecognizer
     VOSK_AVAILABLE = True
 except ImportError:
-    logger = logging.getLogger(__name__)
-    logger.warning("Vosk library not available. Voice transcription will not work.")
     VOSK_AVAILABLE = False
-from datetime import datetime, timezone, timedelta
-from typing import List, Dict, Any, Optional, Union, Tuple
 
 from telegram import Update, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup, Chat as TgChat, CallbackQuery
 from telegram.constants import ChatAction, ParseMode, ChatMemberStatus, ChatType
 from telegram.error import BadRequest, Forbidden, TelegramError, TimedOut
-
 from telegram.ext import (
     ContextTypes, ConversationHandler, CommandHandler, MessageHandler, filters, CallbackQueryHandler
 )
 from sqlalchemy.orm import Session, joinedload, selectinload
 from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
-from sqlalchemy import func
-from sqlalchemy import delete
-from db import PersonaConfig as DBPersonaConfig # Added to fix NameError
-from db import get_active_chat_bot_instance_with_relations # Added to fix NameError
-from db import BotInstance as DBBotInstance
-from db import ChatBotInstance as DBChatBotInstance
+from sqlalchemy import func, delete
 
 from yookassa import Configuration as YookassaConfig, Payment
 from yookassa.domain.models.currency import Currency
 from yookassa.domain.request.payment_request_builder import PaymentRequestBuilder
 from yookassa.domain.models.receipt import Receipt, ReceiptItem
 
-
-import config
 from config import (
     OPENROUTER_API_KEY,
     OPENROUTER_API_BASE_URL,
     OPENROUTER_MODEL_NAME,
-    DEFAULT_MOOD_PROMPTS, YOOKASSA_SHOP_ID, YOOKASSA_SECRET_KEY,
+    YOOKASSA_SHOP_ID, YOOKASSA_SECRET_KEY,
     SUBSCRIPTION_PRICE_RUB, SUBSCRIPTION_CURRENCY, WEBHOOK_URL_BASE,
     SUBSCRIPTION_DURATION_DAYS,
     FREE_PERSONA_LIMIT, PAID_PERSONA_LIMIT, MAX_CONTEXT_MESSAGES_SENT_TO_LLM,
-    ADMIN_USER_ID, CHANNEL_ID
+    ADMIN_USER_ID, CHANNEL_ID, PREMIUM_USER_MONTHLY_MESSAGE_LIMIT
 )
 from db import (
     get_context_for_chat_bot, add_message_to_context,
@@ -75,8 +59,9 @@ from db import (
     get_persona_by_id_and_owner, check_and_update_user_limits, activate_subscription,
     create_bot_instance, link_bot_instance_to_chat, delete_persona_config,
     get_all_active_chat_bot_instances,
-    User, PersonaConfig as DBPersonaConfig, BotInstance as DBBotInstance, ChatBotInstance as DBChatBotInstance, ChatContext, func, get_db,
-    DEFAULT_SYSTEM_PROMPT_TEMPLATE
+    User, PersonaConfig as DBPersonaConfig, BotInstance as DBBotInstance, 
+    ChatBotInstance as DBChatBotInstance, ChatContext, func, get_db,
+    DEFAULT_SYSTEM_PROMPT_TEMPLATE, DEFAULT_MOOD_PROMPTS
 )
 from persona import Persona
 from utils import (
@@ -84,17 +69,16 @@ from utils import (
     extract_gif_links,
     get_time_info,
     escape_markdown_v2,
-    TELEGRAM_MAX_LEN
+    TELEGRAM_MAX_LEN,
+    count_openai_compatible_tokens
 )
 
 # Максимальная длина входящего сообщения от пользователя в символах
-MAX_USER_MESSAGE_LENGTH_CHARS = 600  # Примерно 150 токенов, можно настроить
+MAX_USER_MESSAGE_LENGTH_CHARS = 600
 
 logger = logging.getLogger(__name__)
 
 # --- Vosk model setup ---
-# Путь к модели Vosk для русского языка
-# Нужно скачать модель с https://alphacephei.com/vosk/models и распаковать в эту папку
 VOSK_MODEL_PATH = "model_vosk_ru"
 vosk_model = None
 
@@ -104,93 +88,65 @@ if VOSK_AVAILABLE:
             vosk_model = Model(VOSK_MODEL_PATH)
             logger.info(f"Vosk model loaded successfully from {VOSK_MODEL_PATH}")
         else:
-            logger.warning(f"Vosk model path not found: {VOSK_MODEL_PATH}. Please download a model from https://alphacephei.com/vosk/models")
+            logger.warning(f"Vosk model path not found: {VOSK_MODEL_PATH}. Please download a model.")
     except Exception as e:
         logger.error(f"Error loading Vosk model: {e}", exc_info=True)
         vosk_model = None
+else:
+    logger.warning("Vosk library not available. Voice transcription will not work.")
 
 async def transcribe_audio_with_vosk(audio_data: bytes, original_mime_type: str) -> Optional[str]:
     """
     Транскрибирует аудиоданные с помощью Vosk.
-    Сначала конвертирует OGG в WAV PCM 16kHz моно.
     """
     global vosk_model
-    
-    if not VOSK_AVAILABLE:
-        logger.error("Vosk library not available. Cannot transcribe.")
-        return None
-        
     if not vosk_model:
         logger.error("Vosk model not loaded. Cannot transcribe.")
         return None
 
-    # Имя временного входного файла (OGG)
     temp_ogg_filename = f"temp_voice_{uuid.uuid4().hex}.ogg"
-    # Имя временного выходного файла (WAV)
     temp_wav_filename = f"temp_voice_wav_{uuid.uuid4().hex}.wav"
 
     try:
-        # 1. Сохраняем полученные аудиоданные во временный OGG файл
         with open(temp_ogg_filename, "wb") as f_ogg:
             f_ogg.write(audio_data)
-        logger.info(f"Saved temporary OGG file: {temp_ogg_filename}")
 
-        # 2. Конвертируем OGG в WAV (16kHz, моно, pcm_s16le) с помощью ffmpeg
-        #    -ac 1 (моно), -ar 16000 (частота дискретизации 16kHz)
-        #    -f wav (формат WAV), -c:a pcm_s16le (кодек PCM signed 16-bit little-endian)
         command = [
-            "ffmpeg",
-            "-i", temp_ogg_filename,
-            "-ac", "1",
-            "-ar", "16000",
-            "-c:a", "pcm_s16le",
-            "-f", "wav",
-            temp_wav_filename,
-            "-y" # Перезаписывать выходной файл, если существует
+            "ffmpeg", "-i", temp_ogg_filename, "-ac", "1", "-ar", "16000",
+            "-c:a", "pcm_s16le", "-f", "wav", temp_wav_filename, "-y"
         ]
-        logger.info(f"Running ffmpeg command: {' '.join(command)}")
         process = await asyncio.create_subprocess_exec(
-            *command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
+            *command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
         )
         stdout, stderr = await process.communicate()
 
         if process.returncode != 0:
-            logger.error(f"ffmpeg conversion failed. Return code: {process.returncode}")
-            logger.error(f"ffmpeg stderr: {stderr.decode(errors='ignore')}")
-            logger.error(f"ffmpeg stdout: {stdout.decode(errors='ignore')}")
+            logger.error(f"ffmpeg conversion failed: {stderr.decode(errors='ignore')}")
             return None
-        logger.info(f"Successfully converted OGG to WAV: {temp_wav_filename}")
 
-        # 3. Транскрибируем WAV файл с помощью Vosk
-        wf = wave.open(temp_wav_filename, "rb")
-        if wf.getnchannels() != 1 or wf.getsampwidth() != 2 or wf.getcomptype() != "NONE" or wf.getframerate() != 16000:
-            logger.error(f"Audio file {temp_wav_filename} is not mono WAV 16kHz 16bit PCM. Details: CH={wf.getnchannels()}, SW={wf.getsampwidth()}, CT={wf.getcomptype()}, FR={wf.getframerate()}")
-            wf.close()
-            return None
-        
-        # Инициализируем KaldiRecognizer с частотой дискретизации аудиофайла
-        current_recognizer = KaldiRecognizer(vosk_model, wf.getframerate())
-        current_recognizer.SetWords(True) # Включить информацию о словах, если нужно
+        with wave.open(temp_wav_filename, "rb") as wf:
+            if wf.getnchannels() != 1 or wf.getsampwidth() != 2 or wf.getcomptype() != "NONE" or wf.getframerate() != 16000:
+                logger.error(f"Audio file {temp_wav_filename} is not in the correct format.")
+                return None
+            
+            current_recognizer = KaldiRecognizer(vosk_model, wf.getframerate())
+            current_recognizer.SetWords(True)
 
-        full_transcription = ""
-        while True:
-            data = wf.readframes(4000) # Читаем порциями
-            if len(data) == 0:
-                break
-            if current_recognizer.AcceptWaveform(data):
-                result = json.loads(current_recognizer.Result())
-                full_transcription += result.get("text", "") + " "
-        
-        # Получаем финальный результат
-        final_result_json = json.loads(current_recognizer.FinalResult())
-        full_transcription += final_result_json.get("text", "")
-        wf.close()
-        
-        transcribed_text = full_transcription.strip()
-        logger.info(f"Vosk transcription result: '{transcribed_text}'")
-        return transcribed_text if transcribed_text else None
+            full_transcription = ""
+            while True:
+                data = wf.readframes(4000)
+                if len(data) == 0:
+                    break
+                if current_recognizer.AcceptWaveform(data):
+                    result = json.loads(current_recognizer.Result())
+                    full_transcription += result.get("text", "") + " "
+            
+            final_result_json = json.loads(current_recognizer.FinalResult())
+            full_transcription += final_result_json.get("text", "")
+            
+            transcribed_text = full_transcription.strip()
+            logger.info(f"Vosk transcription result: '{transcribed_text}'")
+            return transcribed_text if transcribed_text else None
 
     except FileNotFoundError:
         logger.error("ffmpeg not found. Please ensure ffmpeg is installed and in your system's PATH.")
@@ -199,15 +155,10 @@ async def transcribe_audio_with_vosk(audio_data: bytes, original_mime_type: str)
         logger.error(f"Error during Vosk transcription: {e}", exc_info=True)
         return None
     finally:
-        # Удаляем временные файлы
-        for temp_file in [temp_ogg_filename, temp_wav_filename]:
-            if os.path.exists(temp_file):
-                try:
-                    os.remove(temp_file)
-                    logger.info(f"Removed temporary file: {temp_file}")
-                except Exception as e_remove:
-                    logger.error(f"Error removing temporary file {temp_file}: {e_remove}")
-
+        if os.path.exists(temp_ogg_filename):
+            os.remove(temp_ogg_filename)
+        if os.path.exists(temp_wav_filename):
+            os.remove(temp_wav_filename)
 # --- Helper Functions ---
 
 async def check_channel_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -1144,131 +1095,7 @@ async def send_to_gemini(system_prompt: str, messages: List[Dict[str, str]], ima
 
 # --- Core Logic Helpers ---
 
-async def process_and_send_response(
-    update: Optional[Update],
-    context: ContextTypes.DEFAULT_TYPE,
-    chat_id: Union[str, int],
-    persona: Persona,
-    full_bot_response_text: str,
-    db: Session,
-    reply_to_message_id: Optional[int] = None,
-    is_first_message: bool = False
-) -> bool:
-    """
-    Processes LLM response, robustly handling JSON and fallbacks. (v3 - Context Fix)
-    Saves CLEANED response to context. Sends parts sequentially.
-    """
-    logger.info(f"process_and_send_response [v3]: --- ENTER --- ChatID: {chat_id}, Persona: '{persona.name}'")
-    if not full_bot_response_text or not full_bot_response_text.strip():
-        logger.warning(f"process_and_send_response [v3]: Received empty response. Not processing.")
-        return False
 
-    raw_llm_response = full_bot_response_text.strip()
-    
-    # 1. Parse the response to get clean text parts
-    text_parts_to_send = None
-
-    def _robust_json_parser(text: str) -> Optional[List[str]]:
-        """Tries to extract and parse a JSON list of strings from messy LLM output."""
-        # Step 1: Extract content from markdown ```json ... ``` if it exists
-        match = re.search(r'```json\s*(.*?)\s*```', text, re.DOTALL | re.IGNORECASE)
-        if match:
-            text = match.group(1).strip()
-        
-        # Step 2: Iteratively try to parse the string if it's string-encoded JSON
-        for _ in range(5): # Limit recursion to prevent infinite loops
-            try:
-                data = json.loads(text)
-                
-                # If we get a list, we're likely done. Convert all items to string.
-                if isinstance(data, list):
-                    unwrapped_parts = [str(item).strip() for item in data if str(item).strip()]
-                    if unwrapped_parts:
-                        logger.info(f"Robust parser: Successfully parsed list with {len(unwrapped_parts)} items.")
-                        return unwrapped_parts
-                
-                # If we get a string, it means we've unwrapped one layer.
-                # Loop again to try and parse this new string.
-                if isinstance(data, str):
-                    text = data
-                    continue
-                
-                # If we get something else (dict, int, etc.), convert to string and return as single-item list
-                return [str(data)]
-
-            except (json.JSONDecodeError, TypeError):
-                # If at any point parsing fails, we assume it's not a valid JSON structure.
-                return None
-        return None # Return None if loop finishes without successful parsing
-
-    text_parts_to_send = _robust_json_parser(raw_llm_response)
-    
-    # 2. Prepare content for DB and for sending
-    content_to_save_in_db = ""
-    if text_parts_to_send is not None:
-        # Success parsing! Save clean, joined text to DB.
-        content_to_save_in_db = "\n".join(text_parts_to_send)
-        logger.info(f"Saving CLEAN response to context: '{content_to_save_in_db[:100]}...'")
-    else:
-        # Parse failed. Save raw response to DB, assuming it's plain text.
-        content_to_save_in_db = raw_llm_response
-        logger.warning(f"JSON parse failed. Saving RAW response to context: '{content_to_save_in_db[:100]}...'")
-        
-        # And generate parts for sending from this raw text.
-        text_without_gifs = raw_llm_response
-        gif_links = extract_gif_links(raw_llm_response)
-        if gif_links:
-            for gif in gif_links:
-                text_without_gifs = re.sub(r'\s*' + re.escape(gif) + r'\s*', ' ', text_without_gifs, flags=re.IGNORECASE)
-        text_without_gifs = re.sub(r'\s{2,}', ' ', text_without_gifs).strip()
-        
-        if text_without_gifs:
-            # Используем max_response_messages из настроек персоны, с fallback на 3
-            max_messages = persona.config.max_response_messages if persona.config and persona.config.max_response_messages > 0 else 3
-            text_parts_to_send = postprocess_response(text_without_gifs, max_messages)
-        else:
-            text_parts_to_send = []
-
-    # 3. Save the prepared content (clean or raw) to the DB
-    context_response_prepared = False
-    if persona.chat_instance:
-        try:
-            add_message_to_context(db, persona.chat_instance.id, "assistant", content_to_save_in_db)
-            context_response_prepared = True
-            logger.debug(f"Response added to context for CBI {persona.chat_instance.id}.")
-        except Exception as e:
-            logger.error(f"DB Error saving assistant response to context: {e}", exc_info=True)
-    else:
-        logger.error("Cannot add response to context, chat_instance is None.")
-
-    # 4. Sequentially send messages
-    gif_links_to_send = extract_gif_links(raw_llm_response)
-
-    if not text_parts_to_send and not gif_links_to_send:
-        logger.warning("process_and_send_response [v3]: No text parts or GIFs found after processing. Nothing to send.")
-        return context_response_prepared
-
-    first_message_sent = False
-    chat_id_str = str(chat_id)
-    chat_type = update.effective_chat.type if update and update.effective_chat else None
-
-    # Send GIFs
-    for gif_url in gif_links_to_send:
-        try:
-            current_reply_id = reply_to_message_id if not first_message_sent else None
-            await context.bot.send_animation(chat_id=chat_id_str, animation=gif_url, reply_to_message_id=current_reply_id)
-            first_message_sent = True
-            await asyncio.sleep(random.uniform(0.5, 1.2))
-        except Exception as e:
-            logger.error(f"Error sending gif {gif_url} to chat {chat_id_str}: {e}", exc_info=True)
-
-    # Send Text
-    for i, part in enumerate(text_parts_to_send):
-        part_raw = part.strip()
-        if not part_raw: continue
-
-        if chat_type in [ChatType.GROUP, ChatType.SUPERGROUP]:
-import asyncio
 import httpx
 import json
 import logging
@@ -2695,20 +2522,19 @@ async def process_and_send_response(
 async def send_limit_exceeded_message(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User):
     """Sends the 'limit exceeded' message with a subscribe prompt."""
     try:
-        count_raw = str(user.daily_message_count)
         limit_raw = str(user.message_limit)
         price_raw = f"{SUBSCRIPTION_PRICE_RUB:.0f}"
         currency_raw = SUBSCRIPTION_CURRENCY
-        paid_limit_raw = str(PAID_DAILY_MESSAGE_LIMIT)
+        paid_limit_raw = str(PREMIUM_USER_MONTHLY_MESSAGE_LIMIT)
         paid_persona_raw = str(PAID_PERSONA_LIMIT)
 
         text_raw = (
-            f"упс! 😕 лимит сообщений ({count_raw}) на сегодня достигнут.\n\n"
+            f"упс! 😕 месячный лимит сообщений ({limit_raw}) достигнут.\n\n"
             f"✨ хочешь большего? ✨\n"
             f"подписка за {price_raw} {currency_raw}/мес дает:\n"
-            f"✅ до {paid_limit_raw} сообщений в день\n"
+            f"✅ до {paid_limit_raw} сообщений в месяц\n"
             f"✅ до {paid_persona_raw} личностей\n"
-            f"✅ полная настройка поведения и настроений\n\n" # Обновлен текст
+            f"✅ полная настройка поведения и настроений\n\n"
             f"👇 жми /subscribe или кнопку ниже!"
         )
         text_to_send = escape_markdown_v2(text_raw)
