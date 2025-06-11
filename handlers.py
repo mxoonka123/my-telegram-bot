@@ -1096,1155 +1096,21 @@ async def send_to_gemini(system_prompt: str, messages: List[Dict[str, str]], ima
 # --- Core Logic Helpers ---
 
 
-import httpx
-import json
-import logging
-import re
-from datetime import datetime, timezone
-from openai import AsyncOpenAI, OpenAIError
-from utils import count_openai_compatible_tokens
-# Ensure config is imported, it's likely already there but as a safeguard:
-import config
-import os
-import random
-import re
-import time
-import traceback
-import urllib.parse
-import uuid
-import wave
-import subprocess
-import asyncio
-
-# Константы для UI
-CHECK_MARK = "✅ "  # Unicode Check Mark Symbol
-PREMIUM_STAR = "⭐"  # Звездочка для премиум-функций
-
-# Импорты для работы с Vosk (будут использоваться после установки библиотеки)
-try:
-    from vosk import Model, KaldiRecognizer
-    VOSK_AVAILABLE = True
-except ImportError:
-    logger = logging.getLogger(__name__)
-    logger.warning("Vosk library not available. Voice transcription will not work.")
-    VOSK_AVAILABLE = False
-from datetime import datetime, timezone, timedelta
-from typing import List, Dict, Any, Optional, Union, Tuple
-
-from telegram import Update, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup, Chat as TgChat, CallbackQuery
-from telegram.constants import ChatAction, ParseMode, ChatMemberStatus, ChatType
-from telegram.error import BadRequest, Forbidden, TelegramError, TimedOut
-
-from telegram.ext import (
-    ContextTypes, ConversationHandler, CommandHandler, MessageHandler, filters, CallbackQueryHandler
-)
-from sqlalchemy.orm import Session, joinedload, selectinload
-from sqlalchemy.orm.attributes import flag_modified
-from sqlalchemy.exc import IntegrityError, SQLAlchemyError
-from sqlalchemy import func
-from sqlalchemy import delete
-from db import PersonaConfig as DBPersonaConfig # Added to fix NameError
-from db import get_active_chat_bot_instance_with_relations # Added to fix NameError
-from db import BotInstance as DBBotInstance
-from db import ChatBotInstance as DBChatBotInstance
-
-from yookassa import Configuration as YookassaConfig, Payment
-from yookassa.domain.models.currency import Currency
-from yookassa.domain.request.payment_request_builder import PaymentRequestBuilder
-from yookassa.domain.models.receipt import Receipt, ReceiptItem
-
-
-import config
-from config import (
-    OPENROUTER_API_KEY,
-    OPENROUTER_API_BASE_URL,
-    OPENROUTER_MODEL_NAME,
-    DEFAULT_MOOD_PROMPTS, YOOKASSA_SHOP_ID, YOOKASSA_SECRET_KEY,
-    SUBSCRIPTION_PRICE_RUB, SUBSCRIPTION_CURRENCY, WEBHOOK_URL_BASE,
-    SUBSCRIPTION_DURATION_DAYS,
-    FREE_PERSONA_LIMIT, PAID_PERSONA_LIMIT, MAX_CONTEXT_MESSAGES_SENT_TO_LLM,
-    ADMIN_USER_ID, CHANNEL_ID
-)
-from db import (
-    get_context_for_chat_bot, add_message_to_context,
-    set_mood_for_chat_bot, get_mood_for_chat_bot, get_or_create_user,
-    create_persona_config, get_personas_by_owner, get_persona_by_name_and_owner,
-    get_persona_by_id_and_owner, check_and_update_user_limits, activate_subscription,
-    create_bot_instance, link_bot_instance_to_chat, delete_persona_config,
-    get_all_active_chat_bot_instances,
-    User, PersonaConfig as DBPersonaConfig, BotInstance as DBBotInstance, ChatBotInstance as DBChatBotInstance, ChatContext, func, get_db,
-    DEFAULT_SYSTEM_PROMPT_TEMPLATE
-)
-from persona import Persona
-from utils import (
-    postprocess_response, 
-    extract_gif_links,
-    get_time_info,
-    escape_markdown_v2,
-    TELEGRAM_MAX_LEN
-)
-
-# Максимальная длина входящего сообщения от пользователя в символах
-MAX_USER_MESSAGE_LENGTH_CHARS = 600  # Примерно 150 токенов, можно настроить
-
-logger = logging.getLogger(__name__)
-
-# --- Vosk model setup ---
-# Путь к модели Vosk для русского языка
-# Нужно скачать модель с https://alphacephei.com/vosk/models и распаковать в эту папку
-VOSK_MODEL_PATH = "model_vosk_ru"
-vosk_model = None
-
-if VOSK_AVAILABLE:
-    try:
-        if os.path.exists(VOSK_MODEL_PATH):
-            vosk_model = Model(VOSK_MODEL_PATH)
-            logger.info(f"Vosk model loaded successfully from {VOSK_MODEL_PATH}")
-        else:
-            logger.warning(f"Vosk model path not found: {VOSK_MODEL_PATH}. Please download a model from https://alphacephei.com/vosk/models")
-    except Exception as e:
-        logger.error(f"Error loading Vosk model: {e}", exc_info=True)
-        vosk_model = None
-
-async def transcribe_audio_with_vosk(audio_data: bytes, original_mime_type: str) -> Optional[str]:
-    """
-    Транскрибирует аудиоданные с помощью Vosk.
-    Сначала конвертирует OGG в WAV PCM 16kHz моно.
-    """
-    global vosk_model
-    
-    if not VOSK_AVAILABLE:
-        logger.error("Vosk library not available. Cannot transcribe.")
-        return None
-        
-    if not vosk_model:
-        logger.error("Vosk model not loaded. Cannot transcribe.")
-        return None
-
-    # Имя временного входного файла (OGG)
-    temp_ogg_filename = f"temp_voice_{uuid.uuid4().hex}.ogg"
-    # Имя временного выходного файла (WAV)
-    temp_wav_filename = f"temp_voice_wav_{uuid.uuid4().hex}.wav"
-
-    try:
-        # 1. Сохраняем полученные аудиоданные во временный OGG файл
-        with open(temp_ogg_filename, "wb") as f_ogg:
-            f_ogg.write(audio_data)
-        logger.info(f"Saved temporary OGG file: {temp_ogg_filename}")
-
-        # 2. Конвертируем OGG в WAV (16kHz, моно, pcm_s16le) с помощью ffmpeg
-        #    -ac 1 (моно), -ar 16000 (частота дискретизации 16kHz)
-        #    -f wav (формат WAV), -c:a pcm_s16le (кодек PCM signed 16-bit little-endian)
-        command = [
-            "ffmpeg",
-            "-i", temp_ogg_filename,
-            "-ac", "1",
-            "-ar", "16000",
-            "-c:a", "pcm_s16le",
-            "-f", "wav",
-            temp_wav_filename,
-            "-y" # Перезаписывать выходной файл, если существует
-        ]
-        logger.info(f"Running ffmpeg command: {' '.join(command)}")
-        process = await asyncio.create_subprocess_exec(
-            *command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        stdout, stderr = await process.communicate()
-
-        if process.returncode != 0:
-            logger.error(f"ffmpeg conversion failed. Return code: {process.returncode}")
-            logger.error(f"ffmpeg stderr: {stderr.decode(errors='ignore')}")
-            logger.error(f"ffmpeg stdout: {stdout.decode(errors='ignore')}")
-            return None
-        logger.info(f"Successfully converted OGG to WAV: {temp_wav_filename}")
-
-        # 3. Транскрибируем WAV файл с помощью Vosk
-        wf = wave.open(temp_wav_filename, "rb")
-        if wf.getnchannels() != 1 or wf.getsampwidth() != 2 or wf.getcomptype() != "NONE" or wf.getframerate() != 16000:
-            logger.error(f"Audio file {temp_wav_filename} is not mono WAV 16kHz 16bit PCM. Details: CH={wf.getnchannels()}, SW={wf.getsampwidth()}, CT={wf.getcomptype()}, FR={wf.getframerate()}")
-            wf.close()
-            return None
-        
-        # Инициализируем KaldiRecognizer с частотой дискретизации аудиофайла
-        current_recognizer = KaldiRecognizer(vosk_model, wf.getframerate())
-        current_recognizer.SetWords(True) # Включить информацию о словах, если нужно
-
-        full_transcription = ""
-        while True:
-            data = wf.readframes(4000) # Читаем порциями
-            if len(data) == 0:
-                break
-            if current_recognizer.AcceptWaveform(data):
-                result = json.loads(current_recognizer.Result())
-                full_transcription += result.get("text", "") + " "
-        
-        # Получаем финальный результат
-        final_result_json = json.loads(current_recognizer.FinalResult())
-        full_transcription += final_result_json.get("text", "")
-        wf.close()
-        
-        transcribed_text = full_transcription.strip()
-        logger.info(f"Vosk transcription result: '{transcribed_text}'")
-        return transcribed_text if transcribed_text else None
-
-    except FileNotFoundError:
-        logger.error("ffmpeg not found. Please ensure ffmpeg is installed and in your system's PATH.")
-        return None
-    except Exception as e:
-        logger.error(f"Error during Vosk transcription: {e}", exc_info=True)
-        return None
-    finally:
-        # Удаляем временные файлы
-        for temp_file in [temp_ogg_filename, temp_wav_filename]:
-            if os.path.exists(temp_file):
-                try:
-                    os.remove(temp_file)
-                    logger.info(f"Removed temporary file: {temp_file}")
-                except Exception as e_remove:
-                    logger.error(f"Error removing temporary file {temp_file}: {e_remove}")
-
-# --- Helper Functions ---
-
-async def check_channel_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    """Checks if the user is subscribed to the required channel."""
-    if not CHANNEL_ID:
-        logger.warning("CHANNEL_ID not set in config. Skipping subscription check.")
-        return True # Skip check if no channel is configured
-
-    user_id = None
-    # Determine user ID from update or callback query
-    eff_user = getattr(update, 'effective_user', None)
-    cb_user = getattr(getattr(update, 'callback_query', None), 'from_user', None)
-
-    if eff_user:
-        user_id = eff_user.id
-    elif cb_user:
-        user_id = cb_user.id
-        logger.debug(f"Using user_id {user_id} from callback_query.")
-    else:
-        logger.warning("check_channel_subscription called without valid user information.")
-        return False # Cannot check without user ID
-
-    # Admin always passes
-    if is_admin(user_id):
-        return True
-
-    logger.debug(f"Checking subscription status for user {user_id} in channel {CHANNEL_ID}")
-    try:
-        member = await context.bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id, read_timeout=10)
-        # Check if user status is one of the allowed ones
-        allowed_statuses = [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]
-        logger.debug(f"User {user_id} status in {CHANNEL_ID}: {member.status}")
-        if member.status in allowed_statuses:
-            logger.debug(f"User {user_id} IS subscribed to {CHANNEL_ID} (status: {member.status})")
-            return True
-        else:
-            logger.info(f"User {user_id} is NOT subscribed to {CHANNEL_ID} (status: {member.status})")
-            return False
-    except TimedOut:
-        logger.warning(f"Timeout checking subscription for user {user_id} in channel {CHANNEL_ID}. Denying access.")
-        # Try to inform the user about the timeout
-        target_message = getattr(update, 'effective_message', None) or getattr(getattr(update, 'callback_query', None), 'message', None)
-        if target_message:
-            try:
-                await target_message.reply_text(
-                    escape_markdown_v2("⏳ не удалось проверить подписку на канал (таймаут). попробуйте еще раз позже."),
-                    parse_mode=ParseMode.MARKDOWN_V2
-                )
-            except Exception as send_err:
-                 logger.error(f"Failed to send 'Timeout' error message: {send_err}")
-        return False
-    except Forbidden as e:
-        logger.error(f"Forbidden error checking subscription for user {user_id} in channel {CHANNEL_ID}: {e}. Ensure bot is admin in the channel.")
-        # Try to inform the user about the permission issue
-        target_message = getattr(update, 'effective_message', None) or getattr(getattr(update, 'callback_query', None), 'message', None)
-        if target_message:
-            try:
-                await target_message.reply_text(
-                    escape_markdown_v2("❌ не удалось проверить подписку на канал. убедитесь, что бот добавлен в канал как администратор."),
-                    parse_mode=ParseMode.MARKDOWN_V2
-                )
-            except Exception as send_err:
-                 logger.error(f"Failed to send 'Forbidden' error message: {send_err}")
-        return False
-    except BadRequest as e:
-         error_message = str(e).lower()
-         logger.error(f"BadRequest checking subscription for user {user_id} in channel {CHANNEL_ID}: {e}")
-         reply_text_raw = "❌ произошла ошибка при проверке подписки (badrequest). попробуйте позже."
-         if "member list is inaccessible" in error_message:
-             logger.error(f"-> Specific BadRequest: Member list is inaccessible. Bot might lack permissions or channel privacy settings restrictive?")
-             reply_text_raw = "❌ не удается получить доступ к списку участников канала для проверки подписки. возможно, настройки канала не позволяют это сделать."
-         elif "user not found" in error_message:
-             logger.info(f"-> Specific BadRequest: User {user_id} not found in channel {CHANNEL_ID}.")
-             return False
-         elif "chat not found" in error_message:
-              logger.error(f"-> Specific BadRequest: Chat {CHANNEL_ID} not found. Check CHANNEL_ID config.")
-              reply_text_raw = "❌ ошибка: не удалось найти указанный канал для проверки подписки. проверьте настройки бота."
-
-         target_message = getattr(update, 'effective_message', None) or getattr(getattr(update, 'callback_query', None), 'message', None)
-         if target_message:
-             try: await target_message.reply_text(escape_markdown_v2(reply_text_raw), parse_mode=ParseMode.MARKDOWN_V2)
-             except Exception as send_err: logger.error(f"Failed to send 'BadRequest' error message: {send_err}")
-         return False
-    except TelegramError as e:
-        logger.error(f"Telegram error checking subscription for user {user_id} in channel {CHANNEL_ID}: {e}")
-        target_message = getattr(update, 'effective_message', None) or getattr(getattr(update, 'callback_query', None), 'message', None)
-        if target_message:
-            try: await target_message.reply_text(escape_markdown_v2("❌ произошла ошибка telegram при проверке подписки. попробуйте позже."), parse_mode=ParseMode.MARKDOWN_V2)
-            except Exception as send_err: logger.error(f"Failed to send 'TelegramError' message: {send_err}")
-        return False
-    except Exception as e:
-        logger.error(f"Unexpected error checking subscription for user {user_id} in channel {CHANNEL_ID}: {e}", exc_info=True)
-        return False
-
-async def send_subscription_required_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Sends a message asking the user to subscribe to the channel."""
-    target_message = getattr(update, 'effective_message', None) or getattr(getattr(update, 'callback_query', None), 'message', None)
-
-    if not target_message:
-         logger.warning("Cannot send subscription required message: no target message found.")
-         return
-
-    channel_username = None
-    if isinstance(CHANNEL_ID, str) and CHANNEL_ID.startswith('@'):
-        channel_username = CHANNEL_ID.lstrip('@')
-
-    error_msg_raw = "❌ произошла ошибка при получении ссылки на канал."
-    subscribe_text_raw = "❗ для использования бота необходимо подписаться на наш канал."
-    button_text = "➡️ перейти к каналу"
-    keyboard = None
-
-    if channel_username:
-        subscribe_text_raw = f"❗ для использования бота необходимо подписаться на канал @{channel_username}."
-        keyboard = [[InlineKeyboardButton(button_text, url=f"https://t.me/{channel_username}")]]
-    elif isinstance(CHANNEL_ID, int):
-         subscribe_text_raw = "❗ для использования бота необходимо подписаться на наш основной канал. пожалуйста, найдите канал в поиске или через описание бота."
-    else:
-         logger.error(f"Invalid CHANNEL_ID format: {CHANNEL_ID}. Cannot generate subscription message correctly.")
-         subscribe_text_raw = error_msg_raw
-
-    reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
-    escaped_text = escape_markdown_v2(subscribe_text_raw)
-    try:
-        await target_message.reply_text(escaped_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
-        if update.callback_query:
-             try: await update.callback_query.answer()
-             except: pass
-    except BadRequest as e:
-        logger.error(f"Failed sending subscription required message (BadRequest): {e} - Text Raw: '{subscribe_text_raw}' Escaped: '{escaped_text[:100]}...'")
-        try:
-            await target_message.reply_text(subscribe_text_raw, reply_markup=reply_markup, parse_mode=None)
-        except Exception as fallback_e:
-            logger.error(f"Failed sending plain subscription required message: {fallback_e}")
-    except Exception as e:
-         logger.error(f"Failed to send subscription required message: {e}")
-
-def is_admin(user_id: int) -> bool:
-    """Checks if the user ID belongs to the admin."""
-    return user_id == ADMIN_USER_ID
-
-# --- Conversation States ---
-# Edit Persona Wizard States
-(EDIT_WIZARD_MENU, # Main wizard menu
- EDIT_NAME, EDIT_DESCRIPTION, EDIT_COMM_STYLE, EDIT_VERBOSITY,
- EDIT_GROUP_REPLY, EDIT_MEDIA_REACTION,
- EDIT_MOODS_ENTRY, # Entry point for mood sub-conversation
- # Mood Editing Sub-Conversation States
- EDIT_MOOD_CHOICE, EDIT_MOOD_NAME, EDIT_MOOD_PROMPT, DELETE_MOOD_CONFIRM,
- # Delete Persona Conversation State
- DELETE_PERSONA_CONFIRM,
- EDIT_MAX_MESSAGES, EDIT_MESSAGE_VOLUME # <-- New states
- ) = range(15) # Total 15 states
-
-# --- Terms of Service Text ---
-# (Assuming TOS_TEXT_RAW and TOS_TEXT are defined as before)
-TOS_TEXT_RAW = """
-📜 пользовательское соглашение сервиса @NunuAiBot
-
-привет! добро пожаловать в @NunuAiBot! мы рады, что ты с нами. это соглашение — документ, который объясняет правила использования нашего сервиса. прочитай его, пожалуйста.
-
-дата последнего обновления: 01.03.2025
-
-1. о чем это соглашение?
-1.1. это пользовательское соглашение (или просто "соглашение") — договор между тобой (далее – "пользователь" или "ты") и нами (владельцем telegram-бота @NunuAiBot, далее – "сервис" или "мы"). оно описывает условия использования сервиса.
-1.2. начиная использовать наш сервис (просто отправляя боту любое сообщение или команду), ты подтверждаешь, что прочитал, понял и согласен со всеми условиями этого соглашения. если ты не согласен хотя бы с одним пунктом, пожалуйста, прекрати использование сервиса.
-1.3. наш сервис предоставляет тебе интересную возможность создавать и общаться с виртуальными собеседниками на базе искусственного интеллекта (далее – "личности" или "ai-собеседники").
-
-2. про подписку и оплату
-2.1. мы предлагаем два уровня доступа: бесплатный и premium (платный). возможности и лимиты для каждого уровня подробно описаны внутри бота, например, в командах `/profile` и `/subscribe`.
-2.2. платная подписка дает тебе расширенные возможности и увеличенные лимиты на период в {subscription_duration} дней.
-2.3. стоимость подписки составляет {subscription_price} {subscription_currency} за {subscription_duration} дней.
-2.4. оплата проходит через безопасную платежную систему yookassa. важно: мы не получаем и не храним твои платежные данные (номер карты и т.п.). все безопасно.
-2.5. политика возвратов: покупая подписку, ты получаешь доступ к расширенным возможностям сервиса сразу же после оплаты. поскольку ты получаешь услугу немедленно, оплаченные средства за этот период доступа, к сожалению, не подлежат возврату.
-2.6. в редких случаях, если сервис окажется недоступен по нашей вине в течение длительного времени (более 7 дней подряд), и у тебя будет активная подписка, ты можешь написать нам в поддержку (контакт указан в биографии бота и в нашем telegram-канале). мы рассмотрим возможность продлить твою подписку на срок недоступности сервиса. решение принимается индивидуально.
-
-3. твои и наши права и обязанности
-3.1. что ожидается от тебя (твои обязанности):
-•   использовать сервис только в законных целях и не нарушать никакие законы при его использовании.
-•   не пытаться вмешаться в работу сервиса или получить несанкционированный доступ.
-•   не использовать сервис для рассылки спама, вредоносных программ или любой запрещенной информации.
-•   если требуется (например, для оплаты), предоставлять точную и правдивую информацию.
-•   поскольку у сервиса нет возрастных ограничений, ты подтверждаешь свою способность принять условия настоящего соглашения.
-3.2. что можем делать мы (наши права):
-•   мы можем менять условия этого соглашения. если это произойдет, мы уведомим тебя, опубликовав новую версию соглашения в нашем telegram-канале или иным доступным способом в рамках сервиса. твое дальнейшее использование сервиса будет означать согласие с изменениями.
-•   мы можем временно приостановить или полностью прекратить твой доступ к сервису, если ты нарушишь условия этого соглашения.
-•   мы можем изменять сам сервис: добавлять или убирать функции, менять лимиты или стоимость подписки.
-
-4. важное предупреждение об ограничении ответственности
-4.1. сервис предоставляется "как есть". это значит, что мы не можем гарантировать его идеальную работу без сбоев или ошибок. технологии иногда подводят, и мы не несем ответственности за возможные проблемы, возникшие не по нашей прямой вине.
-4.2. помни, личности — это искусственный интеллект. их ответы генерируются автоматически и могут быть неточными, неполными, странными или не соответствующими твоим ожиданиям или реальности. мы не несем никакой ответственности за содержание ответов, сгенерированных ai-собеседниками. не воспринимай их как истину в последней инстанции или профессиональный совет.
-4.3. мы не несем ответственности за любые прямые или косвенные убытки или ущерб, который ты мог понести в результате использования (или невозможности использования) сервиса.
-
-5. про твои данные (конфиденциальность)
-5.1. для работы сервиса нам приходится собирать и обрабатывать минимальные данные: твой telegram id (для идентификации аккаунта), имя пользователя telegram (username, если есть), информацию о твоей подписке, информацию о созданных тобой личностях, а также историю твоих сообщений с личностями (это нужно ai для поддержания контекста разговора).
-5.2. мы предпринимаем разумные шаги для защиты твоих данных, но, пожалуйста, помни, что передача информации через интернет никогда не может быть абсолютно безопасной.
-
-6. действие соглашения
-6.1. настоящее соглашение начинает действовать с момента, как ты впервые используешь сервис, и действует до момента, пока ты не перестанешь им пользоваться или пока сервис не прекратит свою работу.
-
-7. интеллектуальная собственность
-7.1. ты сохраняешь все права на контент (текст), который ты создаешь и вводишь в сервис в процессе взаимодействия с ai-собеседниками.
-7.2. ты предоставляешь нам неисключительную, безвозмездную, действующую по всему миру лицензию на использование твоего контента исключительно в целях предоставления, поддержания и улучшения работы сервиса (например, для обработки твоих запросов, сохранения контекста диалога, анонимного анализа для улучшения моделей, если применимо).
-7.3. все права на сам сервис (код бота, дизайн, название, графические элементы и т.д.) принадлежат владельцу сервиса.
-7.4. ответы, сгенерированные ai-собеседниками, являются результатом работы алгоритмов искусственного интеллекта. ты можешь использовать полученные ответы в личных некоммерческих целях, но признаешь, что они созданы машиной и не являются твоей или нашей интеллектуальной собственностью в традиционном понимании.
-
-8. заключительные положения
-8.1. все споры и разногласия решаются путем переговоров. если это не поможет, споры будут рассматриваться в соответствии с законодательством российской федерации.
-8.2. по всем вопросам, касающимся настоящего соглашения или работы сервиса, ты можешь обращаться к нам через контакты, указанные в биографии бота и в нашем telegram-канале.
-"""
-formatted_tos_text_for_bot = TOS_TEXT_RAW.format(
-    subscription_duration=config.SUBSCRIPTION_DURATION_DAYS,
-    subscription_price=f"{config.SUBSCRIPTION_PRICE_RUB:.0f}", # Format as integer
-    subscription_currency=config.SUBSCRIPTION_CURRENCY
-)
-TOS_TEXT = escape_markdown_v2(formatted_tos_text_for_bot)
-
-# --- Error Handler ---
-async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Log Errors caused by Updates."""
-    logger.error("Exception while handling an update:", exc_info=context.error)
-
-    if isinstance(context.error, Forbidden):
-         if CHANNEL_ID and str(CHANNEL_ID) in str(context.error):
-             logger.warning(f"Error handler caught Forbidden regarding channel {CHANNEL_ID}. Bot likely not admin or kicked.")
-             return
-         else:
-             logger.warning(f"Caught generic Forbidden error: {context.error}")
-             return
-
-    elif isinstance(context.error, BadRequest):
-        error_text = str(context.error).lower()
-        if "message is not modified" in error_text:
-            logger.info("Ignoring 'message is not modified' error.")
-            return
-        elif "can't parse entities" in error_text:
-            logger.error(f"MARKDOWN PARSE ERROR: {context.error}. Update: {update}")
-            if isinstance(update, Update) and update.effective_message:
-                try:
-                    await update.effective_message.reply_text("❌ произошла ошибка при форматировании ответа. пожалуйста, сообщите администратору.", parse_mode=None)
-                except Exception as send_err:
-                    logger.error(f"Failed to send 'Markdown parse error' message: {send_err}")
-            return
-        elif "chat member status is required" in error_text:
-             logger.warning(f"Error handler caught BadRequest likely related to missing channel membership check: {context.error}")
-             return
-        elif "chat not found" in error_text:
-             logger.error(f"BadRequest: Chat not found error: {context.error}")
-             return
-        elif "reply message not found" in error_text:
-            logger.warning(f"BadRequest: Reply message not found. Original message might have been deleted. Update: {update}")
-            return
-        else:
-             logger.error(f"Unhandled BadRequest error: {context.error}")
-
-    elif isinstance(context.error, TimedOut):
-         logger.warning(f"Telegram API request timed out: {context.error}")
-         return
-
-    elif isinstance(context.error, TelegramError):
-         logger.error(f"Generic Telegram API error: {context.error}")
-
-    error_message_raw = "упс... 😕 что-то пошло не так. попробуй еще раз позже."
-    escaped_error_message = escape_markdown_v2(error_message_raw)
-    if isinstance(update, Update) and update.effective_message:
-        try:
-            await update.effective_message.reply_text(escaped_error_message, parse_mode=ParseMode.MARKDOWN_V2)
-        except BadRequest as e_md:
-             if "can't parse entities" in str(e_md).lower():
-                 logger.error(f"Failed sending even basic Markdown error msg ({e_md}). Sending plain.")
-                 try: await update.effective_message.reply_text(error_message_raw, parse_mode=None)
-                 except Exception as final_e: logger.error(f"Failed even sending plain text error message: {final_e}")
-             else:
-                 logger.error(f"Failed sending error message (BadRequest, not parse): {e_md}")
-                 try: await update.effective_message.reply_text(error_message_raw, parse_mode=None)
-                 except Exception as final_e: logger.error(f"Failed even sending plain text error message: {final_e}")
-        except Exception as e:
-            logger.error(f"Failed to send error message to user: {e}")
-            try:
-                 await update.effective_message.reply_text(error_message_raw, parse_mode=None)
-            except Exception as final_e:
-                 logger.error(f"Failed even sending plain text error message: {final_e}")
-
-
-# --- Core Logic Helpers ---
-
-def get_persona_and_context_with_owner(chat_id: Union[str, int], db: Session) -> Optional[Tuple[Persona, List[Dict[str, str]], User]]:
-    """Fetches the active Persona, its context, and its owner User for a given chat."""
-    chat_id_str = str(chat_id)
-    chat_instance = get_active_chat_bot_instance_with_relations(db, chat_id_str)
-    if not chat_instance:
-        return None
-
-    bot_instance = chat_instance.bot_instance_ref
-    if not bot_instance:
-         logger.error(f"ChatBotInstance {chat_instance.id} for chat {chat_id_str} is missing linked BotInstance.")
-         return None
-    if not bot_instance.persona_config:
-         logger.error(f"BotInstance {bot_instance.id} (linked to chat {chat_id_str}) is missing linked PersonaConfig.")
-         return None
-    owner_user = bot_instance.owner or bot_instance.persona_config.owner
-    if not owner_user:
-         logger.error(f"Could not load Owner for BotInstance {bot_instance.id} (linked to chat {chat_id_str}).")
-         return None
-
-    persona_config = bot_instance.persona_config
-
-    try:
-        persona = Persona(persona_config, chat_instance)
-    except ValueError as e:
-         logger.error(f"Failed to initialize Persona for config {persona_config.id} in chat {chat_id_str}: {e}", exc_info=True)
-         return None
-
-    context_list = get_context_for_chat_bot(db, chat_instance.id)
-    return persona, context_list, owner_user
-
-
-async def send_to_gemini(system_prompt: str, messages: List[Dict[str, str]], image_data: Optional[bytes] = None, audio_data: Optional[bytes] = None) -> str:
-    """Sends the prompt and context to the Gemini API and returns the response."""
-    
-    if not config.GEMINI_API_KEY:
-        logger.error("GEMINI_API_KEY is not set.")
-        return escape_markdown_v2("❌ ошибка: ключ api gemini не настроен.")
-
-    if not messages:
-        logger.error("send_to_gemini called with an empty messages list!")
-        return "ошибка: нет сообщений для отправки в ai."
-
-    api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={config.GEMINI_API_KEY}"
-    
-    headers = {
-        "Content-Type": "application/json",
-    }
-
-    # Transform messages to Gemini format
-    # Gemini expects a list of contents, where each content has role and parts.
-    # System prompt can be added to the first user message or as a separate turn.
-    gemini_contents = []
-    is_first_user_message = True
-
-    for msg in messages[-config.MAX_CONTEXT_MESSAGES_SENT_TO_LLM:]:
-        role = msg.get("role")
-        content_text = msg.get("content", "")
-        
-        # Gemini uses 'user' and 'model' roles.
-        gemini_role = "user" if role == "user" else "model"
-        
-        # Prepend system_prompt to the first user message's content
-        # Or, if the first message is not from user, create a synthetic user message with system prompt.
-        current_parts = []
-        if gemini_role == "user" and is_first_user_message:
-            full_text_for_first_user_message = f"{system_prompt}\n\n{content_text}"
-            current_parts.append({"text": full_text_for_first_user_message.strip()})
-            is_first_user_message = False
-        else:
-            current_parts.append({"text": content_text.strip()})
-        
-        # Handle image data for user messages if present
-        # Gemini expects image data in 'parts' alongside text for 'user' role.
-        if gemini_role == "user" and image_data:
-            try:
-                import base64
-                image_base64 = base64.b64encode(image_data).decode('utf-8')
-                current_parts.append({
-                    "inline_data": {
-                        "mime_type": "image/jpeg", # Assuming JPEG, adjust if other types are used
-                        "data": image_base64
-                    }
-                })
-                logger.info("Image data prepared for Gemini request.")
-                image_data = None # Consume image data so it's only added once
-            except Exception as e:
-                logger.error(f"Error encoding image data for Gemini: {e}", exc_info=True)
-        
-        # Audio data handling - Gemini API might not directly support audio bytes in the same way as images.
-        # The text placeholder for audio (e.g., "[получено голосовое сообщение]") should already be in content_text.
-        if audio_data and gemini_role == "user":
-            logger.info("Audio data was present for Gemini, text placeholder should be used in prompt.")
-            # We don't add audio_data directly here, relying on the text placeholder.
-            audio_data = None # Consume audio data flag
-
-        if current_parts: # Only add if there's something to send
-             gemini_contents.append({"role": gemini_role, "parts": current_parts})
-    
-    # If system_prompt wasn't prepended (e.g. no user messages or first message was assistant)
-    # add it as the very first user turn.
-    if is_first_user_message and system_prompt:
-        gemini_contents.insert(0, {"role": "user", "parts": [{"text": system_prompt.strip()}]})
-        if gemini_contents and len(gemini_contents) > 1 and gemini_contents[1]["role"] == "user":
-             # If the next message is also user, we need to insert a model (assistant) turn in between
-             # to maintain the user/model alternating sequence for Gemini.
-             # This is a simplified handling; complex scenarios might need more robust logic.
-             gemini_contents.insert(1, {"role": "model", "parts": [{"text": "Okay."}]}) # Placeholder response
-
-    payload = {
-        "contents": gemini_contents,
-        "generationConfig": {
-            # "temperature": 0.7, # Optional: Adjust as needed
-            # "topK": 1,          # Optional
-            # "topP": 1,          # Optional
-            # "maxOutputTokens": 2048, # Optional: Gemini Flash has a large context window
-        },
-        "safetySettings": [ # Optional: Adjust safety settings as needed
-            {
-                "category": "HARM_CATEGORY_HARASSMENT",
-                "threshold": "BLOCK_MEDIUM_AND_ABOVE"
-            },
-            {
-                "category": "HARM_CATEGORY_HATE_SPEECH",
-                "threshold": "BLOCK_MEDIUM_AND_ABOVE"
-            },
-            {
-                "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-                "threshold": "BLOCK_MEDIUM_AND_ABOVE"
-            },
-            {
-                "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
-                "threshold": "BLOCK_MEDIUM_AND_ABOVE"
-            }
-        ]
-    }
-
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            async with httpx.AsyncClient(timeout=120.0) as client: # Increased timeout for potentially longer AI responses
-                logger.debug(f"Sending to Gemini. URL: {api_url}")
-                # logger.debug(f"Gemini Request Payload: {json.dumps(payload, indent=2, ensure_ascii=False)}") # Careful with logging PII
-                
-                response = await client.post(api_url, headers=headers, json=payload)
-                response.raise_for_status() # Raises HTTPStatusError for 4xx/5xx responses
-                
-                response_data = response.json()
-                # logger.debug(f"Gemini Raw Response: {json.dumps(response_data, indent=2, ensure_ascii=False)}")
-
-                if response_data.get("candidates") and response_data["candidates"][0].get("content") and response_data["candidates"][0]["content"].get("parts"):
-                    generated_text = response_data["candidates"][0]["content"]["parts"][0].get("text", "")
-                    if not generated_text and response_data["candidates"][0].get("finishReason") == "SAFETY":
-                        logger.warning("Gemini: Response blocked due to safety settings.")
-                        return escape_markdown_v2("❌ мой ответ был заблокирован из-за настроек безопасности.")
-                    if not generated_text and response_data["candidates"][0].get("finishReason") == "MAX_TOKENS":
-                        logger.warning("Gemini: Response stopped due to max tokens.")
-                        # return generated_text # Return whatever was generated before cutoff
-                    if not generated_text:
-                         logger.warning(f"Gemini: Empty text in response. Finish reason: {response_data['candidates'][0].get('finishReason')}. Full candidate: {response_data['candidates'][0]}")
-                         return escape_markdown_v2("❌ получен пустой ответ от ai (gemini). причина: " + response_data["candidates"][0].get("finishReason", "unknown"))
-                    return generated_text
-                elif response_data.get("promptFeedback") and response_data["promptFeedback"].get("blockReason"):
-                    block_reason = response_data["promptFeedback"]["blockReason"]
-                    logger.warning(f"Gemini: Prompt blocked due to {block_reason}.")
-                    return escape_markdown_v2(f"❌ ваш запрос был заблокирован (gemini): {block_reason.lower().replace('_', ' ')}.")
-                else:
-                    logger.error(f"Gemini: Unexpected response structure: {response_data}")
-                    return escape_markdown_v2("❌ ошибка: неожиданный формат ответа от ai (gemini).")
-
-        except httpx.HTTPStatusError as e:
-            logger.error(f"Gemini API request failed (attempt {attempt + 1}/{max_retries}) with status {e.response.status_code}: {e.response.text}", exc_info=True)
-            if e.response.status_code == 429: # Rate limit
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(5 * (attempt + 1)) # Exponential backoff
-                    continue
-                return escape_markdown_v2("❌ ошибка: превышен лимит запросов к ai (gemini). попробуйте позже.")
-            # For other client-side errors (4xx) or server-side (5xx), specific handling might be needed
-            # For now, a generic error message for non-rate-limit errors after retries or for unrecoverable client errors
-            error_detail = e.response.json().get("error", {}).get("message", e.response.text) if e.response.content else str(e)
-            return escape_markdown_v2(f"❌ ошибка api (gemini) {e.response.status_code}: {error_detail}")
-        except httpx.RequestError as e:
-            logger.error(f"Gemini API request failed (attempt {attempt + 1}/{max_retries}): {e}", exc_info=True)
-            if attempt < max_retries - 1:
-                await asyncio.sleep(3 * (attempt + 1))
-                continue
-            return escape_markdown_v2("❌ ошибка сети при обращении к ai (gemini). попробуйте позже.")
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to decode JSON response from Gemini (attempt {attempt + 1}/{max_retries}): {e}", exc_info=True)
-            # This is unlikely if raise_for_status() passed and API is stable, but good to have.
-            if attempt < max_retries - 1:
-                await asyncio.sleep(1)
-                continue
-            return escape_markdown_v2("❌ ошибка: неверный формат ответа от ai (gemini).")
-        except Exception as e:
-            logger.error(f"An unexpected error occurred in send_to_gemini (attempt {attempt + 1}/{max_retries}): {e}", exc_info=True)
-            if attempt < max_retries - 1:
-                await asyncio.sleep(1)
-                continue
-            return escape_markdown_v2("❌ неизвестная ошибка при обращении к ai (gemini).")
-    
-    return escape_markdown_v2("❌ исчерпаны все попытки обращения к ai (gemini).")
-
-
-# async def send_to_langdock(system_prompt: str, messages: List[Dict[str, str]], image_data: Optional[bytes] = None, audio_data: Optional[bytes] = None) -> str:
-#     """Sends the prompt and context to the Langdock API and returns the response."""
-#     
-#     if not LANGDOCK_API_KEY:
-#         logger.error("LANGDOCK_API_KEY is not set.")
-#         return escape_markdown_v2("❌ ошибка: ключ api не настроен.")
-# 
-#     if not messages:
-#         logger.error("send_to_langdock called with an empty messages list!")
-#         return "ошибка: нет сообщений для отправки в ai."
-# 
-#     headers = {
-#         "Authorization": f"Bearer {LANGDOCK_API_KEY}",
-#         "Content-Type": "application/json",
-#     }
-#     # Берем последние N сообщений, как и раньше
-#     messages_to_send = messages[-MAX_CONTEXT_MESSAGES_SENT_TO_LLM:].copy() # Используем .copy() для безопасного изменения
-#     
-#     last_user_message_index = -1
-#     for i in range(len(messages_to_send) - 1, -1, -1):
-#         if messages_to_send[i].get("role") == "user":
-#             last_user_message_index = i
-#             break
-# 
-#     if last_user_message_index != -1:
-#         original_user_content_field = messages_to_send[last_user_message_index].get("content", "")
-#         
-#         # Инициализируем new_content как массив. 
-#         # Claude API ожидает массив для "content", если есть хотя бы один элемент не "text".
-#         new_content_array = []
-# 
-#         # 1. Добавляем текстовую часть
-#         # original_user_content_field может быть строкой или уже массивом (если предыдущие шаги его так сформировали)
-#         if isinstance(original_user_content_field, str):
-#             if original_user_content_field: # Добавляем текст, только если он не пустой
-#                 new_content_array.append({"type": "text", "text": original_user_content_field})
-#         elif isinstance(original_user_content_field, list): # Если это уже был список (маловероятно здесь)
-#             new_content_array.extend(item for item in original_user_content_field if item.get("type") == "text") # Копируем только текстовые части
-# 
-#         # 2. Добавляем изображение, если есть
-#         if image_data:
-#             try:
-#                 import base64
-#                 image_base64 = base64.b64encode(image_data).decode('utf-8')
-#                 new_content_array.append(
-#                     {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": image_base64}}
-#                 )
-#                 logger.info("Image data prepared for Langdock request.")
-#             except Exception as e:
-#                 logger.error(f"Error encoding image data: {e}", exc_info=True)
-#         
-#         # 3. Обработка аудио (пока что только плейсхолдер, так как прямая отправка не работает)
-#         #    Если в будущем Langdock/Claude начнут поддерживать аудио, здесь будет логика его добавления.
-#         #    Сейчас, если есть audio_data, мы не будем его добавлять в new_content_array в виде base64,
-#         #    так как это вызывает ошибку. Вместо этого, текстовый плейсхолдер '[получено голосовое сообщение]'
-#         #    уже должен быть в original_user_content_field (добавлен в handle_media).
-#         
-#         if audio_data:
-#             # Логируем, что аудио было, но не добавляем его в запрос в формате base64, чтобы избежать ошибки.
-#             # Промпт в persona.py должен быть настроен на реакцию на *факт* получения аудио.
-#             logger.info("Audio data was received by send_to_langdock, but direct audio upload is likely not supported by the current API structure. Text placeholder should be used in prompt.")
-#             # Если текстовый плейсхолдер для аудио не был добавлен ранее, его можно добавить здесь,
-#             # но лучше это делать на более раннем этапе (в handle_media), что у тебя и сделано.
-#             # Например, если new_content_array пуст и есть audio_data:
-#             if not any(item.get("type") == "text" for item in new_content_array):
-#                 # Этого не должно происходить, если handle_media корректно добавляет плейсхолдер
-#                 new_content_array.append({"type": "text", "text": "[получено голосовое сообщение]"})
-#                 logger.warning("send_to_langdock: Added a fallback text placeholder for audio as new_content_array was empty.")
-# 
-#         # Если new_content_array все еще пуст (например, только аудио без текста и без плейсхолдера)
-#         # или если original_user_content_field был пустой строкой и не было медиа,
-#         # то messages_to_send[last_user_message_index]["content"] останется оригинальным (пустым или как было).
-#         # Если же new_content_array не пуст, то обновляем.
-#         if new_content_array:
-#             messages_to_send[last_user_message_index]["content"] = new_content_array
-#         elif not original_user_content_field and not image_data and not audio_data: # Если контент был пуст и нет медиа
-#             # Это может произойти, если пользователь отправил пустое сообщение, что маловероятно
-#             # или если логика формирования контента выше дала сбой.
-#             # В таком случае, чтобы не отправлять пустое "content", можно либо удалить сообщение из списка,
-#             # либо отправить как есть, API может это обработать или вернуть ошибку.
-#             # Для Claude, если content это массив, он не должен быть пустым.
-#             # Если content это строка, она может быть пустой.
-#             # Поскольку мы стремимся к формату массива для content, если он пуст, это проблема.
-#             # Лучше всего, если new_content_array пуст, а original_user_content_field был строкой,
-#             # оставить его строкой.
-#             pass # Оставляем messages_to_send[last_user_message_index]["content"] как есть (original_user_content_field)
-# 
-#     # Если система должна была добавить системный промпт, но не смогла (например, нет user сообщений)
-#     # Это маловероятно, т.к. messages не должен быть пустым.
-#     payload = {
-#         "model": LANGDOCK_MODEL,
-#         "messages": messages_to_send,
-#         "system": system_prompt,
-#         "max_tokens": 4096, # Максимальное количество токенов в ответе
-#         "temperature": 0.7, # Температура для генерации (0.0 - 1.0)
-#     }
-# 
-#     max_retries = 3
-#     for attempt in range(max_retries):
-#         try:
-#             async with httpx.AsyncClient(timeout=120.0) as client: # Увеличенный таймаут
-#                 logger.debug(f"Sending to Langdock. URL: {LANGDOCK_BASE_URL}")
-#                 # logger.debug(f"Langdock Request Payload: {json.dumps(payload, indent=2, ensure_ascii=False)}") # Осторожно с PII
-#                 
-#                 response = await client.post(LANGDOCK_BASE_URL, headers=headers, json=payload)
-#                 response.raise_for_status() # Вызовет исключение для 4xx/5xx ответов
-#                 
-#                 response_data = response.json()
-#                 # logger.debug(f"Langdock Raw Response: {json.dumps(response_data, indent=2, ensure_ascii=False)}")
-# 
-#                 if response_data.get("type") == "error":
-#                     error_message = response_data.get("error", {}).get("message", "unknown error from Langdock")
-#                     logger.error(f"Langdock API returned an error: {error_message}")
-#                     return escape_markdown_v2(f"❌ ошибка от ai (langdock): {error_message}")
-#                 
-#                 # Проверяем, есть ли 'content' и является ли он списком
-#                 content_list = response_data.get("content", [])
-#                 if not content_list or not isinstance(content_list, list):
-#                     logger.error(f"Langdock: 'content' is missing or not a list in response: {response_data}")
-#                     return escape_markdown_v2("❌ ошибка: неверный формат ответа от ai (langdock) \\- отсутствует content.")
-# 
-#                 # Ищем первый текстовый блок в 'content'
-#                 generated_text = ""
-#                 for item in content_list:
-#                     if item.get("type") == "text":
-#                         generated_text = item.get("text", "")
-#                         break
-#                 
-#                 if not generated_text:
-#                     # Если текстового блока нет, но есть другие (например, tool_use), это может быть специфичный ответ
-#                     # В данном случае, если нет текста, считаем это пустым ответом для нашего бота
-#                     logger.warning(f"Langdock: No text block found in response content. Full response: {response_data}")
-#                     # Проверим stop_reason, если есть
-#                     stop_reason = response_data.get("stop_reason")
-#                     if stop_reason == "max_tokens":
-#                         return escape_markdown_v2("⏳ хм, кажется, я немного увлекся и мой ответ был слишком длинным\\! попробуй еще раз, возможно, с более коротким запросом\\.")
-#                     elif stop_reason == "tool_use":
-#                         logger.info("Langdock response indicates tool_use without text. This is not handled yet.")
-#                         return escape_markdown_v2("⚠️ ai попытался использовать инструмент, но это пока не поддерживается\\.")
-#                     return escape_markdown_v2("ai вернул пустой ответ (langdock)\\.")
-# 
-#                 return generated_text
-# 
-#         except httpx.HTTPStatusError as e:
-#             logger.error(f"Langdock API request failed (attempt {attempt + 1}/{max_retries}) with status {e.response.status_code}: {e.response.text}", exc_info=True)
-#             if e.response.status_code == 429: # Rate limit
-#                 if attempt < max_retries - 1:
-#                     await asyncio.sleep(5 * (attempt + 1)) # Экспоненциальная задержка
-#                     continue
-#                 return escape_markdown_v2("❌ ошибка: превышен лимит запросов к ai (langdock)\\. попробуйте позже\\.")
-#             # Другие ошибки 4xx/5xx
-#             error_detail = e.response.json().get("error", {}).get("message", e.response.text) if e.response.content else str(e)
-#             return escape_markdown_v2(f"❌ ошибка api (langdock) {e.response.status_code}: {error_detail}")
-#         except httpx.RequestError as e:
-#             logger.error(f"Langdock API request failed (attempt {attempt + 1}/{max_retries}): {e}", exc_info=True)
-#             if attempt < max_retries - 1:
-#                 await asyncio.sleep(3 * (attempt + 1))
-#                 continue
-#             return escape_markdown_v2("❌ ошибка сети при обращении к ai (langdock)\\. попробуйте позже\\.")
-#         except json.JSONDecodeError as e:
-#             logger.error(f"Failed to decode JSON response from Langdock (attempt {attempt + 1}/{max_retries}): {e}", exc_info=True)
-#             if attempt < max_retries - 1:
-#                 await asyncio.sleep(1)
-#                 continue # Повторить попытку, если это временная проблема с ответом
-#             return escape_markdown_v2("❌ ошибка: неверный формат ответа от ai (langdock)\\.")
-#         except Exception as e:
-#             logger.error(f"An unexpected error occurred in send_to_langdock (attempt {attempt + 1}/{max_retries}): {e}", exc_info=True)
-#             if attempt < max_retries - 1:
-#                 await asyncio.sleep(1)
-#                 continue
-#             return escape_markdown_v2("❌ неизвестная ошибка при обращении к ai (langdock)\\.")
-#     
-#     return escape_markdown_v2("❌ исчерпаны все попытки обращения к ai (langdock)\\.")JSON
-#         raw_response_text = resp.text
-#         logger.debug(f"Langdock raw response text (first 500 chars): {raw_response_text[:500]}")
-# 
-#         resp.raise_for_status() # Вызовет исключение для 4xx/5xx
-#         data = resp.json()
-# {{ ... }}
-# 
-#         # --- Детальное логирование ответа ---
-#         logger.debug(f"Langdock parsed JSON response: {json.dumps(data, ensure_ascii=False, indent=2)}")
-# 
-#         input_tokens = data.get('usage', {}).get('input_tokens') # Claude 3.5 использует 'usage'
-#         output_tokens = data.get('usage', {}).get('output_tokens')
-#         stop_reason = data.get('stop_reason', 'unknown')
-#         
-#         # Если usage отсутствует, попробуем старый вариант (для обратной совместимости или других моделей)
-#         if input_tokens is None: input_tokens = data.get('input_tokens', 0)
-#         if output_tokens is None: output_tokens = data.get('output_tokens', 0)
-# 
-#         logger.info(f"Langdock response stats: input_tokens={input_tokens}, output_tokens={output_tokens}, stop_reason={stop_reason}")
-#         
-#         full_response_text = ""
-#         content_blocks = data.get("content")
-#         
-#         if isinstance(content_blocks, list) and content_blocks:
-#             logger.debug(f"Response 'content' is a list with {len(content_blocks)} item(s).")
-#             for block in content_blocks:
-#                 if isinstance(block, dict) and block.get("type") == "text":
-#                     full_response_text += block.get("text", "")
-#                     logger.debug(f"Extracted text block: '{block.get('text', '')[:100]}...'" )
-#                 else:
-#                     logger.warning(f"Non-text block found in content: {block}")
-#         elif isinstance(content_blocks, str): # На случай, если API вернет просто строку в content
-#              full_response_text = content_blocks
-#              logger.debug(f"Response 'content' is a string: '{content_blocks[:100]}...'" )
-#         else:
-#             logger.warning(f"Unexpected structure or empty 'content' in Langdock response. Content: {content_blocks}")
-# 
-#         if not full_response_text.strip():
-#             logger.warning(f"Extracted text from Langdock response is empty or whitespace. StopReason: {stop_reason}. Original data: {json.dumps(data, ensure_ascii=False)}")
-#             # Проверяем, есть ли ошибка в ответе
-#             if 'error' in data:
-#                 error_details = data['error']
-#                 logger.error(f"Langdock API returned an error: {error_details}")
-#                 error_message_to_user = f"AI сообщило об ошибке: {error_details.get('message', 'Неизвестная ошибка') if isinstance(error_details, dict) else error_details}"
-#                 return escape_markdown_v2(error_message_to_user)
-#             return escape_markdown_v2("ai вернул пустой текстовый ответ 🤷")
-# 
-#         return full_response_text.strip()
-# 
-#     except httpx.ReadTimeout:
-#          logger.error("Langdock API request timed out.")
-#          return escape_markdown_v2("⏳ хм, кажется, я слишком долго думал... попробуй еще раз?")
-#     except httpx.HTTPStatusError as e:
-#         error_body = e.response.text
-#         logger.error(f"Langdock API HTTP error: {e.response.status_code} - {error_body}", exc_info=False)
-#         error_text_raw = f"ой, ошибка связи с ai ({e.response.status_code})"
-#         try:
-#              error_data = json.loads(error_body)
-#              if isinstance(error_data.get('error'), dict) and 'message' in error_data['error']:
-#                   api_error_msg = error_data['error']['message']
-#                   logger.error(f"Langdock API Error Message: {api_error_msg}")
-#                   error_text_raw += f": {api_error_msg}" # Добавляем деталей пользователю
-#              elif isinstance(error_data.get('error'), str):
-#                    logger.error(f"Langdock API Error Message: {error_data['error']}")
-#                    error_text_raw += f": {error_data['error']}"
-#         except json.JSONDecodeError:
-#             logger.warning(f"Could not parse error body from Langdock as JSON: {error_body}")
-#         except Exception: pass # Общий случай
-#         return escape_markdown_v2(error_text_raw) # Экранируем финальное сообщение
-#     except httpx.RequestError as e:
-#         logger.error(f"Langdock API request error (network issue?): {e}", exc_info=True)
-#         return escape_markdown_v2("❌ не могу связаться с ai сейчас (ошибка сети)...")
-#     except json.JSONDecodeError as e:
-#         # Используем raw_response_text с проверкой, что оно существует
-#         raw_response_for_error_log = raw_response_text if 'raw_response_text' in locals() else "[Raw response text not captured]"
-#         logger.error(f"Failed to parse Langdock JSON response: {e}. Raw response: {raw_response_for_error_log[:500]}", exc_info=True)
-#         return escape_markdown_v2("❌ ошибка: не удалось обработать ответ от ai (неверный формат).")
-#     except Exception as e:
-#         logger.error(f"Unexpected error communicating with Langdock: {e}", exc_info=True)
-#         return escape_markdown_v2("❌ произошла внутренняя ошибка при генерации ответа.")
-
-
-    logger.debug(f"Processing AI response for chat {chat_id}, persona {persona.name}. Raw length: {len(full_bot_response_text)}. ReplyTo: {reply_to_message_id}. IsFirstMsg: {is_first_message}")
-
-    chat_id_str = str(chat_id)
-    context_response_prepared = False # Флаг для коммита контекста ответа
-
-    # 1. Сохранение полного ответа в контекст (до разделения)
-    if persona.chat_instance:
-        try:
-            # Используем .strip() на всякий случай
-            add_message_to_context(db, persona.chat_instance.id, "assistant", full_bot_response_text.strip())
-            context_response_prepared = True
-            logger.debug("AI response prepared for database context (pending commit).")
-        except SQLAlchemyError as e:
-            logger.error(f"DB Error preparing assistant response for context chat_instance {persona.chat_instance.id}: {e}", exc_info=True)
-            # Не прерываем отправку из-за ошибки контекста, но и не коммитим его
-            context_response_prepared = False
-        except Exception as e:
-            logger.error(f"Unexpected Error preparing assistant response for context chat_instance {persona.chat_instance.id}: {e}", exc_info=True)
-            context_response_prepared = False
-    else:
-        logger.error("Cannot add AI response to context, chat_instance is None.")
-        context_response_prepared = False
-
-
-    # 2. Извлечение GIF и очистка текста
-    all_text_content = full_bot_response_text.strip()
-    gif_links = extract_gif_links(all_text_content)
-
-    # Удаляем ссылки на GIF из основного текста
-    text_without_gifs = all_text_content
-    if gif_links:
-        for gif in gif_links:
-             # Заменяем ссылку на GIF и возможные пробелы вокруг нее на один пробел
-            text_without_gifs = re.sub(r'\s*' + re.escape(gif) + r'\s*', ' ', text_without_gifs, flags=re.IGNORECASE)
-        text_without_gifs = re.sub(r'\s{2,}', ' ', text_without_gifs).strip() # Убираем двойные пробелы
-
-
-    # 3. Получение разделенных частей текста из utils.py
-    # Получаем настройку max_messages из конфига персоны
-    max_messages_setting = persona.config.max_response_messages if persona.config else 0
-    
-    # Преобразуем числовые значения в фактическое количество сообщений
-    actual_max_messages = 3  # значение по умолчанию
-    if max_messages_setting == 1:  # few
-        actual_max_messages = 1
-    elif max_messages_setting == 3:  # normal
-        actual_max_messages = 3
-    elif max_messages_setting == 6:  # many
-        actual_max_messages = 6
-    elif max_messages_setting == 0:  # random
-        actual_max_messages = random.randint(2, 6)
-    
-    logger.info(f"DEBUG: max_messages_setting = {max_messages_setting}, actual_max_messages = {actual_max_messages}")
-    
-    # postprocess_response сам обработает 0 и >10
-    text_parts_to_send = postprocess_response(text_without_gifs, actual_max_messages)
-    
-    logger.info(f"DEBUG: After postprocess_response, text_parts_to_send = {text_parts_to_send}, len = {len(text_parts_to_send)}")
-    
-    # Дополнительное ограничение для режима "Поменьше сообщений"
-    if max_messages_setting == 1 and len(text_parts_to_send) > 1:  # few
-        logger.info(f"Limiting messages from {len(text_parts_to_send)} to 1 for 'few' mode")
-        # Если больше 1 сообщения, оставляем только первое
-        text_parts_to_send = text_parts_to_send[:1]
-    
-    logger.info(f"DEBUG: Final text_parts_to_send = {text_parts_to_send}, len = {len(text_parts_to_send)}")
-    
-    logger.info(f"postprocess_response returned {len(text_parts_to_send)} parts to send.")
-
-
-    # --- ФИНАЛЬНОЕ ОГРАНИЧЕНИЕ ДЛЯ 'few' ---
-    logger.info(f"max_messages_setting for persona {persona.name}: {max_messages_setting}")
-    logger.info(f"text_parts_to_send BEFORE FINAL LIMIT: {text_parts_to_send}")
-    if max_messages_setting == 1 and len(text_parts_to_send) > 1:
-        logger.info(f"FINAL LIMIT: Limiting to 1 message for 'few' mode")
-        text_parts_to_send = text_parts_to_send[:1]
-    logger.info(f"text_parts_to_send AFTER FINAL LIMIT: {text_parts_to_send}")
-    # 4. Последовательная отправка сообщений
-    first_message_sent = False # Отвечаем только на первое сообщение (текст или гиф)
-
-    # Сначала отправляем GIF, если есть
-    for i, gif in enumerate(gif_links):
-        try:
-            current_reply_id = reply_to_message_id if not first_message_sent else None
-            logger.info(f"Attempting to send GIF {i+1}/{len(gif_links)}: {gif} (ReplyTo: {current_reply_id})")
-            await context.bot.send_animation(
-                chat_id=chat_id_str,
-                animation=gif,
-                reply_to_message_id=current_reply_id,
-                read_timeout=20, # Увеличим таймаут на отправку
-                write_timeout=20
-            )
-            first_message_sent = True
-            logger.info(f"Successfully sent GIF {i+1}.")
-            await asyncio.sleep(0.3) # Небольшая пауза между сообщениями
-        except Exception as e:
-            logger.error(f"Error sending gif {gif} to chat {chat_id_str}: {e}", exc_info=True)
-            # Не прерываем отправку текста из-за гифки
-
-    # Затем отправляем текстовые части
-    if text_parts_to_send:
-        chat_type = update.effective_chat.type if update and update.effective_chat else None
-
-        # Удаление приветствия из *первой* текстовой части (если она есть)
-        if text_parts_to_send and not is_first_message:
-            first_part = text_parts_to_send[0]
-            greetings_pattern = r"^\s*(?:привет|здравствуй|добр(?:ый|ое|ого)\s+(?:день|утро|вечер)|хай|ку|здорово|салют|о[йи])(?:[,.!\s]|\b)"
-            match = re.match(greetings_pattern, first_part, re.IGNORECASE)
-            if match:
-                cleaned_part = first_part[match.end():].strip()
-                if cleaned_part:
-                    logger.warning(f"Removed greeting from first message part. New start: '{cleaned_part[:50]}...'")
-                    text_parts_to_send[0] = cleaned_part
-                else:
-                    logger.warning(f"Greeting removal resulted in empty first part. Removing part.")
-                    text_parts_to_send.pop(0)
-
-        # Отправляем по очереди
-        for i, part in enumerate(text_parts_to_send):
-            part_raw = part.strip()
-            if not part_raw: continue # Пропускаем пустые части
-
-            # Показываем "печатает..." в группах
-            if chat_type in [ChatType.GROUP, ChatType.SUPERGROUP]:
-                 try:
-                     # Не ждем окончания действия, просто запускаем
-                     asyncio.create_task(context.bot.send_chat_action(chat_id=chat_id_str, action=ChatAction.TYPING))
-                     await asyncio.sleep(random.uniform(0.5, 1.0)) # Пауза перед отправкой
-                 except Exception as e:
-                      logger.warning(f"Failed to send typing action to {chat_id_str}: {e}")
-
-            # Определяем, нужно ли отвечать на исходное сообщение
-            current_reply_id = reply_to_message_id if not first_message_sent else None
-
-            # Пытаемся отправить с Markdown
-            escaped_part = escape_markdown_v2(part_raw)
-            message_sent_successfully = False
-            try:
-                 logger.info(f"Attempting to send part {i+1}/{len(text_parts_to_send)} (MDv2, ReplyTo: {current_reply_id}) to chat {chat_id_str}: '{escaped_part[:50]}...'")
-                 await context.bot.send_message(
-                     chat_id=chat_id_str,
-                     text=escaped_part,
-                     parse_mode=ParseMode.MARKDOWN_V2,
-                     reply_to_message_id=current_reply_id,
-                     read_timeout=20,
-                     write_timeout=20
-                 )
-                 message_sent_successfully = True
-            except BadRequest as e_md:
-                 if "can't parse entities" in str(e_md).lower():
-                      logger.error(f"MarkdownV2 parse failed for part {i+1}. Retrying as plain text. Error: {e_md}")
-                      try:
-                           await context.bot.send_message(
-                               chat_id=chat_id_str,
-                               text=part_raw, # Отправляем исходный текст без экранирования
-                               parse_mode=None,
-                               reply_to_message_id=current_reply_id,
-                               read_timeout=20,
-                               write_timeout=20
-                           )
-                           message_sent_successfully = True
-                      except Exception as e_plain:
-                           logger.error(f"Failed to send part {i+1} even as plain text: {e_plain}", exc_info=True)
-                           # Прерываем отправку остальных частей, если одна не ушла
-                           break
-                 elif "reply message not found" in str(e_md).lower():
-                     logger.warning(f"Reply message {reply_to_message_id} not found for part {i+1}. Sending without reply.")
-                     try: # Повторная попытка без reply_to_message_id
-                          await context.bot.send_message(chat_id=chat_id_str, text=escaped_part, parse_mode=ParseMode.MARKDOWN_V2, reply_to_message_id=None, read_timeout=20, write_timeout=20)
-                          message_sent_successfully = True
-                     except Exception as e_no_reply:
-                          logger.error(f"Failed to send part {i+1} even without reply: {e_no_reply}", exc_info=True)
-                          break # Прерываем
-                 else: # Другая ошибка BadRequest
-                     logger.error(f"Unhandled BadRequest sending part {i+1}: {e_md}", exc_info=True)
-                     break # Прерываем
-            except Exception as e_other:
-                 logger.error(f"Unexpected error sending part {i+1}: {e_other}", exc_info=True)
-                 break # Прерываем при других ошибках
-
-            if message_sent_successfully:
-                 first_message_sent = True # Отмечаем, что хотя бы одно сообщение ушло
-                 logger.info(f"Successfully sent part {i+1}/{len(text_parts_to_send)}.")
-                 await asyncio.sleep(0.5) # Пауза между текстовыми сообщениями
-            else:
-                 logger.error(f"Failed to send part {i+1}, stopping further message sending for this response.")
-                 break # Прерываем цикл, если отправка не удалась
-
-    # Возвращаем флаг, удалось ли подготовить контекст ответа (для коммита)
-    return context_response_prepared
-
-# --- Core Logic Helpers ---
-
-
-    logger.info(f"process_and_send_response [v3]: --- ENTER --- ChatID: {chat_id}, Persona: '{persona.name}'")
+async def process_and_send_response(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    chat_id: Union[str, int],
+    persona: Persona,
+    full_bot_response_text: str,
+    db: Session,
+    reply_to_message_id: Optional[int] = None,
+    is_first_message: bool = False
+) -> bool:
+    """Sends a multi-part response to the user, handling GIFs, and returns if context was prepared. V3 - JSON native"""
+
+    logger.info(f"process_and_send_response [JSON]: --- ENTER --- ChatID: {chat_id}, Persona: '{persona.name}'")
     if not full_bot_response_text or not full_bot_response_text.strip():
-        logger.warning(f"process_and_send_response [v3]: Received empty response. Not processing.")
+        logger.warning(f"process_and_send_response [JSON]: Received empty response. Not processing.")
         return False
 
     raw_llm_response = full_bot_response_text.strip()
@@ -2286,10 +1152,11 @@ async def send_to_gemini(system_prompt: str, messages: List[Dict[str, str]], ima
         return None # Return None if loop finishes without successful parsing
 
     text_parts_to_send = _robust_json_parser(raw_llm_response)
+    is_json_parsed = text_parts_to_send is not None
     
     # 2. Prepare content for DB and for sending
     content_to_save_in_db = ""
-    if text_parts_to_send is not None:
+    if is_json_parsed:
         # Success parsing! Save clean, joined text to DB.
         content_to_save_in_db = "\n".join(text_parts_to_send)
         logger.info(f"Saving CLEAN response to context: '{content_to_save_in_db[:100]}...'")
@@ -2312,15 +1179,149 @@ async def send_to_gemini(system_prompt: str, messages: List[Dict[str, str]], ima
             text_parts_to_send = postprocess_response(text_without_gifs, max_messages)
         else:
             text_parts_to_send = []
+    
+    # 3. Save full response to context BEFORE sending
+    context_response_prepared = False
+    if persona.chat_instance:
+        try:
+            add_message_to_context(db, persona.chat_instance.id, "assistant", content_to_save_in_db)
+            context_response_prepared = True
+            logger.debug("AI response prepared for database context (pending commit).")
+        except SQLAlchemyError as e:
+            logger.error(f"DB Error preparing assistant response for context: {e}", exc_info=True)
+            context_response_prepared = False
 
-    # 4. Извлечение GIF (из СЫРОГО ответа, т.к. они могли быть вне JSON)
+    # 4. Extract GIF from RAW response
     gif_links_to_send = extract_gif_links(raw_llm_response)
     if gif_links_to_send:
          logger.info(f"process_and_send_response [JSON]: Found {len(gif_links_to_send)} GIF(s) to send: {gif_links_to_send}")
 
-    # Проверка, есть ли что отправлять
+    # Check if there is anything to send
     if not gif_links_to_send and not text_parts_to_send:
         logger.warning("process_and_send_response [JSON]: No GIFs and no text parts after processing. Nothing to send.")
+        return context_response_prepared
+
+    # 5. Remove greeting from the FIRST text part (if any)
+    if text_parts_to_send and not is_first_message:
+        first_part = text_parts_to_send[0]
+        greetings_pattern = r"^\s*(?:привет|здравствуй|добр(?:ый|ое|ого)\s+(?:день|утро|вечер)|хай|ку|здорово|салют|о[йи])(?:[,.!?;:]|\b)"
+        match = re.match(greetings_pattern, first_part, re.IGNORECASE)
+        if match:
+            cleaned_part = first_part[match.end():].lstrip()
+            if cleaned_part:
+                logger.info(f"process_and_send_response [JSON]: Removed greeting. New start of part 1: '{cleaned_part[:50]}...'")
+                text_parts_to_send[0] = cleaned_part
+            else:
+                logger.warning(f"process_and_send_response [JSON]: Greeting removal left part 1 empty. Removing part.")
+                text_parts_to_send.pop(0)
+
+    # 6. Unified message count limit enforcement
+    if persona and persona.config:
+        max_messages_setting_value = persona.config.max_response_messages 
+        target_message_count = -1
+
+        if max_messages_setting_value == 1: target_message_count = 1
+        elif max_messages_setting_value == 3: target_message_count = 3
+        elif max_messages_setting_value == 6: target_message_count = 6
+        elif max_messages_setting_value == 0:
+            if is_json_parsed and len(text_parts_to_send) > 5:
+                target_message_count = 5
+        else:
+            logger.warning(f"Unexpected max_response_messages value: {max_messages_setting_value}. Using default (3).")
+            target_message_count = 3
+
+        if target_message_count != -1 and len(text_parts_to_send) > target_message_count:
+            logger.info(f"Unified Limit: Truncating messages from {len(text_parts_to_send)} to {target_message_count} (setting: {max_messages_setting_value})")
+            text_parts_to_send = text_parts_to_send[:target_message_count]
+        
+        logger.info(f"Final text parts to send: {len(text_parts_to_send)} (setting: {max_messages_setting_value})")
+
+    # 7. Sequential message sending
+    first_message_sent = False
+    chat_id_str = str(chat_id)
+    chat_type = update.effective_chat.type if update and update.effective_chat else None
+    
+    try:
+        # First, send GIFs
+        if gif_links_to_send:
+            for i, gif_url_send in enumerate(gif_links_to_send):
+                try: # <--- CORRECTLY INDENTED
+                    current_reply_id_gif = reply_to_message_id if not first_message_sent else None
+                    logger.info(f"process_and_send_response [JSON]: Attempting to send GIF {i+1}/{len(gif_links_to_send)}: {gif_url_send} (ReplyTo: {current_reply_id_gif})")
+                    await context.bot.send_animation(
+                        chat_id=chat_id_str, animation=gif_url_send, reply_to_message_id=current_reply_id_gif,
+                        read_timeout=30, write_timeout=30
+                    )
+                    first_message_sent = True
+                    logger.info(f"process_and_send_response [JSON]: Successfully sent GIF {i+1}.")
+                    await asyncio.sleep(random.uniform(0.5, 1.2))
+                except Exception as e_gif:
+                    logger.error(f"process_and_send_response [JSON]: Error sending GIF {gif_url_send}: {e_gif}", exc_info=True)
+
+        # Then, send Text
+        if text_parts_to_send:
+            for i, part_raw_send in enumerate(text_parts_to_send):
+                if not part_raw_send: continue
+                if len(part_raw_send) > TELEGRAM_MAX_LEN:
+                    logger.warning(f"process_and_send_response [JSON]: Fallback Part {i+1} exceeds max length ({len(part_raw_send)}). Truncating.")
+                    part_raw_send = part_raw_send[:TELEGRAM_MAX_LEN - 3] + "..."
+
+                if chat_type in [ChatType.GROUP, ChatType.SUPERGROUP]:
+                    try: asyncio.create_task(context.bot.send_chat_action(chat_id=chat_id_str, action=ChatAction.TYPING))
+                    except Exception as e: logger.warning(f"Failed to send chat action: {e}")
+                
+                try: await asyncio.sleep(random.uniform(0.8, 2.0))
+                except Exception as e: logger.warning(f"Failed to sleep: {e}")
+
+                current_reply_id_text = reply_to_message_id if not first_message_sent else None
+                escaped_part_send = escape_markdown_v2(part_raw_send)
+                message_sent_successfully = False
+
+                logger.info(f"process_and_send_response [JSON]: Attempting send part {i+1}/{len(text_parts_to_send)} (MDv2, ReplyTo: {current_reply_id_text}) to {chat_id_str}: '{escaped_part_send[:80]}...'")
+                try:
+                    await context.bot.send_message(
+                        chat_id=chat_id_str, text=escaped_part_send, parse_mode=ParseMode.MARKDOWN_V2,
+                        reply_to_message_id=current_reply_id_text, read_timeout=30, write_timeout=30
+                    )
+                    message_sent_successfully = True
+                except BadRequest as e_md_send:
+                    if "can't parse entities" in str(e_md_send).lower():
+                        logger.error(f"process_and_send_response [JSON]: MDv2 parse failed part {i+1}. Retrying plain. Error: {e_md_send}")
+                        try:
+                            await context.bot.send_message(
+                                chat_id=chat_id_str, text=part_raw_send, parse_mode=None,
+                                reply_to_message_id=current_reply_id_text, read_timeout=30, write_timeout=30
+                            )
+                            message_sent_successfully = True
+                        except Exception as e_plain_send:
+                            logger.error(f"process_and_send_response [JSON]: Failed plain send part {i+1}: {e_plain_send}", exc_info=True)
+                            break
+                    elif "reply message not found" in str(e_md_send).lower():
+                        logger.warning(f"process_and_send_response [JSON]: Reply message {reply_to_message_id} not found part {i+1}. Sending without reply.")
+                        try:
+                            await context.bot.send_message(chat_id=chat_id_str, text=escaped_part_send, parse_mode=ParseMode.MARKDOWN_V2, reply_to_message_id=None, read_timeout=30, write_timeout=30)
+                            message_sent_successfully = True
+                        except Exception as e_no_reply_send:
+                            logger.error(f"process_and_send_response [JSON]: Failed send part {i+1} w/o reply: {e_no_reply_send}", exc_info=True)
+                            break
+                    else:
+                        logger.error(f"process_and_send_response [JSON]: Unhandled BadRequest sending part {i+1}: {e_md_send}", exc_info=True)
+                        break
+                except Exception as e_other_send:
+                    logger.error(f"process_and_send_response [JSON]: Unexpected error sending part {i+1}: {e_other_send}", exc_info=True)
+                    break
+
+                if message_sent_successfully:
+                    first_message_sent = True
+                    logger.info(f"process_and_send_response [JSON]: Successfully sent part {i+1}/{len(text_parts_to_send)}.")
+                else:
+                    logger.error(f"process_and_send_response [JSON]: Failed to send part {i+1}, stopping.")
+                    break
+    except Exception as e_main_process:
+        logger.error(f"process_and_send_response [JSON]: CRITICAL UNEXPECTED ERROR in main block: {e_main_process}", exc_info=True)
+    
+    finally:
+        logger.info("process_and_send_response [JSON]: --- EXIT --- Returning context_prepared_status: " + str(context_response_prepared))
         return context_response_prepared
 
 
@@ -2389,86 +1390,86 @@ async def send_to_gemini(system_prompt: str, messages: List[Dict[str, str]], ima
             # Сначала GIF
             if gif_links_to_send:
                 for i, gif_url_send in enumerate(gif_links_to_send):
-                try:
-                    current_reply_id_gif = reply_to_message_id if not first_message_sent else None
-                    logger.info(f"process_and_send_response [JSON]: Attempting to send GIF {i+1}/{len(gif_links_to_send)}: {gif_url_send} (ReplyTo: {current_reply_id_gif})")
-                    await context.bot.send_animation(
-                        chat_id=chat_id_str, animation=gif_url_send, reply_to_message_id=current_reply_id_gif,
-                        read_timeout=30, write_timeout=30
-                    )
-                    first_message_sent = True
-                    logger.info(f"process_and_send_response [JSON]: Successfully sent GIF {i+1}.")
-                    await asyncio.sleep(random.uniform(0.5, 1.2))
-                except Exception as e_gif:
-                    logger.error(f"process_and_send_response [JSON]: Error sending GIF {gif_url_send}: {e_gif}", exc_info=True)
-
-        # Затем Текст
-        if text_parts_to_send:
-            for i, part_raw_send in enumerate(text_parts_to_send):
-                # Проверка на пустую строку (на всякий случай)
-                if not part_raw_send:
-                    continue
-                # Обрезка, если часть все еще слишком длинная (актуально для fallback)
-                if len(part_raw_send) > TELEGRAM_MAX_LEN:
-                    logger.warning(f"process_and_send_response [JSON]: Fallback Part {i+1} exceeds max length ({len(part_raw_send)}). Truncating.")
-                    part_raw_send = part_raw_send[:TELEGRAM_MAX_LEN - 3] + "..."
-
-                # --- Отправка ---
-                if chat_type in [ChatType.GROUP, ChatType.SUPERGROUP]:
                     try:
-                        asyncio.create_task(context.bot.send_chat_action(chat_id=chat_id_str, action=ChatAction.TYPING))
+                        current_reply_id_gif = reply_to_message_id if not first_message_sent else None
+                        logger.info(f"process_and_send_response [JSON]: Attempting to send GIF {i+1}/{len(gif_links_to_send)}: {gif_url_send} (ReplyTo: {current_reply_id_gif})")
+                        await context.bot.send_animation(
+                            chat_id=chat_id_str, animation=gif_url_send, reply_to_message_id=current_reply_id_gif,
+                            read_timeout=30, write_timeout=30
+                        )
+                        first_message_sent = True
+                        logger.info(f"process_and_send_response [JSON]: Successfully sent GIF {i+1}.")
+                        await asyncio.sleep(random.uniform(0.5, 1.2))
+                    except Exception as e_gif:
+                        logger.error(f"process_and_send_response [JSON]: Error sending GIF {gif_url_send}: {e_gif}", exc_info=True)
+
+            # Затем Текст
+            if text_parts_to_send:
+                for i, part_raw_send in enumerate(text_parts_to_send):
+                    # Проверка на пустую строку (на всякий случай)
+                    if not part_raw_send:
+                        continue
+                    # Обрезка, если часть все еще слишком длинная (актуально для fallback)
+                    if len(part_raw_send) > TELEGRAM_MAX_LEN:
+                        logger.warning(f"process_and_send_response [JSON]: Fallback Part {i+1} exceeds max length ({len(part_raw_send)}). Truncating.")
+                        part_raw_send = part_raw_send[:TELEGRAM_MAX_LEN - 3] + "..."
+
+                    # --- Отправка ---
+                    if chat_type in [ChatType.GROUP, ChatType.SUPERGROUP]:
+                        try:
+                            asyncio.create_task(context.bot.send_chat_action(chat_id=chat_id_str, action=ChatAction.TYPING))
+                        except Exception as e:
+                            logger.warning(f"Failed to send chat action: {e}")
+
+                    try:
+                        await asyncio.sleep(random.uniform(0.8, 2.0))  # Пауза
                     except Exception as e:
-                        logger.warning(f"Failed to send chat action: {e}")
+                        logger.warning(f"Failed to sleep: {e}")
 
-                try:
-                    await asyncio.sleep(random.uniform(0.8, 2.0))  # Пауза
-                except Exception as e:
-                    logger.warning(f"Failed to sleep: {e}")
+                    current_reply_id_text = reply_to_message_id if not first_message_sent else None
+                    escaped_part_send = escape_markdown_v2(part_raw_send)
+                    message_sent_successfully = False
 
-                current_reply_id_text = reply_to_message_id if not first_message_sent else None
-                escaped_part_send = escape_markdown_v2(part_raw_send)
-                message_sent_successfully = False
-
-                logger.info(f"process_and_send_response [JSON]: Attempting send part {i+1}/{len(text_parts_to_send)} (MDv2, ReplyTo: {current_reply_id_text}) to {chat_id_str}: '{escaped_part_send[:80]}...'")
-                try:
-                    await context.bot.send_message(
-                        chat_id=chat_id_str, text=escaped_part_send, parse_mode=ParseMode.MARKDOWN_V2,
-                        reply_to_message_id=current_reply_id_text, read_timeout=30, write_timeout=30
-                    )
-                    message_sent_successfully = True
-                except BadRequest as e_md_send:
-                    if "can't parse entities" in str(e_md_send).lower():
-                        logger.error(f"process_and_send_response [JSON]: MDv2 parse failed part {i+1}. Retrying plain. Error: {e_md_send}")
-                        try:
-                            await context.bot.send_message(
-                                chat_id=chat_id_str, text=part_raw_send, parse_mode=None,
-                                reply_to_message_id=current_reply_id_text, read_timeout=30, write_timeout=30
-                            )
-                            message_sent_successfully = True
-                        except Exception as e_plain_send:
-                            logger.error(f"process_and_send_response [JSON]: Failed plain send part {i+1}: {e_plain_send}", exc_info=True)
+                    logger.info(f"process_and_send_response [JSON]: Attempting send part {i+1}/{len(text_parts_to_send)} (MDv2, ReplyTo: {current_reply_id_text}) to {chat_id_str}: '{escaped_part_send[:80]}...'")
+                    try:
+                        await context.bot.send_message(
+                            chat_id=chat_id_str, text=escaped_part_send, parse_mode=ParseMode.MARKDOWN_V2,
+                            reply_to_message_id=current_reply_id_text, read_timeout=30, write_timeout=30
+                        )
+                        message_sent_successfully = True
+                    except BadRequest as e_md_send:
+                        if "can't parse entities" in str(e_md_send).lower():
+                            logger.error(f"process_and_send_response [JSON]: MDv2 parse failed part {i+1}. Retrying plain. Error: {e_md_send}")
+                            try:
+                                await context.bot.send_message(
+                                    chat_id=chat_id_str, text=part_raw_send, parse_mode=None,
+                                    reply_to_message_id=current_reply_id_text, read_timeout=30, write_timeout=30
+                                )
+                                message_sent_successfully = True
+                            except Exception as e_plain_send:
+                                logger.error(f"process_and_send_response [JSON]: Failed plain send part {i+1}: {e_plain_send}", exc_info=True)
+                                break
+                        elif "reply message not found" in str(e_md_send).lower():
+                            logger.warning(f"process_and_send_response [JSON]: Reply message {reply_to_message_id} not found part {i+1}. Sending without reply.")
+                            try:
+                                await context.bot.send_message(chat_id=chat_id_str, text=escaped_part_send, parse_mode=ParseMode.MARKDOWN_V2, reply_to_message_id=None, read_timeout=30, write_timeout=30)
+                                message_sent_successfully = True
+                            except Exception as e_no_reply_send:
+                                logger.error(f"process_and_send_response [JSON]: Failed send part {i+1} w/o reply: {e_no_reply_send}", exc_info=True)
+                                break
+                        else:
+                            logger.error(f"process_and_send_response [JSON]: Unhandled BadRequest sending part {i+1}: {e_md_send}", exc_info=True)
                             break
-                    elif "reply message not found" in str(e_md_send).lower():
-                        logger.warning(f"process_and_send_response [JSON]: Reply message {reply_to_message_id} not found part {i+1}. Sending without reply.")
-                        try:
-                            await context.bot.send_message(chat_id=chat_id_str, text=escaped_part_send, parse_mode=ParseMode.MARKDOWN_V2, reply_to_message_id=None, read_timeout=30, write_timeout=30)
-                            message_sent_successfully = True
-                        except Exception as e_no_reply_send:
-                            logger.error(f"process_and_send_response [JSON]: Failed send part {i+1} w/o reply: {e_no_reply_send}", exc_info=True)
-                            break
-                    else:
-                        logger.error(f"process_and_send_response [JSON]: Unhandled BadRequest sending part {i+1}: {e_md_send}", exc_info=True)
+                    except Exception as e_other_send:
+                        logger.error(f"process_and_send_response [JSON]: Unexpected error sending part {i+1}: {e_other_send}", exc_info=True)
                         break
-                except Exception as e_other_send:
-                    logger.error(f"process_and_send_response [JSON]: Unexpected error sending part {i+1}: {e_other_send}", exc_info=True)
-                    break
 
-                if message_sent_successfully:
-                    first_message_sent = True
-                    logger.info(f"process_and_send_response [JSON]: Successfully sent part {i+1}/{len(text_parts_to_send)}.")
-                else:
-                    logger.error(f"process_and_send_response [JSON]: Failed to send part {i+1}, stopping.")
-                    break # Прерываем, если отправка не удалась
+                    if message_sent_successfully:
+                        first_message_sent = True
+                        logger.info(f"process_and_send_response [JSON]: Successfully sent part {i+1}/{len(text_parts_to_send)}.")
+                    else:
+                        logger.error(f"process_and_send_response [JSON]: Failed to send part {i+1}, stopping.")
+                        break # Прерываем, если отправка не удалась
 
         except Exception as e_main_process:
             logger.error(f"process_and_send_response [JSON]: CRITICAL UNEXPECTED ERROR in main block: {e_main_process}", exc_info=True)
@@ -2521,6 +1522,7 @@ async def send_limit_exceeded_message(update: Update, context: ContextTypes.DEFA
             # Попытка отправить сначала с Markdown
             try:
                 logger.debug(f"Attempting to send limit message (MD) to {target_chat_id}")
+                text_to_send = escape_markdown_v2(text_raw)
                 await context.bot.send_message(
                     target_chat_id,
                     text=text_to_send,
@@ -2555,7 +1557,6 @@ async def send_limit_exceeded_message(update: Update, context: ContextTypes.DEFA
             logger.error(f"Failed to send limit exceeded message to user {user.telegram_id}: {outer_e}")
     except Exception as e:
         logger.error(f"Critical error in send_limit_exceeded_message: {e}")
-    f"✅ полная настройка поведения и настроений\n\n" # Обновлен текст
 
 # --- Message Handlers ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2586,6 +1587,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
         logger.info(f"MSG < User {user_id} ({username}) in Chat {chat_id_str} (MsgID: {message_id}): '{message_text[:100]}'")
         limit_state_changed = False  # Initialize flag for DB commit based on limit changes
+        context_user_msg_added = False # Initialize flag for context changes
 
         # --- Проверка подписки ---
         if not await check_channel_subscription(update, context):
@@ -2626,7 +1628,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                             logger.error(f"handle_message: Error preparing user message context (for ignored text response) for CBI {persona.chat_instance.id}: {e_ctx_text_ignore}", exc_info=True)
                             # Don't send error to user, as bot is intentionally not responding with text.
                     
-                    if limit_state_updated or context_user_msg_added:
+                    if limit_state_changed or context_user_msg_added:
                         try:
                             db_session.commit()
                             logger.debug("handle_message: Committed owner limit/context state (text response ignored due to media_reaction).")
@@ -2720,7 +1722,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 # --- Добавление сообщения пользователя в контекст ---
                 current_user_message_content = f"{username}: {message_text}"
                 current_user_message_dict = {"role": "user", "content": current_user_message_content}
-                context_user_msg_added = False
                 
                 if persona.chat_instance:
                     try:
@@ -2741,7 +1742,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 # --- Проверка Mute ---
                 if persona.chat_instance.is_muted:
                     logger.info(f"handle_message: Persona '{persona.name}' is muted in chat {chat_id_str}. Saving context and exiting.")
-                    if limit_state_updated or context_user_msg_added:
+                    if limit_state_changed or context_user_msg_added:
                         try:
                             db_session.commit()
                             logger.debug("handle_message: Committed DB changes for muted bot (limits/user context).")
@@ -2791,115 +1792,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 # --- Отправка запроса к LLM ---
                 if should_ai_respond:
                     logger.debug("handle_message: Proceeding to generate AI response.")
-                    context_for_ai = initial_context_from_db + [current_user_message_dict]
+                    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
 
-                    system_prompt = persona.format_system_prompt(user_id, username, message_text)
-                    if not system_prompt:
-                        logger.error(f"handle_message: System prompt formatting failed for persona {persona.name} (ID: {persona.id}).")
-                        await update.message.reply_text(escape_markdown_v2("❌ ошибка при подготовке системного сообщения."), parse_mode=ParseMode.MARKDOWN_V2)
-                        try:
-                            db_session.rollback()
-                            db_session.close()
-                        except Exception as rollback_err:
-                            logger.error(f"handle_message: ROLLBACK FAILED: {rollback_err}", exc_info=True)
-                        return
-                    
-                    # --- OpenRouter LLM Integration --- 
-
-                    # 1. Check input token limit for premium users
-                    if owner_user.is_active_subscriber:
-                        try:
-                            user_message_token_count = count_openai_compatible_tokens(message_text, config.OPENROUTER_MODEL_NAME)
-                            if user_message_token_count > config.PREMIUM_USER_MESSAGE_TOKEN_LIMIT:
-                                logger.info(f"User {owner_user.id} input message token limit EXCEEDED: {user_message_token_count}/{config.PREMIUM_USER_MESSAGE_TOKEN_LIMIT}")
-                                await update.message.reply_text(
-                                    f"{PREMIUM_STAR} Ваше сообщение слишком длинное ({user_message_token_count} токенов). "
-                                    f"Лимит для премиум-пользователей: {config.PREMIUM_USER_MESSAGE_TOKEN_LIMIT} токенов на одно сообщение. "
-                                    f"Пожалуйста, сократите его.",
-                                    parse_mode=None
-                                )
-                                if limit_state_updated or context_user_msg_added: # Commit pending changes before returning
-                                    try: 
-                                        db_session.commit()
-                                        logger.debug("handle_message: Committed state after input token limit exceeded.")
-                                    except Exception as commit_err_token_limit:
-                                        logger.error(f"handle_message: Commit failed (input token limit): {commit_err_token_limit}", exc_info=True)
-                                        db_session.rollback()
-                                return # Exit if token limit exceeded
-                        except Exception as e_token_count:
-                            logger.error(f"Error counting tokens for user message (user {owner_user.id}): {e_token_count}", exc_info=True)
-                            await update.message.reply_text("Не удалось обработать ваше сообщение из-за внутренней ошибки подсчета. Попробуйте еще раз.", parse_mode=None)
-                            if limit_state_updated or context_user_msg_added: # Commit pending changes before returning
-                                try: 
-                                    db_session.commit()
-                                    logger.debug("handle_message: Committed state after token counting error.")
-                                except Exception as commit_err_token_count_exc:
-                                    logger.error(f"handle_message: Commit failed (token count error): {commit_err_token_count_exc}", exc_info=True)
-                                    db_session.rollback()
-                            return
-
-                    # 2. Формирование запроса к LLM
-                    formatted_messages_for_llm = []
-                    p_config = persona.config
-                    limit_state_updated = False
-                    context_user_msg_added = False
-
-                    # Determine mood
-                    if p_config.mood_prompt_active:
-                        current_mood_name = persona.current_mood or "нейтрально"
-                        current_mood_prompt_text = p_config.get_mood_prompt(current_mood_name)
-                    else:
-                        current_mood_name = "Нейтрально" # Default if mood is not active
-                        current_mood_prompt_text = p_config.get_mood_prompt("Нейтрально") # Get neutral prompt
-                    
-                    # Determine base system prompt template
-                    template_to_use = p_config.system_prompt_template_override or DEFAULT_SYSTEM_PROMPT_TEMPLATE
-                    
-                    base_system_prompt = template_to_use.format(
-                        persona_name=p_config.name,
-                        persona_description=p_config.description,
-                        communication_style=p_config.communication_style,
-                        verbosity_level=p_config.verbosity_level,
-                        mood_name=current_mood_name,
-                        mood_prompt=current_mood_prompt_text,
-                        username=update.effective_user.username or "пользователь",
-                        user_id=update.effective_user.id,
-                        chat_id=chat_id_str
-                    ).strip()
-                    
-                    system_prompt_content_parts = [base_system_prompt] # Initialize with base
-
-                    # JSON output instruction
-                    max_resp_msg_setting = p_config.max_response_messages # Use p_config
-                    json_instruction = "ВАЖНО: Всегда формируй свой ответ в виде одного JSON-массива строк. Каждая строка в массиве - это отдельный параграф или логическая часть твоего ответа. Пример: [\"Привет!\", \"Как твои дела?\"]"
-                    if max_resp_msg_setting == 6:  # many
-                        json_instruction = "ВАЖНО: Разбей свой ответ на 5-6 отдельных сообщений в формате JSON-массива. Каждое сообщение должно быть отдельной мыслью или частью ответа."
-                    elif max_resp_msg_setting == 2:  # few
-                        json_instruction = "ВАЖНО: Дай ОЧЕНЬ КРАТКИЙ ответ в формате JSON-массива. Максимум 1-2 коротких сообщения. Будь предельно лаконичным. Не разбивай ответ на много сообщений."
-                    elif max_resp_msg_setting == 0:  # random (or default)
-                        json_instruction = "ВАЖНО: Разбей свой ответ на 3-5 отдельных сообщений в формате JSON-массива."
-                    system_prompt_content_parts.append(json_instruction)
-
-                    final_system_prompt_content = "\n\n".join(filter(None, system_prompt_content_parts))
-                    formatted_messages_for_llm.append({"role": "system", "content": final_system_prompt_content})
-
-                    for ctx_msg in initial_context_from_db:
-                        role = "user" if ctx_msg['role'] == "user" else "assistant"
-                        content = ctx_msg['content']
-                        actual_content = content
-                        if role == "user" and ": " in content: # Basic username stripping
-                            parts = content.split(": ", 1)
-                            if len(parts) > 1:
-                                potential_username = parts[0]
-                                if not re.search(r'\s', potential_username): 
-                                     actual_content = parts[1]
-                        formatted_messages_for_llm.append({"role": role, "content": actual_content})
-                    
-                    formatted_messages_for_llm.append({"role": "user", "content": message_text})
-
-                    # --- LLM Request ---
-                        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
-                        
                     system_prompt = persona.format_system_prompt(user_id, username, message_text)
                     if not system_prompt:
                         await update.message.reply_text(escape_markdown_v2("❌ ошибка при подготовке системного сообщения."), parse_mode=ParseMode.MARKDOWN_V2)
@@ -2910,6 +1804,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     
                     open_ai_client = AsyncOpenAI(api_key=config.OPENROUTER_API_KEY, base_url=config.OPENROUTER_API_BASE_URL)
                     assistant_response_text = None
+                    llm_call_succeeded = False
                     
                     try:
                         formatted_messages_for_llm = [{"role": "system", "content": system_prompt}]
@@ -2925,26 +1820,30 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                             max_tokens=2048
                         )
                         
-                        # ---- ГЛАВНОЕ ИЗМЕНЕНИЕ ----
-                        # Просто берем сырой ответ. Никаких проверок на JSON, никакого оборачивания.
                         assistant_response_text = llm_response.choices[0].message.content.strip()
+                        llm_call_succeeded = True
                         logger.info(f"LLM Raw Response (CBI {persona.chat_instance.id}): '{assistant_response_text[:300]}...'")
 
                     except OpenAIError as e:
-                        # ... (обработка ошибок без изменений) ...
+                        logger.error(f"OpenAIError communicating with OpenRouter for user {user_id}: {e}", exc_info=True)
                         await update.message.reply_text("Произошла ошибка при обращении к нейросети. Попробуйте немного позже.")
-                                db_session.commit()
-                        return
-
+                    except Exception as e:
+                        logger.error(f"Unexpected error communicating with OpenRouter for user {user_id}: {e}", exc_info=True)
+                        await update.message.reply_text("Произошла непредвиденная ошибка при генерации ответа.")
 
                     if not assistant_response_text:
-                        # ... (обработка пустого ответа без изменений) ...
+                        logger.warning(f"LLM returned an empty response for user {user_id}.")
                         await update.message.reply_text("Модель не дала содержательного ответа. Попробуйте переформулировать запрос.")
+                        if limit_state_changed or context_user_msg_added:
+                            try:
                                 db_session.commit()
+                            except Exception as commit_err:
+                                logger.error(f"Commit failed after empty LLM response: {commit_err}", exc_info=True)
+                                db_session.rollback()
                         return
 
                     # 4. Call existing process_and_send_response
-                    context_response_prepared = await process_and_send_response(
+                    context_response_prepared = await process_and_send_response_json(
                         update,
                         context,
                         chat_id_str,
@@ -2954,7 +1853,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                         reply_to_message_id=message_id,
                         is_first_message=(len(initial_context_from_db) == 0)
                     )
-                    # --- End of OpenRouter LLM Integration ---
 
                     # Инкрементируем месячный счетчик сообщений после успешного ответа
                     if llm_call_succeeded and assistant_response_text and assistant_response_text != json.dumps([""]):
@@ -3042,6 +1940,7 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
 
             context_text_placeholder = ""
             prompt_generator = None
+            system_prompt = None
             
             if media_type == "photo":
                 context_text_placeholder = "[получено фото]"
@@ -3099,32 +1998,6 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
                     except Exception as e_voice:
                         logger.error(f"handle_media: Error processing voice message for chat {chat_id_str}: {e_voice}", exc_info=True)
                         context_text_placeholder = f"{username}: [ошибка обработки голосового сообщения]"
-                        # Ensure voice_bytes_for_llm is cleared if it was set before an error
-                        if 'voice_bytes_for_llm' in context.chat_data: # Check if key exists before popping
-                            context.chat_data.pop('voice_bytes_for_llm', None)
-#                else:
-#                    logger.warning(f"handle_media: Voice message type but no voice data found for chat {chat_id_str}.")
-#                    context_text_placeholder = f"{username}: [ошибка: нет аудио данных]"
-                                
-                                # Показываем распознанный текст премиум-пользователям
-#                                if is_premium_user:
-#                                    transcription_msg = f"🔈 Распознано: \"{transcribed_text}\""
-#                                    await update.message.reply_text(transcription_msg, quote=True)
-#                            else:
-#                                logger.warning("Voice transcription failed or returned empty text")
-#                                context_text_placeholder = "[получено голосовое сообщение, не удалось расшифровать]"
-                                # Уведомляем премиум-пользователей о неудаче
-#                                if is_premium_user:
-#                                    await update.message.reply_text("❌ Не удалось распознать голосовое сообщение")
-#                        else:
-#                            logger.warning("Vosk not available for transcription. Using placeholder.")
-#                            context_text_placeholder = "[получено голосовое сообщение]"
-                            # Уведомляем премиум-пользователей о недоступности Vosk
-#                            if is_premium_user:
-#                                await update.message.reply_text(f"{PREMIUM_STAR} Распознавание голоса временно недоступно")
-                    except Exception as e:
-                        logger.error(f"Error processing voice message for transcription: {e}", exc_info=True)
-                        context_text_placeholder = "[ошибка обработки голосового сообщения]"
                 else:
                     context_text_placeholder = "[получено пустое голосовое сообщение]"
                 
@@ -3158,16 +2031,12 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
                 logger.debug(f"Persona '{persona.name}' is muted in chat {chat_id_str}. Media saved to context, but ignoring response.")
                 db.commit()
                 return
-
-            # Для голосовых и фото сообщений system_prompt уже определен прямым вызовом, а для других типов медиа нужно вызвать prompt_generator() 
-            if media_type != "voice" and media_type != "photo" and prompt_generator:
-                system_prompt = prompt_generator()
-
+            
             if not system_prompt:
                 logger.info(f"Persona {persona.name} in chat {chat_id_str} is configured not to react to {media_type} (media_reaction: {persona.media_reaction}). Skipping response.")
                 if limit_state_updated or context_placeholder_added:  # Если были изменения до этого момента
                     db.commit()
-            return
+                return
             
             # Получаем данные медиа для мультимодального запроса
             image_data = None
@@ -3247,7 +2116,7 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
             ai_response_text = await send_to_gemini(system_prompt, context_for_ai, image_data=image_data, audio_data=audio_data)
             logger.debug(f"Received response from Gemini for {media_type}: {ai_response_text[:100]}...")
 
-            context_response_prepared = await process_and_send_response(
+            context_response_prepared = await process_and_send_response_json(
                 update, context, chat_id_str, persona, ai_response_text, db, reply_to_message_id=message_id
             )
 
@@ -4853,6 +3722,7 @@ async def generate_payment_link(update: Update, context: ContextTypes.DEFAULT_TY
          reply_markup = None
          await query.edit_message_text(text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
          return
+    
     except Exception as conf_e:
         logger.error(f"Failed to configure Yookassa SDK in generate_payment_link: {conf_e}", exc_info=True)
         text = error_yk_config
@@ -5402,7 +4272,7 @@ async def edit_wizard_menu_handler(update: Update, context: ContextTypes.DEFAULT
         if numeric_value != -1:
             try:
                 with get_db() as db_session:
-                    persona = db_session.query(PersonaConfig).filter(PersonaConfig.id == persona_id).first()
+                    persona = db_session.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
                     if persona:
                         persona.max_response_messages = numeric_value
                         db_session.commit()
@@ -5417,7 +4287,7 @@ async def edit_wizard_menu_handler(update: Update, context: ContextTypes.DEFAULT
 
     logger.warning(f"Unhandled wizard menu callback: {data} for persona {persona_id}")
     with get_db() as db_session:
-        persona_config = db_session.query(PersonaConfig).filter(PersonaConfig.id == persona_id).first()
+        persona_config = db_session.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
         return await _show_edit_wizard_menu(update, context, persona_config) if persona_config else ConversationHandler.END
 
 # --- Helper to send prompt and store message ID ---
@@ -5491,7 +4361,7 @@ async def edit_name_received(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 await update.message.reply_text(escape_markdown_v2(f"❌ Имя '{new_name}' уже занято. Введите другое:"))
                 return EDIT_NAME
 
-            persona = db.query(PersonaConfig).filter(PersonaConfig.id == persona_id).with_for_update().first()
+            persona = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).with_for_update().first()
             if persona:
                 persona.name = new_name
                 db.commit()
@@ -5508,7 +4378,9 @@ async def edit_name_received(update: Update, context: ContextTypes.DEFAULT_TYPE)
     except Exception as e:
         logger.error(f"Error updating persona name for {persona_id}: {e}")
         await update.message.reply_text(escape_markdown_v2("❌ Ошибка при сохранении имени."))
-        return await _try_return_to_wizard_menu(update, context, update.effective_user.id, persona_id)
+        with get_db() as db:
+            persona = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
+            return await _show_edit_wizard_menu(update, context, persona)
 
 # --- Edit Description ---
 async def edit_description_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -5637,7 +4509,9 @@ async def edit_comm_style_received(update: Update, context: ContextTypes.DEFAULT
     persona_id = context.user_data.get('edit_persona_id')
 
     if data == "back_to_wizard_menu":
-        return await _handle_back_to_wizard_menu(update, context, persona_id)
+        with get_db() as db:
+            persona = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
+            return await _show_edit_wizard_menu(update, context, persona)
 
     if data.startswith("set_comm_style_"):
         new_style = data.replace("set_comm_style_", "")
@@ -5648,14 +4522,18 @@ async def edit_comm_style_received(update: Update, context: ContextTypes.DEFAULT
                     persona.communication_style = new_style
                     db.commit()
                     logger.info(f"Set communication_style to {new_style} for persona {persona_id}")
-                    return await _handle_back_to_wizard_menu(update, context, persona_id)
+                    with get_db() as db_refresh: # Need a new session for refresh
+                        persona_refreshed = db_refresh.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
+                        return await _show_edit_wizard_menu(update, context, persona_refreshed)
                 else:
                     await query.edit_message_text(escape_markdown_v2("❌ Ошибка: личность не найдена."))
                     return ConversationHandler.END
         except Exception as e:
             logger.error(f"Error setting communication_style for {persona_id}: {e}")
             await query.edit_message_text(escape_markdown_v2("❌ Ошибка при сохранении стиля общения."))
-            return await _try_return_to_wizard_menu(update, context, query.from_user.id, persona_id)
+            with get_db() as db:
+                persona = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
+                return await _show_edit_wizard_menu(update, context, persona)
     else:
         logger.warning(f"Unknown callback in edit_comm_style_received: {data}")
         return EDIT_COMM_STYLE
@@ -5841,14 +4719,18 @@ async def edit_verbosity_received(update: Update, context: ContextTypes.DEFAULT_
                     persona.verbosity_level = new_value
                     db.commit()
                     logger.info(f"Set verbosity_level to {new_value} for persona {persona_id}")
-                    return await _handle_back_to_wizard_menu(update, context, persona_id)
+                    with get_db() as db_refresh:
+                        persona_refreshed = db_refresh.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
+                        return await _show_edit_wizard_menu(update, context, persona_refreshed)
                 else:
                     await query.edit_message_text(escape_markdown_v2("❌ Ошибка: личность не найдена."))
                     return ConversationHandler.END
         except Exception as e:
             logger.error(f"Error setting verbosity_level for {persona_id}: {e}")
             await query.edit_message_text(escape_markdown_v2("❌ Ошибка при сохранении разговорчивости."))
-            return await _try_return_to_wizard_menu(update, context, query.from_user.id, persona_id)
+            with get_db() as db:
+                persona = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
+                return await _show_edit_wizard_menu(update, context, persona)
     else:
         logger.warning(f"Unknown callback in edit_verbosity_received: {data}")
         return EDIT_VERBOSITY
@@ -5889,14 +4771,18 @@ async def edit_group_reply_received(update: Update, context: ContextTypes.DEFAUL
                     persona.group_reply_preference = new_value
                     db.commit()
                     logger.info(f"Set group_reply_preference to {new_value} for persona {persona_id}")
-                    return await _handle_back_to_wizard_menu(update, context, persona_id)
+                    with get_db() as db_refresh:
+                        persona_refreshed = db_refresh.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
+                        return await _show_edit_wizard_menu(update, context, persona_refreshed)
                 else:
                     await query.edit_message_text(escape_markdown_v2("❌ Ошибка: личность не найдена."))
                     return ConversationHandler.END
         except Exception as e:
             logger.error(f"Error setting group_reply_preference for {persona_id}: {e}")
             await query.edit_message_text(escape_markdown_v2("❌ Ошибка при сохранении настройки ответа в группе."))
-            return await _try_return_to_wizard_menu(update, context, query.from_user.id, persona_id)
+            with get_db() as db:
+                persona = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
+                return await _show_edit_wizard_menu(update, context, persona)
     else:
         logger.warning(f"Unknown callback in edit_group_reply_received: {data}")
         return EDIT_GROUP_REPLY
@@ -5997,14 +4883,18 @@ async def edit_media_reaction_received(update: Update, context: ContextTypes.DEF
                     persona.media_reaction = new_value
                     db.commit()
                     logger.info(f"Set media_reaction to {new_value} for persona {persona_id}")
-                    return await _handle_back_to_wizard_menu(update, context, persona_id)
+                    with get_db() as db_refresh:
+                        persona_refreshed = db_refresh.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
+                        return await _show_edit_wizard_menu(update, context, persona_refreshed)
                 else:
                     await query.edit_message_text(escape_markdown_v2("❌ Ошибка: личность не найдена."))
                     return ConversationHandler.END
         except Exception as e:
             logger.error(f"Error setting media_reaction for {persona_id}: {e}")
             await query.edit_message_text(escape_markdown_v2("❌ Ошибка при сохранении настройки реакции на медиа."))
-            return await _try_return_to_wizard_menu(update, context, query.from_user.id, persona_id)
+            with get_db() as db:
+                persona = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
+                return await _show_edit_wizard_menu(update, context, persona)
     else:
         logger.warning(f"Unknown callback in edit_media_reaction_received: {data}")
         return EDIT_MEDIA_REACTION
@@ -6031,7 +4921,9 @@ async def edit_moods_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             return await edit_moods_menu(update, context, persona_config=persona_config)
         else: # Should not happen if check passed
             logger.error(f"Persona {persona_id} not found after premium check in edit_moods_entry.")
-            return await _try_return_to_wizard_menu(update, context, user_id, persona_id)
+            with get_db() as db_fallback:
+                persona = db_fallback.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
+                return await _show_edit_wizard_menu(update, context, persona)
 
 # --- Markdown Safety Fixes ---
 def fix_markdown_prompt_strings(markdown_strings=None):
@@ -6213,9 +5105,9 @@ async def edit_moods_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, pe
     if local_persona_config is None:
         try:
             with get_db() as db:
-                local_persona_config = db.query(PersonaConfig).options(selectinload(PersonaConfig.owner)).filter(
-                     PersonaConfig.id == persona_id,
-                     PersonaConfig.owner.has(User.telegram_id == user_id)
+                local_persona_config = db.query(DBPersonaConfig).options(selectinload(DBPersonaConfig.owner)).filter(
+                     DBPersonaConfig.id == persona_id,
+                     DBPersonaConfig.owner.has(User.telegram_id == user_id)
                  ).first()
                 if not local_persona_config:
                     logger.warning(f"User {user_id}: PersonaConfig {persona_id} not found/owned in edit_moods_menu fetch.")
@@ -6227,9 +5119,25 @@ async def edit_moods_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, pe
              logger.error(f"DB Error fetching persona in edit_moods_menu: {e}", exc_info=True)
              await query.answer("❌ Ошибка базы данных", show_alert=True)
              await context.bot.send_message(chat_id, error_db, reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2)
-             return await _try_return_to_wizard_menu(update, context, user_id, persona_id)
+             with get_db() as db_fallback:
+                 persona = db_fallback.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
+                 return await _show_edit_wizard_menu(update, context, persona)
+
 
     logger.debug(f"Showing moods menu for persona {persona_id}")
+    async def _get_edit_moods_keyboard_internal(config):
+        moods = json.loads(config.mood_prompts_json or '{}')
+        keyboard = []
+        for name in sorted(moods.keys(), key=str.lower):
+            encoded_name = urllib.parse.quote(name)
+            keyboard.append([
+                InlineKeyboardButton(f"✏️ {name}", callback_data=f"editmood_select_{encoded_name}"),
+                InlineKeyboardButton("🗑️", callback_data=f"deletemood_confirm_{encoded_name}")
+            ])
+        keyboard.append([InlineKeyboardButton("➕ Добавить новое", callback_data="editmood_add")])
+        keyboard.append([InlineKeyboardButton("⬅️ Назад в настройки", callback_data="back_to_wizard_menu")])
+        return keyboard
+
     keyboard = await _get_edit_moods_keyboard_internal(local_persona_config)
     reply_markup = InlineKeyboardMarkup(keyboard)
     msg_text = prompt_mood_menu_fmt_raw.format(name=escape_markdown_v2(local_persona_config.name))
@@ -6282,9 +5190,9 @@ async def edit_mood_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     persona_config = None
     try:
         with get_db() as db:
-             persona_config = db.query(PersonaConfig).options(selectinload(PersonaConfig.owner)).filter(
-                 PersonaConfig.id == persona_id,
-                 PersonaConfig.owner.has(User.telegram_id == user_id)
+             persona_config = db.query(DBPersonaConfig).options(selectinload(DBPersonaConfig.owner)).filter(
+                 DBPersonaConfig.id == persona_id,
+                 DBPersonaConfig.owner.has(User.telegram_id == user_id)
              ).first()
              if not persona_config:
                  logger.warning(f"User {user_id}: PersonaConfig {persona_id} not found/owned in edit_mood_choice.")
@@ -6296,7 +5204,9 @@ async def edit_mood_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -
          logger.error(f"DB Error fetching persona in edit_mood_choice: {e}", exc_info=True)
          await query.answer("❌ Ошибка базы данных", show_alert=True)
          await context.bot.send_message(chat_id, error_db, reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2)
-         return await _try_return_to_wizard_menu(update, context, user_id, persona_id)
+         with get_db() as db_fallback:
+             persona = db_fallback.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
+             return await _show_edit_wizard_menu(update, context, persona)
 
     await query.answer()
 
@@ -6397,9 +5307,9 @@ async def edit_mood_name_received(update: Update, context: ContextTypes.DEFAULT_
 
     try:
         with get_db() as db:
-            persona_config = db.query(PersonaConfig).options(selectinload(PersonaConfig.owner)).filter(
-                 PersonaConfig.id == persona_id,
-                 PersonaConfig.owner.has(User.telegram_id == user_id)
+            persona_config = db.query(DBPersonaConfig).options(selectinload(DBPersonaConfig.owner)).filter(
+                 DBPersonaConfig.id == persona_id,
+                 DBPersonaConfig.owner.has(User.telegram_id == user_id)
              ).first()
             if not persona_config:
                  logger.warning(f"User {user_id}: Persona {persona_id} not found/owned in mood name check.")
@@ -6473,9 +5383,9 @@ async def edit_mood_prompt_received(update: Update, context: ContextTypes.DEFAUL
 
     try:
         with get_db() as db:
-            persona_config = db.query(PersonaConfig).options(selectinload(PersonaConfig.owner)).filter(
-                 PersonaConfig.id == persona_id,
-                 PersonaConfig.owner.has(User.telegram_id == user_id)
+            persona_config = db.query(DBPersonaConfig).options(selectinload(DBPersonaConfig.owner)).filter(
+                 DBPersonaConfig.id == persona_id,
+                 DBPersonaConfig.owner.has(User.telegram_id == user_id)
              ).with_for_update().first()
             if not persona_config:
                 logger.warning(f"User {user_id}: Persona {persona_id} not found/owned when saving mood prompt.")
@@ -6508,12 +5418,17 @@ async def edit_mood_prompt_received(update: Update, context: ContextTypes.DEFAUL
         logger.error(f"Database error saving mood '{mood_name}' for persona {persona_id}: {e}", exc_info=True)
         await update.message.reply_text(error_db, parse_mode=ParseMode.MARKDOWN_V2)
         db.rollback()
-        return await _try_return_to_mood_menu(update, context, user_id, persona_id)
+        with get_db() as db_fallback:
+            persona = db_fallback.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
+            return await _show_edit_wizard_menu(update, context, persona)
+
     except Exception as e:
         logger.error(f"Error saving mood '{mood_name}' for persona {persona_id}: {e}", exc_info=True)
         await update.message.reply_text(error_general, parse_mode=ParseMode.MARKDOWN_V2)
         db.rollback()
-        return await _try_return_to_mood_menu(update, context, user_id, persona_id)
+        with get_db() as db_fallback:
+            persona = db_fallback.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
+            return await _show_edit_wizard_menu(update, context, persona)
 
 
 async def delete_mood_confirmed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -6546,23 +5461,27 @@ async def delete_mood_confirmed(update: Update, context: ContextTypes.DEFAULT_TY
             logger.error(f"Error decoding mood name from delete confirm callback {data}: {decode_err}")
             await query.answer("❌ Ошибка данных", show_alert=True)
             await context.bot.send_message(chat_id, error_decode_mood, reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2)
-            return await _try_return_to_mood_menu(update, context, user_id, persona_id)
+            with get_db() as db_fallback:
+                persona = db_fallback.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
+                return await _show_edit_wizard_menu(update, context, persona)
 
     if not mood_name_to_delete or not persona_id or not original_name_from_callback or mood_name_to_delete != original_name_from_callback:
         logger.warning(f"User {user_id}: Mismatch or missing state in delete_mood_confirmed. Stored='{mood_name_to_delete}', Callback='{original_name_from_callback}', PersonaID='{persona_id}'")
         await query.answer("❌ Ошибка сессии", show_alert=True)
         await context.bot.send_message(chat_id, error_no_session, reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2)
         context.user_data.pop('delete_mood_name', None)
-        return await _try_return_to_mood_menu(update, context, user_id, persona_id)
+        with get_db() as db_fallback:
+            persona = db_fallback.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
+            return await _show_edit_wizard_menu(update, context, persona)
 
     await query.answer("Удаляем...")
     logger.warning(f"User {user_id} confirmed deletion of mood '{mood_name_to_delete}' for persona {persona_id}.")
 
     try:
         with get_db() as db:
-            persona_config = db.query(PersonaConfig).options(selectinload(PersonaConfig.owner)).filter(
-                 PersonaConfig.id == persona_id,
-                 PersonaConfig.owner.has(User.telegram_id == user_id)
+            persona_config = db.query(DBPersonaConfig).options(selectinload(DBPersonaConfig.owner)).filter(
+                 DBPersonaConfig.id == persona_id,
+                 DBPersonaConfig.owner.has(User.telegram_id == user_id)
              ).with_for_update().first()
             if not persona_config:
                 logger.warning(f"User {user_id}: Persona {persona_id} not found/owned during mood deletion.")
@@ -6598,51 +5517,17 @@ async def delete_mood_confirmed(update: Update, context: ContextTypes.DEFAULT_TY
         logger.error(f"Database error deleting mood '{mood_name_to_delete}' for persona {persona_id}: {e}", exc_info=True)
         await context.bot.send_message(chat_id, error_db, reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2)
         db.rollback()
-        return await _try_return_to_mood_menu(update, context, user_id, persona_id)
+        with get_db() as db_fallback:
+            persona = db_fallback.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
+            return await _show_edit_wizard_menu(update, context, persona)
+
     except Exception as e:
         logger.error(f"Error deleting mood '{mood_name_to_delete}' for persona {persona_id}: {e}", exc_info=True)
         await context.bot.send_message(chat_id, error_general, reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2)
         db.rollback()
-        return await _try_return_to_mood_menu(update, context, user_id, persona_id)
-
-
-async def _try_return_to_mood_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int, persona_id: int) -> int:
-     """Helper function to attempt returning to the mood edit menu after an error."""
-     logger.debug(f"Attempting to return to mood menu for user {user_id}, persona {persona_id} after error.")
-     callback_message = update.callback_query.message if update.callback_query else None
-     user_message = update.message
-     target_message = callback_message or user_message
-
-     error_cannot_return = escape_markdown_v2("❌ не удалось вернуться к меню настроений \\(личность не найдена\\)\\.")
-     error_cannot_return_general = escape_markdown_v2("❌ не удалось вернуться к меню настроений.")
-     prompt_mood_menu_raw = "🎭 управление настроениями для *{name}*:"
-
-     if not target_message:
-         logger.warning("Cannot return to mood menu: no target message found.")
-         context.user_data.clear()
-         return ConversationHandler.END
-     target_chat_id = target_message.chat.id
-
-     try:
-         with get_db() as db:
-             persona_config = db.query(PersonaConfig).options(selectinload(PersonaConfig.owner)).filter(
-                 PersonaConfig.id == persona_id,
-                 PersonaConfig.owner.has(User.telegram_id == user_id)
-             ).first()
-
-             if persona_config:
-                 # Use the existing mood menu function
-                 return await edit_moods_menu(update, context, persona_config=persona_config)
-             else:
-                 logger.warning(f"Persona {persona_id} not found when trying to return to mood menu.")
-                 await context.bot.send_message(target_chat_id, error_cannot_return, parse_mode=ParseMode.MARKDOWN_V2)
-                 context.user_data.clear()
-                 return ConversationHandler.END
-     except Exception as e:
-         logger.error(f"Failed to return to mood menu after error: {e}", exc_info=True)
-         await context.bot.send_message(target_chat_id, error_cannot_return_general, parse_mode=ParseMode.MARKDOWN_V2)
-         context.user_data.clear()
-         return ConversationHandler.END
+        with get_db() as db_fallback:
+            persona = db_fallback.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
+            return await _show_edit_wizard_menu(update, context, persona)
 
 
 # --- Wizard Finish/Cancel ---
@@ -7177,7 +6062,9 @@ async def edit_message_volume_received(update: Update, context: ContextTypes.DEF
     persona_id = context.user_data.get('edit_persona_id')
 
     if data == "back_to_wizard_menu":
-        return await _handle_back_to_wizard_menu(update, context, persona_id)
+        with get_db() as db:
+            persona = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
+            return await _show_edit_wizard_menu(update, context, persona)
 
     if data.startswith("set_volume_"):
         volume = data.replace("set_volume_", "")
@@ -7209,7 +6096,9 @@ async def edit_message_volume_received(update: Update, context: ContextTypes.DEF
         except Exception as e:
             logger.error(f"Error setting message_volume for {persona_id}: {e}")
             await query.edit_message_text(escape_markdown_v2("❌ Ошибка при сохранении настройки объема сообщений."))
-            return await _try_return_to_wizard_menu(update, context, query.from_user.id, persona_id)
+            with get_db() as db:
+                persona = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
+                return await _show_edit_wizard_menu(update, context, persona)
     else:
         logger.warning(f"Unknown callback in edit_message_volume_received: {data}")
         return EDIT_MESSAGE_VOLUME
