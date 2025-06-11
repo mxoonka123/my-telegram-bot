@@ -314,12 +314,20 @@ SessionLocal = None
 
 def initialize_database():
     global engine, SessionLocal
-    # --- УПРОЩЕНИЕ ---
     # Просто берем URL как есть из переменной окружения
     db_url_str = DATABASE_URL
     if not db_url_str:
         logger.critical("DATABASE_URL environment variable is not set!")
         raise ValueError("DATABASE_URL environment variable is not set!")
+
+    # --- ИСПРАВЛЕНИЕ: Принудительно указываем использование драйвера psycopg (v3) ---
+    # SQLAlchemy по умолчанию для "postgresql://" ищет psycopg2.
+    # Наш requirements.txt использует psycopg (v3), поэтому мы должны явно указать
+    # SQLAlchemy использовать новый драйвер, изменив схему подключения.
+    if db_url_str.startswith("postgresql://"):
+        db_url_str = db_url_str.replace("postgresql://", "postgresql+psycopg://", 1)
+        logger.info("Adjusted DATABASE_URL to use 'psycopg' (v3) driver.")
+    # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
 
     db_log_url = db_url_str.split('@')[-1] if '@' in db_url_str else db_url_str
     logger.info(f"Initializing database connection pool for: {db_log_url}")
@@ -328,8 +336,7 @@ def initialize_database():
         log_url_display = make_url(db_url_str).render_as_string(hide_password=True)
     except Exception:
         log_url_display = "Could not parse DATABASE_URL for logging."
-    logger.info(f"Using DATABASE_URL directly: {log_url_display}")
-    # --- КОНЕЦ УПРОЩЕНИЯ ---
+    logger.info(f"Using modified DATABASE_URL for engine: {log_url_display}")
 
     engine_args = {}
     if db_url_str.startswith("sqlite"):
@@ -342,7 +349,6 @@ def initialize_database():
             "pool_timeout": 30,
             "pool_recycle": 1800,
             "pool_pre_ping": True,
-            # Убираем connect_args и executemany_mode
         })
 
     try:
@@ -361,7 +367,7 @@ def initialize_database():
             
             logger.info("PostgreSQL: Disabled prepared statements and set timeouts to prevent transaction issues")
             
-        # Создаем engine с URL из переменной и модифицированными engine_args
+        # Создаем engine с ИЗМЕНЕННЫМ URL из переменной и модифицированными engine_args
         engine = create_engine(db_url_str, **engine_args, echo=False)
         
         # Для postgres подключений добавляем обработчик событий для мониторинга
@@ -381,7 +387,10 @@ def initialize_database():
 
     except OperationalError as e:
          err_str = str(e).lower()
-         if "password authentication failed" in err_str or "wrong password" in err_str:
+         # Проверяем, есть ли в ошибке упоминание 'psycopg2'
+         if 'psycopg2' in err_str:
+             logger.critical(f"FATAL: The application is still trying to use 'psycopg2'. Check for hardcoded connection strings or old SQLAlchemy versions.")
+         elif "password authentication failed" in err_str or "wrong password" in err_str:
              logger.critical(f"FATAL: Database password authentication failed for {db_log_url}.")
              logger.critical(f"Verify the password in the DATABASE_URL variable in Railway matches the Supabase DB password.")
          elif "database" in err_str and "does not exist" in err_str:
@@ -393,6 +402,10 @@ def initialize_database():
          raise
     except ProgrammingError as e:
         logger.critical(f"FATAL: Database programming error during initialization for {db_log_url}: {e}", exc_info=True)
+        raise
+    except ModuleNotFoundError as e:
+        # Добавляем более явную обработку ModuleNotFoundError, если она все еще возникает
+        logger.critical(f"FATAL: A required module is missing: {e}. Ensure it is in requirements.txt and installed.", exc_info=True)
         raise
     except Exception as e:
          logger.critical(f"FATAL: An unexpected error occurred during database initialization for {db_log_url}: {e}", exc_info=True)
