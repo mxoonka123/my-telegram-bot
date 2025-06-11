@@ -2371,23 +2371,39 @@ async def send_to_gemini(system_prompt: str, messages: List[Dict[str, str]], ima
             logger.info(f"Финальное количество текстовых частей для отправки: {len(text_parts_to_send)} (настройка: {max_messages_setting_value})")
         # --- КОНЕЦ НОВОЙ ЕДИНОЙ ТОЧКИ ОГРАНИЧЕНИЯ ---
 
+    try:
         first_message_sent = False
         chat_id_str = str(chat_id)
-        
+
         # NEW: Further parse parts if they contain markdown-wrapped JSON
         processed_parts_for_sending = []
-        if text_parts_to_send: # Only if we have something to process
+        if text_parts_to_send:
             for text_part_candidate in text_parts_to_send:
                 stripped_candidate = text_part_candidate.strip()
-                # Attempt to find and parse markdown-wrapped JSON within this candidate part
                 match = re.search(r"^```json\s*(\[.*?\])\s*```$", stripped_candidate, re.DOTALL)
                 if match:
                     inner_json_str = match.group(1)
+                    try:
+                        # Parse the inner JSON, which should be a list of strings
+                        parsed_parts = json.loads(inner_json_str)
+                        if isinstance(parsed_parts, list):
+                            processed_parts_for_sending.extend(str(p) for p in parsed_parts)
+                        else:
+                            # If it's not a list, just add it as a single part
+                            processed_parts_for_sending.append(str(parsed_parts))
+                    except (json.JSONDecodeError, TypeError):
+                        # If parsing fails, fall back to using the original part
+                        processed_parts_for_sending.append(text_part_candidate)
+                else:
+                    # If no JSON is found, just add the original part
+                    processed_parts_for_sending.append(text_part_candidate)
+            # After processing all parts, replace the original list with the new one
+            text_parts_to_send = processed_parts_for_sending
+        
         chat_type = update.effective_chat.type if update and update.effective_chat else None
 
-        try:
-            # Сначала GIF
-            if gif_links_to_send:
+        # Сначала GIF
+        if gif_links_to_send:
             for i, gif_url_send in enumerate(gif_links_to_send):
                 try:
                     current_reply_id_gif = reply_to_message_id if not first_message_sent else None
@@ -2405,15 +2421,12 @@ async def send_to_gemini(system_prompt: str, messages: List[Dict[str, str]], ima
         # Затем Текст
         if text_parts_to_send:
             for i, part_raw_send in enumerate(text_parts_to_send):
-                # Проверка на пустую строку (на всякий случай)
                 if not part_raw_send:
                     continue
-                # Обрезка, если часть все еще слишком длинная (актуально для fallback)
                 if len(part_raw_send) > TELEGRAM_MAX_LEN:
                     logger.warning(f"process_and_send_response [JSON]: Fallback Part {i+1} exceeds max length ({len(part_raw_send)}). Truncating.")
                     part_raw_send = part_raw_send[:TELEGRAM_MAX_LEN - 3] + "..."
 
-                # --- Отправка ---
                 if chat_type in [ChatType.GROUP, ChatType.SUPERGROUP]:
                     try:
                         asyncio.create_task(context.bot.send_chat_action(chat_id=chat_id_str, action=ChatAction.TYPING))
@@ -2421,7 +2434,7 @@ async def send_to_gemini(system_prompt: str, messages: List[Dict[str, str]], ima
                         logger.warning(f"Failed to send chat action: {e}")
 
                 try:
-                    await asyncio.sleep(random.uniform(0.8, 2.0))  # Пауза
+                    await asyncio.sleep(random.uniform(0.8, 2.0))
                 except Exception as e:
                     logger.warning(f"Failed to sleep: {e}")
 
@@ -2429,7 +2442,7 @@ async def send_to_gemini(system_prompt: str, messages: List[Dict[str, str]], ima
                 escaped_part_send = escape_markdown_v2(part_raw_send)
                 message_sent_successfully = False
 
-                logger.info(f"process_and_send_response [JSON]: Attempting send part {i+1}/{len(text_parts_to_send)} (MDv2, ReplyTo: {current_reply_id_text}) to {chat_id_str}: '{escaped_part_send[:80]}...'")
+                logger.info(f"process_and_send_response [JSON]: Attempting send part {i+1}/{len(text_parts_to_send)} (MDv2, ReplyTo: {current_reply_id_text}) to {chat_id_str}: '{escaped_part_send[:80]}...')")
                 try:
                     await context.bot.send_message(
                         chat_id=chat_id_str, text=escaped_part_send, parse_mode=ParseMode.MARKDOWN_V2,
@@ -2468,7 +2481,7 @@ async def send_to_gemini(system_prompt: str, messages: List[Dict[str, str]], ima
                     logger.info(f"process_and_send_response [JSON]: Successfully sent part {i+1}/{len(text_parts_to_send)}.")
                 else:
                     logger.error(f"process_and_send_response [JSON]: Failed to send part {i+1}, stopping.")
-                    break # Прерываем, если отправка не удалась
+                    break
 
     except Exception as e_main_process:
         logger.error(f"process_and_send_response [JSON]: CRITICAL UNEXPECTED ERROR in main block: {e_main_process}", exc_info=True)
@@ -2534,8 +2547,6 @@ async def send_limit_exceeded_message(update: Update, context: ContextTypes.DEFA
                 except Exception as plain_e:
                     logger.error(f"Plain text send failed: {plain_e}")
                     logger.debug(f"Text (Plain): {text_raw[:100]}...")
-                except:  # Добавляем пустой except для вложенного блока
-                    pass
             except Exception as send_e:
                 logger.error(f"Unexpected error during message send: {send_e}")
         except ValueError as ve:
@@ -2544,7 +2555,6 @@ async def send_limit_exceeded_message(update: Update, context: ContextTypes.DEFA
             logger.error(f"Failed to send limit exceeded message to user {user.telegram_id}: {outer_e}")
     except Exception as e:
         logger.error(f"Critical error in send_limit_exceeded_message: {e}")
-    f"✅ полная настройка поведения и настроений\n\n" # Обновлен текст
 
 # --- Message Handlers ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
