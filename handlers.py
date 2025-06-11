@@ -445,35 +445,6 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 
 # --- Core Logic Helpers ---
 
-def get_persona_and_context_with_owner(chat_id: Union[str, int], db: Session) -> Optional[Tuple[Persona, List[Dict[str, str]], User]]:
-    """Fetches the active Persona, its context, and its owner User for a given chat."""
-    chat_id_str = str(chat_id)
-    chat_instance = get_active_chat_bot_instance_with_relations(db, chat_id_str)
-    if not chat_instance:
-        return None
-
-    bot_instance = chat_instance.bot_instance_ref
-    if not bot_instance:
-         logger.error(f"ChatBotInstance {chat_instance.id} for chat {chat_id_str} is missing linked BotInstance.")
-         return None
-    if not bot_instance.persona_config:
-         logger.error(f"BotInstance {bot_instance.id} (linked to chat {chat_id_str}) is missing linked PersonaConfig.")
-         return None
-    owner_user = bot_instance.owner or bot_instance.persona_config.owner
-    if not owner_user:
-         logger.error(f"Could not load Owner for BotInstance {bot_instance.id} (linked to chat {chat_id_str}).")
-         return None
-
-    persona_config = bot_instance.persona_config
-
-    try:
-        persona = Persona(persona_config, chat_instance)
-    except ValueError as e:
-         logger.error(f"Failed to initialize Persona for config {persona_config.id} in chat {chat_id_str}: {e}", exc_info=True)
-         return None
-
-    context_list = get_context_for_chat_bot(db, chat_instance.id)
-    return persona, context_list, owner_user
 
 
 async def send_to_gemini(system_prompt: str, messages: List[Dict[str, str]], image_data: Optional[bytes] = None, audio_data: Optional[bytes] = None) -> str:
@@ -1604,7 +1575,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 logger.debug("handle_message: DB session acquired.")
 
                 # --- Получение персоны и владельца ---
-                persona_context_owner_tuple = get_persona_and_context_with_owner(chat_id_str, db_session)
+                persona_context_owner_tuple = db.get_persona_and_context_with_owner(chat_id_str, db_session)
                 if not persona_context_owner_tuple:
                     logger.warning(f"handle_message: No active persona found for chat {chat_id_str}.")
                     return
@@ -1922,7 +1893,7 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
 
     with get_db() as db:
         try:
-            persona_context_owner_tuple = get_persona_and_context_with_owner(chat_id_str, db)
+            persona_context_owner_tuple = db.get_persona_and_context_with_owner(chat_id_str, db)
             if not persona_context_owner_tuple:
                 logger.debug(f"No active persona in chat {chat_id_str} for media message.")
                 return
@@ -2173,17 +2144,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     fallback_text_raw = "Привет! Произошла ошибка отображения стартового сообщения. Используй /help или /menu."
 
     try:
-        with get_db() as db:
-            user = get_or_create_user(db, user_id, username)
-            if db.is_modified(user):
+        with get_db() as db_session: # Renamed to db_session to avoid conflict
+            user = get_or_create_user(db_session, user_id, username)
+            if db_session.is_modified(user):
                 logger.info(f"/start: Committing new/updated user {user_id}.")
-                db.commit()
-                db.refresh(user)
+                db_session.commit()
+                db_session.refresh(user)
             else:
                 logger.debug(f"/start: User {user_id} already exists and is up-to-date.")
 
             logger.debug(f"/start: Checking for active persona in chat {chat_id_str}...")
-            persona_info_tuple = get_persona_and_context_with_owner(chat_id_str, db)
+            # ИСПРАВЛЕННЫЙ ВЫЗОВ: Используем функцию из модуля db
+            persona_info_tuple = db.get_persona_and_context_with_owner(chat_id_str, db_session)
+            
             if persona_info_tuple:
                 persona, _, _ = persona_info_tuple
                 logger.info(f"/start: Persona '{persona.name}' is active in chat {chat_id_str}.")
@@ -2194,37 +2167,24 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 reply_markup = ReplyKeyboardRemove()
             else:
                 logger.info(f"/start: No active persona in chat {chat_id_str}. Showing welcome message.")
-                if not db.is_modified(user):
-                    user = db.query(User).options(selectinload(User.persona_configs)).filter(User.id == user.id).one()
+                if not db_session.is_modified(user):
+                    user = db_session.query(User).options(selectinload(User.persona_configs)).filter(User.id == user.id).one()
 
+                # ... (rest of the logic for creating welcome message is fine) ...
                 now = datetime.now(timezone.utc)
-                today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-                # Ensure user.last_message_reset is UTC-aware for comparison
-                # today_start is already UTC-aware
-                last_reset_dt_for_comparison = user.last_message_reset
-                if last_reset_dt_for_comparison and last_reset_dt_for_comparison.tzinfo is None:
-                    # Assume naive datetime from DB (e.g., SQLite) is intended to be UTC
-                    last_reset_dt_for_comparison = last_reset_dt_for_comparison.replace(tzinfo=timezone.utc)
-
                 status_raw = "⭐ Premium" if user.is_active_subscriber else "🆓 Free"
                 expires_raw = ""
                 if user.is_active_subscriber and user.subscription_expires_at:
-                     # Ensure user.subscription_expires_at is UTC-aware for comparison
-                     # now is already UTC-aware
                      subscription_expires_dt_for_comparison = user.subscription_expires_at
                      if subscription_expires_dt_for_comparison.tzinfo is None:
-                         # Assume naive datetime from DB (e.g., SQLite) is intended to be UTC
                          subscription_expires_dt_for_comparison = subscription_expires_dt_for_comparison.replace(tzinfo=timezone.utc)
-
-                     # now + timedelta is also UTC-aware
                      if subscription_expires_dt_for_comparison > now + timedelta(days=365*10):
                          expires_raw = "(бессрочно)"
                      else:
-                         expires_raw = f"до {user.subscription_expires_at.strftime('%d.%m.%Y')}" # Original for display is fine
-
+                         expires_raw = f"до {user.subscription_expires_at.strftime('%d.%m.%Y')}"
+                
                 persona_count = len(user.persona_configs) if user.persona_configs else 0
                 persona_limit_raw = f"{persona_count}/{user.persona_limit}"
-                # Отображаем месячный лимит для всех пользователей
                 message_limit_raw = f"{user.monthly_message_count}/{user.message_limit}"
 
                 start_text_md = (
@@ -2239,7 +2199,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                     f"`/subscribe` \\- узнать о подписке"
                  )
                 reply_text_final = start_text_md
-
                 fallback_text_raw = (
                      f"привет! 👋 я бот для создания ai-собеседников (@{context.bot.username}).\n\n"
                      f"твой статус: {status_raw} {expires_raw}\n"
@@ -2251,13 +2210,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                      f"/profile - детали статуса\n"
                      f"/subscribe - узнать о подписке"
                 )
-
                 keyboard = [[InlineKeyboardButton("🚀 Меню Команд", callback_data="show_menu")]]
                 reply_markup = InlineKeyboardMarkup(keyboard)
 
             logger.debug(f"/start: Sending final message to user {user_id}.")
             await update.message.reply_text(reply_text_final, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
 
+    # ... (rest of the /start handler's exception blocks are fine) ...
     except SQLAlchemyError as e:
         logger.error(f"Database error during /start for user {user_id}: {e}", exc_info=True)
         error_msg_raw = "❌ ошибка при загрузке данных. попробуй позже."
@@ -2465,7 +2424,7 @@ async def mood(update: Update, context: ContextTypes.DEFAULT_TYPE, db: Optional[
             close_db_later = True
 
         if local_persona is None:
-            persona_info_tuple = get_persona_and_context_with_owner(chat_id_str, db_session)
+            persona_info_tuple = db.get_persona_and_context_with_owner(chat_id_str, db_session)
             if not persona_info_tuple:
                 reply_target = update.callback_query.message if is_callback else message_or_callback_msg
                 if is_callback: await update.callback_query.answer("Нет активной личности", show_alert=True)
@@ -2662,7 +2621,7 @@ async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     with get_db() as db:
         try:
-            persona_info_tuple = get_persona_and_context_with_owner(chat_id_str, db)
+            persona_info_tuple = db.get_persona_and_context_with_owner(chat_id_str, db)
             if not persona_info_tuple:
                 await update.message.reply_text(error_no_persona, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
                 return
@@ -5931,7 +5890,7 @@ async def mute_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     with get_db() as db:
         try:
-            instance_info = get_persona_and_context_with_owner(chat_id_str, db)
+            instance_info = db.get_persona_and_context_with_owner(chat_id_str, db)
             if not instance_info:
                 await update.message.reply_text(error_no_persona, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
                 return
@@ -5989,14 +5948,13 @@ async def unmute_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     with get_db() as db:
         try:
-            active_instance = get_active_chat_bot_instance_with_relations(db, chat_id_str)
-
-            if not active_instance or not active_instance.bot_instance_ref or not active_instance.bot_instance_ref.owner or not active_instance.bot_instance_ref.persona_config:
+            persona_info = db.get_persona_and_context_with_owner(chat_id_str, db)
+            if not persona_info:
                 await update.message.reply_text(error_no_persona, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
                 return
 
-            owner_user = active_instance.bot_instance_ref.owner
-            persona_name = active_instance.bot_instance_ref.persona_config.name
+            active_persona, active_instance, owner_user = persona_info
+            persona_name = active_persona.name
             persona_name_escaped = escape_markdown_v2(persona_name)
 
             if owner_user.telegram_id != user_id and not is_admin(user_id):
@@ -6130,7 +6088,7 @@ async def clear_memory(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     with get_db() as db:
         try:
             # Находим активную личность и ее владельца
-            persona_info_tuple = get_persona_and_context_with_owner(chat_id_str, db)
+            persona_info_tuple = db.get_persona_and_context_with_owner(chat_id_str, db)
             if not persona_info_tuple:
                 await update.message.reply_text(msg_no_persona, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
                 return
@@ -6203,7 +6161,7 @@ async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     with get_db() as db:
         try:
-            persona_info_tuple = get_persona_and_context_with_owner(chat_id_str, db)
+            persona_info_tuple = db.get_persona_and_context_with_owner(chat_id_str, db)
             if not persona_info_tuple:
                 # Используем parse_mode=None
                 await update.message.reply_text(error_no_persona_raw, reply_markup=ReplyKeyboardRemove(), parse_mode=None)
