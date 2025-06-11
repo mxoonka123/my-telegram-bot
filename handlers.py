@@ -14,6 +14,7 @@ import uuid
 import wave
 import subprocess
 from typing import List, Dict, Any, Optional, Union, Tuple
+import config
 
 # Константы для UI
 CHECK_MARK = "✅ "  # Unicode Check Mark Symbol
