@@ -80,7 +80,24 @@ from utils import (
     TELEGRAM_MAX_LEN,
     count_openai_compatible_tokens
 )
+# handlers.py: (добавить в районе 45 строки, после импортов)
 
+# Helper function to extract JSON from markdown code blocks
+def extract_json_from_markdown(text: str) -> str:
+    """
+    Extracts a JSON string from a markdown code block (e.g., ```json...```).
+    If no markdown block is found, returns the original text.
+    """
+    # The pattern looks for a string inside ```json ... ``` or ``` ... ```
+    pattern = r'```(?:json)?\s*([\s\S]*?)\s*```'
+    match = re.search(pattern, text, re.DOTALL)
+    if match:
+        extracted_json = match.group(1).strip()
+        logger.debug(f"Extracted JSON from markdown block. Original length: {len(text)}, Extracted length: {len(extracted_json)}")
+        return extracted_json
+    # If no markdown block is found, maybe the response is already a clean JSON array.
+    return text.strip()
+    
 # Максимальная длина входящего сообщения от пользователя в символах
 MAX_USER_MESSAGE_LENGTH_CHARS = 600
 
