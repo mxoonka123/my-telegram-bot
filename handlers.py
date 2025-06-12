@@ -64,8 +64,6 @@ from db import (
     get_persona_by_id_and_owner, check_and_update_user_limits, activate_subscription,
     create_bot_instance, link_bot_instance_to_chat, delete_persona_config,
     get_all_active_chat_bot_instances,
-    # --- ИСПРАВЛЕНИЕ: Добавлен импорт get_persona_and_context_with_owner ---
-    get_active_chat_bot_instance_with_relations,
     get_persona_and_context_with_owner,
     User, PersonaConfig as DBPersonaConfig, BotInstance as DBBotInstance,
     ChatBotInstance as DBChatBotInstance, ChatContext, func, get_db,
@@ -5272,14 +5270,14 @@ async def unmute_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     with get_db() as db:
         try:
-            active_instance = get_active_chat_bot_instance_with_relations(db, chat_id_str)
+            instance_info = get_persona_and_context_with_owner(db, chat_id_str)
 
-            if not active_instance or not active_instance.bot_instance_ref or not active_instance.bot_instance_ref.owner or not active_instance.bot_instance_ref.persona_config:
+            if not instance_info:
                 await update.message.reply_text(error_no_persona, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
                 return
 
-            owner_user = active_instance.bot_instance_ref.owner
-            persona_name = active_instance.bot_instance_ref.persona_config.name
+            persona, active_instance, owner_user = instance_info
+            persona_name = persona.name
             persona_name_escaped = escape_markdown_v2(persona_name)
 
             if owner_user.telegram_id != user_id and not is_admin(user_id):
