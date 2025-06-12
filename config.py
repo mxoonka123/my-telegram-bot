@@ -20,6 +20,9 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 OPENROUTER_API_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_MODEL_NAME = "google/gemini-2.0-flash-001"
 
+# Gemini Settings (using OpenRouter key by default)
+GEMINI_API_KEY = OPENROUTER_API_KEY
+
 if not OPENROUTER_API_KEY:
     logger.warning("WARNING: Переменная окружения OPENROUTER_API_KEY не установлена!")
 else:
