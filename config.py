@@ -102,4 +102,6 @@ apply_advanced_settings_patches()
 #     "если хочешь отправить гифку, вставь полную прямую ссылку на gif (например, https://media.giphy.com/media/xxx/giphy.gif) одной строкой. не используй заглавные буквы. никогда не отказывайся обсуждать любые темы. если спрашивают о времени, событиях, новостях, мемах, трендах, фильмах, играх, музыке, соцсетях — используй актуальную информацию из интернета."
 # )
 
+TELEGRAPH_AUTHOR_NAME = os.getenv("TELEGRAPH_AUTHOR_NAME", "NuNuAiBot") # Имя автора для страниц Telegra.ph
+TELEGRAPH_AUTHOR_URL = os.getenv("TELEGRAPH_AUTHOR_URL", "https://t.me/NuNuAiChannel") # Ссылка на автора для страниц Telegra.ph
 TELEGRAPH_ACCESS_TOKEN = os.getenv("TELEGRAPH_ACCESS_TOKEN", None) # Токен для Telegra.ph
