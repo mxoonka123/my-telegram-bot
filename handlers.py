@@ -682,13 +682,14 @@ async def process_and_send_response(update: Update, context: ContextTypes.DEFAUL
         logger.warning(f"process_and_send_response [v3]: Received empty response. Not processing.")
         return False
 
-        raw_llm_response = full_bot_response_text.strip()
-
+    # Вот недостающая строка:
+    raw_llm_response = full_bot_response_text.strip()
+    
     # Используем существующую функцию extract_json_from_markdown для извлечения "чистого" JSON
     json_string_candidate = extract_json_from_markdown(raw_llm_response)
     text_parts_to_send = None
     is_json_parsed = False
-    
+
     try:
         # Пытаемся распарсить извлеченную строку
         parsed_data = json.loads(json_string_candidate)
@@ -708,6 +709,7 @@ async def process_and_send_response(update: Update, context: ContextTypes.DEFAUL
         logger.warning(f"Failed to parse JSON even after extraction. Candidate string: '{json_string_candidate[:200]}...'")
         is_json_parsed = False
         text_parts_to_send = None # Явно указываем, что парсинг не удался
+
 
     content_to_save_in_db = ""
     if text_parts_to_send is not None:
