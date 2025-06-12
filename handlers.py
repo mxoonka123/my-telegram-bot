@@ -455,11 +455,89 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 # --- ИСПРАВЛЕНИЕ: Удалена дублирующаяся функция get_persona_and_context_with_owner.
 # Теперь она импортируется из db.py
 
-async def send_to_gemini(system_prompt: str, messages: List[Dict[str, str]], image_data: Optional[bytes] = None, audio_data: Optional[bytes] = None) -> str:
-    """Sends the prompt and context to the Gemini API and returns the response."""
-    if not config.GEMINI_API_KEY:
-        logger.error("GEMINI_API_KEY is not set.")
-        return escape_markdown_v2("❌ ошибка: ключ api gemini не настроен.")
+async def send_to_openrouter(system_prompt: str, messages: List[Dict[str, str]], image_data: Optional[bytes] = None, audio_data: Optional[bytes] = None) -> str:
+    """Sends the prompt and context to the OpenRouter API and returns the response."""
+    if not config.OPENROUTER_API_KEY:
+        logger.error("OPENROUTER_API_KEY is not set.")
+        return escape_markdown_v2("❌ ошибка: ключ api для openrouter не настроен.")
+
+    # Создаем клиент, совместимый с OpenAI API
+    try:
+        client = AsyncOpenAI(
+            api_key=config.OPENROUTER_API_KEY,
+            base_url=config.OPENROUTER_API_BASE_URL,
+        )
+    except Exception as e:
+        logger.error(f"Failed to initialize AsyncOpenAI client for OpenRouter: {e}", exc_info=True)
+        return escape_markdown_v2("❌ ошибка: не удалось инициализировать клиент openrouter.")
+
+    # Формируем сообщения для API. OpenRouter использует стандартный формат OpenAI.
+    # Первое сообщение - системный промпт.
+    api_messages = [{"role": "system", "content": system_prompt.strip()}]
+    
+    # Добавляем историю диалога, ограничивая ее последними сообщениями
+    for msg in messages[-config.MAX_CONTEXT_MESSAGES_SENT_TO_LLM:]:
+        role = msg.get("role")
+        content_text = msg.get("content", "")
+        
+        # Преобразуем роли 'assistant' -> 'assistant', 'user' -> 'user'
+        api_role = "assistant" if role == "assistant" else "user"
+        
+        # Обработка медиа (если будет реализована для моделей, поддерживающих это)
+        # Текущая модель google/gemini-flash не поддерживает смешанные типы данных через этот API
+        if image_data and api_role == "user":
+            logger.warning("Image data provided, but the current OpenRouter model might not support it via this API format. Sending text only.")
+            # Здесь можно будет добавить логику для multi-modal моделей в будущем
+            image_data = None # Обнуляем, чтобы не использовать дальше
+        
+        api_messages.append({"role": api_role, "content": content_text.strip()})
+
+    logger.debug(f"Sending to OpenRouter. Model: {config.OPENROUTER_MODEL_NAME}. Messages count: {len(api_messages)}")
+
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            chat_completion = await client.chat.completions.create(
+                model=config.OPENROUTER_MODEL_NAME,
+                messages=api_messages,
+                timeout=120.0,
+                # Можно добавить другие параметры, например, temperature, top_p из persona.config
+            )
+            
+            response_text = chat_completion.choices[0].message.content
+            if not response_text:
+                 finish_reason = chat_completion.choices[0].finish_reason
+                 logger.warning(f"OpenRouter: Empty text in response. Finish reason: {finish_reason}.")
+                 return escape_markdown_v2(f"❌ получен пустой ответ от ai (openrouter). причина: {finish_reason}")
+            
+            return response_text.strip()
+
+        except OpenAIError as e: # Это общий класс ошибок для openai-совместимых API
+            logger.error(f"OpenRouter API request failed (attempt {attempt + 1}/{max_retries}) with status {e.status_code}: {e.response.text}", exc_info=False) # exc_info=False чтобы не дублировать stack trace
+            if e.status_code == 429: # Too Many Requests
+                if attempt < max_retries - 1:
+                    sleep_time = 5 * (attempt + 1)
+                    logger.warning(f"Rate limit exceeded. Retrying in {sleep_time} seconds...")
+                    await asyncio.sleep(sleep_time)
+                    continue
+                return escape_markdown_v2("❌ ошибка: превышен лимит запросов к ai (openrouter). попробуйте позже.")
+            
+            error_detail = e.response.json().get("error", {}).get("message", e.response.text)
+            return escape_markdown_v2(f"❌ ошибка api (openrouter) {e.status_code}: {error_detail}")
+        except httpx.RequestError as e:
+            logger.error(f"OpenRouter API network request failed (attempt {attempt + 1}/{max_retries}): {e}", exc_info=True)
+            if attempt < max_retries - 1:
+                await asyncio.sleep(3 * (attempt + 1))
+                continue
+            return escape_markdown_v2("❌ ошибка сети при обращении к ai (openrouter). попробуйте позже.")
+        except Exception as e:
+            logger.error(f"An unexpected error occurred in send_to_openrouter (attempt {attempt + 1}/{max_retries}): {e}", exc_info=True)
+            if attempt < max_retries - 1:
+                await asyncio.sleep(1)
+                continue
+            return escape_markdown_v2("❌ неизвестная ошибка при обращении к ai (openrouter).")
+
+    return escape_markdown_v2("❌ исчерпаны все попытки обращения к ai (openrouter).")
 
     if not messages:
         logger.error("send_to_gemini called with an empty messages list!")
@@ -1076,7 +1154,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                         return
 
                     context_for_ai = initial_context_from_db + [{"role": "user", "content": f"{username}: {message_text}"}]
-                    assistant_response_text = await send_to_gemini(system_prompt, context_for_ai)
+                    assistant_response_text = await send_to_openrouter(system_prompt, context_for_ai)
 
                     context_response_prepared = False
                     if assistant_response_text and not assistant_response_text.startswith("❌"):
@@ -1266,8 +1344,7 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
                 if len(context_for_ai) > MAX_CONTEXT_MESSAGES_SENT_TO_LLM:
                     context_for_ai = context_for_ai[-MAX_CONTEXT_MESSAGES_SENT_TO_LLM:]
             
-            ai_response_text = await send_to_gemini(system_prompt, context_for_ai, image_data=image_data, audio_data=audio_data)
-            logger.debug(f"Received response from Gemini for {media_type}: {ai_response_text[:100]}...")
+            ai_response_text = await send_to_openrouter(system_prompt, context_for_ai, image_data=image_data, audio_data=audio_data)            logger.debug(f"Received response from Gemini for {media_type}: {ai_response_text[:100]}...")
 
             context_response_prepared = await process_and_send_response(
                 update, context, chat_id_str, persona, ai_response_text, db, reply_to_message_id=message_id
