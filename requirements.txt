@@ -2,7 +2,7 @@ python-telegram-bot[job-queue]==20.3
 telegraph==2.2.0
 httpx[http2]~=0.24.0
 SQLAlchemy==2.0.31
-psycopg[binary]==3.1.18
+psycopg-binary==3.1.18
 python-dotenv==1.0.1
 yookassa==3.5.0
 Flask==3.0.3
@@ -10,7 +10,7 @@ Flask==3.0.3
 # gunicorn==22.0.0
 
 markdown==3.6
-pydantic==2.7.1
+pydantic<2.0
 waitress==3.0.0
 # Added requests as a potential Yookassa dependency, although httpx is primary
 requests>=2.25.1
@@ -21,4 +21,3 @@ vosk==0.3.45
 ffmpeg-python==0.2.0
 cffi>=1.0
 openai>=1.0.0,<2.0.0
-tiktoken

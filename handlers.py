@@ -43,14 +43,14 @@ from yookassa.domain.request.payment_request_builder import PaymentRequestBuilde
 from yookassa.domain.models.receipt import Receipt, ReceiptItem
 
 from config import (
-    OPENROUTER_API_KEY,
-    OPENROUTER_API_BASE_URL,
-    OPENROUTER_MODEL_NAME,
-    YOOKASSA_SHOP_ID, YOOKASSA_SECRET_KEY,
-    SUBSCRIPTION_PRICE_RUB, SUBSCRIPTION_CURRENCY, WEBHOOK_URL_BASE,
+    ADMIN_USER_ID,
+    CHANNEL_ID,
     SUBSCRIPTION_DURATION_DAYS,
-    FREE_PERSONA_LIMIT, PAID_PERSONA_LIMIT, MAX_CONTEXT_MESSAGES_SENT_TO_LLM,
-    ADMIN_USER_ID, CHANNEL_ID, PREMIUM_USER_MONTHLY_MESSAGE_LIMIT
+    SUBSCRIPTION_PRICE_RUB,
+    SUBSCRIPTION_CURRENCY,
+    YOOKASSA_SHOP_ID,
+    YOOKASSA_SECRET_KEY,
+    GEMINI_API_KEY
 )
 from db import (
     get_context_for_chat_bot, add_message_to_context,
@@ -1103,13 +1103,6 @@ import re
 from datetime import datetime, timezone
 from openai import AsyncOpenAI, OpenAIError
 from utils import count_openai_compatible_tokens
-# Ensure config is imported, it's likely already there but as a safeguard:
-import config
-import os
-import random
-import re
-import time
-import traceback
 import urllib.parse
 import uuid
 import wave

@@ -24,7 +24,18 @@ from telegram.error import TelegramError, Forbidden, BadRequest
 
 from telegraph import Telegraph, exceptions as telegraph_exceptions
 
-import config
+from config import (
+    YOOKASSA_SHOP_ID,
+    YOOKASSA_SECRET_KEY,
+    TELEGRAM_TOKEN,
+    TELEGRAPH_AUTHOR_NAME,
+    TELEGRAPH_AUTHOR_URL,
+    WEBHOOK_URL_BASE,
+    TELEGRAPH_ACCESS_TOKEN,
+    SUBSCRIPTION_DURATION_DAYS,
+    SUBSCRIPTION_PRICE_RUB,
+    SUBSCRIPTION_CURRENCY
+)
 import db # db.py should be fixed now (no circular import)
 import handlers # handlers.py теперь содержит новые состояния
 import tasks # Импорт модуля tasks для фоновых задач
@@ -38,13 +49,13 @@ flask_logger = logging.getLogger('flask_webhook')
 
 # --- Yookassa Configuration ---
 try:
-    if config.YOOKASSA_SHOP_ID and config.YOOKASSA_SECRET_KEY and config.YOOKASSA_SHOP_ID.isdigit():
-        YookassaConfig.configure(account_id=int(config.YOOKASSA_SHOP_ID), secret_key=config.YOOKASSA_SECRET_KEY)
-        flask_logger.info(f"Yookassa SDK configured for webhook (Shop ID: {config.YOOKASSA_SHOP_ID}).")
+    if YOOKASSA_SHOP_ID and YOOKASSA_SECRET_KEY and YOOKASSA_SHOP_ID.isdigit():
+        YookassaConfig.configure(account_id=int(YOOKASSA_SHOP_ID), secret_key=YOOKASSA_SECRET_KEY)
+        flask_logger.info(f"Yookassa SDK configured for webhook (Shop ID: {YOOKASSA_SHOP_ID}).")
     else:
         flask_logger.warning("YOOKASSA_SHOP_ID or YOOKASSA_SECRET_KEY invalid/missing. Webhook processing might fail.")
 except ValueError:
-     flask_logger.error(f"YOOKASSA_SHOP_ID ({config.YOOKASSA_SHOP_ID}) is not a valid integer.")
+     flask_logger.error(f"YOOKASSA_SHOP_ID ({YOOKASSA_SHOP_ID}) is not a valid integer.")
 except Exception as e:
     flask_logger.error(f"Failed to configure Yookassa SDK for webhook: {e}")
 
@@ -62,17 +73,17 @@ def handle_yookassa_webhook():
         flask_logger.info(f"Webhook received: Event='{event_json.get('event')}', Type='{event_json.get('type')}', PaymentID='{payment_id_log}'")
         flask_logger.debug(f"Webhook body: {json.dumps(event_json)}")
 
-        if not config.YOOKASSA_SECRET_KEY or not config.YOOKASSA_SHOP_ID or not config.YOOKASSA_SHOP_ID.isdigit():
+        if not YOOKASSA_SECRET_KEY or not YOOKASSA_SHOP_ID or not YOOKASSA_SHOP_ID.isdigit():
             flask_logger.error("YOOKASSA not configured correctly. Cannot process webhook.")
             return Response("Server configuration error", status=500)
         try:
-             current_shop_id = int(config.YOOKASSA_SHOP_ID)
+             current_shop_id = int(YOOKASSA_SHOP_ID)
              if not hasattr(YookassaConfig, 'secret_key') or not YookassaConfig.secret_key or \
                 not hasattr(YookassaConfig, 'account_id') or YookassaConfig.account_id != current_shop_id:
-                  YookassaConfig.configure(account_id=current_shop_id, secret_key=config.YOOKASSA_SECRET_KEY)
+                  YookassaConfig.configure(account_id=current_shop_id, secret_key=YOOKASSA_SECRET_KEY)
                   flask_logger.info("Yookassa SDK re-configured within webhook handler.")
         except ValueError:
-             flask_logger.error(f"YOOKASSA_SHOP_ID ({config.YOOKASSA_SHOP_ID}) invalid integer during webhook re-config.")
+             flask_logger.error(f"YOOKASSA_SHOP_ID ({YOOKASSA_SHOP_ID}) invalid integer during webhook re-config.")
              return Response("Server configuration error", status=500)
         except Exception as conf_e:
              flask_logger.error(f"Failed to re-configure Yookassa SDK in webhook: {conf_e}")
@@ -122,7 +133,7 @@ def handle_yookassa_webhook():
                 if app and app.bot:
                     success_text_raw = (
                         f"✅ ваша премиум подписка успешно активирована!\n"
-                        f"срок действия: {config.SUBSCRIPTION_DURATION_DAYS} дней.\n\n"
+                        f"срок действия: {SUBSCRIPTION_DURATION_DAYS} дней.\n\n"
                         f"спасибо за поддержку! 🎉\n\n"
                         f"используйте /profile для просмотра статуса."
                     )
@@ -225,8 +236,8 @@ logging.getLogger("utils").setLevel(logging.DEBUG) # Устанавливаем 
 logger = logging.getLogger(__name__) # Logger for this module
 
 # --- Token Check (Railway Friendly) ---
-if config.TELEGRAM_TOKEN:
-    logger.info(f"DEBUG: TELEGRAM_TOKEN is loaded (partially masked): '{config.TELEGRAM_TOKEN[:5]}...{config.TELEGRAM_TOKEN[-5:] if len(config.TELEGRAM_TOKEN) > 10 else ''}'")
+if TELEGRAM_TOKEN:
+    logger.info(f"DEBUG: TELEGRAM_TOKEN is loaded (partially masked): '{TELEGRAM_TOKEN[:5]}...{TELEGRAM_TOKEN[-5:] if len(TELEGRAM_TOKEN) > 10 else ''}'")
 else:
     logger.critical("CRITICAL: TELEGRAM_TOKEN is missing or empty after config load! Bot will likely fail to initialize Application.")
 
@@ -235,7 +246,7 @@ async def setup_telegraph_page(application: Application):
     """Creates or updates the Terms of Service page on Telegra.ph."""
     logger.info("Setting up Telegra.ph ToS page...")
     application.bot_data['tos_url'] = None
-    access_token = config.TELEGRAPH_ACCESS_TOKEN
+    access_token = TELEGRAPH_ACCESS_TOKEN
     if not access_token:
         logger.error("TELEGRAPH_ACCESS_TOKEN not set. Cannot create/update ToS page.")
         return
@@ -253,9 +264,9 @@ async def setup_telegraph_page(application: Application):
 
         tos_content_raw_for_telegraph = handlers.TOS_TEXT_RAW.replace("**", "").replace("*", "")
         tos_content_formatted_for_telegraph = tos_content_raw_for_telegraph.format(
-            subscription_duration=config.SUBSCRIPTION_DURATION_DAYS,
-            subscription_price=f"{config.SUBSCRIPTION_PRICE_RUB:.0f}",
-            subscription_currency=config.SUBSCRIPTION_CURRENCY
+            subscription_duration=SUBSCRIPTION_DURATION_DAYS,
+            subscription_price=f"{SUBSCRIPTION_PRICE_RUB:.0f}",
+            subscription_currency=SUBSCRIPTION_CURRENCY
         )
 
         content_node_array = []
@@ -430,7 +441,7 @@ def main():
 
     # --- Initialize Telegram Bot ---
     logger.info("Initializing Telegram Bot Application...")
-    token = config.TELEGRAM_TOKEN
+    token = TELEGRAM_TOKEN
     if not token:
         logger.critical("TELEGRAM_TOKEN not found in config or environment. Exiting.")
         return
