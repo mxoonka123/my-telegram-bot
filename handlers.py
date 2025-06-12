@@ -42,7 +42,6 @@ from yookassa.domain.models.currency import Currency
 from yookassa.domain.request.payment_request_builder import PaymentRequestBuilder
 from yookassa.domain.models.receipt import Receipt, ReceiptItem
 
-# ИСПРАВЛЕНИЕ: Единый стиль импорта конфига
 import config
 
 from db import (
@@ -52,6 +51,8 @@ from db import (
     get_persona_by_id_and_owner, check_and_update_user_limits, activate_subscription,
     create_bot_instance, link_bot_instance_to_chat, delete_persona_config,
     get_all_active_chat_bot_instances,
+    # ИСПРАВЛЕНИЕ: Добавляем недостающий импорт
+    get_active_chat_bot_instance_with_relations,
     User, PersonaConfig as DBPersonaConfig, BotInstance as DBBotInstance,
     ChatBotInstance as DBChatBotInstance, ChatContext, func, get_db,
     DEFAULT_SYSTEM_PROMPT_TEMPLATE, DEFAULT_MOOD_PROMPTS
