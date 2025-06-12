@@ -18,33 +18,34 @@ def count_openai_compatible_tokens(text_content: str, model_identifier: str = co
     """
     Counts the number of tokens in the text_content using tiktoken,
     compatible with OpenAI models and OpenRouter's Gemini via OpenAI-compatible API.
-    
+
     Args:
         text_content: The text to count tokens for.
-        model_identifier: The model identifier (e.g., "google/gemini-2.5-flash-preview-05-20" or "gpt-4").
+        model_identifier: The model identifier (e.g., "google/gemini-2.0-flash-001" or "gpt-4").
                           This helps select the correct tiktoken encoding.
-    
+
     Returns:
         The number of tokens.
     """
     if not text_content:
         return 0
-    
+
+    try:
         try:
             encoding = tiktoken.encoding_for_model(model_identifier)
         except KeyError:
-            # Change log level to INFO, as this is expected behavior for some models
+            # Меняем уровень на INFO, так как это ожидаемое поведение для некоторых моделей
             logger.info(
                 f"Model '{model_identifier}' not found by tiktoken's predefined list. "
                 f"This is expected for some OpenRouter models. Using 'cl100k_base' as a reliable fallback."
             )
             encoding = tiktoken.get_encoding("cl100k_base")
-            
+
         num_tokens = len(encoding.encode(text_content))
         return num_tokens
     except Exception as e:
         logger.error(f"Error counting tokens with tiktoken for model {model_identifier}: {e}", exc_info=True)
-        # Fallback: very rough estimation if tiktoken fails
+        # Fallback: очень грубая оценка, если tiktoken не сработает
         return len(text_content) // 3
 
 
