@@ -711,30 +711,37 @@ async def process_and_send_response(update: Update, context: ContextTypes.DEFAUL
         text_parts_to_send = None # Явно указываем, что парсинг не удался
 
 
-        content_to_save_in_db = ""
+            content_to_save_in_db = ""
     if is_json_parsed and text_parts_to_send is not None:
         content_to_save_in_db = "\n".join(text_parts_to_send)
         logger.info(f"Saving CLEAN response to context: '{content_to_save_in_db[:100]}...'")
     else:
-        # --- БЛОК ОБРАБОТКИ НЕУДАЧНОГО ПАРСИНГА ---
-        # Здесь text_parts_to_send - None, а is_json_parsed - False
-        content_to_save_in_db = raw_llm_response # Сохраняем в БД сырой ответ для анализа
-        logger.warning(f"JSON parse failed. Saving RAW response to context: '{content_to_save_in_db[:100]}...'")
+        # --- УМНЫЙ FALLBACK-БЛОК ---
+        # Этот блок выполняется, когда is_json_parsed == False
+        content_to_save_in_db = raw_llm_response # Сохраняем сырой ответ в БД для отладки
+        logger.warning(f"JSON parse failed. Saving RAW response and using fallback text processing on: '{content_to_save_in_db[:100]}...'")
+
+        # Используем существующую функцию, чтобы безопасно убрать ```json...``` если они есть.
+        # Если их нет, она вернет исходную строку. Это именно то, что нам нужно.
+        text_for_fallback = extract_json_from_markdown(raw_llm_response)
+
+        # Логика обработки GIF-ссылок должна быть и в fallback-сценарии
+        gif_links = extract_gif_links(text_for_fallback)
+        if gif_links:
+            # Удаляем ссылки на гифки из текста, чтобы они не дублировались
+            for gif in gif_links:
+                text_for_fallback = text_for_fallback.replace(gif, '')
         
-        # Пытаемся "вычистить" текст из сырого ответа для отправки пользователю
-        # Удаляем markdown блоки и сам json, оставляя только текст.
-        # Это грубый метод, но он лучше, чем отправка сырого JSON.
-        cleaned_text_for_user = re.sub(r'```json\s*.*?\s*```', '', raw_llm_response, flags=re.DOTALL)
-        cleaned_text_for_user = re.sub(r'[\[\]"`,]', '', cleaned_text_for_user).strip() # Удаляем остатки JSON-синтаксиса
-        
-        # Если после чистки что-то осталось, обрабатываем это
-        if cleaned_text_for_user:
-            logger.info(f"Fallback: processing cleaned text: '{cleaned_text_for_user[:100]}...'")
+        text_for_fallback = text_for_fallback.strip()
+
+        # Если после всех манипуляций остался какой-то текст
+        if text_for_fallback:
+            logger.info(f"Fallback: processing text for user: '{text_for_fallback[:100]}...'")
             max_messages = persona.config.max_response_messages if persona.config and persona.config.max_response_messages > 0 else 3
-            # Передаем на обработку и разбиение на сообщения уже ОЧИЩЕННЫЙ текст
-            text_parts_to_send = postprocess_response(cleaned_text_for_user, max_messages, persona.message_volume)
+            # Передаем "как есть" в postprocess_response, который сам разобьет текст на сообщения
+            text_parts_to_send = postprocess_response(text_for_fallback, max_messages, persona.message_volume)
         else:
-            # Если после чистки ничего не осталось
+            # Если текста нет, делаем пустой список
             text_parts_to_send = []
 
     context_response_prepared = False
