@@ -1344,7 +1344,8 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
                 if len(context_for_ai) > MAX_CONTEXT_MESSAGES_SENT_TO_LLM:
                     context_for_ai = context_for_ai[-MAX_CONTEXT_MESSAGES_SENT_TO_LLM:]
             
-            ai_response_text = await send_to_openrouter(system_prompt, context_for_ai, image_data=image_data, audio_data=audio_data)            logger.debug(f"Received response from Gemini for {media_type}: {ai_response_text[:100]}...")
+            ai_response_text = await send_to_openrouter(system_prompt, context_for_ai, image_data=image_data, audio_data=audio_data)
+            logger.debug(f"Received response from Gemini for {media_type}: {ai_response_text[:100]}...")
 
             context_response_prepared = await process_and_send_response(
                 update, context, chat_id_str, persona, ai_response_text, db, reply_to_message_id=message_id
