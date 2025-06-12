@@ -97,7 +97,7 @@ def extract_json_from_markdown(text: str) -> str:
         return extracted_json
     # If no markdown block is found, maybe the response is already a clean JSON array.
     return text.strip()
-    
+
 # Максимальная длина входящего сообщения от пользователя в символах
 MAX_USER_MESSAGE_LENGTH_CHARS = 600
 
@@ -682,30 +682,32 @@ async def process_and_send_response(update: Update, context: ContextTypes.DEFAUL
         logger.warning(f"process_and_send_response [v3]: Received empty response. Not processing.")
         return False
 
-    raw_llm_response = full_bot_response_text.strip()
+        raw_llm_response = full_bot_response_text.strip()
 
-    def _robust_json_parser(text: str) -> Optional[List[str]]:
-        match = re.search(r'```json\s*(.*?)\s*```', text, re.DOTALL | re.IGNORECASE)
-        if match:
-            text = match.group(1).strip()
-        for _ in range(5):
-            try:
-                data = json.loads(text)
-                if isinstance(data, list):
-                    unwrapped_parts = [str(item).strip() for item in data if str(item).strip()]
-                    if unwrapped_parts:
-                        logger.info(f"Robust parser: Successfully parsed list with {len(unwrapped_parts)} items.")
-                        return unwrapped_parts
-                if isinstance(data, str):
-                    text = data
-                    continue
-                return [str(data)]
-            except (json.JSONDecodeError, TypeError):
-                return None
-        return None
+    # Используем существующую функцию extract_json_from_markdown для извлечения "чистого" JSON
+    json_string_candidate = extract_json_from_markdown(raw_llm_response)
+    text_parts_to_send = None
+    is_json_parsed = False
+    
+    try:
+        # Пытаемся распарсить извлеченную строку
+        parsed_data = json.loads(json_string_candidate)
+        if isinstance(parsed_data, list):
+            # Убираем пустые элементы и преобразуем все в строки
+            text_parts_to_send = [str(item).strip() for item in parsed_data if str(item).strip()]
+            is_json_parsed = True
+            logger.info(f"Successfully parsed JSON array with {len(text_parts_to_send)} items.")
+        else:
+            # Если JSON валидный, но не список (например, просто строка), оборачиваем в список
+            text_parts_to_send = [str(parsed_data)]
+            is_json_parsed = True
+            logger.info("Parsed valid JSON, but it was not a list. Wrapped it into a list.")
 
-    text_parts_to_send = _robust_json_parser(raw_llm_response)
-    is_json_parsed = text_parts_to_send is not None
+    except (json.JSONDecodeError, TypeError):
+        # Если парсинг не удался, is_json_parsed останется False
+        logger.warning(f"Failed to parse JSON even after extraction. Candidate string: '{json_string_candidate[:200]}...'")
+        is_json_parsed = False
+        text_parts_to_send = None # Явно указываем, что парсинг не удался
 
     content_to_save_in_db = ""
     if text_parts_to_send is not None:

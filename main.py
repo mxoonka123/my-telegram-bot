@@ -452,16 +452,17 @@ def main():
         block=False # Run handlers concurrently by default
     )
 
-    # Configure the application with timeouts directly
+        # Configure the application with timeouts directly
     application = (
         Application.builder()
         .token(token)
         .defaults(bot_defaults)
-        .pool_timeout(10.0) # Timeout for getting connection from pool
-        .connect_timeout(10.0) # Connect timeout
-        .read_timeout(20.0)    # Read timeout
-        .write_timeout(20.0)   # Write timeout
-        .connection_pool_size(10) # Default is 4, increase if needed
+        # Увеличиваем таймауты для большей стабильности на Railway
+        .pool_timeout(20.0)      # Время ожидания соединения из пула
+        .connect_timeout(20.0)   # Таймаут на установку соединения
+        .read_timeout(30.0)      # Таймаут на чтение ответа
+        .write_timeout(30.0)     # Таймаут на отправку запроса
+        .connection_pool_size(50) # Увеличиваем размер пула соединений
         .post_init(post_init)
         .build()
     )

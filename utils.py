@@ -30,15 +30,13 @@ def count_openai_compatible_tokens(text_content: str, model_identifier: str = co
     if not text_content:
         return 0
     
-    try:
-        # For models like those from Google via OpenRouter, "cl100k_base" (used by GPT-4) 
-        # is often a suitable encoding if the specific model name isn't directly recognized by tiktoken.
         try:
             encoding = tiktoken.encoding_for_model(model_identifier)
         except KeyError:
-            logger.warning(
-                f"Warning: model {model_identifier} not found by tiktoken. "
-                f"Using cl100k_base encoding as a fallback."
+            # Change log level to INFO, as this is expected behavior for some models
+            logger.info(
+                f"Model '{model_identifier}' not found by tiktoken's predefined list. "
+                f"This is expected for some OpenRouter models. Using 'cl100k_base' as a reliable fallback."
             )
             encoding = tiktoken.get_encoding("cl100k_base")
             
