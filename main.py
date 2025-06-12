@@ -570,7 +570,7 @@ def main():
     application.add_handler(CommandHandler("addbot", handlers.add_bot_to_chat))
     application.add_handler(CommandHandler("mood", handlers.mood))
     application.add_handler(CommandHandler("reset", handlers.reset))
-    application.add_handler(CommandHandler("clear", handlers.clear_memory))
+    application.add_handler(CommandHandler("clear", handlers.reset)) # Теперь /clear - это псевдоним для /reset
     application.add_handler(CommandHandler("mutebot", handlers.mute_bot))
     application.add_handler(CommandHandler("unmutebot", handlers.unmute_bot))
 

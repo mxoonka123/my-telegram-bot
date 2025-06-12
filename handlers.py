@@ -43,7 +43,17 @@ from yookassa.domain.request.payment_request_builder import PaymentRequestBuilde
 from yookassa.domain.models.receipt import Receipt, ReceiptItem
 
 import config
-
+from config import (
+    SUBSCRIPTION_DURATION_DAYS,
+    SUBSCRIPTION_PRICE_RUB,
+    SUBSCRIPTION_CURRENCY,
+    YOOKASSA_SHOP_ID,
+    YOOKASSA_SECRET_KEY,
+    PAID_PERSONA_LIMIT,
+    FREE_PERSONA_LIMIT,
+    PREMIUM_USER_MONTHLY_MESSAGE_LIMIT,
+    FREE_USER_MONTHLY_MESSAGE_LIMIT
+)
 from db import (
     get_context_for_chat_bot, add_message_to_context,
     set_mood_for_chat_bot, get_mood_for_chat_bot, get_or_create_user,
@@ -51,8 +61,9 @@ from db import (
     get_persona_by_id_and_owner, check_and_update_user_limits, activate_subscription,
     create_bot_instance, link_bot_instance_to_chat, delete_persona_config,
     get_all_active_chat_bot_instances,
-    # ИСПРАВЛЕНИЕ: Добавляем недостающий импорт
+    # ИСПРАВЛЕНИЕ: Добавляем недостающий импорт и новый
     get_active_chat_bot_instance_with_relations,
+    get_persona_and_context_with_owner, # <-- ВОТ ЭТОТ ИМПОРТ
     User, PersonaConfig as DBPersonaConfig, BotInstance as DBBotInstance,
     ChatBotInstance as DBChatBotInstance, ChatContext, func, get_db,
     DEFAULT_SYSTEM_PROMPT_TEMPLATE, DEFAULT_MOOD_PROMPTS
@@ -437,35 +448,6 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 
 # --- Core Logic Helpers ---
 
-def get_persona_and_context_with_owner(chat_id: Union[str, int], db: Session) -> Optional[Tuple[Persona, List[Dict[str, str]], User]]:
-    """Fetches the active Persona, its context, and its owner User for a given chat."""
-    chat_id_str = str(chat_id)
-    chat_instance = get_active_chat_bot_instance_with_relations(db, chat_id_str)
-    if not chat_instance:
-        return None
-
-    bot_instance = chat_instance.bot_instance_ref
-    if not bot_instance:
-         logger.error(f"ChatBotInstance {chat_instance.id} for chat {chat_id_str} is missing linked BotInstance.")
-         return None
-    if not bot_instance.persona_config:
-         logger.error(f"BotInstance {bot_instance.id} (linked to chat {chat_id_str}) is missing linked PersonaConfig.")
-         return None
-    owner_user = bot_instance.owner or bot_instance.persona_config.owner
-    if not owner_user:
-         logger.error(f"Could not load Owner for BotInstance {bot_instance.id} (linked to chat {chat_id_str}).")
-         return None
-
-    persona_config = bot_instance.persona_config
-
-    try:
-        persona = Persona(persona_config, chat_instance)
-    except ValueError as e:
-         logger.error(f"Failed to initialize Persona for config {persona_config.id} in chat {chat_id_str}: {e}", exc_info=True)
-         return None
-
-    context_list = get_context_for_chat_bot(db, chat_instance.id)
-    return persona, context_list, owner_user
 
 
 async def send_to_gemini(system_prompt: str, messages: List[Dict[str, str]], image_data: Optional[bytes] = None, audio_data: Optional[bytes] = None) -> str:
@@ -5203,77 +5185,6 @@ async def edit_message_volume_received(update: Update, context: ContextTypes.DEF
         return EDIT_MESSAGE_VOLUME
 
 
-async def clear_memory(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handles the /clear command to clear persona context in the current chat."""
-    if not update.message: return
-    chat_id_str = str(update.effective_chat.id)
-    user_id = update.effective_user.id
-    username = update.effective_user.username or f"id_{user_id}"
-    logger.info(f"CMD /clear < User {user_id} ({username}) in Chat {chat_id_str}")
-
-    if not await check_channel_subscription(update, context):
-        await send_subscription_required_message(update, context)
-        return
-
-    await context.bot.send_chat_action(chat_id=chat_id_str, action=ChatAction.TYPING)
-
-    # Сообщения для пользователя
-    msg_no_persona = escape_markdown_v2("🎭 В этом чате нет активной личности, память которой можно было бы очистить.")
-    msg_not_owner = escape_markdown_v2("❌ Только владелец личности или администратор бота могут очистить её память.")
-    msg_no_instance = escape_markdown_v2("❌ Ошибка: не найден экземпляр связи бота с этим чатом.")
-    msg_db_error = escape_markdown_v2("❌ Ошибка базы данных при очистке памяти.")
-    msg_general_error = escape_markdown_v2("❌ Непредвиденная ошибка при очистке памяти.")
-    msg_success_fmt = "✅ Память личности '{name}' в этом чате очищена ({count} сообщений удалено)." # Используем format позже
-
-    with get_db() as db:
-        try:
-            # Находим активную личность и ее владельца
-            persona_info_tuple = get_persona_and_context_with_owner(chat_id_str, db)
-            if not persona_info_tuple:
-                await update.message.reply_text(msg_no_persona, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
-                return
-
-            persona, _, owner_user = persona_info_tuple
-            persona_name_raw = persona.name
-            persona_name_escaped = escape_markdown_v2(persona_name_raw)
-
-            # Проверяем права доступа
-            if owner_user.telegram_id != user_id and not is_admin(user_id):
-                logger.warning(f"User {user_id} attempted to clear memory for persona '{persona_name_raw}' owned by {owner_user.telegram_id} in chat {chat_id_str}.")
-                await update.message.reply_text(msg_not_owner, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
-                return
-
-            chat_bot_instance = persona.chat_instance
-            if not chat_bot_instance:
-                 logger.error(f"Clear command: ChatBotInstance not found for persona {persona_name_raw} in chat {chat_id_str}")
-                 await update.message.reply_text(msg_no_instance, parse_mode=ParseMode.MARKDOWN_V2)
-                 return
-
-            # Удаляем контекст
-            chat_bot_instance_id = chat_bot_instance.id
-            logger.warning(f"User {user_id} clearing context for ChatBotInstance {chat_bot_instance_id} (Persona '{persona_name_raw}') in chat {chat_id_str}.")
-
-            # Создаем SQL запрос на удаление
-            stmt = delete(ChatContext).where(ChatContext.chat_bot_instance_id == chat_bot_instance_id)
-            result = db.execute(stmt)
-            deleted_count = result.rowcount # Получаем количество удаленных строк
-            db.commit()
-
-            logger.info(f"Deleted {deleted_count} context messages for instance {chat_bot_instance_id}.")
-            # Форматируем сообщение об успехе с реальным количеством
-            final_success_msg_raw = msg_success_fmt.format(name=persona_name_raw, count=deleted_count)
-            final_success_msg_escaped = escape_markdown_v2(final_success_msg_raw)
-
-            await update.message.reply_text(final_success_msg_escaped, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
-
-        except SQLAlchemyError as e:
-            logger.error(f"Database error during /clear for chat {chat_id_str}: {e}", exc_info=True)
-            await update.message.reply_text(msg_db_error, parse_mode=ParseMode.MARKDOWN_V2)
-            db.rollback()
-        except Exception as e:
-            logger.error(f"Error in /clear handler for chat {chat_id_str}: {e}", exc_info=True)
-            await update.message.reply_text(msg_general_error, parse_mode=ParseMode.MARKDOWN_V2)
-            db.rollback()
 
 
 # ... (остальные функции) ...
