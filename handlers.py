@@ -711,23 +711,30 @@ async def process_and_send_response(update: Update, context: ContextTypes.DEFAUL
         text_parts_to_send = None # Явно указываем, что парсинг не удался
 
 
-    content_to_save_in_db = ""
-    if text_parts_to_send is not None:
+        content_to_save_in_db = ""
+    if is_json_parsed and text_parts_to_send is not None:
         content_to_save_in_db = "\n".join(text_parts_to_send)
         logger.info(f"Saving CLEAN response to context: '{content_to_save_in_db[:100]}...'")
     else:
-        content_to_save_in_db = raw_llm_response
+        # --- БЛОК ОБРАБОТКИ НЕУДАЧНОГО ПАРСИНГА ---
+        # Здесь text_parts_to_send - None, а is_json_parsed - False
+        content_to_save_in_db = raw_llm_response # Сохраняем в БД сырой ответ для анализа
         logger.warning(f"JSON parse failed. Saving RAW response to context: '{content_to_save_in_db[:100]}...'")
-        text_without_gifs = raw_llm_response
-        gif_links = extract_gif_links(raw_llm_response)
-        if gif_links:
-            for gif in gif_links:
-                text_without_gifs = re.sub(r'\s*' + re.escape(gif) + r'\s*', ' ', text_without_gifs, flags=re.IGNORECASE)
-        text_without_gifs = re.sub(r'\s{2,}', ' ', text_without_gifs).strip()
-        if text_without_gifs:
+        
+        # Пытаемся "вычистить" текст из сырого ответа для отправки пользователю
+        # Удаляем markdown блоки и сам json, оставляя только текст.
+        # Это грубый метод, но он лучше, чем отправка сырого JSON.
+        cleaned_text_for_user = re.sub(r'```json\s*.*?\s*```', '', raw_llm_response, flags=re.DOTALL)
+        cleaned_text_for_user = re.sub(r'[\[\]"`,]', '', cleaned_text_for_user).strip() # Удаляем остатки JSON-синтаксиса
+        
+        # Если после чистки что-то осталось, обрабатываем это
+        if cleaned_text_for_user:
+            logger.info(f"Fallback: processing cleaned text: '{cleaned_text_for_user[:100]}...'")
             max_messages = persona.config.max_response_messages if persona.config and persona.config.max_response_messages > 0 else 3
-            text_parts_to_send = postprocess_response(text_without_gifs, max_messages)
+            # Передаем на обработку и разбиение на сообщения уже ОЧИЩЕННЫЙ текст
+            text_parts_to_send = postprocess_response(cleaned_text_for_user, max_messages, persona.message_volume)
         else:
+            # Если после чистки ничего не осталось
             text_parts_to_send = []
 
     context_response_prepared = False
