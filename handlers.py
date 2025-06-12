@@ -693,34 +693,35 @@ async def process_and_send_response(update: Update, context: ContextTypes.DEFAUL
         # Пытаемся распарсить извлеченную строку
         parsed_data = json.loads(json_string_candidate)
         if isinstance(parsed_data, list):
-            # Убираем пустые элементы и преобразуем все в строки
+            # Успешный парсинг списка строк - это основной сценарий
             text_parts_to_send = [str(item).strip() for item in parsed_data if str(item).strip()]
             is_json_parsed = True
             logger.info(f"Successfully parsed JSON array with {len(text_parts_to_send)} items.")
         else:
-            # Если JSON валидный, но не список (например, просто строка), оборачиваем в список
-            text_parts_to_send = [str(parsed_data)]
-            is_json_parsed = True
-            logger.info("Parsed valid JSON, but it was not a list. Wrapped it into a list.")
+            # Если JSON валидный, но не список (например, просто строка), считаем это текстом для отправки
+            logger.warning(f"Parsed valid JSON, but it was not a list (type: {type(parsed_data)}). Treating as plain text.")
+            is_json_parsed = False # Считаем, что это не тот JSON, который мы ждали
+            text_parts_to_send = None
     except (json.JSONDecodeError, TypeError):
         # Если парсинг не удался, is_json_parsed останется False
-        logger.warning(f"Failed to parse JSON even after extraction. Candidate string: '{json_string_candidate[:200]}...'")
+        logger.warning(f"Failed to parse JSON. Candidate string: '{json_string_candidate[:200]}...'")
         is_json_parsed = False
         text_parts_to_send = None # Явно указываем, что парсинг не удался
 
     content_to_save_in_db = ""
     if is_json_parsed and text_parts_to_send is not None:
+        # Если JSON успешно распарсен в список, сохраняем чистый текст
         content_to_save_in_db = "\n".join(text_parts_to_send)
         logger.info(f"Saving CLEAN response to context: '{content_to_save_in_db[:100]}...'")
     else:
-        # --- УМНЫЙ FALLBACK-БЛОК ---
-        # Этот блок выполняется, когда is_json_parsed == False
+        # --- УЛУЧШЕННЫЙ FALLBACK-БЛОК ---
+        # Этот блок выполняется, если is_json_parsed == False
         content_to_save_in_db = raw_llm_response # Сохраняем сырой ответ в БД для отладки
-        logger.warning(f"JSON parse failed. Saving RAW response and using fallback text processing on: '{content_to_save_in_db[:100]}...'")
+        logger.warning(f"JSON parse failed or result was not a list. Using fallback text processing on: '{content_to_save_in_db[:100]}...'")
 
-        # Используем существующую функцию, чтобы безопасно убрать ```json...``` если они есть.
-        # Если их нет, она вернет исходную строку. Это именно то, что нам нужно.
-        text_for_fallback = extract_json_from_markdown(raw_llm_response)
+        # В качестве текста для пользователя берем ИСХОДНЫЙ ответ модели,
+        # а не результат попытки извлечь JSON. Это важно, если модель вернула обычный текст.
+        text_for_fallback = raw_llm_response
 
         # Логика обработки GIF-ссылок должна быть и в fallback-сценарии
         gif_links = extract_gif_links(text_for_fallback)
@@ -729,13 +730,17 @@ async def process_and_send_response(update: Update, context: ContextTypes.DEFAUL
             for gif in gif_links:
                 text_for_fallback = text_for_fallback.replace(gif, '')
 
-        text_for_fallback = text_for_fallback.strip()
+        # Убираем возможные артефакты markdown-блока
+        text_for_fallback = extract_json_from_markdown(text_for_fallback).strip()
+        # Убираем возможные артефакты JSON-массива, если они остались
+        if text_for_fallback.startswith('[') and text_for_fallback.endswith(']'):
+            text_for_fallback = text_for_fallback[1:-1].strip()
 
         # Если после всех манипуляций остался какой-то текст
         if text_for_fallback:
-            logger.info(f"Fallback: processing text for user: '{text_for_fallback[:100]}...'")
+            logger.info(f"Fallback: processing cleaned text for user: '{text_for_fallback[:100]}...'")
             max_messages = persona.config.max_response_messages if persona.config and persona.config.max_response_messages > 0 else 3
-            # Передаем "как есть" в postprocess_response, который сам разобьет текст на сообщения
+            # Передаем очищенный текст в postprocess_response
             text_parts_to_send = postprocess_response(text_for_fallback, max_messages, persona.message_volume)
         else:
             # Если текста нет, делаем пустой список
