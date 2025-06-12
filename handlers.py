@@ -904,8 +904,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     logger.warning(f"handle_message: No active persona found for chat {chat_id_str}.")
                     return
                 
-                persona, initial_context_from_db, owner_user = persona_context_owner_tuple
+                # Распаковываем кортеж правильно. Второй элемент - это ChatBotInstance, а не контекст.
+                persona, chat_instance, owner_user = persona_context_owner_tuple
                 logger.info(f"handle_message: Found active persona '{persona.name}' (ID: {persona.id}) owned by User ID {owner_user.id} (TG: {owner_user.telegram_id}).")
+                
+                # Теперь получаем контекст (список сообщений) отдельно, используя chat_instance.id
+                initial_context_from_db = get_context_for_chat_bot(db_session, chat_instance.id)
 
                 if persona.config.media_reaction in ["all_media_no_text", "photo_only", "voice_only", "none"]:
                     logger.info(f"handle_message: Persona '{persona.name}' (ID: {persona.id}) is configured with media_reaction='{persona.config.media_reaction}', so it will not respond to this text message. Message will still be added to context if not muted.")
