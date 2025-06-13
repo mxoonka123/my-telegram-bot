@@ -727,37 +727,43 @@ async def process_and_send_response(update: Update, context: ContextTypes.DEFAUL
         content_to_save_in_db = "\n".join(text_parts_to_send)
         logger.info(f"Saving CLEAN response to context: '{content_to_save_in_db[:100]}...'")
     else:
-        # --- УЛУЧШЕННЫЙ FALLBACK-БЛОК ---
-        # Этот блок выполняется, если is_json_parsed == False
-        content_to_save_in_db = raw_llm_response # Сохраняем сырой ответ в БД для отладки
-        logger.warning(f"JSON parse failed or result was not a list. Using fallback text processing on: '{content_to_save_in_db[:100]}...'")
+    # --- УЛУЧШЕННЫЙ FALLBACK-БЛОК ---
+    # Этот блок выполняется, если is_json_parsed == False
+    content_to_save_in_db = raw_llm_response # Сохраняем сырой ответ в БД для отладки
+    logger.warning(f"JSON parse failed or result was not a list. Using fallback text processing on: '{content_to_save_in_db[:100]}...'")
 
-        # В качестве текста для пользователя берем ИСХОДНЫЙ ответ модели,
-        # а не результат попытки извлечь JSON. Это важно, если модель вернула обычный текст.
-        text_for_fallback = raw_llm_response
+    # В качестве текста для пользователя берем СТРОКУ-КАНДИДАТ, которая уже очищена от ```json.
+    # Это предотвращает отправку пользователю служебных символов.
+    text_for_fallback = json_string_candidate
 
-        # Логика обработки GIF-ссылок должна быть и в fallback-сценарии
-        gif_links = extract_gif_links(text_for_fallback)
-        if gif_links:
-            # Удаляем ссылки на гифки из текста, чтобы они не дублировались
-            for gif in gif_links:
-                text_for_fallback = text_for_fallback.replace(gif, '')
+    # Логика обработки GIF-ссылок должна быть и в fallback-сценарии
+    gif_links = extract_gif_links(text_for_fallback)
+    if gif_links:
+        # Удаляем ссылки на гифки из текста, чтобы они не дублировались
+        for gif in gif_links:
+            text_for_fallback = text_for_fallback.replace(gif, '')
 
-        # Убираем возможные артефакты markdown-блока
-        text_for_fallback = extract_json_from_markdown(text_for_fallback).strip()
-        # Убираем возможные артефакты JSON-массива, если они остались
-        if text_for_fallback.startswith('[') and text_for_fallback.endswith(']'):
-            text_for_fallback = text_for_fallback[1:-1].strip()
+    # Дополнительно убираем возможные артефакты JSON-массива
+    text_for_fallback = text_for_fallback.strip()
+    if text_for_fallback.startswith('[') and text_for_fallback.endswith(']'):
+        text_for_fallback = text_for_fallback[1:-1].strip()
+    # Убираем кавычки по краям, если они остались от JSON-строки
+    if text_for_fallback.startswith('"') and text_for_fallback.endswith('"'):
+        text_for_fallback = text_for_fallback[1:-1].strip()
 
-        # Если после всех манипуляций остался какой-то текст
-        if text_for_fallback:
-            logger.info(f"Fallback: processing cleaned text for user: '{text_for_fallback[:100]}...'")
-            max_messages = persona.config.max_response_messages if persona.config and persona.config.max_response_messages > 0 else 3
-            # Передаем очищенный текст в postprocess_response
-            text_parts_to_send = postprocess_response(text_for_fallback, max_messages, persona.message_volume)
-        else:
-            # Если текста нет, делаем пустой список
-            text_parts_to_send = []
+    # Заменяем разделители JSON-массива на переносы строк для лучшего разделения
+    text_for_fallback = text_for_fallback.replace('","', '\n').replace('", "', '\n')
+
+
+    # Если после всех манипуляций остался какой-то текст
+    if text_for_fallback:
+        logger.info(f"Fallback: processing cleaned text for user: '{text_for_fallback[:100]}...'")
+        max_messages = persona.config.max_response_messages if persona.config and persona.config.max_response_messages > 0 else 3
+        # Передаем очищенный текст в postprocess_response
+        text_parts_to_send = postprocess_response(text_for_fallback, max_messages, persona.message_volume)
+    else:
+        # Если текста нет, делаем пустой список
+        text_parts_to_send = []
 
     context_response_prepared = False
     if persona.chat_instance:
