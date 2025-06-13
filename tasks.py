@@ -35,7 +35,7 @@ async def check_subscription_expiry_task(context: ContextTypes.DEFAULT_TYPE):
         with get_db() as db_session:
             # Select users who are subscribed AND expiry date is in the past
             expired_users_query = (
-                select(User.id, User.telegram_id, User.daily_message_count, User.subscription_expires_at)
+                select(User.id, User.telegram_id, User.monthly_message_count, User.subscription_expires_at)
                 .where(
                     User.is_subscribed == True,
                     User.subscription_expires_at != None,
@@ -64,13 +64,13 @@ async def check_subscription_expiry_task(context: ContextTypes.DEFAULT_TYPE):
                 logger.info(f"Subscription expiry task: Deactivated {expired_count} subscriptions.")
 
                 # Gather info for notifications AFTER commit
-                for user_id, telegram_id, daily_count, _ in expired_users_result:
+                for user_id, telegram_id, monthly_count, _ in expired_users_result:
                     persona_count = db_session.execute(
                         select(func.count(PersonaConfig.id)).filter(PersonaConfig.owner_id == user_id)
                     ).scalar() or 0
                     expired_users_info.append({
                         "telegram_id": telegram_id,
-                        "daily_count": daily_count, # Keep original count for now
+                        "monthly_message_count": monthly_count,
                         "persona_count": persona_count
                     })
             else:
@@ -93,16 +93,13 @@ async def check_subscription_expiry_task(context: ContextTypes.DEFAULT_TYPE):
                  # Prepare notification message
                  persona_limit_str = escape_markdown_v2(f"{user_info['persona_count']}/{FREE_PERSONA_LIMIT}")
                  # --- ИСПРАВЛЕННЫЙ БЛОК ---
-                 # Используем месячный лимит, а не несуществующий дневной.
-                 # Так как у нас нет monthly_message_count в user_info, покажем просто общий лимит.
-                 # В идеале, нужно было бы передать и monthly_message_count в user_info.
-                 # Но для простоты сейчас покажем только новый лимит.
-                 monthly_limit_str = escape_markdown_v2(f"ранее использовано: {user_info['daily_count']}/{FREE_USER_MONTHLY_MESSAGE_LIMIT}")
+                 # Теперь мы используем корректный monthly_message_count, который передали в user_info
+                 monthly_limit_str = escape_markdown_v2(f"{user_info['monthly_message_count']}/{FREE_USER_MONTHLY_MESSAGE_LIMIT}")
 
                  text_to_send = (
                      escape_markdown_v2("⏳ ваша премиум подписка истекла\\.\n\n") +
                      f"*Текущие лимиты \\(Free\\):*\n" +
-                     f"Сообщения \\(в мес\\.\\): `{monthly_limit_str}`\n" + # <-- ИЗМЕНЕНА СТРОКА
+                     f"Сообщения \\(в мес\\.\\): `{monthly_limit_str}`\n" +
                      f"Личности: `{persona_limit_str}`\n\n" +
                      escape_markdown_v2("Чтобы продолжить пользоваться всеми возможностями, вы можете снова оформить подписку командой `/subscribe`\\.")
                  )
