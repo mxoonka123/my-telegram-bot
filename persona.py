@@ -70,7 +70,7 @@ class Persona:
             self.config.max_response_messages = 1
             self.max_response_messages = 1
                 # ------------------------------------------------
-        self.message_volume = self.config.message_volume or "normal"
+        self.message_volume = "normal"  # Временно используем значение по умолчанию
 
         # Load moods safely
         loaded_moods = {}
@@ -220,171 +220,193 @@ class Persona:
                 f"Ты {self.name}. {self.description}.",
                 f"Стиль: {style_text}. Разговорчивость: {verbosity_text}.",
                 f"Настроение: {mood_name} ({mood_instruction}).",
-                f"Ответь на сообщение от {username} (id: {user_id}) в чате {chat_id_info}: {message}"
+                f"Пользователь: {username} (ID: {user_id}) в чате {chat_id_info}.",
+                f"Сообщение пользователя: {message}",
+                BASE_PROMPT_SUFFIX
             ]
-            formatted_prompt = " ".join(fallback_parts)
-            logger.warning("Using fallback system prompt due to template error.")
+            formatted_prompt = "\n".join(fallback_parts)
+            logger.warning(f"Using fallback system prompt for persona {self.id} due to template error.")
 
-        except Exception as format_err:
-            # Этот блок выполняется при других ошибках форматирования
-            logger.error(f"FATAL: Unexpected error formatting system prompt V9: {format_err}. Template sample: {template[:100]}...", exc_info=True)
-            # Fallback на простой формат БЕЗ ШАБЛОНА
-            fallback_parts = [
-                f"Ты {self.name}. {self.description}.",
-                f"Стиль: {style_text}. Разговорчивость: {verbosity_text}.",
-                f"Настроение: {mood_name} ({mood_instruction}).",
-                f"Ответь на сообщение от {username} (id: {user_id}) в чате {chat_id_info}: {message}"
-            ]
-            formatted_prompt = " ".join(fallback_parts)
-            logger.warning("Using fallback system prompt due to unexpected formatting error.")
-        # --- Конец блока try...except ---
-
-        # Если нужно добавить общие инструкции *после* форматирования шаблона
-        # formatted_prompt += " " + BASE_PROMPT_SUFFIX # Пример
-
-        return formatted_prompt.strip()
-
-    def format_should_respond_prompt(self, message_text: str, bot_username: str, history: List[Dict[str, str]]) -> Optional[str]:
-        """Formats the prompt to decide if the bot should respond in a group based on context."""
-        if self.group_reply_preference != "mentioned_or_contextual":
-            # Этот метод вызывается только для contextual
-            logger.error("format_should_respond_prompt called for non-contextual preference.")
-            return None
-
-        # Получаем шаблон из объекта конфига PersonaConfig
-        template = self.should_respond_prompt_template
-        if not template:
-            logger.warning(f"should_respond_prompt_template is empty for persona {self.id}. Cannot generate contextual check prompt. Using default.")
-            template = DEFAULT_SHOULD_RESPOND_TEMPLATE # Используем дефолтный из db.py как fallback
-
-        # --- Создание краткого саммари истории ---
-        history_limit = 5
-        relevant_history = history[-history_limit:]
-        context_lines = []
-        for msg in relevant_history:
-            role = "Ты" if msg.get("role") == "assistant" else "User"
-            content_preview = str(msg.get("content", ""))[:80]
-            if len(str(msg.get("content", ""))) > 80: content_preview += "..."
-            context_lines.append(f"{role}: {content_preview}")
-        context_summary = "\n".join(context_lines) if context_lines else "Нет истории."
-        # --- Конец саммари ---
-
-        # Подставляем значения в шаблон V5 из db.py
-        # Плейсхолдеры: {persona_name}, {bot_username}, {last_user_message}, {context_summary}
-        try:
-            formatted_prompt = template.format(
-                persona_name=self.name,
-                bot_username=bot_username,
-                last_user_message=message_text,
-                context_summary=context_summary
-            )
-            logger.debug(f"Generated should_respond prompt for persona {self.id}:\n---\n{formatted_prompt}\n---")
-            return formatted_prompt
-        except KeyError as e:
-            logger.error(f"Missing key in should_respond prompt template: {e}. Template: {template[:100]}...")
-            return None
         except Exception as e:
-             logger.error(f"Error formatting should_respond prompt: {e}", exc_info=True)
-             return None
+            # Этот блок - для любых других непредвиденных ошибок форматирования
+            logger.error(f"Unexpected error formatting system prompt for persona {self.id}: {e}", exc_info=True)
+            # Еще более простой fallback
+            formatted_prompt = f"Ты {self.name}. {self.description}. Отвечай в стиле {style_text}, {verbosity_text}. Настроение: {mood_name}."
 
-    def _format_media_prompt(self, media_type_text: str, user_id: Optional[int] = None, username: Optional[str] = None, chat_id: Optional[str] = None) -> Optional[str]:
-        """Helper method to format prompts for media reactions based on media_reaction setting.
-        
-        Args:
-            media_type_text: Type of media as string (e.g., 'фото', 'голосовое сообщение', etc.)
-            user_id: Optional user ID for context
-            username: Optional username for context
-            chat_id: Optional chat ID for context
-        
-        Returns:
-            Formatted prompt string or None if shouldn't react
-        """
-        # Determine whether we should react based on media_reaction setting
-        react_setting = self.media_reaction
-        should_react = False
-        
-        # Check if we should process this media type
-        if media_type_text == "фото" and react_setting in ["text_and_all_media", "all_media_no_text", "photo_only"]:
-            should_react = True
-        elif media_type_text == "голосовое сообщение" and react_setting in ["text_and_all_media", "all_media_no_text", "voice_only"]:
-            should_react = True
-        # NOTE: video, sticker, gif checks were removed as they were not fully implemented
-        # and led to a broken prompt generation logic. Add them back here if you implement them.
-
-        if not should_react:
-            logger.debug(f"Persona {self.id} ({self.name}) configured NOT to react to {media_type_text.upper()} with setting '{react_setting}'. Media prompt generation skipped.")
-            return None
-
-        # Проверка наличия необходимых параметров контекста
-        if not all([user_id, username, chat_id]):
-            logger.error(f"Missing context parameters for {media_type_text} prompt: user_id={user_id}, username={username}, chat_id={chat_id}")
-            return None
-        
-        style_text = {"neutral": "Нейтральный", "friendly": "Дружелюбный", "sarcastic": "Саркастичный", "formal": "Формальный", "brief": "Краткий"}.get(self.communication_style, "Нейтральный")
-        verbosity_text = {"concise": "Лаконичный", "medium": "Средний", "talkative": "Разговорчивый"}.get(self.verbosity_level, "Средний")
-        
-        # Выбор шаблона и инструкции
-        template = None
-        media_instruction = f"Пользователь ({username}, id: {user_id}) в чате {chat_id} прислал(а) {media_type_text}."
-        
-        if media_type_text == "фото":
-            # Используем специальный шаблон для фото, если он есть, иначе fallback
-            template = self.config.photo_system_prompt_template if hasattr(self.config, 'photo_system_prompt_template') and self.config.photo_system_prompt_template else PHOTO_SYSTEM_PROMPT_TEMPLATE_FALLBACK
-            # Для фото инструкция уже встроена в шаблон
-            media_instruction = "" 
-        else: # Для голоса и других потенциальных типов
-            template = self.config.media_system_prompt_template if self.config.media_system_prompt_template else DEFAULT_MEDIA_SYSTEM_PROMPT_TEMPLATE
-            # Если есть расшифровка, она будет добавлена в `user_message` на этапе `handle_media`
-            media_instruction += " Тебе нужно отреагировать на это, продолжая диалог."
-
-        if not template:
-            logger.error(f"No suitable template found for media type: {media_type_text}")
-            return None
-
-        # --- ИСПРАВЛЕННЫЙ БЛОК ---
-        # Получаем данные о настроении ПРАВИЛЬНЫМ СПОСОБОМ
-        mood_name = self.current_mood
-        mood_prompt = self.get_mood_prompt_snippet()
-        
-        template_vars = {
-            'persona_name': self.name,
-            'persona_description': self.description,
-            'communication_style': style_text,
-            'verbosity_level': verbosity_text,
-            'media_interaction_instruction': media_instruction,
-            'mood_name': mood_name,
-            'mood_prompt': mood_prompt,
-            'user_id': user_id,
-            'username': username,
-            'chat_id': chat_id
-        }
-        
-        try:
-            formatted_prompt = template.format(**template_vars)
-        except KeyError as e:
-            logger.error(f"Error formatting media system prompt for persona {self.id}: Missing key {e}", exc_info=True)
-            # Fallback на дефолтный шаблон с теми же переменными, чтобы избежать падения
-            fallback_template = PHOTO_SYSTEM_PROMPT_TEMPLATE_FALLBACK if media_type_text == "фото" else DEFAULT_MEDIA_SYSTEM_PROMPT_TEMPLATE
-            try:
-                formatted_prompt = fallback_template.format(**template_vars)
-                logger.warning(f"Successfully used fallback template due to KeyError.")
-            except Exception as fallback_e:
-                logger.error(f"Fallback template formatting also failed: {fallback_e}")
-                return None
-        
-        logger.debug(f"Persona {self.id} ({self.name}) WILL react to '{media_type_text}' with setting '{react_setting}'. Prompt generated: {formatted_prompt[:200]}...")
         return formatted_prompt
 
-    def format_photo_prompt(self, user_id: int, username: str, chat_id: str) -> Optional[str]:
-        """Formats the prompt for responding to photos."""
-        return self._format_media_prompt("фото", user_id, username, chat_id)
+    def format_photo_system_prompt(self, user_id: int, username: str, chat_id: int, 
+                                   context_messages: List[str] = None) -> Optional[str]:
+        """
+        Formats system prompt for photo processing.
+        Returns None if persona should not react to photos based on media_reaction.
+        """
+        if self.media_reaction in ["text_only", "voice_only", "none"]:
+            logger.debug(f"Persona {self.id} ({self.name}) configured NOT to react to PHOTOS with setting '{self.media_reaction}'. Photo prompt generation skipped.")
+            return None
 
-    def format_voice_prompt(self, user_id: int, username: str, chat_id: str) -> Optional[str]:
-        """Formats the prompt for responding to voice messages."""
-        # Убедимся, что персона должна реагировать на голос
-        if self.media_reaction not in ["text_and_all_media", "all_media_no_text", "voice_only"]:
+        mood_instruction = self.get_mood_prompt_snippet()
+        mood_name = self.current_mood
+
+        style_map = {"neutral": "Нейтральный", "friendly": "Дружелюбный", "sarcastic": "Саркастичный", "formal": "Формальный", "brief": "Краткий"}
+        verbosity_map = {"concise": "Лаконичный", "medium": "Средний", "talkative": "Разговорчивый"}
+        style_text = style_map.get(self.communication_style, style_map["neutral"])
+        verbosity_text = verbosity_map.get(self.verbosity_level, verbosity_map["medium"])
+
+        # Генерируем инструкцию для взаимодействия с медиа
+        media_instruction = self._generate_media_interaction_instruction()
+
+        try:
+            # Попробуем использовать основной шаблон для медиа
+            formatted_prompt = DEFAULT_MEDIA_SYSTEM_PROMPT_TEMPLATE.format(
+                persona_name=self.name,
+                persona_description=self.description,
+                communication_style=style_text,
+                verbosity_level=verbosity_text,
+                media_interaction_instruction=media_instruction,
+                mood_name=mood_name,
+                mood_prompt=mood_instruction
+            )
+        except KeyError as e:
+            logger.warning(f"KeyError in media system prompt template: {e}. Using fallback.")
+            # Fallback на более простой шаблон
+            formatted_prompt = PHOTO_SYSTEM_PROMPT_TEMPLATE_FALLBACK.format(
+                persona_name=self.name,
+                persona_description=self.description,
+                communication_style=style_text,
+                verbosity_level=verbosity_text,
+                mood_name=mood_name,
+                mood_prompt=mood_instruction,
+                username=username,
+                user_id=user_id,
+                chat_id=chat_id
+            )
+        except Exception as e:
+            logger.error(f"Unexpected error in photo system prompt generation: {e}", exc_info=True)
+            # Простейший fallback
+            formatted_prompt = f"Ты {self.name}. {self.description}. Пользователь прислал фото. Опиши что видишь и отреагируй как персонаж. Ответ в JSON-массиве."
+
+        return formatted_prompt
+
+    def _generate_media_interaction_instruction(self) -> str:
+        """Generates media interaction instruction based on media_reaction setting."""
+        media_instructions = {
+            "text_only": "Ты реагируешь только на текстовые сообщения.",
+            "photo_only": "Ты реагируешь только на фотографии, описывая что видишь на них.",
+            "voice_only": "Ты реагируешь только на голосовые сообщения.",
+            "all_media_no_text": "Ты реагируешь на любые медиа (фото, голосовые), но НЕ на текст.",
+            "all_media_and_text": "Ты реагируешь на все типы сообщений: текст, фото, голосовые.",
+            "contextual": "Ты реагируешь на сообщения в зависимости от контекста беседы.",
+            "none": "Ты не реагируешь ни на какие сообщения."
+        }
+        return media_instructions.get(self.media_reaction, media_instructions["text_only"])
+
+    def should_respond_to_message_type(self, message_type: str) -> bool:
+        """
+        Determines if persona should respond to a specific message type.
+        
+        Args:
+            message_type: "text", "photo", "voice", etc.
+        
+        Returns:
+            True if should respond, False otherwise
+        """
+        if self.media_reaction == "none":
+            return False
+        elif self.media_reaction == "text_only":
+            return message_type == "text"
+        elif self.media_reaction == "photo_only":
+            return message_type == "photo"
+        elif self.media_reaction == "voice_only":
+            return message_type == "voice"
+        elif self.media_reaction == "all_media_no_text":
+            return message_type != "text"
+        elif self.media_reaction == "all_media_and_text":
+            return True
+        elif self.media_reaction == "contextual":
+            return True  # Contextual logic handled elsewhere
+        else:
+            return message_type == "text"  # Default fallback
+
+    def format_voice_system_prompt(self, user_id: int, username: str, transcribed_text: str) -> Optional[str]:
+        """
+        Formats system prompt for voice message processing.
+        Returns None if persona should not react to voice based on media_reaction.
+        """
+        if self.media_reaction in ["text_only", "photo_only", "none"]:
             logger.debug(f"Persona {self.id} ({self.name}) configured NOT to react to VOICE with setting '{self.media_reaction}'. Voice prompt generation skipped.")
             return None
-        return self._format_media_prompt("голосовое сообщение", user_id, username, chat_id)
 
-    # format_spam_prompt is removed as it wasn't used and placeholders are internal now
+        mood_instruction = self.get_mood_prompt_snippet()
+        mood_name = self.current_mood
+
+        style_map = {"neutral": "Нейтральный", "friendly": "Дружелюбный", "sarcastic": "Саркастичный", "formal": "Формальный", "brief": "Краткий"}
+        verbosity_map = {"concise": "Лаконичный", "medium": "Средний", "talkative": "Разговорчивый"}
+        style_text = style_map.get(self.communication_style, style_map["neutral"])
+        verbosity_text = verbosity_map.get(self.verbosity_level, verbosity_map["medium"])
+
+        chat_id_info = str(self.chat_instance.chat_id) if self.chat_instance else "unknown_chat"
+
+        voice_prompt = f"""[СИСТЕМНОЕ СООБЩЕНИЕ]
+Ты - {self.name}, {self.description}.
+
+Твой стиль общения: {style_text}.
+Уровень многословности: {verbosity_text}.
+
+Пользователь ({username}, ID: {user_id}) в чате {chat_id_info} прислал голосовое сообщение.
+Расшифровка голосового сообщения: "{transcribed_text}"
+
+Твоё текущее настроение: {mood_name}. {mood_instruction}
+
+Отреагируй на голосовое сообщение пользователя как персонаж. Можешь прокомментировать как содержание, так и сам факт получения голосового сообщения.
+
+ВАЖНО: форматируй ответ как JSON-массив строк. Например: ["интересное голосовое!", "ты сказал про {transcribed_text[:20]}..."]
+"""
+
+        return voice_prompt
+
+    def update_mood_prompts(self, new_moods: Dict[str, str]):
+        """Updates mood prompts and saves to database."""
+        self.mood_prompts.update(new_moods)
+        # This would need to be saved to the database in the calling code
+        logger.info(f"Updated mood prompts for persona {self.id}")
+
+    def add_custom_mood(self, mood_name: str, mood_prompt: str):
+        """Adds a custom mood."""
+        self.mood_prompts[mood_name] = mood_prompt
+        logger.info(f"Added custom mood '{mood_name}' to persona {self.id}")
+
+    def remove_mood(self, mood_name: str) -> bool:
+        """Removes a mood if it exists."""
+        if mood_name in self.mood_prompts:
+            del self.mood_prompts[mood_name]
+            logger.info(f"Removed mood '{mood_name}' from persona {self.id}")
+            return True
+        return False
+
+    def get_settings_summary(self) -> str:
+        """Returns a human-readable summary of persona settings."""
+        style_names = {
+            "neutral": "Нейтральный", "friendly": "Дружелюбный", 
+            "sarcastic": "Саркастичный", "formal": "Формальный", "brief": "Краткий"
+        }
+        verbosity_names = {
+            "concise": "Лаконичный", "medium": "Средний", "talkative": "Разговорчивый"
+        }
+        media_names = {
+            "text_only": "Только текст", "photo_only": "Только фото", 
+            "voice_only": "Только голос", "all_media_no_text": "Медиа без текста",
+            "all_media_and_text": "Всё", "contextual": "По контексту", "none": "Не реагирует"
+        }
+
+        return f"""📋 **{self.name}**
+📝 {self.description}
+
+⚙️ **Настройки:**
+• Стиль: {style_names.get(self.communication_style, self.communication_style)}
+• Разговорчивость: {verbosity_names.get(self.verbosity_level, self.verbosity_level)}
+• Реакция на медиа: {media_names.get(self.media_reaction, self.media_reaction)}
+• Макс. сообщений: {self.max_response_messages}
+
+🎭 **Настроения:** {', '.join(self.mood_prompts.keys())}
+💭 **Текущее:** {self.current_mood}"""
