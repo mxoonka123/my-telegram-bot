@@ -198,8 +198,7 @@ class PersonaConfig(Base):
     temperature = Column(Float, nullable=True)  # Температура для LLM, может быть NULL
     top_p = Column(Float, nullable=True)  # top_p для LLM, может быть NULL  # Added to control mood prompt activation
     max_response_messages = Column(Integer, default=3, nullable=False)
-    # Временно закомментировано, пока миграция не применена
-    # message_volume = Column(String(20), default="normal", nullable=False)  # short, normal, long, random
+    message_volume = Column(String(20), default="normal", nullable=False)  # short, normal, long, random
 
     system_prompt_template = Column(Text, nullable=False, default=DEFAULT_SYSTEM_PROMPT_TEMPLATE)
     system_prompt_template_override = Column(Text, nullable=True)  # Пользовательский шаблон для системного промпта, если задан

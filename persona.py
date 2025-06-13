@@ -69,10 +69,8 @@ class Persona:
             logger.warning(f"Persona {self.id}: converting legacy max_response_messages 2 -> 1 ('few').")
             self.config.max_response_messages = 1
             self.max_response_messages = 1
-        # ------------------------------------------------
-        # Временно используем значение по умолчанию, пока миграция не применена
-        # self.message_volume = self.config.message_volume or "normal"
-        self.message_volume = "normal"
+                # ------------------------------------------------
+        self.message_volume = self.config.message_volume or "normal"
 
         # Load moods safely
         loaded_moods = {}

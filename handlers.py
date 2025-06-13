@@ -722,38 +722,42 @@ async def process_and_send_response(update: Update, context: ContextTypes.DEFAUL
         text_parts_to_send = None # Явно указываем, что парсинг не удался
 
     content_to_save_in_db = ""
-    if is_json_parsed and text_parts_to_send is not None:
-        # Если JSON успешно распарсен в список, сохраняем чистый текст
+        if is_json_parsed and text_parts_to_send is not None:
+        # Если JSON успешно распарсен в список, это основной сценарий
+        # Проверим, не содержит ли единственный элемент списка еще один JSON
+        if len(text_parts_to_send) == 1:
+            first_item = text_parts_to_send[0]
+            # Попытка рекурсивного парсинга, если модель вернула JSON в виде строки внутри JSON-массива
+            if first_item.strip().startswith('[') and first_item.strip().endswith(']'):
+                logger.warning("Detected a nested JSON array string inside the main array. Attempting to re-parse.")
+                try:
+                    nested_parsed_data = json.loads(first_item)
+                    if isinstance(nested_parsed_data, list):
+                        text_parts_to_send = [str(item).strip() for item in nested_parsed_data if str(item).strip()]
+                        logger.info(f"Successfully re-parsed nested JSON. New parts count: {len(text_parts_to_send)}")
+                except (json.JSONDecodeError, TypeError):
+                    logger.warning("Failed to re-parse nested JSON string, proceeding with the original single part.")
+
         content_to_save_in_db = "\n".join(text_parts_to_send)
         logger.info(f"Saving CLEAN response to context: '{content_to_save_in_db[:100]}...'")
     else:
         # --- УЛУЧШЕННЫЙ FALLBACK-БЛОК ---
-        # Этот блок выполняется, если is_json_parsed == False
         content_to_save_in_db = raw_llm_response # Сохраняем сырой ответ в БД для отладки
         logger.warning(f"JSON parse failed or result was not a list. Using fallback text processing on: '{content_to_save_in_db[:100]}...'")
 
         # В качестве текста для пользователя берем СТРОКУ-КАНДИДАТ, которая уже очищена от ```json.
-        # Это предотвращает отправку пользователю служебных символов.
         text_for_fallback = json_string_candidate
 
-        # Логика обработки GIF-ссылок должна быть и в fallback-сценарии
+        # Логика обработки GIF-ссылок
         gif_links = extract_gif_links(text_for_fallback)
         if gif_links:
-            # Удаляем ссылки на гифки из текста, чтобы они не дублировались
             for gif in gif_links:
                 text_for_fallback = text_for_fallback.replace(gif, '')
 
-        # Дополнительно убираем возможные артефакты JSON-массива
+        # Агрессивная очистка от остатков JSON-разметки
+        text_for_fallback = re.sub(r'^\s*\[\s*"(.*)"\s*\]\s*$', r'\1', text_for_fallback, flags=re.DOTALL) # Убирает ["..."]
+        text_for_fallback = text_for_fallback.replace('\\n', '\n').replace('\\"', '"') # Заменяет экранированные символы
         text_for_fallback = text_for_fallback.strip()
-        if text_for_fallback.startswith('[') and text_for_fallback.endswith(']'):
-            text_for_fallback = text_for_fallback[1:-1].strip()
-        # Убираем кавычки по краям, если они остались от JSON-строки
-        if text_for_fallback.startswith('"') and text_for_fallback.endswith('"'):
-            text_for_fallback = text_for_fallback[1:-1].strip()
-
-        # Заменяем разделители JSON-массива на переносы строк для лучшего разделения
-        text_for_fallback = text_for_fallback.replace('","', '\n').replace('", "', '\n')
-
 
         # Если после всех манипуляций остался какой-то текст
         if text_for_fallback:
@@ -762,7 +766,6 @@ async def process_and_send_response(update: Update, context: ContextTypes.DEFAUL
             # Передаем очищенный текст в postprocess_response
             text_parts_to_send = postprocess_response(text_for_fallback, max_messages, persona.message_volume)
         else:
-            # Если текста нет, делаем пустой список
             text_parts_to_send = []
 
     context_response_prepared = False
@@ -2295,14 +2298,15 @@ async def my_personas(update: Union[Update, CallbackQuery], context: ContextType
                 keyboard_no_personas = [[InlineKeyboardButton("⬅️ Назад в Меню", callback_data="show_menu")]] if is_callback else None
                 final_reply_markup = InlineKeyboardMarkup(keyboard_no_personas) if keyboard_no_personas else ReplyKeyboardRemove()
             else:
-                # --- ИСПРАВЛЕНИЕ: Экранируем скобки в заголовке ---
-                header_text = info_list_header_fmt_raw.format(count=persona_count, limit=persona_limit)
+                                header_text = info_list_header_fmt_raw.format(
+                    count=escape_markdown_v2(str(persona_count)), 
+                    limit=escape_markdown_v2(str(persona_limit))
+                )
                 message_lines = [header_text]
                 keyboard_personas = []
                 fallback_text_plain_parts.append(f"Твои личности ({persona_count}/{persona_limit}):")
 
                 for p in personas:
-                     # --- ИСПРАВЛЕНИЕ: Экранируем скобки в строке личности ---
                      persona_text = f"\n👤 *{escape_markdown_v2(p.name)}* \\(ID: `{p.id}`\\)"
                      message_lines.append(persona_text)
                      fallback_text_plain_parts.append(f"\n- {p.name} (ID: {p.id})")
@@ -2828,7 +2832,7 @@ async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE, from_cal
         paid_persona_raw = str(PAID_PERSONA_LIMIT)
         free_persona_raw = str(FREE_PERSONA_LIMIT)
 
-        text_md = (
+                text_md = (
             f"✨ *Премиум подписка* \\({escape_markdown_v2(price_raw)} {escape_markdown_v2(SUBSCRIPTION_CURRENCY)}/мес\\) ✨\n\n"
             f"*Получите максимум возможностей:*\n"
             f"✅ до `{escape_markdown_v2(paid_limit_raw)}` сообщений в месяц \\(вместо `{escape_markdown_v2(free_limit_raw)}`\\)\n"
@@ -2954,14 +2958,13 @@ async def confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         reply_markup = InlineKeyboardMarkup(keyboard)
         logger.warning("Yookassa credentials not set or shop ID is not numeric in confirm_pay handler.")
     else:
-        # Формируем текст СРАЗУ с экранированием и реальными переносами
-        info_confirm_md = (
-             "✅ отлично\\\\!\\n\\n"  # Экранируем ! -> \\!
+                info_confirm_raw = (
+             "✅ отлично!\n\n"
              "нажимая кнопку 'Оплатить' ниже, вы подтверждаете, что ознакомились и полностью согласны с "
-             "пользовательским соглашением\\\\.\\n\\n" # Экранируем . -> \\.
+             "пользовательским соглашением.\n\n"
              "👇"
         )
-        text = info_confirm_md # Передаем уже экранированный текст
+        text = escape_markdown_v2(info_confirm_raw)
         price_raw = f"{SUBSCRIPTION_PRICE_RUB:.0f}"
         currency_raw = SUBSCRIPTION_CURRENCY
         # Экранируем символы в тексте кнопки, если они там могут быть (на всякий случай)
@@ -4962,7 +4965,7 @@ async def _start_delete_convo(update: Update, context: ContextTypes.DEFAULT_TYPE
         logger.warning(f"Could not send chat action in _start_delete_convo: {e}")
 
     error_not_found_fmt_raw = "❌ Личность с ID `{id}` не найдена или не твоя."
-    prompt_delete_fmt_raw = "🚨 *ВНИМАНИЕ\\!* 🚨\nУдалить личность '{name}' \\(ID: `{id}`\\)?\n\nЭто действие *НЕОБРАТИМО\\!*"
+        prompt_delete_fmt_raw = "🚨 *ВНИМАНИЕ\\!* 🚨\nУдалить личность '{name}' \\(ID: `{id}`\\)\\?\n\nЭто действие *НЕОБРАТИМО\\!*"`
     error_db_raw = "❌ Ошибка базы данных."
     error_general_raw = "❌ Непредвиденная ошибка."
     error_db = escape_markdown_v2(error_db_raw)
