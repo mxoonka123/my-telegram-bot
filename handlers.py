@@ -673,6 +673,21 @@ async def send_to_openrouter(system_prompt: str, messages: List[Dict[str, str]],
 
     return escape_markdown_v2("❌ исчерпаны все попытки обращения к ai (gemini).")
 
+def extract_json_from_markdown(text: str) -> str:
+    """
+    Extracts a JSON string from a markdown code block (e.g., ```json...```).
+    If no markdown block is found, returns the original text.
+    """
+    # The pattern looks for a string inside ```json ... ``` or ``` ... ```
+    pattern = r'```(?:json)?\s*([\s\S]*?)\s*```'
+    match = re.search(pattern, text, re.DOTALL)
+    if match:
+        extracted_json = match.group(1).strip()
+        logger.debug(f"Extracted JSON from markdown block. Original length: {len(text)}, Extracted length: {len(extracted_json)}")
+        return extracted_json
+    # If no markdown block is found, maybe the response is already a clean JSON array.
+    return text.strip()
+
 async def process_and_send_response(update: Update, context: ContextTypes.DEFAULT_TYPE, chat_id: Union[str, int], persona: Persona, full_bot_response_text: str, db: Session, reply_to_message_id: int, is_first_message: bool = False) -> bool:
     """Processes the raw text from AI, splits it into messages, and sends them to the chat."""
     logger.info(f"process_and_send_response [v3]: --- ENTER --- ChatID: {chat_id}, Persona: '{persona.name}'")

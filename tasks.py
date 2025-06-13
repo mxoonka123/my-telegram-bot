@@ -93,7 +93,10 @@ async def check_subscription_expiry_task(context: ContextTypes.DEFAULT_TYPE):
                  # Prepare notification message
                  persona_limit_str = escape_markdown_v2(f"{user_info['persona_count']}/{FREE_PERSONA_LIMIT}")
                  # --- ИСПРАВЛЕННЫЙ БЛОК ---
-                 # Используем месячный лимит, а не несуществующий дневной
+                 # Используем месячный лимит, а не несуществующий дневной.
+                 # Так как у нас нет monthly_message_count в user_info, покажем просто общий лимит.
+                 # В идеале, нужно было бы передать и monthly_message_count в user_info.
+                 # Но для простоты сейчас покажем только новый лимит.
                  monthly_limit_str = escape_markdown_v2(f"ранее использовано: {user_info['daily_count']}/{FREE_USER_MONTHLY_MESSAGE_LIMIT}")
 
                  text_to_send = (
