@@ -53,7 +53,8 @@ from config import (
     PAID_PERSONA_LIMIT,
     FREE_PERSONA_LIMIT,
     PREMIUM_USER_MONTHLY_MESSAGE_LIMIT,
-    FREE_USER_MONTHLY_MESSAGE_LIMIT
+    FREE_USER_MONTHLY_MESSAGE_LIMIT,
+    MAX_CONTEXT_MESSAGES_SENT_TO_LLM
 )
 # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
 
@@ -1323,15 +1324,16 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
             persona, _, owner_user = persona_context_owner_tuple
             logger.debug(f"Handling {media_type} for persona '{persona.name}' owned by {owner_user.id}")
 
-            limit_ok = check_and_update_user_limits(db, owner_user)
-            limit_state_updated = db.is_modified(owner_user)
+            # --- DEPRECATED: Лимиты теперь проверяются в handle_message, на который пересылается транскрипция ---
+            # limit_ok = check_and_update_user_limits(db, owner_user)
+            # limit_state_updated = db.is_modified(owner_user)
 
-            if not limit_ok:
-                logger.info(f"Owner {owner_user.telegram_id} exceeded daily message limit for media.")
-                await send_limit_exceeded_message(update, context, owner_user)
-                if limit_state_updated:
-                    db.commit()
-                return
+            # if not limit_ok:
+            #     logger.info(f"Owner {owner_user.telegram_id} exceeded daily message limit for media.")
+            #     await send_limit_exceeded_message(update, context, owner_user)
+            #     if limit_state_updated:
+            #         db.commit()
+            #     return
 
             context_text_placeholder = ""
             system_prompt = None
@@ -3240,11 +3242,11 @@ async def _handle_back_to_wizard_menu(update: Update, context: ContextTypes.DEFA
             await query.answer("Ошибка: личность не найдена")
             return ConversationHandler.END
     
-        # Удаляем текущее сообщение с подменю
-        try:
-            await context.bot.delete_message(chat_id=query.message.chat.id, message_id=query.message.message_id)
-        except Exception as e:
-            logger.warning(f"Could not delete submenu message: {e}")
+        # # Удаляем текущее сообщение с подменю <-- ЭТО ВЫЗЫВАЛО ПРОБЛЕМУ
+        # try:
+        #     await context.bot.delete_message(chat_id=query.message.chat.id, message_id=query.message.message_id)
+        # except Exception as e:
+        #     logger.warning(f"Could not delete submenu message: {e}")
     
         return await fixed_show_edit_wizard_menu(update, context, persona)
 
