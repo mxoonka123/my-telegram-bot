@@ -703,27 +703,39 @@ async def process_and_send_response(update: Update, context: ContextTypes.DEFAUL
     is_json_parsed = False
 
     try:
-        # ПРИНУДИТЕЛЬНОЕ РАСКОДИРОВАНИЕ UNICODE-ESCAPE ПОСЛЕДОВАТЕЛЬНОСТЕЙ
-        # Это решает проблему, когда AI возвращает кириллицу в виде \uXXXX
-        decoded_string = json_string_candidate.encode('utf-8').decode('unicode_escape')
-
-        # Пытаемся распарсить уже раскодированную строку
-        parsed_data = json.loads(decoded_string)
+        # Сначала пробуем стандартный парсинг. json.loads сам справится с \uXXXX.
+        parsed_data = json.loads(json_string_candidate)
         if isinstance(parsed_data, list):
-            # Успешный парсинг списка строк - это основной сценарий
             text_parts_to_send = [str(item).strip() for item in parsed_data if str(item).strip()]
             is_json_parsed = True
-            logger.info(f"Successfully parsed JSON array with {len(text_parts_to_send)} items.")
+            logger.info(f"Successfully parsed JSON array with {len(text_parts_to_send)} items (standard method).")
         else:
-            # Если JSON валидный, но не список (например, просто строка), считаем это текстом для отправки
-            logger.warning(f"Parsed valid JSON, but it was not a list (type: {type(parsed_data)}). Treating as plain text.")
-            is_json_parsed = False # Считаем, что это не тот JSON, который мы ждали
+            logger.warning(f"Parsed valid JSON, but it's not a list (type: {type(parsed_data)}). Using fallback.")
+            is_json_parsed = False
             text_parts_to_send = None
     except (json.JSONDecodeError, TypeError):
-        # Если парсинг не удался, is_json_parsed останется False
-        logger.warning(f"Failed to parse JSON. Candidate string: '{json_string_candidate[:200]}...'")
-        is_json_parsed = False
-        text_parts_to_send = None # Явно указываем, что парсинг не удался
+        # Если стандартный парсинг не удался, проверяем, есть ли в строке \u.
+        # Это может помочь, если LLM вернул некорректный JSON, но с правильными escape-последовательностями.
+        if '\\u' in json_string_candidate:
+            logger.warning("Standard JSON parse failed, but '\\u' found. Trying unicode_escape fallback.")
+            try:
+                decoded_string = json_string_candidate.encode('utf-8').decode('unicode_escape')
+                parsed_data = json.loads(decoded_string)
+                if isinstance(parsed_data, list):
+                    text_parts_to_send = [str(item).strip() for item in parsed_data if str(item).strip()]
+                    is_json_parsed = True
+                    logger.info(f"Successfully parsed JSON array with {len(text_parts_to_send)} items (unicode_escape fallback).")
+                else:
+                    is_json_parsed = False
+                    text_parts_to_send = None
+            except (json.JSONDecodeError, TypeError, UnicodeDecodeError) as fallback_e:
+                logger.error(f"Fallback parsing with unicode_escape also failed: {fallback_e}")
+                is_json_parsed = False
+                text_parts_to_send = None
+        else:
+            logger.warning(f"Standard JSON parse failed. No '\\u' detected. String: '{json_string_candidate[:200]}...'")
+            is_json_parsed = False
+            text_parts_to_send = None
 
     content_to_save_in_db = ""
     if is_json_parsed and text_parts_to_send is not None:
