@@ -714,16 +714,20 @@ def link_bot_instance_to_chat(db: Session, bot_instance_id: int, chat_id: Union[
                  chat_link.is_muted = False
                  needs_commit = True
                  try:
-                     deleted_ctx_result = chat_link.context.delete(synchronize_session='fetch')
-                     deleted_ctx = deleted_ctx_result if isinstance(deleted_ctx_result, int) else 0
+                     # ИСПРАВЛЕНИЕ: Используем явный DELETE запрос вместо relationship.delete()
+                     stmt = delete(ChatContext).where(ChatContext.chat_bot_instance_id == chat_link.id)
+                     result = db.execute(stmt)
+                     deleted_ctx = result.rowcount
                      logger.debug(f"[link_bot_instance] Cleared {deleted_ctx} context messages for reactivated ChatBotInstance {chat_link.id}.")
                  except Exception as del_ctx_err:
                      logger.error(f"[link_bot_instance] Error clearing context during reactivation: {del_ctx_err}", exc_info=True)
             else:
                 logger.info(f"[link_bot_instance] ChatBotInstance link for bot {bot_instance_id} in chat {chat_id_str} is already active. Clearing context on re-add request.")
                 try:
-                    deleted_ctx_result = chat_link.context.delete(synchronize_session='fetch')
-                    deleted_ctx = deleted_ctx_result if isinstance(deleted_ctx_result, int) else 0
+                    # ИСПРАВЛЕНИЕ: Используем явный DELETE запрос и здесь
+                    stmt = delete(ChatContext).where(ChatContext.chat_bot_instance_id == chat_link.id)
+                    result = db.execute(stmt)
+                    deleted_ctx = result.rowcount
                     logger.debug(f"[link_bot_instance] Cleared {deleted_ctx} context messages for already active ChatBotInstance {chat_link.id}.")
                     needs_commit = True
                 except Exception as del_ctx_err:
