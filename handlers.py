@@ -334,7 +334,7 @@ EDIT_MOOD_CHOICE, EDIT_MOOD_NAME, EDIT_MOOD_PROMPT, DELETE_MOOD_CONFIRM,
 # Delete Persona Conversation State
 DELETE_PERSONA_CONFIRM,
 EDIT_MAX_MESSAGES, # EDIT_MESSAGE_VOLUME removed
-) = range(13) # Total 13 states now
+) = range(14) # Total 14 states now
 
 # --- Terms of Service Text ---
 TOS_TEXT_RAW = """
