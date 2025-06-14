@@ -1370,7 +1370,8 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
                         file = await context.bot.get_file(photo_file.file_id)
                         image_data_io = await file.download_as_bytearray()
                         image_data = bytes(image_data_io)
-                        context_text_placeholder = "[получено фото]"
+                        # Более осмысленный плейсхолдер
+                        context_text_placeholder = f"{username}: [отправил(а) фото]"
                         logger.info(f"Downloaded image: {len(image_data)} bytes")
                 except Exception as e:
                     logger.error(f"Error downloading photo: {e}", exc_info=True)
