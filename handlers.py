@@ -15,6 +15,7 @@ import wave
 import subprocess
 import base64
 from typing import List, Dict, Any, Optional, Union, Tuple
+from sqlalchemy import delete
 
 # Константы для UI
 CHECK_MARK = "✅ "  # Unicode Check Mark Symbol
@@ -1993,7 +1994,8 @@ async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             logger.warning(f"User {user_id} clearing context for ChatBotInstance {chat_bot_instance_id} (Persona '{persona_name_raw}') in chat {chat_id_str}.")
 
             # Создаем SQL запрос на удаление
-            stmt = delete(ChatContext).where(ChatContext.chat_bot_instance_id == chat_bot_instance_id)
+            from sqlalchemy import text
+            stmt = text(f"DELETE FROM chat_context WHERE chat_bot_instance_id = {chat_bot_instance_id}")
             result = db.execute(stmt)
             deleted_count = result.rowcount
             db.commit()
