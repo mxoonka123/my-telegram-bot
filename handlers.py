@@ -16,6 +16,7 @@ import subprocess
 import base64
 from typing import List, Dict, Any, Optional, Union, Tuple
 from sqlalchemy import delete
+from telegram.constants import ParseMode # Added for confirm_pay
 
 # Константы для UI
 CHECK_MARK = "✅ "  # Unicode Check Mark Symbol
@@ -2884,16 +2885,15 @@ async def confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         reply_markup = InlineKeyboardMarkup(keyboard)
 
     try:
-        # Диагностика: Используем максимально простой текст
-        # current_text_to_send = info_confirm_raw
-        current_text_to_send = "Нажмите кнопку Оплатить ниже:"
-        logger.debug(f"Attempting to edit message for confirm_pay. Text: '{current_text_to_send}', ParseMode: None")
+        # Используем полную версию сообщения и MarkdownV2
+        current_text_to_send = info_confirm
+        logger.debug(f"Attempting to edit message for confirm_pay. Text: '{current_text_to_send[:100]}...', ParseMode: MDv2")
         if query.message.text != current_text_to_send or query.message.reply_markup != reply_markup:
             await query.edit_message_text(
-                current_text_to_send, # Отправляем ПРОСТОЙ текст
+                text=current_text_to_send,
                 reply_markup=reply_markup,
                 disable_web_page_preview=True,
-                parse_mode=None # <--- Убираем Markdown
+                parse_mode=ParseMode.MARKDOWN_V2
             )
         else:
             await query.answer()
