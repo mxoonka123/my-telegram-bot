@@ -1,5 +1,4 @@
 import asyncio
-import base64
 import httpx
 import json
 import logging
@@ -14,6 +13,7 @@ import urllib.parse
 import uuid
 import wave
 import subprocess
+import base64
 from typing import List, Dict, Any, Optional, Union, Tuple
 
 # Константы для UI
