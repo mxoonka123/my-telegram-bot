@@ -508,9 +508,9 @@ def main():
                 CallbackQueryHandler(handlers.edit_wizard_menu_handler, pattern='^back_to_wizard_menu$') # Кнопка Назад
             ],
             # Add the state for handling message volume selection
-            handlers.EDIT_MESSAGE_VOLUME: [
-                CallbackQueryHandler(handlers.edit_message_volume_received, pattern='^set_volume_|^back_to_wizard_menu$') # Handle volume selection and back button
-            ]
+            # handlers.EDIT_MESSAGE_VOLUME: [
+            #     CallbackQueryHandler(handlers.edit_message_volume_received, pattern='^set_volume_|^back_to_wizard_menu$') # Handle volume selection and back button
+            # ]
         },
         fallbacks=[ # Общие точки выхода из диалога
             CommandHandler('cancel', handlers.edit_persona_cancel),

@@ -70,7 +70,7 @@ class Persona:
             self.config.max_response_messages = 1
             self.max_response_messages = 1
                 # ------------------------------------------------
-        self.message_volume = self.config.message_volume or "normal"
+        self.message_volume = "normal"  # Используем жестко заданное значение по умолчанию
 
         # Load moods safely
         loaded_moods = {}

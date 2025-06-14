@@ -333,8 +333,8 @@ EDIT_MOODS_ENTRY, # Entry point for mood sub-conversation
 EDIT_MOOD_CHOICE, EDIT_MOOD_NAME, EDIT_MOOD_PROMPT, DELETE_MOOD_CONFIRM,
 # Delete Persona Conversation State
 DELETE_PERSONA_CONFIRM,
-EDIT_MAX_MESSAGES, EDIT_MESSAGE_VOLUME # <-- New states
-) = range(15) # Total 15 states
+EDIT_MAX_MESSAGES, # EDIT_MESSAGE_VOLUME removed
+) = range(13) # Total 13 states now
 
 # --- Terms of Service Text ---
 TOS_TEXT_RAW = """
@@ -764,7 +764,7 @@ async def process_and_send_response(update: Update, context: ContextTypes.DEFAUL
             logger.info(f"Fallback: processing cleaned text for user: '{text_for_fallback[:100]}...'")
             max_messages = persona.config.max_response_messages if persona.config and persona.config.max_response_messages > 0 else 3
             # Передаем очищенный текст в postprocess_response
-            text_parts_to_send = postprocess_response(text_for_fallback, max_messages, persona.message_volume)
+            text_parts_to_send = postprocess_response(text_for_fallback, max_messages, "normal") # Используем значение по умолчанию
         else:
             text_parts_to_send = []
 
