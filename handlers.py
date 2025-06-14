@@ -1431,7 +1431,7 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
             )
 
             db.commit()
-            logger.debug(f"Committed DB changes for handle_media chat {chat_id_str} (LimitUpdated: {limit_state_updated}, PlaceholderAdded: {context_placeholder_added}, BotRespAdded: {context_response_prepared})")
+            logger.debug(f"Committed DB changes for handle_media chat {chat_id_str} (PlaceholderAdded: {context_placeholder_added}, BotRespAdded: {context_response_prepared})")
 
         except SQLAlchemyError as e:
             logger.error(f"Database error during handle_media ({media_type}): {e}", exc_info=True)
