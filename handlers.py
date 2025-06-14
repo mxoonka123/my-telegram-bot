@@ -703,8 +703,12 @@ async def process_and_send_response(update: Update, context: ContextTypes.DEFAUL
     is_json_parsed = False
 
     try:
-        # Пытаемся распарсить извлеченную строку
-        parsed_data = json.loads(json_string_candidate)
+        # ПРИНУДИТЕЛЬНОЕ РАСКОДИРОВАНИЕ UNICODE-ESCAPE ПОСЛЕДОВАТЕЛЬНОСТЕЙ
+        # Это решает проблему, когда AI возвращает кириллицу в виде \uXXXX
+        decoded_string = json_string_candidate.encode('utf-8').decode('unicode_escape')
+
+        # Пытаемся распарсить уже раскодированную строку
+        parsed_data = json.loads(decoded_string)
         if isinstance(parsed_data, list):
             # Успешный парсинг списка строк - это основной сценарий
             text_parts_to_send = [str(item).strip() for item in parsed_data if str(item).strip()]
