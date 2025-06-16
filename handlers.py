@@ -490,48 +490,41 @@ async def send_to_openrouter(system_prompt: str, messages: List[Dict[str, str]],
         logger.error(f"Failed to initialize AsyncOpenAI client for OpenRouter: {e}", exc_info=True)
         return escape_markdown_v2("❌ ошибка: не удалось инициализировать клиент openrouter.")
 
-    # --- НОВАЯ ЛОГИКА ФОРМИРОВАНИЯ ЗАПРОСА ---
-    # Формируем сообщения для API. OpenRouter использует стандартный формат OpenAI.
-    # Но для Gemini Vision нужно передавать данные особым образом.
-    api_messages = []
-    
-    # Системный промпт для Gemini является частью первого сообщения пользователя
-    full_system_prompt = system_prompt.strip()
-    
-    # Формируем историю. Роль "system" эмулируется.
+    # --- ИСПРАВЛЕНИЕ: Переработка логики отправки промпта ---
+    # Модели, совместимые с OpenAI API (включая Gemini через OpenRouter),
+    # лучше всего работают с выделенной системной ролью.
+    # Промпт должен отправляться при каждом запросе, а не только в начале истории.
+
+    # 1. Формируем системное сообщение.
+    system_message = {"role": "system", "content": system_prompt.strip()}
+
+    # 2. Формируем историю сообщений.
     history = []
+    # `messages` уже содержит последнее сообщение пользователя
     for msg in messages:
-        # Gemini API ожидает чередования user -> model.
-        role = "model" if msg.get("role") == "assistant" else "user"
-        history.append({"role": role, "content": msg.get("content", "")})
-
-    # Если в истории нет сообщений, добавляем системный промпт как первое сообщение
-    if not history:
-        history.append({"role": "user", "content": full_system_prompt})
-        history.append({"role": "model", "content": "Ok, I am ready."}) # Эмулируем ответ, чтобы сохранить чередование
-    else:
-        # Добавляем системный промпт к первому сообщению пользователя
-        history[0]["content"] = f"{full_system_prompt}\n\n---\n\n{history[0]['content']}"
-
-    # Обрабатываем последнее сообщение, к которому может быть прикреплена картинка
-    if history:
-        last_message = history[-1]
-        if last_message["role"] == "user":
-            content_parts = [{"type": "text", "text": last_message["content"]}]
-            if image_data:
-                logger.info("Encoding image data to Base64 for Google Gemini Vision model.")
-                base64_image = base64.b64encode(image_data).decode("utf-8")
-                content_parts.append({
-                    "type": "image_url",
-                    "image_url": {
-                        "url": f"data:image/jpeg;base64,{base64_image}"
+        role = "assistant" if msg.get("role") == "assistant" else "user"
+        content = msg.get("content", "")
+        # Для Gemini Vision: если это последнее сообщение пользователя и есть картинка
+        if role == "user" and msg == messages[-1] and image_data:
+            logger.info("Encoding image data to Base64 for Google Gemini Vision model.")
+            base64_image = base64.b64encode(image_data).decode("utf-8")
+            history.append({
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": content},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}
                     }
-                })
-            last_message["content"] = content_parts
+                ]
+            })
+        else:
+             history.append({"role": role, "content": content})
 
-    api_messages = history
+    # 3. Собираем финальный список сообщений для API.
+    api_messages = [system_message] + history
 
-    logger.debug(f"Sending to OpenRouter. Model: {config.OPENROUTER_MODEL_NAME}. Messages count: {len(api_messages)}")
+    logger.debug(f"Sending to OpenRouter. Model: {config.OPENROUTER_MODEL_NAME}. System prompt sent. Messages count: {len(api_messages)}")
 
     max_retries = 3
     for attempt in range(max_retries):
