@@ -356,13 +356,17 @@ def initialize_database():
         
         # Отключаем prepared statements для psycopg3, чтобы избежать ошибки DuplicatePreparedStatement
         if 'postgres' in db_url_str:
-            # Настраиваем параметры для psycopg3
-            connect_args = engine_args.get('connect_args', {})
-            connect_args['prepare_threshold'] = None  # Отключение prepared statements
-            connect_args['options'] = "-c statement_timeout=60000 -c idle_in_transaction_session_timeout=60000"
-            engine_args['connect_args'] = connect_args
+            # Настраиваем параметры для psycopg3, ОБНОВЛЯЯ существующий словарь connect_args
+            if 'connect_args' not in engine_args:
+                engine_args['connect_args'] = {}
             
-            logger.info("PostgreSQL: Disabled prepared statements and set timeouts to prevent transaction issues")
+            engine_args['connect_args']['prepare_threshold'] = None  # Отключение prepared statements
+            # Убедимся, что не перезаписываем другие опции, если они есть
+            existing_options = engine_args['connect_args'].get('options', '')
+            new_options = "-c statement_timeout=60000 -c idle_in_transaction_session_timeout=60000"
+            engine_args['connect_args']['options'] = f"{existing_options} {new_options}".strip()
+            
+            logger.info(f"PostgreSQL: Disabled prepared statements and updated timeouts. Final connect_args: {engine_args['connect_args']}")
             
         # Создаем engine с ИЗМЕНЕННЫМ URL из переменной и модифицированными engine_args
         engine = create_engine(db_url_str, **engine_args, echo=False)

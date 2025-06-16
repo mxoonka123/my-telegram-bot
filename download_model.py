@@ -56,10 +56,16 @@ def download_and_unzip_model():
         logging.error(f"ERROR: An error occurred during model setup: {e}. The bot will start, but voice recognition will be disabled.", exc_info=True)
         # sys.exit(1) <-- УДАЛЕНО
     finally:
-        # Удаляем zip-архив в любом случае
-        if os.path.exists(ZIP_FILE_NAME):
-            os.remove(ZIP_FILE_NAME)
-            logging.info(f"Removed temporary file '{ZIP_FILE_NAME}'.")
+        # Удаляем zip-архив, только если он существует
+        try:
+            if os.path.exists(ZIP_FILE_NAME):
+                try:
+                    os.remove(ZIP_FILE_NAME)
+                    logging.info(f"Removed temporary file '{ZIP_FILE_NAME}'.")
+                except OSError as e:
+                    logging.error(f"Error removing temporary zip file {ZIP_FILE_NAME}: {e}")
+        except OSError as e:
+            logging.error(f"Error removing temporary zip file {ZIP_FILE_NAME}: {e}")
 
 if __name__ == "__main__":
     download_and_unzip_model()

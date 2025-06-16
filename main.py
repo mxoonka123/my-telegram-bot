@@ -231,12 +231,9 @@ def run_flask():
     except Exception as e:
         flask_logger.critical(f"Flask/Waitress server thread failed: {e}", exc_info=True)
 
-# --- Logging Configuration ---
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-# Adjust log levels for noisy libraries
+# --- Logging Levels Adjustment (basicConfig call removed) ---
+# Настройка базового логгера уже произведена в самом верху файла.
+# Здесь мы только настраиваем уровни для конкретных библиотек.
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("apscheduler").setLevel(logging.WARNING)
 logging.getLogger("telegram").setLevel(logging.INFO) # Keep INFO for basic TG operations
