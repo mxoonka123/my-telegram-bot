@@ -105,10 +105,9 @@ MAX_USER_MESSAGE_LENGTH_CHARS = 600
 
 logger = logging.getLogger(__name__)
 
-# --- Vosk model setup ---
-VOSK_MODEL_PATH = "model_vosk_ru"
-vosk_model = None
-
+# --- Vosk model setup (Lazy Loading from /tmp) ---
+VOSK_MODEL_PATH = "/tmp/model_vosk_ru" # --- ИЗМЕНЕНИЕ: Указываем на временную папку ---
+vosk_model = None # Глобальная переменная для кэширования модели
 if VOSK_AVAILABLE:
     try:
         if os.path.exists(VOSK_MODEL_PATH):

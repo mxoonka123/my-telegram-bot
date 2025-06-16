@@ -5,20 +5,24 @@ import logging
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Путь, куда будет смонтирован volume. Он должен совпадать с путем в настройках Railway.
-# Для простоты будем использовать путь внутри папки приложения.
-MODEL_DIR = "model_vosk_ru" 
+# --- ИЗМЕНЕНИЕ: Используем временную папку /tmp ---
+# Путь для скачивания и распаковки модели.
+# Этот путь будет уникален для каждого запуска контейнера.
+MODEL_DIR = "/tmp/model_vosk_ru"
 MODEL_URL = "https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip" # URL на маленькую русскую модель
-ZIP_FILE_NAME = "vosk_model.zip"
+# Имя zip-файла теперь тоже будет во временной папке
+ZIP_FILE_NAME = "/tmp/vosk_model.zip"
 
 def download_and_unzip_model():
     """
-    Checks for the model directory. If it doesn't exist, downloads and extracts the model.
+    Downloads and extracts the model to a temporary directory on every start.
     """
-    # Проверяем, существует ли папка И содержит ли она файлы (признак успешной распаковки)
-    if os.path.exists(MODEL_DIR) and os.path.exists(os.path.join(MODEL_DIR, 'am/final.mdl')):
-        logging.info(f"Vosk model already exists in '{MODEL_DIR}'. Skipping download.")
-        return
+    # --- ИЗМЕНЕНИЕ: Убираем проверку, так как /tmp всегда пустая при старте ---
+    # if os.path.exists(MODEL_DIR) and os.path.exists(os.path.join(MODEL_DIR, 'am/final.mdl')):
+    #     logging.info(f"Vosk model already exists in '{MODEL_DIR}'. Skipping download.")
+    #     return
+
+    logging.info(f"Model will be downloaded to temporary directory: '{MODEL_DIR}'.")
 
     logging.info(f"Model directory '{MODEL_DIR}' not found or incomplete. Starting download...")
     
