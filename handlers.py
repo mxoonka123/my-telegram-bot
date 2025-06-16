@@ -603,7 +603,17 @@ async def process_and_send_response(update: Update, context: ContextTypes.DEFAUL
         # Сначала пробуем стандартный парсинг. json.loads сам справится с \uXXXX.
         parsed_data = json.loads(json_string_candidate)
         if isinstance(parsed_data, list):
-            text_parts_to_send = [str(item).strip() for item in parsed_data if str(item).strip()]
+            # --- УЛУЧШЕНИЕ: Принудительное удаление точек в конце ---
+            processed_parts = []
+            for item in parsed_data:
+                text = str(item).strip()
+                if text.endswith('.') and not text.endswith(('..', '...')):
+                    text = text[:-1]
+                if text:
+                    processed_parts.append(text)
+            
+            text_parts_to_send = processed_parts
+            # --- КОНЕЦ УЛУЧШЕНИЯ ---
             is_json_parsed = True
             logger.info(f"Successfully parsed JSON array with {len(text_parts_to_send)} items (standard method).")
         else:
