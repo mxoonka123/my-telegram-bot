@@ -372,14 +372,17 @@ class Persona:
         try:
             formatted_prompt = template.format(**template_vars)
         except KeyError as e:
-            logger.error(f"Error formatting media system prompt for persona {self.id}: Missing key {e}", exc_info=True)
+            logger.error(f"Error formatting media system prompt for persona {self.id}: Missing key {e}. Template: {template[:150]}...", exc_info=True)
+            # --- УЛУЧШЕННЫЙ FALLBACK ---
             # Fallback на дефолтный шаблон с теми же переменными, чтобы избежать падения
             fallback_template = PHOTO_SYSTEM_PROMPT_TEMPLATE_FALLBACK if media_type_text == "фото" else DEFAULT_MEDIA_SYSTEM_PROMPT_TEMPLATE
             try:
-                formatted_prompt = fallback_template.format(**template_vars)
-                logger.warning(f"Successfully used fallback template due to KeyError.")
+                # Используем только те ключи, которые точно есть в fallback-шаблоне
+                fallback_vars = {k: v for k, v in template_vars.items() if f"{{{k}}}" in fallback_template}
+                formatted_prompt = fallback_template.format(**fallback_vars)
+                logger.warning(f"Successfully used fallback template due to KeyError in custom template.")
             except Exception as fallback_e:
-                logger.error(f"Fallback template formatting also failed: {fallback_e}")
+                logger.critical(f"FATAL: Fallback media template formatting also failed: {fallback_e}")
                 return None
         
         logger.debug(f"Persona {self.id} ({self.name}) WILL react to '{media_type_text}' with setting '{react_setting}'. Prompt generated: {formatted_prompt[:200]}...")

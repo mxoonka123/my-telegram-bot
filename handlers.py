@@ -657,6 +657,7 @@ async def process_and_send_response(update: Update, context: ContextTypes.DEFAUL
                         logger.info(f"Successfully re-parsed nested JSON. New parts count: {len(text_parts_to_send)}")
                 except (json.JSONDecodeError, TypeError):
                     logger.warning("Failed to re-parse nested JSON string, proceeding with the original single part.")
+        # --- КОНЕЦ УЛУЧШЕНИЯ ---
 
         content_to_save_in_db = "\n".join(text_parts_to_send)
         logger.info(f"Saving CLEAN response to context: '{content_to_save_in_db[:100]}...'")
