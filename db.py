@@ -334,13 +334,18 @@ def initialize_database():
     if db_url_str.startswith("sqlite"):
         engine_args["connect_args"] = {"check_same_thread": False}
     elif db_url_str.startswith("postgres"):
-        # Базовые настройки пула
+        # --- ИЗМЕНЕНИЕ: Более агрессивные настройки для облачных БД ---
         engine_args.update({
-            "pool_size": 10, # Можно уменьшить для прямого подключения, например 5
-            "max_overflow": 5, # Можно уменьшить, например 2
-            "pool_timeout": 30,
-            "pool_recycle": 1800,
-            "pool_pre_ping": True,
+            "pool_size": 5,           # Меньше соединений в пуле для старта
+            "max_overflow": 2,        #
+            "pool_timeout": 60,       # Увеличиваем таймаут ожидания соединения из пула
+            "pool_recycle": 300,      # Пересоздаем соединения каждые 5 минут
+            "pool_pre_ping": True,    # Проверяем соединение перед использованием
+            "connect_args": {
+                # Увеличиваем таймауты на уровне драйвера (в миллисекундах для psycopg)
+                "options": "-c statement_timeout=60000 -c idle_in_transaction_session_timeout=60000",
+                "connect_timeout": 15 # Таймаут на установку TCP-соединения (в секундах)
+            }
         })
 
     try:

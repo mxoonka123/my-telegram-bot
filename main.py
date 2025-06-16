@@ -1,5 +1,17 @@
-print("DEBUG: main.py - Script execution started")
+# --- ИЗМЕНЕНИЕ: Настройка базового логгирования в самом начале ---
 import logging
+import sys
+# Настраиваем базовый логгер, который будет выводить ВСЕ в stdout, чтобы Railway это точно поймал
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    stream=sys.stdout, # Явно указываем поток вывода
+    force=True # Перезаписываем любые существующие настройки
+)
+# --- КОНЕЦ ИЗМЕНЕНИЯ ---
+
+print("DEBUG: main.py - Script execution started")
+# import logging <-- этот импорт уже есть выше, можно убрать или оставить
 import asyncio
 import os
 import threading
