@@ -1,3 +1,7 @@
+# --- ИЗМЕНЕНИЕ: Добавляем отладочный print для проверки запуска ---
+print("DEBUG: main.py - Top of file, execution starting NOW.")
+# --- КОНЕЦ ИЗМЕНЕНИЯ ---
+
 # --- ИЗМЕНЕНИЕ: Настройка базового логгирования в самом начале ---
 import logging
 import sys

@@ -1,6 +1,6 @@
 import json
 import logging
-logging.basicConfig(level=logging.INFO) # Базовая конфигурация для этой проверки
+# logging.basicConfig(level=logging.INFO) # <-- УДАЛЕНО: Эта строка вызывает конфликт с main.py
 logging.getLogger("DB_PY_VERSION_CHECK").critical("!!! DB.PY MODULE LOADED - VERSION CHECK JUNE 08 02:28 AM UTC+3 !!!")
 from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, Boolean, ForeignKey, UniqueConstraint, func, BIGINT, select, update as sql_update, delete, Float
 from sqlalchemy.orm import sessionmaker, relationship, Session, joinedload, selectinload
