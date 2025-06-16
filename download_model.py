@@ -2,67 +2,62 @@ import os
 import requests
 import zipfile
 import logging
+import shutil
+import sys # <-- Важный импорт для завершения с ошибкой
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# --- ИЗМЕНЕНИЕ: Используем временную папку /tmp ---
-# Путь для скачивания и распаковки модели.
-# Этот путь будет уникален для каждого запуска контейнера.
+# Путь для скачивания и распаковки модели во временной папке
 MODEL_DIR = "/tmp/model_vosk_ru"
-MODEL_URL = "https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip" # URL на маленькую русскую модель
-# Имя zip-файла теперь тоже будет во временной папке
+MODEL_URL = "https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip"
 ZIP_FILE_NAME = "/tmp/vosk_model.zip"
+# Имя папки, которое создается ВНУТРИ архива
+EXTRACTED_FOLDER_NAME = 'vosk-model-small-ru-0.22'
 
 def download_and_unzip_model():
     """
     Downloads and extracts the model to a temporary directory on every start.
+    Exits with a non-zero status code on failure.
     """
-    # --- ИЗМЕНЕНИЕ: Убираем проверку, так как /tmp всегда пустая при старте ---
-    # if os.path.exists(MODEL_DIR) and os.path.exists(os.path.join(MODEL_DIR, 'am/final.mdl')):
-    #     logging.info(f"Vosk model already exists in '{MODEL_DIR}'. Skipping download.")
-    #     return
-
-    logging.info(f"Model will be downloaded to temporary directory: '{MODEL_DIR}'.")
-
-    logging.info(f"Model directory '{MODEL_DIR}' not found or incomplete. Starting download...")
-    
-    # Создаем папку, если ее нет
-    os.makedirs(MODEL_DIR, exist_ok=True)
-
     try:
+        logging.info(f"Model will be downloaded to temporary directory: '{MODEL_DIR}'.")
+
         # Скачиваем архив
         logging.info(f"Downloading model from {MODEL_URL}...")
         response = requests.get(MODEL_URL, stream=True)
-        response.raise_for_status() # Проверка на ошибки HTTP
-        
+        response.raise_for_status()
+
         with open(ZIP_FILE_NAME, "wb") as f:
             for chunk in response.iter_content(chunk_size=8192):
                 f.write(chunk)
         logging.info("Download complete.")
 
-        # Распаковываем архив
-        logging.info(f"Unzipping '{ZIP_FILE_NAME}'...")
+        # Распаковываем архив во временную папку
+        logging.info(f"Unzipping '{ZIP_FILE_NAME}' to /tmp/ ...")
         with zipfile.ZipFile(ZIP_FILE_NAME, 'r') as zip_ref:
-            # Находим имя папки внутри архива (обычно оно совпадает с именем архива)
-            # Например, vosk-model-small-ru-0.22
-            top_level_dir = zip_ref.namelist()[0].split('/')[0]
-            zip_ref.extractall() # Распаковываем все
+            zip_ref.extractall('/tmp/')
+        logging.info("Unzip complete.")
+
+        # --- НОВАЯ, БОЛЕЕ НАДЕЖНАЯ ЛОГИКА ---
+        # Проверяем, существует ли целевая папка (от прошлого неудачного запуска) и удаляем ее
+        if os.path.exists(MODEL_DIR):
+            logging.warning(f"Target directory '{MODEL_DIR}' already exists. Cleaning up before moving.")
+            shutil.rmtree(MODEL_DIR)
+
+        # Переименовываем распакованную папку в нашу целевую.
+        # Это одна атомарная операция, она надежнее, чем копирование по файлам.
+        source_path = f"/tmp/{EXTRACTED_FOLDER_NAME}"
+        logging.info(f"Renaming '{source_path}' to '{MODEL_DIR}'...")
+        os.rename(source_path, MODEL_DIR)
         
-        # Перемещаем содержимое из распакованной папки в нашу целевую папку
-        logging.info(f"Moving files from '{top_level_dir}' to '{MODEL_DIR}'...")
-        for item in os.listdir(top_level_dir):
-            os.rename(os.path.join(top_level_dir, item), os.path.join(MODEL_DIR, item))
-        
-        # Удаляем пустую папку и архив
-        os.rmdir(top_level_dir)
         logging.info("Model setup complete.")
 
-    except requests.exceptions.RequestException as e:
-        logging.error(f"Failed to download model: {e}")
-    except zipfile.BadZipFile:
-        logging.error("Failed to unzip model. The downloaded file might be corrupted.")
     except Exception as e:
-        logging.error(f"An unexpected error occurred during model setup: {e}", exc_info=True)
+        logging.error(f"FATAL: An error occurred during model setup: {e}", exc_info=True)
+        # --- САМОЕ ГЛАВНОЕ ИЗМЕНЕНИЕ ---
+        # Завершаем скрипт с кодом ошибки 1.
+        # Это остановит выполнение цепочки `&&` и Railway покажет ошибку в деплое.
+        sys.exit(1)
     finally:
         # Удаляем zip-архив в любом случае
         if os.path.exists(ZIP_FILE_NAME):
