@@ -221,18 +221,25 @@ def _split_response_to_messages(response: str, max_messages: int, message_volume
         return [response]
 
     # 1. Initial split on natural boundaries (paragraphs, transitions)
-    parts = []
-    current_part = ""
-    for line in response.splitlines():
-        line = line.strip()
-        if not line:  # Empty line = paragraph break
-            if current_part:
-                parts.append(current_part.strip())
-                current_part = ""
-            continue
-        current_part += line + " "
-    if current_part:
-        parts.append(current_part.strip())
+    # --- ИСПРАВЛЕНИЕ: Правильно обрабатываем переносы строк как разделители ---
+    # Если в ответе есть переносы строк, считаем каждую непустую строку отдельным сообщением.
+    if '\n' in response:
+        parts = [line.strip() for line in response.splitlines() if line.strip()]
+        logger.info(f"Fallback: Split response by newlines into {len(parts)} parts.")
+    else:
+        # Старая логика для ответа без переносов строк
+        parts = []
+        current_part = ""
+        for line in response.splitlines():
+            line = line.strip()
+            if not line:
+                if current_part:
+                    parts.append(current_part.strip())
+                    current_part = ""
+                continue
+            current_part += line + " "
+        if current_part:
+            parts.append(current_part.strip())
 
     # If still one big part, try splitting by transition words or sentence ends
     if len(parts) == 1 and len(parts[0]) > max_len:
