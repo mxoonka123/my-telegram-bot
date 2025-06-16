@@ -3,7 +3,7 @@ import requests
 import zipfile
 import logging
 import shutil
-import sys # <-- Важный импорт для завершения с ошибкой
+# import sys <-- УДАЛЕНО: Больше не нужен для завершения с ошибкой
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -16,8 +16,8 @@ EXTRACTED_FOLDER_NAME = 'vosk-model-small-ru-0.22'
 
 def download_and_unzip_model():
     """
-    Downloads and extracts the model to a temporary directory on every start.
-    Exits with a non-zero status code on failure.
+    Downloads and extracts the model. It will log errors but will not exit with a
+    non-zero status code, to ensure the main application always starts.
     """
     try:
         logging.info(f"Model will be downloaded to temporary directory: '{MODEL_DIR}'.")
@@ -45,7 +45,6 @@ def download_and_unzip_model():
             shutil.rmtree(MODEL_DIR)
 
         # Переименовываем распакованную папку в нашу целевую.
-        # Это одна атомарная операция, она надежнее, чем копирование по файлам.
         source_path = f"/tmp/{EXTRACTED_FOLDER_NAME}"
         logging.info(f"Renaming '{source_path}' to '{MODEL_DIR}'...")
         os.rename(source_path, MODEL_DIR)
@@ -53,11 +52,9 @@ def download_and_unzip_model():
         logging.info("Model setup complete.")
 
     except Exception as e:
-        logging.error(f"FATAL: An error occurred during model setup: {e}", exc_info=True)
-        # --- САМОЕ ГЛАВНОЕ ИЗМЕНЕНИЕ ---
-        # Завершаем скрипт с кодом ошибки 1.
-        # Это остановит выполнение цепочки `&&` и Railway покажет ошибку в деплое.
-        sys.exit(1)
+        # --- ИЗМЕНЕНИЕ: Просто логируем ошибку, не завершаем процесс ---
+        logging.error(f"ERROR: An error occurred during model setup: {e}. The bot will start, but voice recognition will be disabled.", exc_info=True)
+        # sys.exit(1) <-- УДАЛЕНО
     finally:
         # Удаляем zip-архив в любом случае
         if os.path.exists(ZIP_FILE_NAME):
