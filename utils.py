@@ -225,26 +225,13 @@ def _split_response_to_messages(response: str, max_messages: int, message_volume
     # Если в ответе есть переносы строк, считаем каждую непустую строку отдельным сообщением.
     if '\n' in response:
         parts = [line.strip() for line in response.splitlines() if line.strip()]
-        logger.info(f"Fallback: Split response by newlines into {len(parts)} parts.")
+        logger.info(f"Split response by newlines into {len(parts)} parts.")
     else:
-        # Старая логика для ответа без переносов строк
+        # Если переносов нет, это одна большая строка. Пробуем разбить по смыслу.
+        logger.info("Single-line response detected. Attempting split by transitions/sentences.")
+        text = response
         parts = []
-        current_part = ""
-        for line in response.splitlines():
-            line = line.strip()
-            if not line:
-                if current_part:
-                    parts.append(current_part.strip())
-                    current_part = ""
-                continue
-            current_part += line + " "
-        if current_part:
-            parts.append(current_part.strip())
-
-    # If still one big part, try splitting by transition words or sentence ends
-    if len(parts) == 1 and len(parts[0]) > max_len:
-        text = parts[0]
-        parts = []
+        # Fallback to the original logic for splitting a single long line
         current_part = ""
         last_break = 0
         matches = list(re.finditer(TRANSITION_PATTERN, text))
@@ -256,20 +243,23 @@ def _split_response_to_messages(response: str, max_messages: int, message_volume
             matches = list(re.finditer(r"\?\s+", text))
         if not matches and "… " in text:
             matches = list(re.finditer(r"…\s+", text))
-        for m in matches:
-            pos = m.start()
-            if pos - last_break >= MIN_SENSIBLE_LEN and len(current_part) <= max_len:
-                if current_part:
-                    parts.append(current_part.strip())
-                current_part = text[last_break:pos].strip()
-                last_break = pos
-        if current_part or last_break < len(text):
-            current_part += " " + text[last_break:]
-            if len(current_part) > max_len:
-                subparts = _split_aggressively(current_part, max_len)
-                parts.extend(subparts)
-            elif current_part.strip():
-                parts.append(current_part.strip())
+
+        if matches:
+            for m in matches:
+                pos = m.start()
+                # Split only if the resulting part is of a reasonable length
+                if pos - last_break >= MIN_SENSIBLE_LEN and len(text[last_break:pos]) <= max_len:
+                    parts.append(text[last_break:pos].strip())
+                    last_break = pos
+            # Add the rest of the text
+            remaining_text = text[last_break:].strip()
+            if remaining_text:
+                parts.append(remaining_text)
+        else:
+            # If no good split points were found, the whole text is one part
+            parts = [text]
+
+    # If splitting still resulted in one big part, it will be handled by the aggressive splitter later.
 
     # 2. Split long parts further if under max_messages
     while len(parts) < max_messages:

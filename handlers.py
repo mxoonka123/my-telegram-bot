@@ -1220,16 +1220,8 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
             persona, _, owner_user = persona_context_owner_tuple
             logger.debug(f"Handling {media_type} for persona '{persona.name}' owned by {owner_user.id}")
 
-            # --- DEPRECATED: Лимиты теперь проверяются в handle_message, на который пересылается транскрипция ---
-            # limit_ok = check_and_update_user_limits(db, owner_user)
-            # limit_state_updated = db.is_modified(owner_user)
-
-            # if not limit_ok:
-            #     logger.info(f"Owner {owner_user.telegram_id} exceeded daily message limit for media.")
-            #     await send_limit_exceeded_message(update, context, owner_user)
-            #     if limit_state_updated:
-            #         db.commit()
-            #     return
+            # Лимиты теперь проверяются в handle_message, на который пересылается транскрипция, 
+            # или непосредственно перед вызовом AI, поэтому здесь проверка убрана.
 
             context_text_placeholder = ""
             system_prompt = None
