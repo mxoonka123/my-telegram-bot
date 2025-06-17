@@ -322,7 +322,7 @@ class Persona:
             return None
 
         # Проверка наличия необходимых параметров контекста
-        if not all([user_id, username, chat_id]):
+        if user_id is None or username is None or chat_id is None:
             logger.error(f"Missing context parameters for {media_type_text} prompt: user_id={user_id}, username={username}, chat_id={chat_id}")
             return None
         

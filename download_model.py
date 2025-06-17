@@ -38,7 +38,6 @@ def download_and_unzip_model():
             zip_ref.extractall('/tmp/')
         logging.info("Unzip complete.")
 
-        # --- НОВАЯ, БОЛЕЕ НАДЕЖНАЯ ЛОГИКА ---
         # Проверяем, существует ли целевая папка (от прошлого неудачного запуска) и удаляем ее
         if os.path.exists(MODEL_DIR):
             logging.warning(f"Target directory '{MODEL_DIR}' already exists. Cleaning up before moving.")

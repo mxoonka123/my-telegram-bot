@@ -1859,12 +1859,12 @@ async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             chat_bot_instance_id = chat_bot_instance.id
             logger.warning(f"User {user_id} clearing context for ChatBotInstance {chat_bot_instance_id} (Persona '{persona_name_raw}') in chat {chat_id_str}.")
 
-            # Создаем SQL запрос на удаление
-            from sqlalchemy import text
-            stmt = text(f"DELETE FROM chat_context WHERE chat_bot_instance_id = {chat_bot_instance_id}")
+            # --- ИСПРАВЛЕНИЕ: Используем безопасный ORM-совместимый delete() ---
+            stmt = delete(ChatContext).where(ChatContext.chat_bot_instance_id == chat_bot_instance_id)
             result = db.execute(stmt)
             deleted_count = result.rowcount
             db.commit()
+            # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
 
             logger.info(f"Deleted {deleted_count} context messages for instance {chat_bot_instance_id}.")
             # Форматируем сообщение об успехе

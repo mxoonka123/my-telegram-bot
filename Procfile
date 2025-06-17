@@ -1,1 +1,1 @@
-web: python main.py
+web: python download_model.py && python main.py
