@@ -181,8 +181,9 @@ class Persona:
         # Could potentially load from self.config.system_prompt_template if needed
         return DEFAULT_SYSTEM_PROMPT_TEMPLATE
 
-    def format_system_prompt(self, user_id: int, username: str, message: str) -> Optional[str]:
+    def format_system_prompt(self, user_id: int, username: str) -> Optional[str]:
         """Formats the main system prompt using template and dynamic info.
+           The user's message is NO LONGER part of this prompt.
            Returns None if persona should not respond to text based on media_reaction.
         """
         # Check if text responses are disabled by media_reaction setting
@@ -203,7 +204,7 @@ class Persona:
 
         # --- Блок try...except для форматирования ---
         try:
-            # Словарь с плейсхолдерами для шаблона V9
+            # Словарь с плейсхолдерами для шаблона V16. last_user_message УДАЛЕН.
             placeholders = {
                 'persona_name': self.name,
                 'persona_description': self.description,
@@ -211,14 +212,13 @@ class Persona:
                 'verbosity_level': verbosity_text,
                 'mood_name': mood_name,
                 'mood_prompt': mood_instruction,
-                'username': username,
-                'user_id': user_id,
-                'chat_id': chat_id_info,
-                'last_user_message': message
+                'username': username, # Keep username for context
+                'user_id': user_id,     # Keep user_id for context
+                'chat_id': chat_id_info # Keep chat_id for context
             }
             # Форматируем шаблон, используя словарь
             formatted_prompt = template.format(**placeholders)
-            logger.debug(f"Formatting system prompt V9 with keys: {list(placeholders.keys())}")
+            logger.debug(f"Formatting system prompt V16 with keys: {list(placeholders.keys())}")
 
         except KeyError as e:
             # Этот блок выполняется, если в шаблоне есть ключ, которого нет в placeholders

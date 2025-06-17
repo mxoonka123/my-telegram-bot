@@ -480,7 +480,6 @@ async def send_to_openrouter(system_prompt: str, messages: List[Dict[str, str]],
         logger.error("OPENROUTER_API_KEY is not set.")
         return escape_markdown_v2("❌ ошибка: ключ api для openrouter не настроен.")
 
-    # Создаем клиент, совместимый с OpenAI API
     try:
         client = AsyncOpenAI(
             api_key=config.OPENROUTER_API_KEY,
@@ -490,47 +489,32 @@ async def send_to_openrouter(system_prompt: str, messages: List[Dict[str, str]],
         logger.error(f"Failed to initialize AsyncOpenAI client for OpenRouter: {e}", exc_info=True)
         return escape_markdown_v2("❌ ошибка: не удалось инициализировать клиент openrouter.")
 
-    # --- НОВАЯ ЛОГИКА ФОРМИРОВАНИЯ ЗАПРОСА ---
-    # Формируем сообщения для API. OpenRouter использует стандартный формат OpenAI.
-    # Но для Gemini Vision нужно передавать данные особым образом.
-    api_messages = []
-    
-    # Системный промпт для Gemini является частью первого сообщения пользователя
-    full_system_prompt = system_prompt.strip()
-    
-    # Формируем историю. Роль "system" эмулируется.
-    history = []
+    # --- ПРАВИЛЬНАЯ ЛОГИКА ФОРМИРОВАНИЯ ЗАПРОСА ---
+    # 1. Системный промпт идет первым отдельным сообщением с ролью "system".
+    api_messages = [{"role": "system", "content": system_prompt.strip()}]
+
+    # 2. Добавляем всю историю сообщений.
     for msg in messages:
-        # Gemini API ожидает чередования user -> model.
-        role = "model" if msg.get("role") == "assistant" else "user"
-        history.append({"role": role, "content": msg.get("content", "")})
-
-    # Если в истории нет сообщений, добавляем системный промпт как первое сообщение
-    if not history:
-        history.append({"role": "user", "content": full_system_prompt})
-        history.append({"role": "model", "content": "Ok, I am ready."}) # Эмулируем ответ, чтобы сохранить чередование
-    else:
-        # Добавляем системный промпт к первому сообщению пользователя
-        history[0]["content"] = f"{full_system_prompt}\n\n---\n\n{history[0]['content']}"
-
-    # Обрабатываем последнее сообщение, к которому может быть прикреплена картинка
-    if history:
-        last_message = history[-1]
-        if last_message["role"] == "user":
-            content_parts = [{"type": "text", "text": last_message["content"]}]
-            if image_data:
-                logger.info("Encoding image data to Base64 for Google Gemini Vision model.")
-                base64_image = base64.b64encode(image_data).decode("utf-8")
-                content_parts.append({
-                    "type": "image_url",
-                    "image_url": {
-                        "url": f"data:image/jpeg;base64,{base64_image}"
-                    }
-                })
-            last_message["content"] = content_parts
-
-    api_messages = history
-
+        # Роль "assistant" для модели, "user" для пользователя.
+        role = "assistant" if msg.get("role") == "assistant" else "user"
+        api_messages.append({"role": role, "content": msg.get("content", "")})
+    
+    # 3. Обрабатываем изображение, если оно есть, модифицируя ПОСЛЕДНЕЕ сообщение.
+    if image_data and api_messages and api_messages[-1]["role"] == "user":
+        logger.info("Encoding image data to Base64 for Google Gemini Vision model.")
+        last_user_message = api_messages[-1]
+        text_content = last_user_message.get("content", "")
+        base64_image = base64.b64encode(image_data).decode("utf-8")
+        
+        # Модели Vision лучше работают, когда текст и картинка передаются как части одного сообщения
+        last_user_message["content"] = [
+            {"type": "text", "text": text_content},
+            {
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}
+            }
+        ]
+        
     logger.debug(f"Sending to OpenRouter. Model: {config.OPENROUTER_MODEL_NAME}. Messages count: {len(api_messages)}")
 
     max_retries = 3
@@ -722,16 +706,21 @@ async def process_and_send_response(update: Update, context: ContextTypes.DEFAUL
         return context_response_prepared
 
 
+    # --- СТРАХОВКА ОТ ПОВТОРНЫХ ПРИВЕТСТВИЙ ---
+    # Если это не первое сообщение в диалоге, и модель вдруг поздоровалась, убираем это.
     if text_parts_to_send and not is_first_message:
         first_part = text_parts_to_send[0]
+        # Паттерн для разных вариантов приветствий
         greetings_pattern = r"^\s*(?:привет|здравствуй|добр(?:ый|ое|ого)\s+(?:день|утро|вечер)|хай|ку|здорово|салют|о[йи])(?:[,.!?;:]|\b)"
         match = re.match(greetings_pattern, first_part, re.IGNORECASE)
         if match:
+            # Убираем приветствие и лишние пробелы
             cleaned_part = first_part[match.end():].lstrip()
             if cleaned_part:
                 logger.info(f"process_and_send_response [JSON]: Removed greeting. New start of part 1: '{cleaned_part[:50]}...'")
                 text_parts_to_send[0] = cleaned_part
             else:
+                # Если после удаления приветствия ничего не осталось, удаляем эту часть целиком
                 logger.warning(f"process_and_send_response [JSON]: Greeting removal left part 1 empty. Removing part.")
                 text_parts_to_send.pop(0)
 
@@ -1139,14 +1128,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     llm_call_succeeded = False
                     
                     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
-                        
-                    system_prompt = persona.format_system_prompt(user_id, username, message_text)
+
+                    # Вызываем format_system_prompt БЕЗ текста сообщения
+                    system_prompt = persona.format_system_prompt(user_id, username)
                     if not system_prompt:
                         await update.message.reply_text(escape_markdown_v2("❌ ошибка при подготовке системного сообщения."), parse_mode=ParseMode.MARKDOWN_V2)
                         db_session.rollback()
                         return
 
+                    # Контекст для ИИ - это история + новое сообщение
                     context_for_ai = initial_context_from_db + [{"role": "user", "content": f"{username}: {message_text}"}]
+                    # Отправляем системный промпт и контекст раздельно
                     assistant_response_text = await send_to_openrouter(system_prompt, context_for_ai)
 
                     context_response_prepared = False
