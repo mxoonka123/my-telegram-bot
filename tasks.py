@@ -92,9 +92,12 @@ async def check_subscription_expiry_task(context: ContextTypes.DEFAULT_TYPE):
             try:
                  # Prepare notification message
                  persona_limit_str = escape_markdown_v2(f"{user_info['persona_count']}/{FREE_PERSONA_LIMIT}")
-                 # --- ИСПРАВЛЕННЫЙ БЛОК ---
+                 # --- ИСПРАВЛЕННЫЙ БЛОК V2 ---
                  # Теперь мы используем корректный monthly_message_count, который передали в user_info
-                 monthly_limit_str = escape_markdown_v2(f"{user_info['monthly_message_count']}/{FREE_USER_MONTHLY_MESSAGE_LIMIT}")
+                 # и сравниваем его с БЕСПЛАТНЫМ лимитом, так как подписка истекла.
+                 current_usage = user_info['monthly_message_count']
+                 monthly_limit_str = escape_markdown_v2(f"{current_usage}/{FREE_USER_MONTHLY_MESSAGE_LIMIT}")
+                 persona_limit_str = escape_markdown_v2(f"{user_info['persona_count']}/{FREE_PERSONA_LIMIT}")
 
                  text_raw_part1 = "⏳ ваша премиум подписка истекла.\n\n"
                  text_raw_part2 = "\n\nЧтобы продолжить пользоваться всеми возможностями, вы можете снова оформить подписку командой `/subscribe`."
@@ -102,11 +105,11 @@ async def check_subscription_expiry_task(context: ContextTypes.DEFAULT_TYPE):
                  text_to_send = (
                      escape_markdown_v2(text_raw_part1) +
                      f"*Текущие лимиты \\(Free\\):*\\n" +
-                     f"Сообщения \\(в мес\\.\\): `{monthly_limit_str}`\\n" +
+                     f"Сообщения \\(в мес\\.\\): `{monthly_limit_str}`\n" +
                      f"Личности: `{persona_limit_str}`" +
                      escape_markdown_v2(text_raw_part2)
                  )
-                 # --- КОНЕЦ ИСПРАВЛЕННОГО БЛОКА ---
+                 # --- КОНЕЦ ИСПРАВЛЕННОГО БЛОКА V2 ---
                  await application.bot.send_message(
                      chat_id=telegram_id,
                      text=text_to_send,

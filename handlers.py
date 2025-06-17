@@ -661,32 +661,44 @@ async def process_and_send_response(update: Update, context: ContextTypes.DEFAUL
         content_to_save_in_db = "\n".join(text_parts_to_send)
         logger.info(f"Saving CLEAN response to context: '{content_to_save_in_db[:100]}...'")
     else:
-        # --- УЛУЧШЕННЫЙ FALLBACK-БЛОК ---
+        # --- УЛУЧШЕННЫЙ FALLBACK-БЛОК V2 с ПРЕДОХРАНИТЕЛЕМ ---
         content_to_save_in_db = raw_llm_response # Сохраняем сырой ответ в БД для отладки
         logger.warning(f"JSON parse failed or result was not a list. Using fallback text processing on: '{content_to_save_in_db[:100]}...'")
 
-        # В качестве текста для пользователя берем СТРОКУ-КАНДИДАТ, которая уже очищена от ```json.
-        text_for_fallback = json_string_candidate
-
-        # Логика обработки GIF-ссылок
-        gif_links = extract_gif_links(text_for_fallback)
-        if gif_links:
-            for gif in gif_links:
-                text_for_fallback = text_for_fallback.replace(gif, '')
-
-        # Агрессивная очистка от остатков JSON-разметки
-        text_for_fallback = re.sub(r'^\s*\[\s*"(.*)"\s*\]\s*$', r'\1', text_for_fallback, flags=re.DOTALL) # Убирает ["..."]
-        text_for_fallback = text_for_fallback.replace('\\n', '\n').replace('\\"', '"') # Заменяет экранированные символы
-        text_for_fallback = text_for_fallback.strip()
-
-        # Если после всех манипуляций остался какой-то текст
-        if text_for_fallback:
-            logger.info(f"Fallback: processing cleaned text for user: '{text_for_fallback[:100]}...'")
-            max_messages = persona.config.max_response_messages if persona.config and persona.config.max_response_messages > 0 else 3
-            # Передаем очищенный текст в postprocess_response
-            text_parts_to_send = postprocess_response(text_for_fallback, max_messages, "normal") # Используем значение по умолчанию
+        # ПРЕДОХРАНИТЕЛЬ: Проверяем сырой ответ на наличие запрещенных фраз
+        forbidden_phrases = [
+            "i cannot fulfill", "i am unable to", "as an ai", "as a language model",
+            "я не могу", "как языковая модель", "как ии", "простите, но я не могу",
+            "i am just a language model", "inappropriate", "offensive"
+        ]
+        if any(phrase in raw_llm_response.lower() for phrase in forbidden_phrases):
+            logger.error(f"!!! ROLE-BREAK DETECTED !!! AI response contained a forbidden phrase. Overriding with a generic in-character response. Original response: '{raw_llm_response[:200]}...'")
+            # Заменяем ответ на что-то нейтральное и в рамках роли
+            text_parts_to_send = random.choice([
+                ["эм", "я что-то запуталась", "давай сменим тему"],
+                ["так, стоп", "я потеряла мысль", "о чем мы говорили"],
+                ["упс", "кажется, я задумалась о своем", "спроси что-нибудь еще"]
+            ])
+            # Сохраняем в БД все равно сырой ответ для анализа, но пользователю отправляем "безопасный"
         else:
-            text_parts_to_send = []
+            # Если запрещенных фраз нет, продолжаем обычную обработку
+            text_for_fallback = json_string_candidate
+
+            gif_links = extract_gif_links(text_for_fallback)
+            if gif_links:
+                for gif in gif_links:
+                    text_for_fallback = text_for_fallback.replace(gif, '')
+
+            text_for_fallback = re.sub(r'^\s*\[\s*"(.*)"\s*\]\s*$', r'\1', text_for_fallback, flags=re.DOTALL)
+            text_for_fallback = text_for_fallback.replace('\\n', '\n').replace('\\"', '"')
+            text_for_fallback = text_for_fallback.strip()
+
+            if text_for_fallback:
+                logger.info(f"Fallback: processing cleaned text for user: '{text_for_fallback[:100]}...'")
+                max_messages = persona.config.max_response_messages if persona.config and persona.config.max_response_messages > 0 else 3
+                text_parts_to_send = postprocess_response(text_for_fallback, max_messages, "normal")
+            else:
+                text_parts_to_send = []
 
     context_response_prepared = False
     if persona.chat_instance:
