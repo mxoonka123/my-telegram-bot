@@ -1,1 +1,1 @@
-worker: ./run.sh
+worker: python main.py

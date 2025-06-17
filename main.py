@@ -1,129 +1,27 @@
-# --- ИЗМЕНЕНИЕ: Добавляем отладочный print для проверки запуска ---
-print("DEBUG: main.py - Top of file, execution starting NOW.")
-# --- КОНЕЦ ИЗМЕНЕНИЯ ---
-
-# --- ИЗМЕНЕНИЕ: Настройка базового логгирования в самом начале ---
+# --- RADICAL DIAGNOSTICS main.py ---
 import logging
 import sys
-# Настраиваем базовый логгер, который будет выводить ВСЕ в stdout, чтобы Railway это точно поймал
+import os
+import asyncio
+from telegram import Update, BotCommand
+from telegram.ext import Application, CommandHandler, ContextTypes
+
+# 1. НЕУБИВАЕМОЕ ЛОГИРОВАНИЕ
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    stream=sys.stdout, # Явно указываем поток вывода
-    force=True # Перезаписываем любые существующие настройки
+    stream=sys.stdout,
+    force=True
 )
-# --- КОНЕЦ ИЗМЕНЕНИЯ ---
+logger = logging.getLogger(__name__)
 
-print("DEBUG: main.py - Script execution started")
-# import logging <-- этот импорт уже есть выше, можно убрать или оставить
-import asyncio
-import os
-import threading
-from datetime import timedelta
-from flask import Flask, request, abort, Response
-from yookassa import Configuration as YookassaConfig
-from yookassa.domain.notification import WebhookNotification
-import json
-from sqlalchemy.exc import SQLAlchemyError, OperationalError, ProgrammingError
-import aiohttp
-import httpx
-from typing import Optional
-import re # <<< Убедитесь, что импорт есть
+logger.info("--- DIAGNOSTICS: main.py execution started ---")
 
-from telegram import Update, BotCommand
-from telegram.ext import (
-    Application, CommandHandler, MessageHandler, ContextTypes, filters,
-    CallbackQueryHandler, ConversationHandler, Defaults
-)
-from telegram.constants import ParseMode, ChatMemberStatus
-from telegram.error import TelegramError, Forbidden, BadRequest
-
-from telegraph import Telegraph, exceptions as telegraph_exceptions
-
-from config import (
-    YOOKASSA_SHOP_ID,
-    YOOKASSA_SECRET_KEY,
-    TELEGRAM_TOKEN,
-    TELEGRAPH_AUTHOR_NAME,
-    TELEGRAPH_AUTHOR_URL,
-    WEBHOOK_URL_BASE,
-    TELEGRAPH_ACCESS_TOKEN,
-    SUBSCRIPTION_DURATION_DAYS,
-    SUBSCRIPTION_PRICE_RUB,
-    SUBSCRIPTION_CURRENCY
-)
-import db # db.py should be fixed now (no circular import)
-import handlers # handlers.py теперь содержит новые состояния
-import tasks # Импорт модуля tasks для фоновых задач
-
-# Настройки UI также оставляем, т.к. они содержат базовый функционал
-from utils import escape_markdown_v2
-# Patch for max_response_messages has been integrated into handlers
-
-flask_app = Flask(__name__)
-flask_logger = logging.getLogger('flask_webhook')
-
-# --- Yookassa Configuration ---
-try:
-    if YOOKASSA_SHOP_ID and YOOKASSA_SECRET_KEY and YOOKASSA_SHOP_ID.isdigit():
-        YookassaConfig.configure(account_id=int(YOOKASSA_SHOP_ID), secret_key=YOOKASSA_SECRET_KEY)
-        flask_logger.info(f"Yookassa SDK configured for webhook (Shop ID: {YOOKASSA_SHOP_ID}).")
-    else:
-        flask_logger.warning("YOOKASSA_SHOP_ID or YOOKASSA_SECRET_KEY invalid/missing. Webhook processing might fail.")
-except ValueError:
-     flask_logger.error(f"YOOKASSA_SHOP_ID ({YOOKASSA_SHOP_ID}) is not a valid integer.")
-except Exception as e:
-    flask_logger.error(f"Failed to configure Yookassa SDK for webhook: {e}")
-
-# Global variable to hold the PTB Application instance for the webhook handler
-application_instance: Optional[Application] = None
-
-# --- Flask Webhook Handler ---
-@flask_app.route('/yookassa/webhook', methods=['POST'])
-def handle_yookassa_webhook():
-    global application_instance
-    event_json = None
-    try:
-        event_json = request.get_json(force=True)
-        payment_id_log = event_json.get('object', {}).get('id', 'N/A')
-        flask_logger.info(f"Webhook received: Event='{event_json.get('event')}', Type='{event_json.get('type')}', PaymentID='{payment_id_log}'")
-        flask_logger.debug(f"Webhook body: {json.dumps(event_json)}")
-
-        if not YOOKASSA_SECRET_KEY or not YOOKASSA_SHOP_ID or not YOOKASSA_SHOP_ID.isdigit():
-            flask_logger.error("YOOKASSA not configured correctly. Cannot process webhook.")
-            return Response("Server configuration error", status=500)
-        try:
-             current_shop_id = int(YOOKASSA_SHOP_ID)
-             if not hasattr(YookassaConfig, 'secret_key') or not YookassaConfig.secret_key or \
-                not hasattr(YookassaConfig, 'account_id') or YookassaConfig.account_id != current_shop_id:
-                  YookassaConfig.configure(account_id=current_shop_id, secret_key=YOOKASSA_SECRET_KEY)
-                  flask_logger.info("Yookassa SDK re-configured within webhook handler.")
-        except ValueError:
-             flask_logger.error(f"YOOKASSA_SHOP_ID ({YOOKASSA_SHOP_ID}) invalid integer during webhook re-config.")
-             return Response("Server configuration error", status=500)
-        except Exception as conf_e:
-             flask_logger.error(f"Failed to re-configure Yookassa SDK in webhook: {conf_e}")
-             return Response("Server configuration error", status=500)
-
-        notification_object = WebhookNotification(event_json)
-        payment = notification_object.object
-        flask_logger.info(f"Processing event: {notification_object.event}, Payment ID: {payment.id}, Status: {payment.status}")
-
-        if notification_object.event == 'payment.succeeded' and payment.status == 'succeeded':
-            flask_logger.info(f"Successful payment detected: {payment.id}")
-            metadata = payment.metadata
-            if not metadata or 'telegram_user_id' not in metadata:
-                flask_logger.error(f"Webhook error: 'telegram_user_id' missing in metadata for payment {payment.id}.")
-                return Response(status=200) # Respond OK to YK even if metadata is bad
-            try:
-                telegram_user_id = int(metadata['telegram_user_id'])
-            except (ValueError, TypeError) as e:
-                flask_logger.error(f"Webhook error: Invalid 'telegram_user_id' {metadata.get('telegram_user_id')} for payment {payment.id}. Error: {e}")
-                return Response(status=200) # Respond OK to YK
-
-            flask_logger.info(f"Attempting subscription activation for TG User ID: {telegram_user_id} from Payment ID: {payment.id}")
-            activation_success = False
-            user_db_id = None
+# 2. ПРОВЕРКА КЛЮЧЕВЫХ ПЕРЕМЕННЫХ
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
+if not TELEGRAM_TOKEN:
+    logger.critical("--- DIAGNOSTICS: CRITICAL ERROR: TELEGRAM_TOKEN is NOT SET! ---")
+    sys.exit(1) # Завершаем с ошибкой, чтобы Railway показал сбой
 
             try:
                 with db.get_db() as db_session:
