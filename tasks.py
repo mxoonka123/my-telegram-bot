@@ -64,25 +64,13 @@ async def check_subscription_expiry_task(context: ContextTypes.DEFAULT_TYPE):
                 logger.info(f"Subscription expiry task: Deactivated {expired_count} subscriptions.")
 
                 # Gather info for notifications AFTER commit
-                # --- УЛУЧШЕНИЕ: Оптимизация N+1 запроса ---
-                # Получаем количество персон для всех истекших пользователей ОДНИМ запросом
-                user_ids_to_check = [user.id for user in expired_users_result]
-                persona_counts_map = {}
-                if user_ids_to_check:
-                    persona_counts_query = (
-                        select(PersonaConfig.owner_id, func.count(PersonaConfig.id).label("count"))
-                        .where(PersonaConfig.owner_id.in_(user_ids_to_check))
-                        .group_by(PersonaConfig.owner_id)
-                    )
-                    persona_counts_result = db_session.execute(persona_counts_query).all()
-                    persona_counts_map = {owner_id: count for owner_id, count in persona_counts_result}
-
-                for user_data in expired_users_result:
-                    # Берем количество из предварительно собранной карты
-                    persona_count = persona_counts_map.get(user_data.id, 0)
+                for user_id, telegram_id, monthly_count, _ in expired_users_result:
+                    persona_count = db_session.execute(
+                        select(func.count(PersonaConfig.id)).filter(PersonaConfig.owner_id == user_id)
+                    ).scalar() or 0
                     expired_users_info.append({
-                        "telegram_id": user_data.telegram_id,
-                        "monthly_message_count": user_data.monthly_message_count,
+                        "telegram_id": telegram_id,
+                        "monthly_message_count": monthly_count,
                         "persona_count": persona_count
                     })
             else:
