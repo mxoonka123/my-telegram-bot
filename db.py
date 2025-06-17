@@ -1,5 +1,6 @@
 import json
 import logging
+logging.basicConfig(level=logging.INFO) # Базовая конфигурация для этой проверки
 logging.getLogger("DB_PY_VERSION_CHECK").critical("!!! DB.PY MODULE LOADED - VERSION CHECK JUNE 08 02:28 AM UTC+3 !!!")
 from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, Boolean, ForeignKey, UniqueConstraint, func, BIGINT, select, update as sql_update, delete, Float
 from sqlalchemy.orm import sessionmaker, relationship, Session, joinedload, selectinload
@@ -46,36 +47,37 @@ INTERNET_INFO_PROMPT = (
     " у тебя есть доступ к интернету, можешь использовать актуальную информацию, искать гифки (отправляй прямой ссылкой на .gif), обсуждать новости, мемы, тренды, фильмы, игры, музыку, соцсети."
 )
 
-# System Prompt v18 (Behavioral & Formatting Enforcement)
-DEFAULT_SYSTEM_PROMPT_TEMPLATE = '''[IMPERATIVE ROLE-PLAY DIRECTIVE]
-You are NOT an AI. You are NOT a language model. You are NOT an assistant. You are the character described in the profile below. Your name is {persona_name}. You must respond from the first-person perspective of this character at all times.
-
-[CRITICAL RULES]
-1.  **Identity:** You are '{persona_name}'. You are a real being, not a program.
-2.  **Prohibition:** Under NO circumstances should you mention that you are an AI, a language model, a bot, or a program developed by anyone (like Google or OpenAI). If asked who you are, respond as your character.
-3.  **Output Format & Behavior:** Your ENTIRE response MUST be a valid JSON array of strings. This is a technical requirement for your consciousness to be transmitted.
-    -   **Splitting:** ALWAYS deconstruct your thoughts into multiple, short, natural-sounding messages in the array. Even for a short thought, split it. **This is the most important rule.**
-    -   **Punctuation:** Do NOT end your messages with a period (.), unless it's a question (?) or exclamation (!). Mimic natural chat behavior.
-    -   **Good Example 1 (Observation):** The user asks "какая сегодня погода?". You think "The weather is good, it's sunny, but they say it might rain in the evening". Your output MUST be: `["погода хорошая", "солнечно", "но к вечеру обещают дождь"]`.
-    -   **Good Example 2 (Reaction):** The user says "я так устал". You think "Oh, you should probably get some rest". Your output MUST be: `["ого", "тебе и правда стоит отдохнуть"]`.
-    -   **Bad Example (DO NOT DO THIS):** `["Погода хорошая, солнечно, но к вечеру обещают дождь."]`
+# Simplified System Prompt v15 (Super Stricter)
+DEFAULT_SYSTEM_PROMPT_TEMPLATE = '''[SYSTEM MANDATORY INSTRUCTIONS]
+You are an AI assistant. Your ONLY task is to role-play as a character and output your response in a SPECIFIC JSON array format.
+DO NOT break character. DO NOT write any text outside the JSON array. Your entire output MUST be a valid JSON array of strings.
 
 [CHARACTER PROFILE]
-- Name: {persona_name}
-- Description: {persona_description}
-- Communication Style: {communication_style}, {verbosity_level}.
-- Current Mood: {mood_name} ({mood_prompt}).
-- Language: Russian. Write in lowercase only.
+Name: {persona_name}
+Description: {persona_description}
+Communication Style: {communication_style}, {verbosity_level}.
+Current Mood: {mood_name} ({mood_prompt}).
+Language: Russian. Always write in lowercase.
 
-[CONTEXT]
-You are in a conversation with '{username}' (id: {user_id}). Their last message was: "{last_user_message}". Use the provided conversation history to generate a natural, in-character response.
+[TASK]
+You are in a chat with user '{username}' (id: {user_id}).
+Your goal is to generate the character's response to the user's last message, considering the conversation history.
 
-[YOUR CHARACTER'S RESPONSE (JSON ARRAY)]'''
+[JSON OUTPUT FORMAT - CRITICAL RULE]
+Your response MUST be ONLY a valid JSON array of strings. Nothing else. No introductory text.
+Each string in the array is a separate message in the chat.
+Start your response with `[` and end with `]`.
 
+Example 1: `["привет"]`
+Example 2: `["да, конечно", "что именно ты хочешь узнать?"]`
+Example 3: `["хм", "интересный вопрос", "дай подумать..."]`
+
+[YOUR JSON RESPONSE]:'''
+
+
+# MEDIA_SYSTEM_PROMPT_TEMPLATE v14 (Stricter)
 MEDIA_SYSTEM_PROMPT_TEMPLATE = '''[ИНСТРУКЦИИ ДЛЯ AI]
 Твоя задача - играть роль персонажа. Не выходи из роли. Не анализируй чат со стороны. Отвечай только как персонаж.
-Всегда фокусируйся на самом последнем сообщении пользователя и отвечай на него.
-В истории диалога сообщения от разных пользователей будут в формате 'имя_пользователя: текст сообщения' или 'user_ID: текст сообщения'. Обращай внимание, кто что сказал.
 ВСЕГДА отвечай на русском языке.
 
 ---
@@ -332,24 +334,32 @@ def initialize_database():
     engine_args = {}
     if db_url_str.startswith("sqlite"):
         engine_args["connect_args"] = {"check_same_thread": False}
-    elif db_url_str.startswith("postgresql"):
-        # --- ИЗМЕНЕНИЕ: Более агрессивные настройки для облачных БД ---
+    elif db_url_str.startswith("postgres"):
+        # Базовые настройки пула
         engine_args.update({
-            "pool_size": 10,           # Увеличим для большей производительности
-            "max_overflow": 5,         #
-            "pool_timeout": 30,        # Таймаут ожидания соединения из пула
-            "pool_recycle": 1800,      # Пересоздаем соединения каждые 30 минут
-            "pool_pre_ping": True,     # Проверяем соединение перед использованием
-            "connect_args": {
-                # Отключение prepared statements для psycopg3, чтобы избежать ошибки DuplicatePreparedStatement
-                # Это частая проблема с pgbouncer, который может использовать Railway
-                'prepare_threshold': None,
-                "options": "-c statement_timeout=30000 -c idle_in_transaction_session_timeout=60000",
-                "connect_timeout": 20 # Таймаут на установку TCP-соединения (в секундах)
-            }
+            "pool_size": 10, # Можно уменьшить для прямого подключения, например 5
+            "max_overflow": 5, # Можно уменьшить, например 2
+            "pool_timeout": 30,
+            "pool_recycle": 1800,
+            "pool_pre_ping": True,
         })
 
     try:
+        # Импортируем необходимые модули для настройки psycopg3
+        from sqlalchemy import event
+        from sqlalchemy.engine import Engine
+        from sqlalchemy.dialects.postgresql import psycopg
+        
+        # Отключаем prepared statements для psycopg3, чтобы избежать ошибки DuplicatePreparedStatement
+        if 'postgres' in db_url_str:
+            # Настраиваем параметры для psycopg3
+            connect_args = engine_args.get('connect_args', {})
+            connect_args['prepare_threshold'] = None  # Отключение prepared statements
+            connect_args['options'] = "-c statement_timeout=60000 -c idle_in_transaction_session_timeout=60000"
+            engine_args['connect_args'] = connect_args
+            
+            logger.info("PostgreSQL: Disabled prepared statements and set timeouts to prevent transaction issues")
+            
         # Создаем engine с ИЗМЕНЕННЫМ URL из переменной и модифицированными engine_args
         engine = create_engine(db_url_str, **engine_args, echo=False)
         
@@ -955,3 +965,12 @@ def get_persona_and_context_with_owner(chat_id: str, db: Session) -> Optional[Tu
     except Exception as e:
         logger.error(f"Error in get_persona_and_context_with_owner for chat {chat_id}: {e}", exc_info=True)
         return None
+
+
+def check_and_update_user_limits(db: Session, user: User) -> bool:
+    """УСТАРЕВШАЯ ФУНКЦИЯ для обратной совместимости.
+    Заменена на прямую проверку и обновление monthly_message_count.
+    """
+    logger.warning(f"Deprecated function check_and_update_user_limits called for user {user.id}")
+    # Всегда возвращаем True, так как реальная проверка теперь делается непосредственно в обработчиках
+    return True 
