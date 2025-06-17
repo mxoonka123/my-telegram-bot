@@ -395,35 +395,35 @@ async def post_init(application: Application):
         logger.warning("JobQueue not available, background tasks not scheduled.")
 
 
-# --- Main Function ---
-def main():
-    """Initializes DB and starts the Flask server for webhooks."""
-    # Initialize database connection FIRST
+# --- Инициализация при запуске веб-сервера ---
+
+def initialize_web_services():
+    """Initializes services required by the web process."""
+    # Инициализация базы данных
     try:
         logger.info("Initializing database connection for web server...")
         db.initialize_database()
-        logger.info("Database connection initialized.")
+        logger.info("Database connection initialized for web server.")
     except Exception as e:
         logger.critical(f"FATAL: Web server failed to initialize database connection: {e}", exc_info=True)
-        return
+        # В производственной среде лучше остановить процесс, если БД недоступна
+        raise RuntimeError("Database initialization failed for web server") from e
 
-    # Create tables if they don't exist
+    # Создание таблиц (безопасно, если они уже существуют)
     try:
         logger.info("Verifying/creating database tables for web server...")
         db.create_tables()
-        logger.info("Database tables verified/created successfully.")
+        logger.info("Database tables verified/created successfully for web server.")
     except Exception as e:
         logger.critical(f"FATAL: Web server failed to create/verify database tables: {e}", exc_info=True)
-        return
+        raise RuntimeError("Table creation/verification failed for web server") from e
 
-    # The Flask app will be started by the waitress server as defined in Procfile
-    logger.info("----- Web Server Starting (via Procfile) -----")
-    # The run_flask() function is no longer needed here,
-    # as waitress-serve will run the flask_app object directly.
-
+# Вызываем инициализацию один раз при загрузке модуля веб-сервером
+initialize_web_services()
+logger.info("----- Web Server module loaded and services initialized -----")
 
 if __name__ == "__main__":
-    # Этот блок теперь в основном для локального тестирования веб-сервера.
-    # На Railway запуск будет через Procfile.
-    main()
+    # Этот блок для локального тестирования.
+    # На Railway запуск будет через Procfile и waitress-serve.
+    logger.info("Running Flask app directly for local testing...")
     run_flask()
