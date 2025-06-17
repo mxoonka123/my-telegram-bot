@@ -105,9 +105,10 @@ MAX_USER_MESSAGE_LENGTH_CHARS = 600
 
 logger = logging.getLogger(__name__)
 
-# --- Vosk model setup (Lazy Loading from /tmp) ---
-VOSK_MODEL_PATH = "/tmp/model_vosk_ru" # --- ИЗМЕНЕНИЕ: Указываем на временную папку ---
-vosk_model = None # Глобальная переменная для кэширования модели
+# --- Vosk model setup ---
+VOSK_MODEL_PATH = "model_vosk_ru"
+vosk_model = None
+
 if VOSK_AVAILABLE:
     try:
         if os.path.exists(VOSK_MODEL_PATH):
@@ -489,41 +490,48 @@ async def send_to_openrouter(system_prompt: str, messages: List[Dict[str, str]],
         logger.error(f"Failed to initialize AsyncOpenAI client for OpenRouter: {e}", exc_info=True)
         return escape_markdown_v2("❌ ошибка: не удалось инициализировать клиент openrouter.")
 
-    # --- ИСПРАВЛЕНИЕ: Переработка логики отправки промпта ---
-    # Модели, совместимые с OpenAI API (включая Gemini через OpenRouter),
-    # лучше всего работают с выделенной системной ролью.
-    # Промпт должен отправляться при каждом запросе, а не только в начале истории.
-
-    # 1. Формируем системное сообщение.
-    system_message = {"role": "system", "content": system_prompt.strip()}
-
-    # 2. Формируем историю сообщений.
+    # --- НОВАЯ ЛОГИКА ФОРМИРОВАНИЯ ЗАПРОСА ---
+    # Формируем сообщения для API. OpenRouter использует стандартный формат OpenAI.
+    # Но для Gemini Vision нужно передавать данные особым образом.
+    api_messages = []
+    
+    # Системный промпт для Gemini является частью первого сообщения пользователя
+    full_system_prompt = system_prompt.strip()
+    
+    # Формируем историю. Роль "system" эмулируется.
     history = []
-    # `messages` уже содержит последнее сообщение пользователя
     for msg in messages:
-        role = "assistant" if msg.get("role") == "assistant" else "user"
-        content = msg.get("content", "")
-        # Для Gemini Vision: если это последнее сообщение пользователя и есть картинка
-        if role == "user" and msg == messages[-1] and image_data:
-            logger.info("Encoding image data to Base64 for Google Gemini Vision model.")
-            base64_image = base64.b64encode(image_data).decode("utf-8")
-            history.append({
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": content},
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}
+        # Gemini API ожидает чередования user -> model.
+        role = "model" if msg.get("role") == "assistant" else "user"
+        history.append({"role": role, "content": msg.get("content", "")})
+
+    # Если в истории нет сообщений, добавляем системный промпт как первое сообщение
+    if not history:
+        history.append({"role": "user", "content": full_system_prompt})
+        history.append({"role": "model", "content": "Ok, I am ready."}) # Эмулируем ответ, чтобы сохранить чередование
+    else:
+        # Добавляем системный промпт к первому сообщению пользователя
+        history[0]["content"] = f"{full_system_prompt}\n\n---\n\n{history[0]['content']}"
+
+    # Обрабатываем последнее сообщение, к которому может быть прикреплена картинка
+    if history:
+        last_message = history[-1]
+        if last_message["role"] == "user":
+            content_parts = [{"type": "text", "text": last_message["content"]}]
+            if image_data:
+                logger.info("Encoding image data to Base64 for Google Gemini Vision model.")
+                base64_image = base64.b64encode(image_data).decode("utf-8")
+                content_parts.append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/jpeg;base64,{base64_image}"
                     }
-                ]
-            })
-        else:
-             history.append({"role": role, "content": content})
+                })
+            last_message["content"] = content_parts
 
-    # 3. Собираем финальный список сообщений для API.
-    api_messages = [system_message] + history
+    api_messages = history
 
-    logger.debug(f"Sending to OpenRouter. Model: {config.OPENROUTER_MODEL_NAME}. System prompt sent. Messages count: {len(api_messages)}")
+    logger.debug(f"Sending to OpenRouter. Model: {config.OPENROUTER_MODEL_NAME}. Messages count: {len(api_messages)}")
 
     max_retries = 3
     for attempt in range(max_retries):
@@ -649,7 +657,6 @@ async def process_and_send_response(update: Update, context: ContextTypes.DEFAUL
                         logger.info(f"Successfully re-parsed nested JSON. New parts count: {len(text_parts_to_send)}")
                 except (json.JSONDecodeError, TypeError):
                     logger.warning("Failed to re-parse nested JSON string, proceeding with the original single part.")
-        # --- КОНЕЦ УЛУЧШЕНИЯ ---
 
         content_to_save_in_db = "\n".join(text_parts_to_send)
         logger.info(f"Saving CLEAN response to context: '{content_to_save_in_db[:100]}...'")
@@ -1220,8 +1227,16 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
             persona, _, owner_user = persona_context_owner_tuple
             logger.debug(f"Handling {media_type} for persona '{persona.name}' owned by {owner_user.id}")
 
-            # Лимиты теперь проверяются в handle_message, на который пересылается транскрипция, 
-            # или непосредственно перед вызовом AI, поэтому здесь проверка убрана.
+            # --- DEPRECATED: Лимиты теперь проверяются в handle_message, на который пересылается транскрипция ---
+            # limit_ok = check_and_update_user_limits(db, owner_user)
+            # limit_state_updated = db.is_modified(owner_user)
+
+            # if not limit_ok:
+            #     logger.info(f"Owner {owner_user.telegram_id} exceeded daily message limit for media.")
+            #     await send_limit_exceeded_message(update, context, owner_user)
+            #     if limit_state_updated:
+            #         db.commit()
+            #     return
 
             context_text_placeholder = ""
             system_prompt = None
@@ -1859,12 +1874,12 @@ async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             chat_bot_instance_id = chat_bot_instance.id
             logger.warning(f"User {user_id} clearing context for ChatBotInstance {chat_bot_instance_id} (Persona '{persona_name_raw}') in chat {chat_id_str}.")
 
-            # --- ИСПРАВЛЕНИЕ: Используем безопасный ORM-совместимый delete() ---
-            stmt = delete(ChatContext).where(ChatContext.chat_bot_instance_id == chat_bot_instance_id)
+            # Создаем SQL запрос на удаление
+            from sqlalchemy import text
+            stmt = text(f"DELETE FROM chat_context WHERE chat_bot_instance_id = {chat_bot_instance_id}")
             result = db.execute(stmt)
             deleted_count = result.rowcount
             db.commit()
-            # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
 
             logger.info(f"Deleted {deleted_count} context messages for instance {chat_bot_instance_id}.")
             # Форматируем сообщение об успехе
@@ -2911,103 +2926,137 @@ async def yookassa_webhook_placeholder(update: Update, context: ContextTypes.DEF
 
 # --- Edit Persona Wizard ---
 
-# --- УЛУЧШЕНИЕ: Функции для стабильности диалога ---
-async def _cleanup_old_wizard_messages(context: ContextTypes.DEFAULT_TYPE):
-    """Безопасно удаляет старое сообщение-меню и сообщение-приглашение, если они существуют."""
-    chat_id = context.user_data.get('chat_id')
-    if not chat_id:
-        logger.debug("_cleanup_old_wizard_messages: No chat_id found in context, cannot delete messages.")
-        return
-
-    wizard_menu_message_id = context.user_data.pop('wizard_menu_message_id', None)
-    if wizard_menu_message_id:
+async def _clean_previous_edit_session(context: ContextTypes.DEFAULT_TYPE, current_user_id_for_log_prefix: int):
+    """Helper to delete the menu message from a previous edit session, if any."""
+    # current_user_id_for_log_prefix - это ID пользователя, который инициировал ТЕКУЩЕЕ действие,
+    # чтобы лог был привязан к текущему пользователю, даже если user_data от предыдущего.
+    
+    # Мы все еще смотрим на wizard_menu_message_id и edit_chat_id, которые могли быть установлены
+    # этим же пользователем в предыдущей сессии.
+    
+    current_keys = list(context.user_data.keys()) # Получаем ключи ДО попытки извлечения
+    logger.info(f"_clean_previous_edit_session: CALLED (initiating user: {current_user_id_for_log_prefix}). "
+                f"Current user_data keys BEFORE getting IDs: {current_keys}")
+    
+    old_wizard_menu_id = context.user_data.get('wizard_menu_message_id')
+    old_edit_chat_id = context.user_data.get('edit_chat_id') 
+    # _user_id_for_logging из user_data относится к пользователю ПРЕДЫДУЩЕЙ сессии (если она была от того же пользователя)
+    previous_session_user_log = context.user_data.get('_user_id_for_logging', 'N/A_prev_session')
+    
+    logger.info(f"_clean_previous_edit_session: For initiating user '{current_user_id_for_log_prefix}' (prev session user log: '{previous_session_user_log}') - "
+                f"Found old_wizard_menu_id: {old_wizard_menu_id}, old_edit_chat_id: {old_edit_chat_id}")
+    
+    if old_wizard_menu_id and old_edit_chat_id:
+        logger.info(f"_clean_previous_edit_session: Attempting to delete old menu message {old_wizard_menu_id} "
+                    f"in chat {old_edit_chat_id} (likely from user '{previous_session_user_log}')")
         try:
-            await context.bot.delete_message(chat_id=chat_id, message_id=wizard_menu_message_id)
-            logger.debug(f"Cleaned up old wizard menu message (ID: {wizard_menu_message_id})")
-        except BadRequest as e:
-            if "message to delete not found" not in str(e).lower():
-                logger.warning(f"Could not delete old wizard menu (ID: {wizard_menu_message_id}): {e}")
-
-    prompt_message_id = context.user_data.pop('wizard_prompt_message_id', None)
-    if prompt_message_id:
-        try:
-            await context.bot.delete_message(chat_id=chat_id, message_id=prompt_message_id)
-            logger.debug(f"Cleaned up old wizard prompt message (ID: {prompt_message_id})")
-        except BadRequest as e:
-            if "message to delete not found" not in str(e).lower():
-                logger.warning(f"Could not delete old wizard prompt (ID: {prompt_message_id}): {e}")
-
-def _clear_wizard_context(context: ContextTypes.DEFAULT_TYPE):
-    """Очищает все данные, связанные с диалогом, из user_data."""
-    keys_to_clear = [
-        'active_persona_id', 'edit_persona_id', 'wizard_menu_message_id',
-        'wizard_prompt_message_id', 'field_to_edit', 'chat_id', 'edit_chat_id',
-        '_user_id_for_logging', 'mood_to_edit', 'mood_action', 'delete_persona_id'
-    ]
-    cleared_keys = []
-    for key in keys_to_clear:
-        if key in context.user_data:
-            context.user_data.pop(key, None)
-            cleared_keys.append(key)
-    if cleared_keys:
-        logger.debug(f"Cleared wizard context keys: {cleared_keys}")
-
+            delete_successful = await context.bot.delete_message(chat_id=old_edit_chat_id, message_id=old_wizard_menu_id)
+            if delete_successful:
+                logger.info(f"_clean_previous_edit_session: Successfully deleted old wizard menu message "
+                            f"{old_wizard_menu_id} from chat {old_edit_chat_id}.")
+            else:
+                logger.warning(f"_clean_previous_edit_session: delete_message returned {delete_successful} "
+                                f"for message {old_wizard_menu_id} in chat {old_edit_chat_id}.")
+        except BadRequest as e_bad_req:
+            if "message to delete not found" in str(e_bad_req).lower():
+                logger.warning(f"_clean_previous_edit_session: Message {old_wizard_menu_id} in chat {old_edit_chat_id} "
+                                f"not found for deletion. Error: {e_bad_req}")
+            elif "message can't be deleted" in str(e_bad_req).lower():
+                logger.warning(f"_clean_previous_edit_session: Message {old_wizard_menu_id} in chat {old_edit_chat_id} "
+                                f"can't be deleted. Error: {e_bad_req}")
+            else:
+                logger.error(f"_clean_previous_edit_session: BadRequest while deleting message {old_wizard_menu_id} "
+                            f"in chat {old_edit_chat_id}. Error: {e_bad_req}")
+        except Forbidden as e_forbidden:
+            logger.error(f"_clean_previous_edit_session: Forbidden to delete message {old_wizard_menu_id} "
+                        f"in chat {old_edit_chat_id}. Error: {e_forbidden}")
+        except Exception as e:
+            logger.error(f"_clean_previous_edit_session: Generic error deleting message {old_wizard_menu_id} "
+                        f"in chat {old_edit_chat_id}. Error: {e}")
+    elif old_wizard_menu_id:
+        logger.warning(f"_clean_previous_edit_session: Found old_wizard_menu_id ({old_wizard_menu_id}) "
+                        f"but no old_edit_chat_id (initiating user '{current_user_id_for_log_prefix}'). Cannot delete.")
+    elif old_edit_chat_id:
+        logger.warning(f"_clean_previous_edit_session: Found old_edit_chat_id ({old_edit_chat_id}) "
+                        f"but no old_wizard_menu_id (initiating user '{current_user_id_for_log_prefix}'). Cannot delete.")
+    else:
+        logger.info(f"_clean_previous_edit_session: No old wizard menu message found in user_data "
+                    f"(initiating user '{current_user_id_for_log_prefix}') to delete.")
 
 async def _start_edit_convo(update: Update, context: ContextTypes.DEFAULT_TYPE, persona_id: int) -> int:
-    """Starts the persona editing wizard with robust state management."""
-    user_id = update.effective_user.id
-    chat_id = update.effective_chat.id
-    query = update.callback_query
+    """Starts the persona editing wizard."""
+    user_id = update.effective_user.id # Это ID текущего пользователя, инициирующего действие
+    
+    # Определяем chat_id для нового меню
+    chat_id_for_new_menu = None
+    if update.effective_chat: 
+        chat_id_for_new_menu = update.effective_chat.id
+    elif update.callback_query and update.callback_query.message: 
+        chat_id_for_new_menu = update.callback_query.message.chat.id
+    
+    if not chat_id_for_new_menu: # Добавили return если не определен chat_id
+        logger.error("_start_edit_convo: Could not determine chat_id for sending the new wizard menu.")
+        if update.callback_query:
+            try: await update.callback_query.answer("Ошибка: чат для меню не определен.", show_alert=True)
+            except Exception: pass
+        return ConversationHandler.END
 
-    logger.info(f"User {user_id} starting persona edit for persona_id {persona_id} in chat {chat_id}.")
+    is_callback = update.callback_query is not None
+    logger.info(f"_start_edit_convo: User {user_id}, New PersonaID to edit {persona_id}, TargetChatID for new menu {chat_id_for_new_menu}, IsCallback {is_callback}")
+    
+    # 1. Сначала сохраняем ID пользователя во временную переменную
+    logger.debug(f"_start_edit_convo: Before cleaning - user_data keys: {list(context.user_data.keys())}")
+    
+    # 2. Вызываем очистку. Она использует user_data от ВОЗМОЖНОЙ ПРЕДЫДУЩЕЙ сессии.
+    # Передаем user_id ТЕКУЩЕГО пользователя для логирования в _clean_previous_edit_session
+    logger.info(f"_start_edit_convo: Calling _clean_previous_edit_session for user {user_id}")
+    await _clean_previous_edit_session(context, user_id) 
+    
+    # 3. Очищаем user_data для начала чистой НОВОЙ сессии
+    logger.info(f"_start_edit_convo: Clearing user_data for user {user_id} to start new session.")
+    context.user_data.clear() 
+    
+    # 4. Устанавливаем данные для НОВОЙ сессии
+    context.user_data['edit_persona_id'] = persona_id
+    context.user_data['_user_id_for_logging'] = user_id # <--- Устанавливаем для СЛЕДУЮЩЕГО вызова _clean_previous_edit_session
 
-    # --- УЛУЧШЕНИЕ: Полная очистка предыдущего состояния ---
-    if 'active_persona_id' in context.user_data or 'edit_persona_id' in context.user_data:
-        logger.warning("Found lingering persona edit session. Cleaning up before starting new one.")
-        await _cleanup_old_wizard_messages(context)
-    _clear_wizard_context(context)
+    if not is_callback:
+        if not await check_channel_subscription(update, context):
+            await send_subscription_required_message(update, context)
+            return ConversationHandler.END
 
-    # --- УЛУЧШЕНИЕ: Удаляем исходное сообщение со списком персон, если это колбэк ---
-    if query and query.message:
-        try:
-            await query.message.delete()
-            logger.debug(f"Deleted initial persona list message for user {user_id}.")
-        except BadRequest as e:
-            if "message to delete not found" not in str(e).lower():
-                logger.warning(f"Could not delete initial persona list message for user {user_id}: {e}")
-
-    # Устанавливаем состояние для новой сессии
-    context.user_data['active_persona_id'] = persona_id
-    context.user_data['chat_id'] = chat_id
-
-    await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+    await context.bot.send_chat_action(chat_id=chat_id_for_new_menu, action=ChatAction.TYPING)
 
     error_not_found_fmt_raw = "❌ личность с id `{id}` не найдена или не твоя."
     error_db = escape_markdown_v2("❌ ошибка базы данных при начале редактирования.")
+    error_general = escape_markdown_v2("❌ непредвиденная ошибка.")
 
     try:
         with get_db() as db:
             persona_config = db.query(DBPersonaConfig).options(selectinload(DBPersonaConfig.owner)).filter(
                 DBPersonaConfig.id == persona_id,
-                DBPersonaConfig.owner.has(User.telegram_id == user_id)
+                DBPersonaConfig.owner.has(User.telegram_id == user_id) # Проверка владения
             ).first()
 
             if not persona_config:
                 final_error_msg = escape_markdown_v2(error_not_found_fmt_raw.format(id=persona_id))
                 logger.warning(f"Persona {persona_id} not found or not owned by user {user_id} in _start_edit_convo.")
-                if query:
-                    await query.answer("Личность не найдена", show_alert=True)
-                await context.bot.send_message(chat_id, final_error_msg, parse_mode=ParseMode.MARKDOWN_V2)
-                _clear_wizard_context(context)
+                if is_callback and update.callback_query: # Отвечаем на коллбэк, если он был
+                    try: await update.callback_query.answer("Личность не найдена", show_alert=True)
+                    except Exception: pass
+                await context.bot.send_message(chat_id_for_new_menu, final_error_msg, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
                 return ConversationHandler.END
 
-            # fixed_show_edit_wizard_menu отправит новое сообщение и сохранит его ID
-            return await fixed_show_edit_wizard_menu(update, context, persona_config)
+            # Вызываем _show_edit_wizard_menu (патченную версию), она отправит НОВОЕ сообщение
+            return await _show_edit_wizard_menu(update, context, persona_config)
 
     except SQLAlchemyError as e:
-        logger.error(f"Database error starting edit for persona {persona_id} by user {user_id}: {e}", exc_info=True)
-        await context.bot.send_message(chat_id, error_db, parse_mode=ParseMode.MARKDOWN_V2)
-        _clear_wizard_context(context)
+        logger.error(f"Database error starting edit persona {persona_id} for user {user_id}: {e}", exc_info=True)
+        await context.bot.send_message(chat_id_for_new_menu, error_db, parse_mode=ParseMode.MARKDOWN_V2)
+        return ConversationHandler.END
+    except Exception as e:
+        logger.error(f"Unexpected error starting edit persona {persona_id} for user {user_id}: {e}", exc_info=True)
+        await context.bot.send_message(chat_id_for_new_menu, error_general, parse_mode=ParseMode.MARKDOWN_V2)
         return ConversationHandler.END
 
 async def edit_persona_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -4568,63 +4617,91 @@ async def _try_return_to_mood_menu(update: Update, context: ContextTypes.DEFAULT
 
 # --- Wizard Finish/Cancel ---
 async def edit_persona_finish(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handles finishing the persona editing conversation cleanly."""
+    """Handles finishing the persona editing conversation via the 'Завершить' button."""
     query = update.callback_query
     user_id = update.effective_user.id
-    logger.info(f"User {user_id} is finishing the persona edit session.")
+    persona_id_from_data = context.user_data.get('edit_persona_id', 'N/A') # Используем то, что в user_data
+    logger.info(f"User {user_id} initiated FINISH for edit persona session {persona_id_from_data}.")
 
+    finish_message = escape_markdown_v2("✅ Редактирование завершено.")
+    
+    # Сначала отвечаем на коллбэк, если он есть
     if query:
-        await query.answer()
-
-    # Определяем chat_id до очистки контекста
-    chat_id = context.user_data.get('chat_id') or (query.message.chat.id if query and query.message else None)
-
-    # Убираем все сообщения диалога (меню, подсказки)
-    await _cleanup_old_wizard_messages(context)
-
-    # Отправляем финальное подтверждение
-    if chat_id:
         try:
-            finish_message = escape_markdown_v2("✅ Редактирование завершено.")
-            await context.bot.send_message(chat_id, finish_message, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
-        except Exception as e:
-            logger.error(f"Failed to send finish message to chat {chat_id} for user {user_id}: {e}")
+            await query.answer()
+        except Exception as e_ans:
+            logger.debug(f"edit_persona_finish: Could not answer query: {e_ans}")
 
-    # Очищаем все данные сессии
-    _clear_wizard_context(context)
+    # Пытаемся отредактировать сообщение, на котором была кнопка "Завершить"
+    # Это сообщение - меню настроек.
+    if query and query.message:
+        try:
+            await query.edit_message_text(finish_message, reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2)
+            logger.info(f"edit_persona_finish: Edited message {query.message.message_id} to show completion.")
+        except BadRequest as e:
+            if "message to edit not found" in str(e).lower() or "message can't be edited" in str(e).lower():
+                logger.warning(f"Could not edit finish message (not found/too old). Sending new for user {user_id}.")
+                try: # Отправляем новое, если редактирование не удалось
+                    await context.bot.send_message(chat_id=query.message.chat.id, text=finish_message, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
+                except Exception as send_e:
+                    logger.error(f"Failed to send new finish message: {send_e}")
+            else: # Другая ошибка BadRequest
+                logger.error(f"BadRequest editing finish message: {e}")
+                # Можно попытаться отправить новое сообщение и здесь
+        except Exception as e: # Любая другая ошибка при редактировании
+            logger.warning(f"Error editing finish confirmation for user {user_id}: {e}. Attempting to send new.")
+            try:
+                await context.bot.send_message(chat_id=query.message.chat.id, text=finish_message, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
+            except Exception as send_e:
+                logger.error(f"Failed to send new finish message after other edit error: {send_e}")
+    elif update.effective_message: # Если это не коллбэк, а, например, /cancel в текстовом виде (хотя для finish это маловероятно)
+        await update.effective_message.reply_text(finish_message, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
 
-    logger.debug(f"Cleared context for user {user_id} after finishing edit.")
+    logger.debug(f"edit_persona_finish: Clearing user_data for user {user_id}.")
+    context.user_data.clear()
     return ConversationHandler.END
 
 async def edit_persona_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Cancels the persona editing wizard cleanly."""
-    query = update.callback_query
+    """Cancels the persona editing wizard."""
     user_id = update.effective_user.id
-    logger.info(f"User {user_id} is canceling the persona edit session.")
+    persona_id_from_data = context.user_data.get('edit_persona_id', 'N/A')
+    logger.info(f"User {user_id} initiated CANCEL for edit persona session {persona_id_from_data}.")
+
+    cancel_message = escape_markdown_v2("Редактирование отменено.")
+    
+    # Определяем, откуда пришел запрос (команда или коллбэк)
+    query = update.callback_query
+    message_to_reply_or_edit = query.message if query else update.effective_message
+    chat_id_to_send = message_to_reply_or_edit.chat.id if message_to_reply_or_edit else None
 
     if query:
-        await query.answer()
+        try: await query.answer()
+        except Exception: pass
 
-    # Определяем chat_id до очистки контекста
-    chat_id = context.user_data.get('chat_id') or \
-              (query.message.chat.id if query and query.message else None) or \
-              (update.effective_chat.id if update.effective_chat else None)
-
-    # Убираем все сообщения диалога
-    await _cleanup_old_wizard_messages(context)
-
-    # Отправляем финальное сообщение об отмене
-    if chat_id:
+    if message_to_reply_or_edit:
         try:
-            cancel_message = escape_markdown_v2("Редактирование отменено.")
-            await context.bot.send_message(chat_id, cancel_message, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
+            # Если это коллбэк от кнопки "Отмена" в подменю, то message_to_reply_or_edit - это сообщение подменю.
+            # Если это команда /cancel, то это сообщение с командой.
+            if query: # Если это коллбэк, пытаемся редактировать
+                await query.edit_message_text(cancel_message, reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2)
+            else: # Если это команда, отвечаем на нее
+                await message_to_reply_or_edit.reply_text(cancel_message, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
+        except BadRequest as e:
+            if "message to edit not found" in str(e).lower() or "message can't be edited" in str(e).lower():
+                logger.warning(f"Could not edit cancel message (not found/too old). Sending new for user {user_id}.")
+                if chat_id_to_send:
+                    try: await context.bot.send_message(chat_id=chat_id_to_send, text=cancel_message, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
+                    except Exception: pass
+            else: # Другая ошибка BadRequest
+                logger.error(f"BadRequest editing/replying cancel message: {e}")
         except Exception as e:
-            logger.error(f"Failed to send cancel message to chat {chat_id} for user {user_id}: {e}")
-
-    # Очищаем все данные сессии
-    _clear_wizard_context(context)
-
-    logger.debug(f"Cleared context for user {user_id} after canceling edit.")
+            logger.warning(f"Error sending/editing cancellation for user {user_id}: {e}. Attempting to send new.")
+            if chat_id_to_send:
+                try: await context.bot.send_message(chat_id=chat_id_to_send, text=cancel_message, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
+                except Exception: pass
+    
+    logger.debug(f"edit_persona_cancel: Clearing user_data for user {user_id}.")
+    context.user_data.clear()
     return ConversationHandler.END
 
 # --- Delete Persona Conversation ---
