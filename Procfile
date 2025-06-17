@@ -1,1 +1,1 @@
-worker: bash run_bot_with_ffmpeg.sh
+web: python main.py
