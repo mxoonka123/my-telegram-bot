@@ -1,1 +1,1 @@
-worker: python main.py
+worker: python download_model.py && python main.py
