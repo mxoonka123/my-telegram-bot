@@ -120,9 +120,9 @@ def main():
         logger.info("Database connection initialized.")
     except Exception as e:
         logger.critical(f"FATAL: Failed to initialize database connection: {e}", exc_info=True)
-        logger.critical("Bot cannot start without a working database connection. Re-raising exception to fail the deployment.")
-        # --- ИЗМЕНЕНИЕ: Перевыбрасываем исключение, чтобы деплой упал с ошибкой ---
-        raise
+        logger.critical("Bot cannot start without a working database connection. EXITING.")
+        # Завершаем процесс с кодом ошибки 1, чтобы Railway точно зарегистрировал сбой.
+        sys.exit(1)
 
     # THEN create tables
     try:

@@ -332,41 +332,24 @@ def initialize_database():
     engine_args = {}
     if db_url_str.startswith("sqlite"):
         engine_args["connect_args"] = {"check_same_thread": False}
-    elif db_url_str.startswith("postgres"):
+    elif db_url_str.startswith("postgresql"):
         # --- ИЗМЕНЕНИЕ: Более агрессивные настройки для облачных БД ---
         engine_args.update({
-            "pool_size": 5,           # Меньше соединений в пуле для старта
-            "max_overflow": 2,        #
-            "pool_timeout": 60,       # Увеличиваем таймаут ожидания соединения из пула
-            "pool_recycle": 300,      # Пересоздаем соединения каждые 5 минут
-            "pool_pre_ping": True,    # Проверяем соединение перед использованием
+            "pool_size": 10,           # Увеличим для большей производительности
+            "max_overflow": 5,         #
+            "pool_timeout": 30,        # Таймаут ожидания соединения из пула
+            "pool_recycle": 1800,      # Пересоздаем соединения каждые 30 минут
+            "pool_pre_ping": True,     # Проверяем соединение перед использованием
             "connect_args": {
-                # Увеличиваем таймауты на уровне драйвера (в миллисекундах для psycopg)
-                "options": "-c statement_timeout=60000 -c idle_in_transaction_session_timeout=60000",
-                "connect_timeout": 15 # Таймаут на установку TCP-соединения (в секундах)
+                # Отключение prepared statements для psycopg3, чтобы избежать ошибки DuplicatePreparedStatement
+                # Это частая проблема с pgbouncer, который может использовать Railway
+                'prepare_threshold': None,
+                "options": "-c statement_timeout=30000 -c idle_in_transaction_session_timeout=60000",
+                "connect_timeout": 20 # Таймаут на установку TCP-соединения (в секундах)
             }
         })
 
     try:
-        # Импортируем необходимые модули для настройки psycopg3
-        from sqlalchemy import event
-        from sqlalchemy.engine import Engine
-        from sqlalchemy.dialects.postgresql import psycopg
-        
-        # Отключаем prepared statements для psycopg3, чтобы избежать ошибки DuplicatePreparedStatement
-        if 'postgres' in db_url_str:
-            # Настраиваем параметры для psycopg3, ОБНОВЛЯЯ существующий словарь connect_args
-            if 'connect_args' not in engine_args:
-                engine_args['connect_args'] = {}
-            
-            engine_args['connect_args']['prepare_threshold'] = None  # Отключение prepared statements
-            # Убедимся, что не перезаписываем другие опции, если они есть
-            existing_options = engine_args['connect_args'].get('options', '')
-            new_options = "-c statement_timeout=60000 -c idle_in_transaction_session_timeout=60000"
-            engine_args['connect_args']['options'] = f"{existing_options} {new_options}".strip()
-            
-            logger.info(f"PostgreSQL: Disabled prepared statements and updated timeouts. Final connect_args: {engine_args['connect_args']}")
-            
         # Создаем engine с ИЗМЕНЕННЫМ URL из переменной и модифицированными engine_args
         engine = create_engine(db_url_str, **engine_args, echo=False)
         

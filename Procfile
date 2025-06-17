@@ -1,1 +1,1 @@
-worker: python download_model.py && python main.py
+worker: bash run_bot_with_ffmpeg.sh
