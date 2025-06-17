@@ -515,7 +515,7 @@ async def send_to_openrouter(system_prompt: str, messages: List[Dict[str, str]],
             }
         ]
         
-    logger.debug(f"Sending to OpenRouter. Model: {config.OPENROUTER_MODEL_NAME}. Messages count: {len(api_messages)}")
+    logger.debug(f"Sending to OpenRouter. Model: {config.OPENROUTER_MODEL_NAME}. Total messages in payload: {len(api_messages)}")
 
     max_retries = 3
     for attempt in range(max_retries):
@@ -594,9 +594,17 @@ async def process_and_send_response(update: Update, context: ContextTypes.DEFAUL
         # Сначала пробуем стандартный парсинг. json.loads сам справится с \uXXXX.
         parsed_data = json.loads(json_string_candidate)
         if isinstance(parsed_data, list):
-            text_parts_to_send = [str(item).strip() for item in parsed_data if str(item).strip()]
+            # НОВЫЙ БЛОК: Разбираем каждую часть на подстроки по переносу строки
+            final_parts = []
+            for item in parsed_data:
+                # Разделяем каждый элемент списка по символу новой строки
+                sub_parts = str(item).strip().split('\n')
+                # Добавляем каждую непустую подстроку в финальный список
+                final_parts.extend(p.strip() for p in sub_parts if p.strip())
+            
+            text_parts_to_send = final_parts
             is_json_parsed = True
-            logger.info(f"Successfully parsed JSON array with {len(text_parts_to_send)} items (standard method).")
+            logger.info(f"Successfully parsed and split JSON array into {len(text_parts_to_send)} final parts.")
         else:
             logger.warning(f"Parsed valid JSON, but it's not a list (type: {type(parsed_data)}). Using fallback.")
             is_json_parsed = False
