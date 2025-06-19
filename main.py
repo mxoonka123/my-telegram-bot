@@ -133,6 +133,7 @@ def run_telegram_bot():
 
     # 2. Вся остальная логика выполняется внутри этого цикла
     try:
+        # Убираем .signal_handler(None) из билдера
         application = (
             Application.builder()
             .token(config.TELEGRAM_TOKEN)
@@ -143,7 +144,6 @@ def run_telegram_bot():
             .write_timeout(30.0)
             .connection_pool_size(50)
             .post_init(post_init)
-            .signal_handler(None)  # <--- ПРАВИЛЬНОЕ МЕСТО ДЛЯ ПАРАМЕТРА
             .build()
         )
 
@@ -198,11 +198,12 @@ def run_telegram_bot():
         logger.info("Handlers registered for Telegram bot.")
         logger.info("Starting bot polling in the new event loop...")
         
-        # 3. Запускаем polling через loop.run_until_complete() БЕЗ лишнего параметра
+        # 3. Запускаем polling, передавая ПРАВИЛЬНЫЙ параметр shutdown_signals
         loop.run_until_complete(application.run_polling(
             allowed_updates=Update.ALL_TYPES,
             drop_pending_updates=True,
-            timeout=30
+            timeout=30,
+            shutdown_signals=[]  # <--- ПРАВИЛЬНОЕ РЕШЕНИЕ ДЛЯ v20.3
         ))
 
     except Exception as e:
