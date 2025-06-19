@@ -143,6 +143,7 @@ def run_telegram_bot():
             .write_timeout(30.0)
             .connection_pool_size(50)
             .post_init(post_init)
+            .signal_handler(None)  # <--- ПРАВИЛЬНОЕ МЕСТО ДЛЯ ПАРАМЕТРА
             .build()
         )
 
@@ -197,12 +198,11 @@ def run_telegram_bot():
         logger.info("Handlers registered for Telegram bot.")
         logger.info("Starting bot polling in the new event loop...")
         
-        # 3. Запускаем polling через loop.run_until_complete(), отключая обработку сигналов
+        # 3. Запускаем polling через loop.run_until_complete() БЕЗ лишнего параметра
         loop.run_until_complete(application.run_polling(
             allowed_updates=Update.ALL_TYPES,
             drop_pending_updates=True,
-            timeout=30,
-            signal_handler=None  # <--- ВОТ КЛЮЧЕВОЕ ИЗМЕНЕНИЕ
+            timeout=30
         ))
 
     except Exception as e:
