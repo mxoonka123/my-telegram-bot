@@ -82,45 +82,42 @@ from utils import (
     TELEGRAM_MAX_LEN,
     count_openai_compatible_tokens
 )
-# handlers.py: (добавить в районе 45 строки, после импортов)
 
-# Helper function to extract JSON from markdown code blocks
-def extract_json_from_markdown(text: str) -> str:
+# --- Constants ---
+def _process_history_for_time_gaps(history: List[Dict[str, Any]]) -> List[Dict[str, str]]:
     """
-    Extracts a JSON string from a markdown code block (e.g., ```json...```).
-    If no markdown block is found, returns the original text.
+    Processes message history to insert system notes about time gaps.
+    Returns a history list ready for the LLM (with string-only content).
     """
-    # The pattern looks for a string inside ```json ... ``` or ``` ... ```
-    pattern = r'```(?:json)?\s*([\s\S]*?)\s*```'
-    match = re.search(pattern, text, re.DOTALL)
-    if match:
-        extracted_json = match.group(1).strip()
-        logger.debug(f"Extracted JSON from markdown block. Original length: {len(text)}, Extracted length: {len(extracted_json)}")
-        return extracted_json
-    # If no markdown block is found, maybe the response is already a clean JSON array.
-    return text.strip()
+    if not history:
+        return []
 
-# Максимальная длина входящего сообщения от пользователя в символах
-MAX_USER_MESSAGE_LENGTH_CHARS = 600
+    processed_history = []
+    last_timestamp = None
 
-logger = logging.getLogger(__name__)
+    for message in history:
+        current_timestamp = message.get("timestamp")
+        
+        if last_timestamp and current_timestamp:
+            time_diff = current_timestamp - last_timestamp
+            
+            # Определяем, какую заметку вставить, если пауза была значительной
+            note = None
+            if time_diff > timedelta(days=1):
+                days = time_diff.days
+                note = f"[прошло {days} дн.]"
+            elif time_diff > timedelta(hours=2):
+                hours = round(time_diff.total_seconds() / 3600)
+                note = f"[прошло около {hours} ч.]"
+            
+            if note:
+                processed_history.append({"role": "system", "content": note})
 
-# --- Vosk model setup ---
-VOSK_MODEL_PATH = "model_vosk_ru"
-vosk_model = None
-
-if VOSK_AVAILABLE:
-    try:
-        if os.path.exists(VOSK_MODEL_PATH):
-            vosk_model = Model(VOSK_MODEL_PATH)
-            logger.info(f"Vosk model loaded successfully from {VOSK_MODEL_PATH}")
-        else:
-            logger.warning(f"Vosk model path not found: {VOSK_MODEL_PATH}. Please download a model.")
-    except Exception as e:
-        logger.error(f"Error loading Vosk model: {e}", exc_info=True)
-        vosk_model = None
-else:
-    logger.warning("Vosk library not available. Voice transcription will not work.")
+        # Добавляем само сообщение, но уже без timestamp
+        processed_history.append({"role": message["role"], "content": message["content"]})
+        last_timestamp = current_timestamp
+        
+    return processed_history
 
 async def transcribe_audio_with_vosk(audio_data: bytes, original_mime_type: str) -> Optional[str]:
     """
@@ -186,7 +183,7 @@ async def transcribe_audio_with_vosk(audio_data: bytes, original_mime_type: str)
             os.remove(temp_ogg_filename)
         if os.path.exists(temp_wav_filename):
             os.remove(temp_wav_filename)
-            
+
 # --- Helper Functions ---
 
 async def check_channel_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -1217,8 +1214,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             except Exception: pass
 
 
-async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media_type: str) -> None:
-    """Handles incoming photo or voice messages."""
+async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media_type: str, caption: Optional[str] = None) -> None:
+    """Handles incoming photo or voice messages, now with caption and time gap awareness."""
     if not update.message: return
     chat_id_str = str(update.effective_chat.id)
     user_id = update.effective_user.id
@@ -1239,18 +1236,7 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
             persona, _, owner_user = persona_context_owner_tuple
             logger.debug(f"Handling {media_type} for persona '{persona.name}' owned by {owner_user.id}")
 
-            # --- DEPRECATED: Лимиты теперь проверяются в handle_message, на который пересылается транскрипция ---
-            # limit_ok = check_and_update_user_limits(db, owner_user)
-            # limit_state_updated = db.is_modified(owner_user)
-
-            # if not limit_ok:
-            #     logger.info(f"Owner {owner_user.telegram_id} exceeded daily message limit for media.")
-            #     await send_limit_exceeded_message(update, context, owner_user)
-            #     if limit_state_updated:
-            #         db.commit()
-            #     return
-
-            context_text_placeholder = ""
+            user_message_content = ""
             system_prompt = None
             image_data = None
             audio_data = None
@@ -1264,12 +1250,15 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
                         file = await context.bot.get_file(photo_file.file_id)
                         image_data_io = await file.download_as_bytearray()
                         image_data = bytes(image_data_io)
-                        # Более осмысленный плейсхолдер
-                        context_text_placeholder = f"{username}: [отправил(а) фото]"
                         logger.info(f"Downloaded image: {len(image_data)} bytes")
+                        # *** ИСПРАВЛЕНИЕ: Используем подпись или даём явную инструкцию ***
+                        if caption:
+                            user_message_content = f"{username}: {caption}"
+                        else:
+                            user_message_content = f"{username}: опиши, что на этой фотографии"
                 except Exception as e:
                     logger.error(f"Error downloading photo: {e}", exc_info=True)
-                    context_text_placeholder = "[ошибка загрузки фото]"
+                    user_message_content = f"{username}: [ошибка загрузки фото]"
 
             elif media_type == "voice":
                 system_prompt = persona.format_voice_prompt(user_id=user_id, username=username, chat_id=chat_id_str)
@@ -1279,75 +1268,65 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
                         voice_file = await context.bot.get_file(update.message.voice.file_id)
                         voice_bytes = await voice_file.download_as_bytearray()
                         audio_data = bytes(voice_bytes)
-                        
                         transcribed_text = None
                         if VOSK_AVAILABLE and vosk_model:
                             transcribed_text = await transcribe_audio_with_vosk(audio_data, update.message.voice.mime_type)
                         
                         if transcribed_text:
-                            context_text_placeholder = f"{username}: {transcribed_text}"
+                            user_message_content = f"{username}: {transcribed_text}"
                         else:
-                            context_text_placeholder = f"{username}: [получено голосовое сообщение]"
+                            user_message_content = f"{username}: [получено голосовое сообщение, расшифровка не удалась]"
                     except Exception as e_voice:
                         logger.error(f"handle_media: Error processing voice message for chat {chat_id_str}: {e_voice}", exc_info=True)
-                        context_text_placeholder = f"{username}: [ошибка обработки голосового сообщения]"
+                        user_message_content = f"{username}: [ошибка обработки голосового сообщения]"
                 else:
-                    context_text_placeholder = "[получено пустое голосовое сообщение]"
+                    user_message_content = f"{username}: [получено пустое голосовое сообщение]"
 
             else:
                 logger.error(f"Unsupported media_type '{media_type}' in handle_media")
-                db.rollback()
-                return
+                return # Убираем rollback, т.к. транзакция может быть не нужна
 
             if not system_prompt:
-                logger.info(f"Persona {persona.name} in chat {chat_id_str} is configured not to react to {media_type}. Saving placeholder to context.")
-                if persona.chat_instance and context_text_placeholder:
+                logger.info(f"Persona {persona.name} in chat {chat_id_str} is configured not to react to {media_type}. Saving user message to context.")
+                if persona.chat_instance and user_message_content:
                     try:
-                        add_message_to_context(db, persona.chat_instance.id, "user", f"{username}: {context_text_placeholder}")
+                        add_message_to_context(db, persona.chat_instance.id, "user", user_message_content)
                         db.commit()
                     except Exception as e_ctx_ignore:
-                        logger.error(f"DB Error saving placeholder for ignored media: {e_ctx_ignore}")
+                        logger.error(f"DB Error saving user message for ignored media: {e_ctx_ignore}")
                         db.rollback()
                 return
             
-            context_placeholder_added = False
-            if persona.chat_instance:
-                try:
-                    add_message_to_context(db, persona.chat_instance.id, "user", context_text_placeholder)
-                    context_placeholder_added = True
-                    logger.debug(f"Media placeholder '{context_text_placeholder}' prepared for context (pending commit).")
-                except (SQLAlchemyError, Exception) as e_ctx:
-                    logger.error(f"DB Error preparing media placeholder context: {e_ctx}", exc_info=True)
-                    if update.effective_message: await update.effective_message.reply_text(escape_markdown_v2("❌ ошибка при сохранении информации о медиа."), parse_mode=ParseMode.MARKDOWN_V2)
-                    db.rollback()
-                    return
-            else:
-                logger.error("Cannot add media placeholder to context, chat_instance is None.")
+            if not persona.chat_instance:
+                logger.error("Cannot proceed, chat_instance is None.")
                 if update.effective_message: await update.effective_message.reply_text(escape_markdown_v2("❌ системная ошибка: не удалось связать медиа с личностью."), parse_mode=ParseMode.MARKDOWN_V2)
-                db.rollback()
                 return
 
             if persona.chat_instance.is_muted:
-                logger.debug(f"Persona '{persona.name}' is muted in chat {chat_id_str}. Media saved to context, but ignoring response.")
+                logger.debug(f"Persona '{persona.name}' is muted. Saving user message to context and exiting.")
+                add_message_to_context(db, persona.chat_instance.id, "user", user_message_content)
                 db.commit()
                 return
 
-            context_for_ai = []
-            if persona.chat_instance:
-                history_from_db = get_context_for_chat_bot(db, persona.chat_instance.id)
-                context_for_ai.extend(history_from_db)
-                if len(context_for_ai) > MAX_CONTEXT_MESSAGES_SENT_TO_LLM:
-                    context_for_ai = context_for_ai[-MAX_CONTEXT_MESSAGES_SENT_TO_LLM:]
+            # *** ИСПРАВЛЕНИЕ: Получаем историю и обрабатываем временные разрывы ***
+            history_with_timestamps = get_context_for_chat_bot(db, persona.chat_instance.id)
+            context_for_ai = _process_history_for_time_gaps(history_with_timestamps)
+            
+            # Добавляем ТЕКУЩЕЕ сообщение пользователя в историю для LLM
+            context_for_ai.append({"role": "user", "content": user_message_content})
+
+            # Добавляем сообщение в БД для будущих запросов
+            add_message_to_context(db, persona.chat_instance.id, "user", user_message_content)
             
             ai_response_text = await send_to_openrouter(system_prompt, context_for_ai, image_data=image_data, audio_data=audio_data)
-            logger.debug(f"Received response from Gemini for {media_type}: {ai_response_text[:100]}...")
+            logger.debug(f"Received response from AI for {media_type}: {ai_response_text[:100]}...")
 
-            context_response_prepared = await process_and_send_response(
+            await process_and_send_response(
                 update, context, chat_id_str, persona, ai_response_text, db, reply_to_message_id=message_id
             )
 
             db.commit()
-            logger.debug(f"Committed DB changes for handle_media chat {chat_id_str} (PlaceholderAdded: {context_placeholder_added}, BotRespAdded: {context_response_prepared})")
+            logger.debug(f"Committed DB changes for handle_media chat {chat_id_str}.")
 
         except SQLAlchemyError as e:
             logger.error(f"Database error during handle_media ({media_type}): {e}", exc_info=True)
@@ -1363,7 +1342,8 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handles photo messages by calling the generic media handler."""
     if not update.message: return
-    await handle_media(update, context, "photo")
+    # Передаём подпись к фото в обработчик
+    await handle_media(update, context, "photo", caption=update.message.caption)
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handles voice messages by calling the generic media handler."""

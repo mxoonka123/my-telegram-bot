@@ -47,7 +47,7 @@ INTERNET_INFO_PROMPT = (
     " у тебя есть доступ к интернету, можешь использовать актуальную информацию, искать гифки (отправляй прямой ссылкой на .gif), обсуждать новости, мемы, тренды, фильмы, игры, музыку, соцсети."
 )
 
-# Simplified System Prompt v17 (Context-Aware)
+# Simplified System Prompt v18 (Time-Aware)
 DEFAULT_SYSTEM_PROMPT_TEMPLATE = '''[SYSTEM MANDATORY INSTRUCTIONS - FOLLOW THESE RULES EXACTLY]
 You are an AI assistant. Your ONLY task is to role-play as a character. Your entire output MUST be a valid JSON array of strings.
 
@@ -65,8 +65,9 @@ Description: {persona_description}
 Communication Style: {communication_style}, {verbosity_level}.
 Current Mood: {mood_name} ({mood_prompt}).
 
-[TASK]
-You are in a chat with user '{username}'. Generate a response based on the entire conversation history provided. Your response must be a logical continuation of the dialogue.
+[CONTEXT]
+Current Time: {current_time_info}
+Your task is to generate a response based on the entire conversation history. Pay attention to how much time has passed between messages to understand the context. Your response must be a logical continuation of the dialogue.
 
 [JSON OUTPUT FORMAT - EXAMPLE]
 Example: `["да, конечно", "что именно ты хочешь узнать"]`
@@ -813,16 +814,18 @@ def unlink_bot_instance_from_chat(db: Session, chat_id: Union[str, int], bot_ins
 
 # --- Context Operations ---
 
-def get_context_for_chat_bot(db: Session, chat_bot_instance_id: int) -> List[Dict[str, str]]:
-    """Retrieves the last N messages for the LLM context."""
+def get_context_for_chat_bot(db: Session, chat_bot_instance_id: int) -> List[Dict[str, Any]]:
+    """Retrieves the last N messages for the LLM context, including timestamps."""
     try:
-        context_records = db.query(ChatContext.role, ChatContext.content)\
+        # Теперь выбираем также и timestamp
+        context_records = db.query(ChatContext.role, ChatContext.content, ChatContext.timestamp)\
                             .filter(ChatContext.chat_bot_instance_id == chat_bot_instance_id)\
                             .order_by(ChatContext.message_order.desc())\
                             .limit(MAX_CONTEXT_MESSAGES_SENT_TO_LLM)\
                             .all()
 
-        return [{"role": role, "content": content} for role, content in reversed(context_records)]
+        # Возвращаем список словарей с тремя ключами
+        return [{"role": role, "content": content, "timestamp": timestamp} for role, content, timestamp in reversed(context_records)]
     except SQLAlchemyError as e:
         logger.error(f"DB error getting context for instance {chat_bot_instance_id}: {e}", exc_info=True)
         return []

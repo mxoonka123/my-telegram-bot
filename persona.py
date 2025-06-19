@@ -10,6 +10,8 @@ from db import (
     DEFAULT_MOOD_PROMPTS, BASE_PROMPT_SUFFIX, INTERNET_INFO_PROMPT
 )
 # Шаблон DEFAULT_SYSTEM_PROMPT_TEMPLATE теперь берется из DB, но нужен для fallback
+from logger import logger
+from utils import get_time_info
 from db import PersonaConfig, ChatBotInstance, User, DEFAULT_SYSTEM_PROMPT_TEMPLATE
 
 # Шаблон для медиа-сообщений, использует тот же формат, что и DEFAULT_SYSTEM_PROMPT_TEMPLATE
@@ -204,7 +206,7 @@ class Persona:
 
         # --- Блок try...except для форматирования ---
         try:
-            # Словарь с плейсхолдерами для шаблона V16. last_user_message УДАЛЕН.
+            # Словарь с плейсхолдерами для шаблона V18. Добавлена информация о времени.
             placeholders = {
                 'persona_name': self.name,
                 'persona_description': self.description,
@@ -214,11 +216,12 @@ class Persona:
                 'mood_prompt': mood_instruction,
                 'username': username, # Keep username for context
                 'user_id': user_id,     # Keep user_id for context
-                'chat_id': chat_id_info # Keep chat_id for context
+                'chat_id': chat_id_info, # Keep chat_id for context
+                'current_time_info': get_time_info() # <-- НОВОЕ
             }
             # Форматируем шаблон, используя словарь
             formatted_prompt = template.format(**placeholders)
-            logger.debug(f"Formatting system prompt V16 with keys: {list(placeholders.keys())}")
+            logger.debug(f"Formatting system prompt V18 with keys: {list(placeholders.keys())}")
 
         except KeyError as e:
             # Этот блок выполняется, если в шаблоне есть ключ, которого нет в placeholders
@@ -368,7 +371,8 @@ class Persona:
             'mood_prompt': mood_prompt,
             'user_id': user_id,
             'username': username,
-            'chat_id': chat_id
+            'chat_id': chat_id,
+            'current_time_info': get_time_info() # <-- НОВОЕ
         }
         
         try:
