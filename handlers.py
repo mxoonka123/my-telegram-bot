@@ -575,6 +575,9 @@ def extract_json_from_markdown(text: str) -> str:
     # If no markdown block is found, maybe the response is already a clean JSON array.
     return text.strip()
 
+# Максимальная длина входящего сообщения от пользователя в символах
+MAX_USER_MESSAGE_LENGTH_CHARS = 600
+
 async def process_and_send_response(update: Update, context: ContextTypes.DEFAULT_TYPE, chat_id: Union[str, int], persona: Persona, full_bot_response_text: str, db: Session, reply_to_message_id: int, is_first_message: bool = False) -> bool:
     """Processes the raw text from AI, splits it into messages, and sends them to the chat."""
     logger.info(f"process_and_send_response [v3]: --- ENTER --- ChatID: {chat_id}, Persona: '{persona.name}'")

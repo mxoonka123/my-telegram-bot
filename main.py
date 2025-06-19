@@ -39,6 +39,11 @@ from yookassa.domain.notification import WebhookNotification
 from hypercorn.asyncio import serve
 from hypercorn.config import Config as HypercornConfig
 
+# --- Новые импорты для Telegra.ph ---
+from telegraph import Telegraph
+from telegraph.exceptions import TelegraphException
+from handlers import formatted_tos_text_for_bot
+
 
 # --- 1. Определение веб-сервера (Flask) ---
 flask_app = Flask(__name__)
@@ -105,6 +110,35 @@ def handle_yookassa_webhook():
         abort(500)
 
 
+async def create_or_update_tos_page(application: Application) -> None:
+    """Creates or updates the Terms of Service page on Telegra.ph."""
+    if not config.TELEGRAPH_ACCESS_TOKEN:
+        logger.warning("TELEGRAPH_ACCESS_TOKEN not set. Cannot create or update ToS page.")
+        return
+
+    try:
+        telegraph = Telegraph(access_token=config.TELEGRAPH_ACCESS_TOKEN)
+        
+        # Заменяем переносы строк на тег <p> для лучшего форматирования
+        html_content = "".join(f"<p>{line}</p>" for line in formatted_tos_text_for_bot.splitlines() if line.strip())
+        
+        response = telegraph.create_page(
+            title="Пользовательское соглашение",
+            html_content=html_content,
+            author_name=config.TELEGRAPH_AUTHOR_NAME,
+            author_url=config.TELEGRAPH_AUTHOR_URL
+        )
+        
+        tos_url = response['url']
+        application.bot_data['tos_url'] = tos_url
+        logger.info(f"Successfully created/updated ToS page: {tos_url}")
+
+    except TelegraphException as e:
+        logger.error(f"Failed to create ToS page on Telegra.ph: {e}")
+    except Exception as e:
+        logger.error(f"An unexpected error occurred while creating ToS page: {e}", exc_info=True)
+
+
 # --- 2. Основная асинхронная функция запуска ---
 async def main():
     """Запускает бота и веб-сервер в одной асинхронной среде."""
@@ -134,6 +168,9 @@ async def main():
     # Собираем приложение
     application = builder.build()
     application_instance = application # Сохраняем для вебхука
+
+    # --- Публикация ToS ---
+    await create_or_update_tos_page(application)
 
     # --- Регистрация хендлеров ---
     # (Вся ваша логика регистрации ConversationHandler, CommandHandler и т.д.)
