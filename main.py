@@ -197,8 +197,13 @@ def run_telegram_bot():
         logger.info("Handlers registered for Telegram bot.")
         logger.info("Starting bot polling in the new event loop...")
         
-        # 3. Запускаем polling через loop.run_until_complete()
-        loop.run_until_complete(application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True, timeout=30))
+        # 3. Запускаем polling через loop.run_until_complete(), отключая обработку сигналов
+        loop.run_until_complete(application.run_polling(
+            allowed_updates=Update.ALL_TYPES,
+            drop_pending_updates=True,
+            timeout=30,
+            signal_handler=None  # <--- ВОТ КЛЮЧЕВОЕ ИЗМЕНЕНИЕ
+        ))
 
     except Exception as e:
         logger.critical(f"An exception occurred in the bot thread's main logic: {e}", exc_info=True)
