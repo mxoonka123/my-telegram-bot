@@ -424,14 +424,7 @@ logger.info("----- Web Server module loaded and services initialized -----")
 
 if __name__ == "__main__":
     # Этот блок для локального тестирования.
-    # На Railway запуск будет через Procfile.
-    import os
-    # Запускаем локальный сервер, только если мы НЕ на Railway.
-    # Railway автоматически устанавливает переменную окружения RAILWAY_ENVIRONMENT.
-    if not os.getenv('RAILWAY_ENVIRONMENT'):
-        logger.info("Running Flask app directly for local testing (RAILWAY_ENVIRONMENT not found)...")
-        run_flask()
-    else:
-        logger.warning("main.py was run directly, but RAILWAY_ENVIRONMENT is set. "
-                       "This indicates a misconfiguration. The web server should be started via Procfile. "
-                       "Aborting direct run.")
+    # На Railway запуск будет через Procfile и waitress-serve, который импортирует
+    # `flask_app`, поэтому этот блок на сервере выполняться не должен.
+    logger.info("Running Flask app directly for local testing...")
+    run_flask()
