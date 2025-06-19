@@ -422,9 +422,4 @@ def initialize_web_services():
 initialize_web_services()
 logger.info("----- Web Server module loaded and services initialized -----")
 
-if __name__ == "__main__":
-    # Этот блок для локального тестирования.
-    # На Railway запуск будет через Procfile и waitress-serve, который импортирует
-    # `flask_app`, поэтому этот блок на сервере выполняться не должен.
-    logger.info("Running Flask app directly for local testing...")
-    run_flask()
+

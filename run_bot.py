@@ -152,5 +152,4 @@ def main_bot_runner() -> None:
     application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True, timeout=30)
     logging.info("----- Bot Polling Stopped -----")
 
-if __name__ == "__main__":
-    main_bot_runner()
+
