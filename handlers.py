@@ -18,6 +18,8 @@ from typing import List, Dict, Any, Optional, Union, Tuple
 from sqlalchemy import delete
 from telegram.constants import ParseMode # Added for confirm_pay
 
+logger = logging.getLogger(__name__)
+
 # Константы для UI
 CHECK_MARK = "✅ "  # Unicode Check Mark Symbol
 PREMIUM_STAR = "⭐"  # Звездочка для премиум-функций
