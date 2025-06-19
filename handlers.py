@@ -34,17 +34,17 @@ except ImportError:
 # --- Vosk Model Loading ---
 vosk_model: Optional[Model] = None
 
-def load_vosk_model():
+def load_vosk_model(model_path: str):
     """Helper function to load the Vosk model if not already loaded."""
     global vosk_model
     if vosk_model is None and VOSK_AVAILABLE:
-        logger.info("Attempting to load Vosk model...")
+        logger.info(f"Attempting to load Vosk model from path: {model_path}")
         try:
-            if os.path.exists(VOSK_MODEL_PATH):
-                vosk_model = Model(VOSK_MODEL_PATH)
-                logger.info(f"Vosk model loaded successfully from {VOSK_MODEL_PATH}")
+            if os.path.exists(model_path):
+                vosk_model = Model(model_path)
+                logger.info(f"Vosk model loaded successfully from {model_path}")
             else:
-                logger.warning(f"Vosk model path not found: {VOSK_MODEL_PATH}. Voice transcription disabled.")
+                logger.warning(f"Vosk model path not found: {model_path}. Voice transcription disabled.")
         except Exception as e:
             logger.error(f"Error loading Vosk model: {e}", exc_info=True)
             vosk_model = None # Ensure it's None on failure
@@ -52,7 +52,7 @@ def load_vosk_model():
         logger.warning("Vosk library not available. Voice transcription is disabled.")
 
 # Загружаем модель при старте
-load_vosk_model()
+load_vosk_model(VOSK_MODEL_PATH)
 
 from telegram import Update, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup, Chat as TgChat, CallbackQuery
 from telegram.constants import ChatAction, ParseMode, ChatMemberStatus, ChatType
@@ -82,8 +82,7 @@ from config import (
     FREE_PERSONA_LIMIT,
     PREMIUM_USER_MONTHLY_MESSAGE_LIMIT,
     FREE_USER_MONTHLY_MESSAGE_LIMIT,
-    MAX_CONTEXT_MESSAGES_SENT_TO_LLM,
-    VOSK_MODEL_PATH
+    MAX_CONTEXT_MESSAGES_SENT_TO_LLM
 )
 # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
 
@@ -1300,7 +1299,7 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
                         transcribed_text = None
                         # Проверяем, загружена ли модель. Если нет - пытаемся загрузить.
                         if vosk_model is None:
-                            load_vosk_model()
+                            load_vosk_model(VOSK_MODEL_PATH)
                         
                         # Теперь вызываем транскрипцию
                         if vosk_model:
