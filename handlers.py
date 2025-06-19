@@ -31,6 +31,29 @@ try:
 except ImportError:
     VOSK_AVAILABLE = False
 
+# --- Vosk Model Loading ---
+vosk_model: Optional[Model] = None
+
+def load_vosk_model():
+    """Helper function to load the Vosk model if not already loaded."""
+    global vosk_model
+    if vosk_model is None and VOSK_AVAILABLE:
+        logger.info("Attempting to load Vosk model...")
+        try:
+            if os.path.exists(VOSK_MODEL_PATH):
+                vosk_model = Model(VOSK_MODEL_PATH)
+                logger.info(f"Vosk model loaded successfully from {VOSK_MODEL_PATH}")
+            else:
+                logger.warning(f"Vosk model path not found: {VOSK_MODEL_PATH}. Voice transcription disabled.")
+        except Exception as e:
+            logger.error(f"Error loading Vosk model: {e}", exc_info=True)
+            vosk_model = None # Ensure it's None on failure
+    elif not VOSK_AVAILABLE:
+        logger.warning("Vosk library not available. Voice transcription is disabled.")
+
+# Загружаем модель при старте
+load_vosk_model()
+
 from telegram import Update, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup, Chat as TgChat, CallbackQuery
 from telegram.constants import ChatAction, ParseMode, ChatMemberStatus, ChatType
 from telegram.error import BadRequest, Forbidden, TelegramError, TimedOut
@@ -59,7 +82,8 @@ from config import (
     FREE_PERSONA_LIMIT,
     PREMIUM_USER_MONTHLY_MESSAGE_LIMIT,
     FREE_USER_MONTHLY_MESSAGE_LIMIT,
-    MAX_CONTEXT_MESSAGES_SENT_TO_LLM
+    MAX_CONTEXT_MESSAGES_SENT_TO_LLM,
+    VOSK_MODEL_PATH
 )
 # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
 
@@ -1274,8 +1298,15 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
                         voice_bytes = await voice_file.download_as_bytearray()
                         audio_data = bytes(voice_bytes)
                         transcribed_text = None
-                        if VOSK_AVAILABLE and vosk_model:
+                        # Проверяем, загружена ли модель. Если нет - пытаемся загрузить.
+                        if vosk_model is None:
+                            load_vosk_model()
+                        
+                        # Теперь вызываем транскрипцию
+                        if vosk_model:
                             transcribed_text = await transcribe_audio_with_vosk(audio_data, update.message.voice.mime_type)
+                        else:
+                            logger.warning("Vosk model is not available, skipping transcription.")
                         
                         if transcribed_text:
                             user_message_content = f"{username}: {transcribed_text}"
