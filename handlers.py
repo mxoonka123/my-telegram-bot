@@ -31,8 +31,9 @@ try:
 except ImportError:
     VOSK_AVAILABLE = False
 
-# --- Vosk Model Loading ---
-vosk_model: Optional[Model] = None
+# --- Vosk model setup ---
+VOSK_MODEL_PATH = "model_vosk_ru"
+vosk_model = None
 
 def load_vosk_model(model_path: str):
     """Helper function to load the Vosk model if not already loaded."""
