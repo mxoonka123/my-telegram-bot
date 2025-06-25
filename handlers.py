@@ -740,18 +740,18 @@ async def process_and_send_response(update: Update, context: ContextTypes.DEFAUL
         return context_response_prepared
 
 
-    # --- СТРАХОВКА ОТ ПОВТОРНЫХ ПРИВЕТСТВИЙ ---
+    # --- СТРАХОВКА ОТ ПОВТОРНЫХ ПРИВЕТСТВИЙ V2 ---
     # Если это не первое сообщение в диалоге, и модель вдруг поздоровалась, убираем это.
     if text_parts_to_send and not is_first_message:
         first_part = text_parts_to_send[0]
-        # Паттерн для разных вариантов приветствий
-        greetings_pattern = r"^\s*(?:привет|здравствуй|добр(?:ый|ое|ого)\s+(?:день|утро|вечер)|хай|ку|здорово|салют|о[йи])(?:[,.!?;:]|\b)"
-        match = re.match(greetings_pattern, first_part, re.IGNORECASE)
+        # Расширенный паттерн для разных вариантов приветствий
+        greetings_pattern = r"^\s*(?:привет(?:ик)?|здравствуй|добр(?:ый|ое|ого)\s+(?:день|утро|вечер)|хай|ку|здорово|салют|о[йи])(?:[,.!?;:]|\b)"
+        match = re.search(greetings_pattern, first_part, re.IGNORECASE)
         if match:
-            # Убираем приветствие и лишние пробелы
-            cleaned_part = first_part[match.end():].lstrip()
+            # Убираем приветствие и лишние пробелы/знаки в начале
+            cleaned_part = first_part[match.end():].lstrip(' ,.!?')
             if cleaned_part:
-                logger.info(f"process_and_send_response [JSON]: Removed greeting. New start of part 1: '{cleaned_part[:50]}...'")
+                logger.info(f"process_and_send_response [JSON]: Removed redundant greeting. New start of part 1: '{cleaned_part[:50]}...'")
                 text_parts_to_send[0] = cleaned_part
             else:
                 # Если после удаления приветствия ничего не осталось, удаляем эту часть целиком
