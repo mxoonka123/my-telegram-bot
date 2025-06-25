@@ -740,18 +740,18 @@ async def process_and_send_response(update: Update, context: ContextTypes.DEFAUL
         return context_response_prepared
 
 
-    # --- СТРАХОВКА ОТ ПОВТОРНЫХ ПРИВЕТСТВИЙ V2 ---
+    # --- СТРАХОВКА ОТ ПОВТОРНЫХ ПРИВЕТСТВИЙ ---
     # Если это не первое сообщение в диалоге, и модель вдруг поздоровалась, убираем это.
     if text_parts_to_send and not is_first_message:
         first_part = text_parts_to_send[0]
-        # Расширенный паттерн для разных вариантов приветствий
-        greetings_pattern = r"^\s*(?:привет(?:ик)?|здравствуй|добр(?:ый|ое|ого)\s+(?:день|утро|вечер)|хай|ку|здорово|салют|о[йи])(?:[,.!?;:]|\b)"
-        match = re.search(greetings_pattern, first_part, re.IGNORECASE)
+        # Паттерн для разных вариантов приветствий
+        greetings_pattern = r"^\s*(?:привет|здравствуй|добр(?:ый|ое|ого)\s+(?:день|утро|вечер)|хай|ку|здорово|салют|о[йи])(?:[,.!?;:]|\b)"
+        match = re.match(greetings_pattern, first_part, re.IGNORECASE)
         if match:
-            # Убираем приветствие и лишние пробелы/знаки в начале
-            cleaned_part = first_part[match.end():].lstrip(' ,.!?')
+            # Убираем приветствие и лишние пробелы
+            cleaned_part = first_part[match.end():].lstrip()
             if cleaned_part:
-                logger.info(f"process_and_send_response [JSON]: Removed redundant greeting. New start of part 1: '{cleaned_part[:50]}...'")
+                logger.info(f"process_and_send_response [JSON]: Removed greeting. New start of part 1: '{cleaned_part[:50]}...'")
                 text_parts_to_send[0] = cleaned_part
             else:
                 # Если после удаления приветствия ничего не осталось, удаляем эту часть целиком
@@ -2210,7 +2210,7 @@ async def add_bot_to_chat(update: Update, context: ContextTypes.DEFAULT_TYPE, pe
     error_no_id = escape_markdown_v2("❌ ошибка: ID личности не определен.")
     error_persona_not_found_fmt_raw = "❌ личность с id `{id}` не найдена или не твоя."
     error_already_active_fmt_raw = "✅ личность '{name}' уже активна в этом чате."
-    success_added_structure_raw = "✅ личность '{name}' (id: {id}) активирована в этом чате! память очищена."
+    success_added_structure_raw = "✅ личность '{name}' \\(id: `{id}`\\) активирована в этом чате\\! память очищена."
     error_link_failed = escape_markdown_v2("❌ не удалось активировать личность (ошибка связывания).")
     error_integrity = escape_markdown_v2("❌ произошла ошибка целостности данных (возможно, конфликт активации), попробуйте еще раз.")
     error_db = escape_markdown_v2("❌ ошибка базы данных при добавлении бота.")
@@ -2312,11 +2312,12 @@ async def add_bot_to_chat(update: Update, context: ContextTypes.DEFAULT_TYPE, pe
             chat_link = link_bot_instance_to_chat(db, bot_instance.id, chat_id_str)
 
             if chat_link:
-                # Готовим простой текст
-                final_success_msg_plain = success_added_structure_raw.format(
-                    name=persona.name, 
+                final_success_msg = success_added_structure_raw.format(
+                    name=escape_markdown_v2(persona.name),
                     id=local_persona_id
-                )
+                    )
+                # Готовим простой текст
+                final_success_msg_plain = f"✅ личность '{persona.name}' (id: {local_persona_id}) активирована в этом чате! память очищена."
                 # Отправляем как простой текст
                 await context.bot.send_message(chat_id=chat_id_str, text=final_success_msg_plain, reply_markup=ReplyKeyboardRemove(), parse_mode=None)
                 if is_callback:
@@ -4969,22 +4970,16 @@ async def delete_persona_confirmed(update: Update, context: ContextTypes.DEFAULT
 
     # --- ИЗМЕНЕНИЕ: Отправка нового сообщения вместо редактирования ---
     message_to_send = ""
-    parse_mode_to_use = None  # Default to plain text
-
     if deleted_ok:
-        # Готовим простой текст, т.к. имя может содержать спецсимволы
-        message_to_send = success_deleted_fmt_raw.format(name=persona_name_deleted)
-        parse_mode_to_use = None  # Отправляем как простой текст
+        message_to_send = escape_markdown_v2(success_deleted_fmt_raw.format(name=persona_name_deleted))
         logger.info(f"Preparing success message for deletion of persona {persona_id_from_state}")
     else:
-        # Сообщение об ошибке уже экранировано для Markdown
-        message_to_send = error_delete_failed
-        parse_mode_to_use = ParseMode.MARKDOWN_V2
+        message_to_send = error_delete_failed # Уже экранировано
         logger.warning(f"Preparing failure message for deletion of persona {persona_id_from_state}")
 
     try:
-        # Отправляем новое сообщение с динамическим parse_mode
-        await context.bot.send_message(chat_id, message_to_send, reply_markup=ReplyKeyboardRemove(), parse_mode=parse_mode_to_use)
+        # Отправляем новое сообщение
+        await context.bot.send_message(chat_id, message_to_send, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
         logger.info(f"Sent final deletion status message to chat {chat_id}.")
         # Пытаемся удалить старое сообщение с кнопками подтверждения
         try:
