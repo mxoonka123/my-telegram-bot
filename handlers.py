@@ -3173,133 +3173,11 @@ async def _handle_back_to_wizard_menu(update: Update, context: ContextTypes.DEFA
         # except Exception as e:
         #     logger.warning(f"Could not delete submenu message: {e}")
     
-        return await fixed_show_edit_wizard_menu(update, context, persona)
+        return await _show_edit_wizard_menu(update, context, persona)
 
-async def _show_edit_wizard_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, persona_config: DBPersonaConfig) -> int:
-    """Прокси-функция для перенаправления на fixed_show_edit_wizard_menu.
-    Эта функция вызывается из _start_edit_convo и необходима для совместимости."""
-    logger.debug(f"_show_edit_wizard_menu: Redirecting to fixed_show_edit_wizard_menu for persona {persona_config.id}")
-    return await fixed_show_edit_wizard_menu(update, context, persona_config)
 
-async def fixed_show_edit_wizard_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, persona_config: DBPersonaConfig) -> int:
-    """Отображает главное меню настройки персоны. Отправляет новое или редактирует существующее."""
-    try:
-        query = update.callback_query 
-        
-        chat_id_for_menu = None
-        # Определяем chat_id, куда будет отправлено/отредактировано меню
-        if query and query.message: 
-            chat_id_for_menu = query.message.chat.id
-        elif update.effective_chat: 
-            chat_id_for_menu = update.effective_chat.id
-        
-        if not chat_id_for_menu:
-            logger.error("fixed_show_edit_wizard_menu: Could not determine chat_id for menu.")
-            if query:
-                try: await query.answer("Ошибка: чат для меню не определен.", show_alert=True)
-                except Exception: pass
-            return ConversationHandler.END
 
-        logger.info(f"fixed_show_edit_wizard_menu: Preparing wizard menu. ChatID: {chat_id_for_menu}, PersonaID: {persona_config.id}")
 
-        persona_id = persona_config.id
-        # ... (остальная подготовка данных: user_id, owner, keyboard, msg_text) ...
-        user_id = update.effective_user.id
-        owner = persona_config.owner
-        is_premium = owner.is_active_subscriber or is_admin(user_id) if owner else False
-        star = " ⭐"
-        style = persona_config.communication_style or "neutral"
-        verbosity = persona_config.verbosity_level or "medium"
-        group_reply = persona_config.group_reply_preference or "mentioned_or_contextual"
-        media_react = persona_config.media_reaction or "text_only"
-        style_map = {"neutral": "Нейтральный", "friendly": "Дружелюбный", "sarcastic": "Саркастичный", "formal": "Формальный", "brief": "Краткий"}
-        verbosity_map = {"concise": "Лаконичный", "medium": "Средний", "talkative": "Разговорчивый"}
-        group_reply_map = {"always": "Всегда", "mentioned_only": "По @", "mentioned_or_contextual": "По @ / Контексту", "never": "Никогда"}
-        media_react_map = {"all": "Текст+GIF", "text_only": "Только текст", "none": "Никак", "photo_only": "Только фото", "voice_only": "Только голос"}
-        current_max_msgs_setting = persona_config.max_response_messages
-        display_for_max_msgs_button = "Стандартно"
-        if current_max_msgs_setting == 0: display_for_max_msgs_button = "Случайно"
-        elif current_max_msgs_setting == 1: display_for_max_msgs_button = "Поменьше"
-        elif current_max_msgs_setting == 3: display_for_max_msgs_button = "Стандартно"
-        elif current_max_msgs_setting == 6: display_for_max_msgs_button = "Побольше"
-        keyboard = [
-            [
-                InlineKeyboardButton("✏️ имя", callback_data="edit_wizard_name"),
-                InlineKeyboardButton("📜 описание", callback_data="edit_wizard_description")
-            ],
-            [InlineKeyboardButton(f"💬 стиль ({style_map.get(style, '?').lower()})", callback_data="edit_wizard_comm_style")],
-            [InlineKeyboardButton(f"🗣️ разговорчивость ({verbosity_map.get(verbosity, '?').lower()})", callback_data="edit_wizard_verbosity")],
-            [InlineKeyboardButton(f"👥 ответы в группе ({group_reply_map.get(group_reply, '?').lower()})", callback_data="edit_wizard_group_reply")],
-            [InlineKeyboardButton(f"🖼️ реакция на медиа ({media_react_map.get(media_react, '?').lower()})", callback_data="edit_wizard_media_reaction")],
-            [InlineKeyboardButton(f"🗨️ макс. сообщ. ({display_for_max_msgs_button.lower()})", callback_data="edit_wizard_max_msgs")],
-            [InlineKeyboardButton(f"🎭 настроения{star if not is_premium else ''}", callback_data="edit_wizard_moods")],
-            [InlineKeyboardButton("✅ завершить", callback_data="finish_edit")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        msg_text_raw = f"""⚙️ *настройка личности: {escape_markdown_v2(persona_config.name)}* (id: `{persona_id}`)
-
-выберите, что изменить:"""
-        # Убираем лишнее экранирование всей строки, используем как есть
-        msg_text = msg_text_raw
-        
-        sent_message = None
-        # Получаем ID *актуального* меню настроек, если оно было сохранено для ТЕКУЩЕЙ сессии
-        current_session_wizard_menu_id = context.user_data.get('wizard_menu_message_id')
-        
-        # Если это коллбэк (т.е. мы уже внутри визарда) И 
-        # есть сохраненный ID меню для текущей сессии И
-        # ID сообщения из коллбэка совпадает с сохраненным ID
-        if query and query.message and current_session_wizard_menu_id and \
-            query.message.message_id == current_session_wizard_menu_id:
-            # Пытаемся редактировать существующее меню текущей сессии
-            try:
-                if query.message.text != msg_text or query.message.reply_markup != reply_markup:
-                    await query.edit_message_text(text=msg_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
-                    logger.info(f"fixed_show_edit_wizard_menu: EDITED existing wizard menu. MsgID: {current_session_wizard_menu_id}")
-                else:
-                    logger.info(f"fixed_show_edit_wizard_menu: Wizard menu message not modified. MsgID: {current_session_wizard_menu_id}")
-                sent_message = query.message
-            except BadRequest as e_edit:
-                if "message is not modified" in str(e_edit).lower():
-                    sent_message = query.message
-                    logger.info(f"fixed_show_edit_wizard_menu: Wizard menu not modified (caught exception). MsgID: {current_session_wizard_menu_id}")
-                else: 
-                    logger.warning(f"fixed_show_edit_wizard_menu: Failed to edit current session menu (error: {e_edit}), sending new.")
-                    sent_message = await context.bot.send_message(chat_id=chat_id_for_menu, text=msg_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
-                    logger.info(f"fixed_show_edit_wizard_menu: Sent NEW (after edit fail) wizard menu. MsgID: {sent_message.message_id}")
-            except Exception as e_gen_edit: 
-                logger.warning(f"fixed_show_edit_wizard_menu: General error editing current session menu (error: {e_gen_edit}), sending new.")
-                sent_message = await context.bot.send_message(chat_id=chat_id_for_menu, text=msg_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
-                logger.info(f"fixed_show_edit_wizard_menu: Sent NEW (after general edit fail) wizard menu. MsgID: {sent_message.message_id}")
-        else:
-            # Отправляем НОВОЕ сообщение с меню.
-            # Это происходит:
-            # 1. При первом входе в визард (current_session_wizard_menu_id будет None).
-            # 2. Если это не коллбэк (например, команда /editpersona).
-            # 3. Если ID сообщения из коллбэка не совпадает с сохраненным (маловероятно с текущей логикой, но для надежности).
-            logger.info(f"fixed_show_edit_wizard_menu: Conditions for editing not met (Query: {bool(query)}, QueryMsg: {bool(query.message if query else None)}, StoredMenuID: {current_session_wizard_menu_id}). Sending NEW menu.")
-            sent_message = await context.bot.send_message(chat_id=chat_id_for_menu, text=msg_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
-            logger.info(f"fixed_show_edit_wizard_menu: Sent NEW wizard menu. MsgID: {sent_message.message_id}")
-
-        # Обновляем ID сохраненного меню в user_data на ID только что отправленного/отредактированного сообщения
-        context.user_data['wizard_menu_message_id'] = sent_message.message_id
-        # Также сохраняем chat_id, где это меню было отправлено/отредактировано
-        context.user_data['edit_chat_id'] = chat_id_for_menu 
-        # edit_message_id используется в _send_prompt, но его можно приравнять к wizard_menu_message_id для главного меню
-        context.user_data['edit_message_id'] = sent_message.message_id 
-        
-        if query: 
-            try: await query.answer()
-            except Exception: pass
-
-        return EDIT_WIZARD_MENU
-    except Exception as e:
-        logger.error(f"CRITICAL Error in fixed_show_edit_wizard_menu: {e}", exc_info=True)
-        chat_id_fallback = update.effective_chat.id if update.effective_chat else None
-        if chat_id_fallback:
-            try: await context.bot.send_message(chat_id_fallback, "Произошла критическая ошибка при отображении меню настроек.")
-            except Exception: pass
-        return ConversationHandler.END
 # --- Wizard Menu Handler ---
 async def edit_wizard_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Handles button presses in the main wizard menu."""
@@ -4063,120 +3941,107 @@ error_no_moods = "У этой личности еще нет настроени�
 error_mood_not_found = "Настроение не найдено."
 error_db = "Ошибка базы данных при работе с настроениями."
 
-def apply_menu_structure_fixes():
-    """Улучшение структуры меню настроек персоны"""
-    async def fixed_show_edit_wizard_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, persona_config: DBPersonaConfig) -> int:
-        try:
-            query = update.callback_query
-            
-            chat_id = None
-            if update.effective_chat:
-                chat_id = update.effective_chat.id
-            elif query and query.message:
-                chat_id = query.message.chat.id
-            
-            if not chat_id:
-                logger.error("fixed_show_edit_wizard_menu: Could not determine chat_id reliably.")
-                if query:
-                    try: await query.answer("Ошибка: не удалось определить чат.", show_alert=True)
-                    except Exception: pass
-                elif update.message:
-                    await update.message.reply_text("Ошибка: не удалось определить чат для отображения меню.")
-                return ConversationHandler.END
-
-            logger.info(f"fixed_show_edit_wizard_menu: Preparing to send wizard menu. ChatID: {chat_id}, PersonaID: {persona_config.id}")
-
-            persona_id = persona_config.id
-            user_id = update.effective_user.id
-
-            owner = persona_config.owner
-            is_premium = owner.is_active_subscriber or is_admin(user_id) if owner else False
-            star = " ⭐"
-            
-            style = persona_config.communication_style or "neutral"
-            verbosity = persona_config.verbosity_level or "medium"
-            group_reply = persona_config.group_reply_preference or "mentioned_or_contextual"
-            media_react = persona_config.media_reaction or "text_only"
-            
-            style_map = {"neutral": "Нейтральный", "friendly": "Дружелюбный", "sarcastic": "Саркастичный", "formal": "Формальный", "brief": "Краткий"}
-            verbosity_map = {"concise": "Лаконичный", "medium": "Средний", "talkative": "Разговорчивый"}
-            group_reply_map = {"always": "Всегда", "mentioned_only": "По @", "mentioned_or_contextual": "По @ / Контексту", "never": "Никогда"}
-            media_react_map = {"all": "Текст+GIF", "text_only": "Только текст", "none": "Никак", "photo_only": "Только фото", "voice_only": "Только голос"}
-            
-            # Определяем текст для кнопки "Макс. сообщ."
-            current_max_msgs_setting = persona_config.max_response_messages
-            display_for_max_msgs_button = "Стандартно" # Текст по умолчанию
-            if current_max_msgs_setting == 0: display_for_max_msgs_button = "Случайно"
-            elif current_max_msgs_setting == 1: display_for_max_msgs_button = "Поменьше"
-            elif current_max_msgs_setting == 3: display_for_max_msgs_button = "Стандартно"
-            elif current_max_msgs_setting == 6: display_for_max_msgs_button = "Побольше"
-            else: # Если значение неожиданное
-                logger.warning(f"Persona {persona_id} has unexpected max_response_messages: {current_max_msgs_setting} for button display. Using 'Стандартно'.")
-            
-            keyboard = [
-                [
-                    InlineKeyboardButton("✏️ Имя", callback_data="edit_wizard_name"),
-                    InlineKeyboardButton("📜 Описание", callback_data="edit_wizard_description")
-                ],
-                [InlineKeyboardButton(f"💬 Стиль ({style_map.get(style, '?')})", callback_data="edit_wizard_comm_style")],
-                [InlineKeyboardButton(f"🗣️ Разговорчивость ({verbosity_map.get(verbosity, '?')})", callback_data="edit_wizard_verbosity")],
-                [InlineKeyboardButton(f"👥 Ответы в группе ({group_reply_map.get(group_reply, '?')})", callback_data="edit_wizard_group_reply")],
-                [InlineKeyboardButton(f"🖼️ Реакция на медиа ({media_react_map.get(media_react, '?')})", callback_data="edit_wizard_media_reaction")],
-                # Вот эта кнопка:
-                [InlineKeyboardButton(f"🗨️ Макс. сообщ. ({display_for_max_msgs_button})", callback_data="edit_wizard_max_msgs")],
-                [InlineKeyboardButton(f"🎭 Настроения{star if not is_premium else ''}", callback_data="edit_wizard_moods")],
-                [InlineKeyboardButton("✅ Завершить", callback_data="finish_edit")]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            
-            msg_text_raw = f"⚙️ *Настройка личности: {persona_config.name}* (ID: {persona_id})\n\nВыберите, что изменить:"
-            msg_text = escape_markdown_v2(msg_text_raw)
-            
-            logger.debug(f"fixed_show_edit_wizard_menu: Final msg_text='{msg_text[:100]}...', reply_markup first button text: '{keyboard[0][0].text if keyboard and keyboard[0] else 'N/A'}'")
-
-            sent_message = None
-            if query and query.message:
-                try:
-                    # Проверяем, отличается ли текст или клавиатура, чтобы избежать "message is not modified"
-                    if query.message.text != msg_text or query.message.reply_markup != reply_markup:
-                        await query.edit_message_text(text=msg_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
-                        logger.info(f"fixed_show_edit_wizard_menu: Successfully EDITED wizard menu. MsgID: {query.message.message_id}")
-                    else:
-                        logger.info(f"fixed_show_edit_wizard_menu: Wizard menu message not modified. MsgID: {query.message.message_id}")
-                    sent_message = query.message
-                except BadRequest as e_edit:
-                    if "message is not modified" in str(e_edit).lower():
-                        sent_message = query.message # Сообщение не изменилось
-                        logger.info(f"fixed_show_edit_wizard_menu: Wizard menu message not modified (caught exception). MsgID: {sent_message.message_id}")
-                    else:
-                        logger.warning(f"fixed_show_edit_wizard_menu: Failed to edit (error: {e_edit}), sending new.")
-                        sent_message = await context.bot.send_message(chat_id=chat_id, text=msg_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
-                        logger.info(f"fixed_show_edit_wizard_menu: Successfully sent NEW (after edit fail) wizard menu. MsgID: {sent_message.message_id}")
-            else:
-                sent_message = await context.bot.send_message(chat_id=chat_id, text=msg_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
-                logger.info(f"fixed_show_edit_wizard_menu: Successfully sent NEW wizard menu. MsgID: {sent_message.message_id}")
-
-            context.user_data['wizard_menu_message_id'] = sent_message.message_id
-            context.user_data['edit_message_id'] = sent_message.message_id 
-            context.user_data['edit_chat_id'] = chat_id
-            
-            if query: 
-                try: await query.answer()
-                except Exception: pass
-
-            return EDIT_WIZARD_MENU
-        except Exception as e:
-            logger.error(f"CRITICAL Error in fixed_show_edit_wizard_menu: {e}", exc_info=True)
-            chat_id_fallback = update.effective_chat.id if update.effective_chat else None
-            if chat_id_fallback:
-                try: await context.bot.send_message(chat_id_fallback, "Произошла критическая ошибка при отображении меню настроек.")
+async def _show_edit_wizard_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, persona_config: DBPersonaConfig) -> int:
+    """Отображает главное меню настройки персоны. Отправляет новое или редактирует существующее."""
+    try:
+        query = update.callback_query 
+        
+        chat_id_for_menu = None
+        if query and query.message: 
+            chat_id_for_menu = query.message.chat.id
+        elif update.effective_chat: 
+            chat_id_for_menu = update.effective_chat.id
+        
+        if not chat_id_for_menu:
+            logger.error("_show_edit_wizard_menu: Could not determine chat_id for menu.")
+            if query:
+                try: await query.answer("ошибка: чат для меню не определен.", show_alert=True)
                 except Exception: pass
             return ConversationHandler.END
-    
-    global _show_edit_wizard_menu
-    _show_edit_wizard_menu = fixed_show_edit_wizard_menu
 
-apply_menu_structure_fixes()
+        logger.info(f"_show_edit_wizard_menu: Preparing wizard menu. ChatID: {chat_id_for_menu}, PersonaID: {persona_config.id}")
+
+        persona_id = persona_config.id
+        user_id = update.effective_user.id
+        owner = persona_config.owner
+        is_premium = owner.is_active_subscriber or is_admin(user_id) if owner else False
+        star = " ⭐"
+        style = persona_config.communication_style or "neutral"
+        verbosity = persona_config.verbosity_level or "medium"
+        group_reply = persona_config.group_reply_preference or "mentioned_or_contextual"
+        media_react = persona_config.media_reaction or "text_only"
+        
+        # Словари со значениями в нижнем регистре
+        style_map = {"neutral": "нейтральный", "friendly": "дружелюбный", "sarcastic": "саркастичный", "formal": "формальный", "brief": "краткий"}
+        verbosity_map = {"concise": "лаконичный", "medium": "средний", "talkative": "разговорчивый"}
+        group_reply_map = {"always": "всегда", "mentioned_only": "по @", "mentioned_or_contextual": "по @ / контексту", "never": "никогда"}
+        media_react_map = {"all": "текст+gif", "text_only": "только текст", "none": "никак", "photo_only": "только фото", "voice_only": "только голос"}
+        
+        current_max_msgs_setting = persona_config.max_response_messages
+        display_for_max_msgs_button = "стандартно"
+        if current_max_msgs_setting == 0: display_for_max_msgs_button = "случайно"
+        elif current_max_msgs_setting == 1: display_for_max_msgs_button = "поменьше"
+        elif current_max_msgs_setting == 3: display_for_max_msgs_button = "стандартно"
+        elif current_max_msgs_setting == 6: display_for_max_msgs_button = "побольше"
+            
+        # Кнопки с текстом в нижнем регистре
+        keyboard = [
+            [
+                InlineKeyboardButton("✏️ имя", callback_data="edit_wizard_name"),
+                InlineKeyboardButton("📜 описание", callback_data="edit_wizard_description")
+            ],
+            [InlineKeyboardButton(f"💬 стиль ({style_map.get(style, '?')})", callback_data="edit_wizard_comm_style")],
+            [InlineKeyboardButton(f"🗣️ разговорчивость ({verbosity_map.get(verbosity, '?')})", callback_data="edit_wizard_verbosity")],
+            [InlineKeyboardButton(f"👥 ответы в группе ({group_reply_map.get(group_reply, '?')})", callback_data="edit_wizard_group_reply")],
+            [InlineKeyboardButton(f"🖼️ реакция на медиа ({media_react_map.get(media_react, '?')})", callback_data="edit_wizard_media_reaction")],
+            [InlineKeyboardButton(f"🗨️ макс. сообщ. ({display_for_max_msgs_button})", callback_data="edit_wizard_max_msgs")],
+            [InlineKeyboardButton(f"🎭 настроения{star if not is_premium else ''}", callback_data="edit_wizard_moods")],
+            [InlineKeyboardButton("✅ завершить", callback_data="finish_edit")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        # Текст сообщения в нижнем регистре и с правильным форматированием
+        msg_text = f"""⚙️ *настройка личности: {escape_markdown_v2(persona_config.name)}* (id: `{persona_id}`)
+
+выберите, что изменить:"""
+        
+        sent_message = None
+        current_session_wizard_menu_id = context.user_data.get('wizard_menu_message_id')
+        
+        if query and query.message and current_session_wizard_menu_id and \
+            query.message.message_id == current_session_wizard_menu_id:
+            try:
+                if query.message.text != msg_text or query.message.reply_markup != reply_markup:
+                    await query.edit_message_text(text=msg_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
+                sent_message = query.message
+            except BadRequest as e_edit:
+                if "message is not modified" in str(e_edit).lower():
+                    sent_message = query.message
+                else: 
+                    logger.warning(f"_show_edit_wizard_menu: Failed to edit menu (error: {e_edit}), sending new.")
+                    sent_message = await context.bot.send_message(chat_id=chat_id_for_menu, text=msg_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
+            except Exception as e_gen_edit: 
+                logger.warning(f"_show_edit_wizard_menu: General error editing menu (error: {e_gen_edit}), sending new.")
+                sent_message = await context.bot.send_message(chat_id=chat_id_for_menu, text=msg_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
+        else:
+            sent_message = await context.bot.send_message(chat_id=chat_id_for_menu, text=msg_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
+
+        context.user_data['wizard_menu_message_id'] = sent_message.message_id
+        context.user_data['edit_chat_id'] = chat_id_for_menu 
+        context.user_data['edit_message_id'] = sent_message.message_id 
+        
+        if query: 
+            try: await query.answer()
+            except Exception: pass
+
+        return EDIT_WIZARD_MENU
+    except Exception as e:
+        logger.error(f"CRITICAL Error in _show_edit_wizard_menu: {e}", exc_info=True)
+        chat_id_fallback = update.effective_chat.id if update.effective_chat else None
+        if chat_id_fallback:
+            try: await context.bot.send_message(chat_id_fallback, "Произошла критическая ошибка при отображении меню настроек.")
+            except Exception: pass
+        return ConversationHandler.END
 
 # --- Mood Editing Functions (Adapted for Wizard Flow) ---
 
