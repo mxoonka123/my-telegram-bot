@@ -1522,24 +1522,24 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     help_text_md = f"""
 *_основные команды:_*
-`/start`        - {escape_markdown_v2("начало работы")}
-`/help`         - {escape_markdown_v2("эта справка")}
-`/menu`         - {escape_markdown_v2("главное меню")}
-`/profile`      - {escape_markdown_v2("ваш профиль и лимиты")}
-`/subscribe`    - {escape_markdown_v2("информация о подписке")}
+`/start`        \\- {escape_markdown_v2("начало работы")}
+`/help`         \\- {escape_markdown_v2("эта справка")}
+`/menu`         \\- {escape_markdown_v2("главное меню")}
+`/profile`      \\- {escape_markdown_v2("ваш профиль и лимиты")}
+`/subscribe`    \\- {escape_markdown_v2("информация о подписке")}
 
 *_управление личностью в чате:_*
-`/mood`         - {escape_markdown_v2("сменить настроение")}
-`/clear`        - {escape_markdown_v2("очистить память (контекст)")}
-`/reset`        - {escape_markdown_v2("сбросить диалог (то же, что /clear)")}
-`/mutebot`      - {escape_markdown_v2("запретить отвечать в чате")}
-`/unmutebot`    - {escape_markdown_v2("разрешить отвечать в чате")}
+`/mood`         \\- {escape_markdown_v2("сменить настроение")}
+`/clear`        \\- {escape_markdown_v2("очистить память (контекст)")}
+`/reset`        \\- {escape_markdown_v2("сбросить диалог (то же, что /clear)")}
+`/mutebot`      \\- {escape_markdown_v2("запретить отвечать в чате")}
+`/unmutebot`    \\- {escape_markdown_v2("разрешить отвечать в чате")}
 
 *_создание и настройка личностей:_*
-`/createpersona <имя> [описание]` - {escape_markdown_v2("создать новую")}
-`/mypersonas`    - {escape_markdown_v2("список ваших личностей")}
-`/editpersona <id>`   - {escape_markdown_v2("редактировать (имя, описание, стиль, настроения и др.)")}
-`/deletepersona <id>` - {escape_markdown_v2("удалить личность")}
+`/createpersona <имя> [описание]` \\- {escape_markdown_v2("создать новую")}
+`/mypersonas`    \\- {escape_markdown_v2("список ваших личностей")}
+`/editpersona <id>`   \\- {escape_markdown_v2("редактировать (имя, описание, стиль, настроения и др.)")}
+`/deletepersona <id>` \\- {escape_markdown_v2("удалить личность")}
 
 *_дополнительно:_*
 • {escape_markdown_v2("бот может реагировать на фото и голосовые сообщения (настраивается в /editpersona <id>).")}
@@ -2542,15 +2542,15 @@ async def profile(update: Union[Update, CallbackQuery], context: ContextTypes.DE
             msg_limit_escaped = escape_markdown_v2(msg_limit_raw)
 
             profile_text_md = (
-                f"👤 *Твой профиль*\n\n"
-                f"*Статус:* {status_text_escaped}\n"
+                f"👤 *твой профиль*\n\n"
+                f"*статус:* {status_text_escaped}\n"
                 f"{expires_text_md}\n\n"
-                f"**Лимиты:**\n"
-                f"{escape_markdown_v2(message_limit_label)} `{msg_limit_escaped}`\n"
-                f"{escape_markdown_v2('создано личностей:')} `{persona_limit_escaped}`\n\n"
+                f"**лимиты:**\n"
+                f"{escape_markdown_v2(message_limit_label)} {msg_limit_escaped}\n"
+                f"{escape_markdown_v2('создано личностей:')} {persona_limit_escaped}\n\n"
             )
-            promo_text_md = "🚀 хочешь больше\\? жми `/subscribe` или кнопку 'Подписка' в `/menu`\\!"
-            promo_text_plain = "🚀 Хочешь больше? Жми /subscribe или кнопку 'Подписка' в /menu !"
+            promo_text_md = "🚀 хочешь больше\\? жми `/subscribe` или кнопку 'подписка' в `/menu`\\!"
+            promo_text_plain = "🚀 хочешь больше? жми /subscribe или кнопку 'подписка' в /menu !"
             if not is_active_subscriber:
                 profile_text_md += promo_text_md
 
