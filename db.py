@@ -488,12 +488,17 @@ def activate_subscription(db: Session, user_id: int) -> bool:
         if user:
             logger.info(f"Activating subscription for user {user.telegram_id} (DB ID: {user_id})")
             now = datetime.now(timezone.utc)
+            # По умолчанию, новая подписка начинается сейчас
             start_date = now
-            if user.is_active_subscriber and user.subscription_expires_at:
-                if user.subscription_expires_at > now:
-                     start_date = user.subscription_expires_at
-                else:
-                     logger.warning(f"User {user.telegram_id} had expired subscription ({user.subscription_expires_at}) but was marked active. Starting new subscription from now.")
+
+            # Главная проверка: если у пользователя уже есть подписка, и она заканчивается в будущем...
+            if user.is_subscribed and user.subscription_expires_at and user.subscription_expires_at > now:
+                # ...то новую подписку нужно "прибавить" к концу старой.
+                start_date = user.subscription_expires_at
+                logger.info(f"User {user.telegram_id} already has an active subscription until {user.subscription_expires_at}. Extending from this date.")
+            else:
+                # Иначе подписка начинается с текущего момента.
+                logger.info(f"User {user.telegram_id} has no active subscription or it has expired. Starting new subscription from {now}.")
 
             expiry_date = start_date + timedelta(days=SUBSCRIPTION_DURATION_DAYS)
 
