@@ -2663,11 +2663,11 @@ async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE, from_cal
         )
 
         keyboard = [
-            [InlineKeyboardButton("📜 Условия использования", callback_data="view_tos")],
-            [InlineKeyboardButton("✅ Принять и оплатить", callback_data="confirm_pay")]
+            [InlineKeyboardButton("📜 условия использования", callback_data="view_tos")],
+            [InlineKeyboardButton("✅ принять и оплатить", callback_data="confirm_pay")]
         ]
         if is_callback:
-            keyboard.append([InlineKeyboardButton("⬅️ Назад в Меню", callback_data="show_menu")])
+            keyboard.append([InlineKeyboardButton("⬅️ назад в меню", callback_data="show_menu")])
         reply_markup = InlineKeyboardMarkup(keyboard)
 
     try:
