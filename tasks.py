@@ -14,7 +14,7 @@ from sqlalchemy import func, select, update as sql_update
 
 from db import (
     get_all_active_chat_bot_instances, SessionLocal, User, ChatBotInstance, BotInstance,
-    check_and_update_user_limits, get_db, PersonaConfig
+    get_db, PersonaConfig
 )
 from persona import Persona
 from utils import postprocess_response, extract_gif_links, escape_markdown_v2
