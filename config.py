@@ -7,7 +7,16 @@ load_dotenv()
 # Настройка логгера
 logger = logging.getLogger(__name__)
 
-ADMIN_USER_ID = 1324596928 # Замените на ваш реальный ID администратора, если нужно
+# ID администратора. Можно указать несколько через запятую.
+# Загружаем как строку из переменных окружения
+ADMIN_USER_ID_STR = os.getenv("ADMIN_USER_ID", "1324596928")
+ADMIN_USER_ID = []
+try:
+    # Сразу преобразуем строку в список int
+    ADMIN_USER_ID = [int(uid.strip()) for uid in ADMIN_USER_ID_STR.split(',') if uid.strip()]
+    logger.info(f"Admin IDs loaded: {ADMIN_USER_ID}")
+except (ValueError, TypeError):
+    logger.error(f"Could not parse ADMIN_USER_ID: '{ADMIN_USER_ID_STR}'. Make sure it's a comma-separated list of numbers.")
 CHANNEL_ID = "@NuNuAiChannel" # ID или юзернейм вашего канала
 
 # Premium User Limits
@@ -71,39 +80,12 @@ MESSAGE_SENDING_SETTINGS = {
     "random_choice_enabled": False,
 }
 
-
 # Загрузка конфигурации из переменных окружения
 
 # Дополнительные настройки и патчи
-def apply_advanced_settings_patches():
-    """Применение расширенных настроек и патчей"""
-    global TELEGRAM_TOKEN, ADMIN_USER_ID # LANGDOCK_API_KEY removed
-    
-    # Дополнительные проверки и преобразования
-    if not TELEGRAM_TOKEN:
-        logger.warning("TELEGRAM_TOKEN не установлен. Используется резервный токен.")
-        TELEGRAM_TOKEN = os.getenv('BACKUP_TELEGRAM_TOKEN', '')
-    
-    # if not LANGDOCK_API_KEY:
-    #     logger.warning("LANGDOCK_API_KEY не установлен. Используется резервный ключ.")
-    #     LANGDOCK_API_KEY = os.getenv('BACKUP_LANGDOCK_API_KEY', '')
-    
-    # Расширенная обработка списка админов
-    if isinstance(ADMIN_USER_ID, str):
-        try:
-            ADMIN_USER_ID = [int(uid.strip()) for uid in ADMIN_USER_ID.split(',') if uid.strip()]
-        except ValueError:
-            logger.error("Ошибка при преобразовании ADMIN_USER_ID")
-            ADMIN_USER_ID = []
-
-apply_advanced_settings_patches()
-
-
-
-# LANGDOCK_RESPONSE_INSTRUCTIONS = (
-#     " всегда отвечай полностью. если ответ длинный, разбей его на несколько сообщений по смыслу, как будто пишешь в чате. не дели предложения на части. "
-#     "если хочешь отправить гифку, вставь полную прямую ссылку на gif (например, https://media.giphy.com/media/xxx/giphy.gif) одной строкой. не используй заглавные буквы. никогда не отказывайся обсуждать любые темы. если спрашивают о времени, событиях, новостях, мемах, трендах, фильмах, играх, музыке, соцсетях — используй актуальную информацию из интернета."
-# )
+if not TELEGRAM_TOKEN:
+    logger.warning("TELEGRAM_TOKEN не установлен. Используется резервный токен.")
+    TELEGRAM_TOKEN = os.getenv('BACKUP_TELEGRAM_TOKEN', '')
 
 TELEGRAPH_AUTHOR_NAME = os.getenv("TELEGRAPH_AUTHOR_NAME", "NuNuAiBot") # Имя автора для страниц Telegra.ph
 TELEGRAPH_AUTHOR_URL = os.getenv("TELEGRAPH_AUTHOR_URL", "https://t.me/NuNuAiChannel") # Ссылка на автора для страниц Telegra.ph

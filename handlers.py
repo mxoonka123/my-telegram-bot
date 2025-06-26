@@ -3364,8 +3364,12 @@ async def edit_name_received(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 return ConversationHandler.END
     except Exception as e:
         logger.error(f"Error updating persona name for {persona_id}: {e}")
-        await update.message.reply_text(escape_markdown_v2("❌ Ошибка при сохранении имени."))
-        return await _try_return_to_wizard_menu(update, context, update.effective_user.id, persona_id)
+        await update.message.reply_text("❌ Ошибка при сохранении имени.", parse_mode=None)
+        with get_db() as db:
+            persona = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
+            if persona:
+                return await _show_edit_wizard_menu(update, context, persona)
+        return ConversationHandler.END
 
 # --- Edit Description ---
 async def edit_description_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -3467,8 +3471,12 @@ async def edit_description_received(update: Update, context: ContextTypes.DEFAUL
                 return ConversationHandler.END
     except Exception as e:
         logger.error(f"Error updating persona description for {persona_id}: {e}")
-        await update.message.reply_text(escape_markdown_v2("❌ Ошибка при сохранении описания."))
-        return await _handle_back_to_wizard_menu(update, context, persona_id)
+        await update.message.reply_text("❌ Ошибка при сохранении описания.", parse_mode=None)
+        with get_db() as db:
+            persona = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
+            if persona:
+                return await _show_edit_wizard_menu(update, context, persona)
+        return ConversationHandler.END
 
 # --- Edit Communication Style ---
 async def edit_comm_style_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -3511,8 +3519,12 @@ async def edit_comm_style_received(update: Update, context: ContextTypes.DEFAULT
                     return ConversationHandler.END
         except Exception as e:
             logger.error(f"Error setting communication_style for {persona_id}: {e}")
-            await query.edit_message_text(escape_markdown_v2("❌ Ошибка при сохранении стиля общения."))
-            return await _try_return_to_wizard_menu(update, context, query.from_user.id, persona_id)
+            await query.edit_message_text("❌ Ошибка при сохранении стиля общения.", parse_mode=None)
+            with get_db() as db:
+                persona = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
+                if persona:
+                    return await _show_edit_wizard_menu(update, context, persona)
+            return ConversationHandler.END
     else:
         logger.warning(f"Unknown callback in edit_comm_style_received: {data}")
         return EDIT_COMM_STYLE
@@ -3704,8 +3716,12 @@ async def edit_verbosity_received(update: Update, context: ContextTypes.DEFAULT_
                     return ConversationHandler.END
         except Exception as e:
             logger.error(f"Error setting verbosity_level for {persona_id}: {e}")
-            await query.edit_message_text(escape_markdown_v2("❌ Ошибка при сохранении разговорчивости."))
-            return await _try_return_to_wizard_menu(update, context, query.from_user.id, persona_id)
+            await query.edit_message_text("❌ Ошибка при сохранении разговорчивости.", parse_mode=None)
+            with get_db() as db:
+                persona = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
+                if persona:
+                    return await _show_edit_wizard_menu(update, context, persona)
+            return ConversationHandler.END
     else:
         logger.warning(f"Unknown callback in edit_verbosity_received: {data}")
         return EDIT_VERBOSITY
@@ -3762,8 +3778,12 @@ async def edit_group_reply_received(update: Update, context: ContextTypes.DEFAUL
                     return ConversationHandler.END
         except Exception as e:
             logger.error(f"Error setting group_reply_preference for {persona_id}: {e}")
-            await query.edit_message_text(escape_markdown_v2("❌ Ошибка при сохранении настройки ответа в группе."))
-            return await _try_return_to_wizard_menu(update, context, query.from_user.id, persona_id)
+            await query.edit_message_text("❌ Ошибка при сохранении настройки ответа в группе.", parse_mode=None)
+            with get_db() as db:
+                persona = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
+                if persona:
+                    return await _show_edit_wizard_menu(update, context, persona)
+            return ConversationHandler.END
     else:
         logger.warning(f"Unknown callback in edit_group_reply_received: {data}")
         return EDIT_GROUP_REPLY
@@ -3870,8 +3890,12 @@ async def edit_media_reaction_received(update: Update, context: ContextTypes.DEF
                     return ConversationHandler.END
         except Exception as e:
             logger.error(f"Error setting media_reaction for {persona_id}: {e}")
-            await query.edit_message_text(escape_markdown_v2("❌ Ошибка при сохранении настройки реакции на медиа."))
-            return await _try_return_to_wizard_menu(update, context, query.from_user.id, persona_id)
+            await query.edit_message_text("❌ Ошибка при сохранении настройки реакции на медиа.", parse_mode=None)
+            with get_db() as db:
+                persona = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
+                if persona:
+                    return await _show_edit_wizard_menu(update, context, persona)
+            return ConversationHandler.END
     else:
         logger.warning(f"Unknown callback in edit_media_reaction_received: {data}")
         return EDIT_MEDIA_REACTION
@@ -4092,8 +4116,12 @@ async def edit_mood_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     except Exception as e:
         logger.error(f"DB Error fetching persona in edit_mood_choice: {e}", exc_info=True)
         await query.answer("❌ Ошибка базы данных", show_alert=True)
-        await context.bot.send_message(chat_id, error_db, reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2)
-        return await _try_return_to_wizard_menu(update, context, user_id, persona_id)
+        await query.edit_message_text("❌ Ошибка базы данных.", parse_mode=None)
+        with get_db() as db:
+            persona = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
+            if persona:
+                return await _show_edit_wizard_menu(update, context, persona)
+        return ConversationHandler.END
 
     await query.answer()
 
