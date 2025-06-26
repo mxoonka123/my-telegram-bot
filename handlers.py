@@ -2749,63 +2749,57 @@ async def confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     tos_url = context.bot_data.get('tos_url')
     yookassa_ready = bool(YOOKASSA_SHOP_ID and YOOKASSA_SECRET_KEY and YOOKASSA_SHOP_ID.isdigit())
 
-    error_payment_unavailable = escape_markdown_v2("❌ к сожалению, функция оплаты сейчас недоступна \\(проблема с настройками\\)\\. 😥")
-    info_confirm = escape_markdown_v2(
-        "✅ отлично\\!\n\n"
-        "нажимая кнопку 'Оплатить' ниже, вы подтверждаете, что ознакомились и полностью согласны с "
-        "пользовательским соглашением\\."
-        "\n\n👇"
+    # --- УПРОЩЕНИЕ: Готовим простой текст без Markdown ---
+    info_text_raw = (
+        "✅ отлично!\n\n"
+        "нажимая кнопку 'оплатить' ниже, вы подтверждаете, что ознакомились и полностью согласны с "
+        "пользовательским соглашением.\n\n"
+        "👇"
     )
-    text = ""
-    reply_markup = None
+    error_payment_unavailable_raw = "❌ к сожалению, функция оплаты сейчас недоступна (проблема с настройками). 😥"
+
+    text_to_send = ""
+    keyboard_rows = []
 
     if not yookassa_ready:
-        text = error_payment_unavailable
-        keyboard = [[InlineKeyboardButton("⬅️ Назад", callback_data="subscribe_info")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
+        text_to_send = error_payment_unavailable_raw
+        keyboard_rows.append([InlineKeyboardButton("⬅️ назад", callback_data="subscribe_info")])
         logger.warning("Yookassa credentials not set or shop ID is not numeric in confirm_pay handler.")
     else:
-        info_confirm_raw = (
-            "✅ отлично!\n\n"
-            "нажимая кнопку 'Оплатить' ниже, вы подтверждаете, что ознакомились и полностью согласны с "
-            "пользовательским соглашением.\n\n"
-            "👇"
-        )
-        text = escape_markdown_v2(info_confirm_raw)
+        text_to_send = info_text_raw
         price_raw = f"{SUBSCRIPTION_PRICE_RUB:.0f}"
         currency_raw = SUBSCRIPTION_CURRENCY
-        # Экранируем символы в тексте кнопки, если они там могут быть (на всякий случай)
-        button_text_raw = f"💳 Оплатить {price_raw} {currency_raw}"
-        button_text = button_text_raw # Кнопки не требуют Markdown экранирования
+        # --- ИСПРАВЛЕНИЕ: Текст на кнопке тоже строчными буквами ---
+        button_text = f"💳 оплатить {price_raw} {currency_raw}"
 
-        keyboard = [
-            [InlineKeyboardButton(button_text, callback_data="subscribe_pay")]
-        ]
-        # URL в кнопке не требует экранирования
+        keyboard_rows.append([InlineKeyboardButton(button_text, callback_data="subscribe_pay")])
+
         if tos_url:
-            keyboard.append([InlineKeyboardButton("📜 Условия использования (прочитано)", url=tos_url)])
+            keyboard_rows.append([InlineKeyboardButton("📜 условия использования (прочитано)", url=tos_url)])
         else:
-            # Текст кнопки не требует спец. экранирования, т.к. не MD
-            keyboard.append([InlineKeyboardButton("📜 Условия (ошибка загрузки)", callback_data="view_tos")])
+            keyboard_rows.append([InlineKeyboardButton("📜 условия (ошибка загрузки)", callback_data="view_tos")])
 
-        keyboard.append([InlineKeyboardButton("⬅️ Назад", callback_data="subscribe_info")])
-        reply_markup = InlineKeyboardMarkup(keyboard)
+        keyboard_rows.append([InlineKeyboardButton("⬅️ назад", callback_data="subscribe_info")])
+
+    reply_markup = InlineKeyboardMarkup(keyboard_rows)
 
     try:
-        # Используем полную версию сообщения и MarkdownV2
-        current_text_to_send = info_confirm
-        logger.debug(f"Attempting to edit message for confirm_pay. Text: '{current_text_to_send[:100]}...', ParseMode: MDv2")
-        if query.message.text != current_text_to_send or query.message.reply_markup != reply_markup:
+        # --- ИСПРАВЛЕНИЕ: Отправляем как простой текст ---
+        if query.message.text != text_to_send or query.message.reply_markup != reply_markup:
             await query.edit_message_text(
-                text=current_text_to_send,
+                text=text_to_send,
                 reply_markup=reply_markup,
                 disable_web_page_preview=True,
-                parse_mode=ParseMode.MARKDOWN_V2
+                parse_mode=None  # <--- Устраняет ошибку
             )
         else:
             await query.answer()
     except Exception as e:
-        logger.error(f"Failed to show final payment confirmation to user {user_id}: {e}")
+        logger.error(f"Failed to show final payment confirmation to user {user_id}: {e}", exc_info=True)
+        try:
+            await query.answer("произошла ошибка", show_alert=True)
+        except Exception:
+            pass
 
 
 async def generate_payment_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
