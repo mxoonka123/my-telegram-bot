@@ -3322,7 +3322,7 @@ async def edit_name_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     persona_id = context.user_data.get('edit_persona_id')
     with get_db() as db:
         current_name = db.query(DBPersonaConfig.name).filter(DBPersonaConfig.id == persona_id).scalar() or "N/A"
-    prompt_text = escape_markdown_v2(f"✏️ Введите новое имя (текущее: '{current_name}', 2-50 симв.):")
+    prompt_text = escape_markdown_v2(f"✏️ введите новое имя (текущее: '{current_name}', 2-50 симв.):")
     keyboard = [[InlineKeyboardButton("⬅️ Назад", callback_data="back_to_wizard_menu")]]
     await _send_prompt(update, context, prompt_text, InlineKeyboardMarkup(keyboard))
     return EDIT_NAME
@@ -3352,7 +3352,7 @@ async def edit_name_received(update: Update, context: ContextTypes.DEFAULT_TYPE)
             if persona:
                 persona.name = new_name
                 db.commit()
-                await update.message.reply_text(escape_markdown_v2(f"✅ Имя обновлено на '{new_name}'."))
+                await update.message.reply_text(escape_markdown_v2(f"✅ имя обновлено на '{new_name}'."))
                 # Delete the prompt message before showing menu
                 prompt_msg_id = context.user_data.pop('last_prompt_message_id', None)
                 if prompt_msg_id:
@@ -3378,7 +3378,7 @@ async def edit_description_prompt(update: Update, context: ContextTypes.DEFAULT_
     current_desc_preview = (current_desc[:100] + '...') if len(current_desc) > 100 else current_desc
     
     # Создаем простой текст без специальных символов
-    prompt_text = f"✏️ Введите новое описание (макс. 1500 символов).\n\nТекущее (начало):\n{current_desc_preview}"
+    prompt_text = f"✏️ введите новое описание (макс. 1500 символов).\n\nтекущее (начало):\n{current_desc_preview}"
     
     # Создаем клавиатуру с кнопкой Назад
     keyboard = [[InlineKeyboardButton("⬅️ Назад", callback_data="back_to_wizard_menu")]]
@@ -3456,7 +3456,7 @@ async def edit_description_received(update: Update, context: ContextTypes.DEFAUL
             if persona:
                 persona.description = new_desc
                 db.commit()
-                await update.message.reply_text(escape_markdown_v2("✅ Описание обновлено."))
+                await update.message.reply_text(escape_markdown_v2("✅ описание обновлено."))
                 prompt_msg_id = context.user_data.pop('last_prompt_message_id', None)
                 if prompt_msg_id:
                     try: await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=prompt_msg_id)
@@ -3561,9 +3561,9 @@ async def edit_max_messages_prompt(update: Update, context: ContextTypes.DEFAULT
         "many": f"📚 побольше{PREMIUM_STAR if not is_premium_user else ''}",
         "random": f"🎲 случайно{PREMIUM_STAR if not is_premium_user else ''}"
     }
-    current_display = display_map.get(current_value_str, "Стандартно")
+    current_display = display_map.get(current_value_str, "стандартно")
 
-    prompt_text = escape_markdown_v2(f"🗨️ Количество сообщений в ответе (тек.: {current_display}):")
+    prompt_text = escape_markdown_v2(f"🗨️ количество сообщений в ответе (тек.: {current_display}):")
 
     keyboard = [
         [
@@ -3715,7 +3715,7 @@ async def edit_group_reply_prompt(update: Update, context: ContextTypes.DEFAULT_
     persona_id = context.user_data.get('edit_persona_id')
     with get_db() as db:
         current = db.query(DBPersonaConfig.group_reply_preference).filter(DBPersonaConfig.id == persona_id).scalar() or "mentioned_or_contextual"
-    prompt_text = escape_markdown_v2(f"👥 Как отвечать в группах (текущее: {current}):")
+    prompt_text = escape_markdown_v2(f"👥 как отвечать в группах (текущее: {current}):")
     keyboard = [
         [InlineKeyboardButton(f"{'✅ ' if current == 'always' else ''}📢 Всегда", callback_data="set_group_reply_always")],
         [InlineKeyboardButton(f"{'✅ ' if current == 'mentioned_only' else ''}🎯 Только по упоминанию (@)", callback_data="set_group_reply_mentioned_only")],
@@ -3792,8 +3792,8 @@ async def edit_media_reaction_prompt(update: Update, context: ContextTypes.DEFAU
     # Совместимость со старыми значениями
     if current == "all": current = "text_and_all_media"
     
-    current_display_text = media_react_map.get(current, "Только текст") # Fallback
-    prompt_text = escape_markdown_v2(f"🖼️ Как реагировать на текст и медиа (текущее: {current_display_text}):")
+    current_display_text = media_react_map.get(current, "только текст") # Fallback
+    prompt_text = escape_markdown_v2(f"🖼️ как реагировать на текст и медиа (текущее: {current_display_text}):")
     
     keyboard_buttons = []
     for key, text_val in media_react_map.items():
