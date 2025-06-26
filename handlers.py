@@ -2616,7 +2616,41 @@ async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE, from_cal
             await send_subscription_required_message(update, context)
             return
 
+    # --- НАЧАЛО ИЗМЕНЕНИЙ ---
+    with get_db() as db:
+        user_db = db.query(User).filter(User.telegram_id == user_id).first()
+        if user_db and user_db.is_active_subscriber:
+            # Пользователь уже подписан, показываем ему статус
+            expires_text_md = ""
+            if user_db.subscription_expires_at:
+                if user_db.subscription_expires_at > datetime.now(timezone.utc) + timedelta(days=365*10):
+                    expires_text_md = escape_markdown_v2("бессрочно")
+                else:
+                    date_str = user_db.subscription_expires_at.strftime('%d.%m.%Y %H:%M')
+                    expires_text_md = f"до *{escape_markdown_v2(date_str)}* UTC"
+            else:
+                expires_text_md = escape_markdown_v2("бессрочно (нет даты окончания)")
+
+            status_text_md = (
+                f"⭐ *ваша премиум подписка активна\\!*\n\n"
+                f"срок действия: {expires_text_md}\n\n"
+                f"спасибо за вашу поддержку\\! 🎉"
+            )
+            keyboard = [[InlineKeyboardButton("⬅️ назад в меню", callback_data="show_menu")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+
+            try:
+                if is_callback:
+                    await update.callback_query.edit_message_text(status_text_md, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
+                else:
+                    await message_to_update_or_reply.reply_text(status_text_md, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
+            except Exception as e:
+                logger.error(f"Failed to send 'already subscribed' message to user {user_id}: {e}")
+            return # Завершаем выполнение функции
+
+    # Если у пользователя нет активной подписки, продолжаем со старой логикой
     yookassa_ready = bool(YOOKASSA_SHOP_ID and YOOKASSA_SECRET_KEY and YOOKASSA_SHOP_ID.isdigit())
+    # --- КОНЕЦ ИЗМЕНЕНИЙ ---
 
     error_payment_unavailable = escape_markdown_v2("❌ к сожалению, функция оплаты сейчас недоступна \\(проблема с настройками\\)\\. 😥")
 
@@ -2743,6 +2777,22 @@ async def confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if not query or not query.message: return
     user_id = query.from_user.id
     logger.info(f"User {user_id} confirmed ToS agreement, proceeding to payment button.")
+
+    # --- НАЧАЛО ИЗМЕНЕНИЙ: Проверка на активную подписку ---
+    with get_db() as db:
+        user_db = db.query(User).filter(User.telegram_id == user_id).first()
+        if user_db and user_db.is_active_subscriber:
+            await query.answer("⭐ У вас уже есть активная подписка!", show_alert=True)
+            # Можно дополнительно отредактировать сообщение, чтобы убрать кнопки оплаты
+            try:
+                await query.edit_message_text(
+                    text="⭐ У вас уже есть активная премиум подписка.",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ назад в меню", callback_data="show_menu")]])
+                )
+            except Exception:
+                pass # Если не получилось, ничего страшного
+            return
+    # --- КОНЕЦ ИЗМЕНЕНИЙ ---
 
     tos_url = context.bot_data.get('tos_url')
     yookassa_ready = bool(YOOKASSA_SHOP_ID and YOOKASSA_SECRET_KEY and YOOKASSA_SHOP_ID.isdigit())
