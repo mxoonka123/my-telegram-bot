@@ -3236,10 +3236,11 @@ async def fixed_show_edit_wizard_menu(update: Update, context: ContextTypes.DEFA
             [InlineKeyboardButton("✅ завершить", callback_data="finish_edit")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        msg_text_raw = f"""⚙️ *настройка личности: {persona_config.name}* (id: `{persona_id}`)
+        msg_text_raw = f"""⚙️ *настройка личности: {escape_markdown_v2(persona_config.name)}* (id: `{persona_id}`)
 
 выберите, что изменить:"""
-        msg_text = escape_markdown_v2(msg_text_raw)
+        # Убираем лишнее экранирование всей строки, используем как есть
+        msg_text = msg_text_raw
         
         sent_message = None
         # Получаем ID *актуального* меню настроек, если оно было сохранено для ТЕКУЩЕЙ сессии
