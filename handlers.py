@@ -1342,6 +1342,26 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
                 db.commit()
                 return
 
+            # --- НАЧАЛО: Проверка лимитов перед отправкой в LLM ---
+            limit_exceeded, limit_message = check_and_update_user_limits(owner_user, media_type)
+            if limit_exceeded:
+                logger.warning(f"User {user_id} exceeded {media_type} limit. Message: {limit_message}")
+                # Используем parse_mode=None для простого текста
+                await update.message.reply_text(limit_message, parse_mode=None)
+                return # Прерываем выполнение, если лимит превышен
+            # --- КОНЕЦ: Проверка лимитов ---
+
+            # --- НОВОЕ МЕСТО ДЛЯ УВЕЛИЧЕНИЯ СЧЕТЧИКОВ ---
+            # Увеличиваем счетчик сразу после проверки лимита, ДО отправки запроса к LLM.
+            # Это гарантирует, что попытка будет засчитана.
+            if media_type == "photo":
+                owner_user.monthly_photo_count += 1
+                logger.info(f"Incrementing photo count for user {owner_user.id} to {owner_user.monthly_photo_count} (before LLM call).")
+            elif media_type == "voice":
+                owner_user.monthly_message_count += 1
+                logger.info(f"Incrementing message count for user {owner_user.id} to {owner_user.monthly_message_count} (via voice, before LLM call).")
+            # --- КОНЕЦ НОВОГО МЕСТА ---
+
             # *** ИСПРАВЛЕНИЕ: Получаем историю и обрабатываем временные разрывы ***
             history_with_timestamps = get_context_for_chat_bot(db, persona.chat_instance.id)
             context_for_ai = _process_history_for_time_gaps(history_with_timestamps)
