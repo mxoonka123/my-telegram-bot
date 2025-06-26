@@ -355,13 +355,11 @@ def is_admin(user_id: int) -> bool:
 (EDIT_WIZARD_MENU, # Main wizard menu
 EDIT_NAME, EDIT_DESCRIPTION, EDIT_COMM_STYLE, EDIT_VERBOSITY,
 EDIT_GROUP_REPLY, EDIT_MEDIA_REACTION,
-EDIT_MOODS_ENTRY, # Entry point for mood sub-conversation
-# Mood Editing Sub-Conversation States
-EDIT_MOOD_CHOICE, EDIT_MOOD_NAME, EDIT_MOOD_PROMPT, DELETE_MOOD_CONFIRM,
 # Delete Persona Conversation State
 DELETE_PERSONA_CONFIRM,
-EDIT_MAX_MESSAGES, # EDIT_MESSAGE_VOLUME removed
-) = range(14) # Total 14 states now
+EDIT_MAX_MESSAGES,
+# EDIT_MESSAGE_VOLUME removed
+) = range(9) # Total 9 states now
 
 # --- Terms of Service Text ---
 TOS_TEXT_RAW = """
@@ -3220,18 +3218,7 @@ async def edit_wizard_menu_handler(update: Update, context: ContextTypes.DEFAULT
             persona_config = db_session.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
             return await _show_edit_wizard_menu(update, context, persona_config) if persona_config else ConversationHandler.END
             
-    if data == "edit_wizard_moods":
-        with get_db() as db_session:
-            persona_for_moods = db_session.query(DBPersonaConfig).options(selectinload(DBPersonaConfig.owner)).filter(DBPersonaConfig.id == persona_id).first()
-            if not persona_for_moods:
-                if query.message: await query.edit_message_text("", reply_markup=None)
-                return ConversationHandler.END
-            owner = persona_for_moods.owner
-            if owner and (owner.is_active_subscriber or is_admin(user_id)):
-                return await edit_moods_entry(update, context)
-            else:
-                await query.answer("", show_alert=True)
-                return await _show_edit_wizard_menu(update, context, persona_for_moods)
+    
                 
     if data == "finish_edit": return await edit_persona_finish(update, context)
     if data == "back_to_wizard_menu": # Возврат из подменю в главное меню
@@ -3879,67 +3866,7 @@ async def edit_media_reaction_received(update: Update, context: ContextTypes.DEF
         logger.warning(f"Unknown callback in edit_media_reaction_received: {data}")
         return EDIT_MEDIA_REACTION
 
-# --- Mood Editing Sub-Conversation ---
-async def edit_moods_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Entry point for mood editing sub-conversation."""
-    query = update.callback_query
-    persona_id = context.user_data.get('edit_persona_id')
-    user_id = query.from_user.id
 
-    with get_db() as db:
-        owner = db.query(User).join(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
-        if not owner or not (owner.is_active_subscriber or is_admin(user_id)):
-            await query.answer("⭐ Доступно по подписке", show_alert=True)
-            persona = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
-            return await _show_edit_wizard_menu(update, context, persona)
-
-    logger.info(f"User {user_id} entering mood editing for persona {persona_id}.")
-    # Pass control to the mood menu function
-    with get_db() as db:
-        persona_config = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
-        if persona_config:
-            return await edit_moods_menu(update, context, persona_config=persona_config)
-        else: # Should not happen if check passed
-            logger.error(f"Persona {persona_id} not found after premium check in edit_moods_entry.")
-            return await _try_return_to_wizard_menu(update, context, user_id, persona_id)
-
-# --- Markdown Safety Fixes ---
-def fix_markdown_prompt_strings(markdown_strings=None):
-    """Исправляет все строки с подсказками для корректного экранирования в Markdown V2"""
-    global prompt_new_name, prompt_new_prompt_fmt_raw, prompt_confirm_delete_fmt_raw
-    global prompt_delete_successful_fmt_raw, prompt_add_successful_fmt_raw, prompt_edit_successful_fmt_raw
-    global error_generic_mood_edit, error_name_length, error_name_regex, error_name_exists, error_no_moods
-    global error_mood_not_found, error_db
-    
-    # Экранируем все исходные строки
-    prompt_new_name = "введи название нового настроения (1-30 символов, буквы/цифры/дефис/подчерк., без пробелов):"
-    prompt_new_prompt_fmt_raw = "введи описание для настроения {mood_name}:"
-    prompt_confirm_delete_fmt_raw = "Вы уверены, что хотите удалить настроение {mood_name}?"
-    prompt_delete_successful_fmt_raw = "Настроение {mood_name} успешно удалено."
-    prompt_add_successful_fmt_raw = "Настроение {mood_name} успешно добавлено."
-    prompt_edit_successful_fmt_raw = "Настроение {mood_name} успешно изменено."
-    error_generic_mood_edit = "При редактировании настроений произошла ошибка."
-    error_name_length = "Название должно быть от 1 до 30 символов."
-    error_name_regex = "Название может содержать только буквы, цифры, дефис и подчеркивание (без пробелов)."
-    error_name_exists = "Такое настроение уже существует. Выберите другое название."
-    error_no_moods = "У этой личности еще нет настроений. Добавьте первое!"
-    error_mood_not_found = "Настроение не найдено."
-    error_db = "Ошибка базы данных при работе с настроениями."
-
-# Инициализация переменных перед вызовом
-prompt_new_name = "введи название нового настроения (1-30 символов, буквы/цифры/дефис/подчерк., без пробелов):"
-prompt_new_prompt_fmt_raw = "введи описание для настроения {mood_name}:"
-prompt_confirm_delete_fmt_raw = "Вы уверены, что хотите удалить настроение {mood_name}?"
-prompt_delete_successful_fmt_raw = "Настроение {mood_name} успешно удалено."
-prompt_add_successful_fmt_raw = "Настроение {mood_name} успешно добавлено."
-prompt_edit_successful_fmt_raw = "Настроение {mood_name} успешно изменено."
-error_generic_mood_edit = "При редактировании настроений произошла ошибка."
-error_name_length = "Название должно быть от 1 до 30 символов."
-error_name_regex = "Название может содержать только буквы, цифры, дефис и подчеркивание (без пробелов)."
-error_name_exists = "Такое настроение уже существует. Выберите другое название."
-error_no_moods = "У этой личности еще нет настроений. Добавьте первое!"
-error_mood_not_found = "Настроение не найдено."
-error_db = "Ошибка базы данных при работе с настроениями."
 
 async def _show_edit_wizard_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, persona_config: DBPersonaConfig) -> int:
     """Отображает главное меню настройки персоны. Отправляет новое или редактирует существующее."""
@@ -3993,7 +3920,7 @@ async def _show_edit_wizard_menu(update: Update, context: ContextTypes.DEFAULT_T
             [InlineKeyboardButton(f"👥 ответы в группе ({group_reply_map.get(group_reply, '?')})", callback_data="edit_wizard_group_reply")],
             [InlineKeyboardButton(f"🖼️ реакция на медиа ({media_react_map.get(media_react, '?')})", callback_data="edit_wizard_media_reaction")],
             [InlineKeyboardButton(f"🗨️ макс. сообщ. ({display_for_max_msgs_button})", callback_data="edit_wizard_max_msgs")],
-            [InlineKeyboardButton(f"🎭 настроения{star if not is_premium else ''}", callback_data="edit_wizard_moods")],
+            # [InlineKeyboardButton(f"🎭 настроения{star if not is_premium else ''}", callback_data="edit_wizard_moods")], # <-- ЗАКОММЕНТИРОВАНО
             [InlineKeyboardButton("✅ завершить", callback_data="finish_edit")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
