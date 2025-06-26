@@ -482,50 +482,32 @@ def get_or_create_user(db: Session, telegram_id: int, username: str = None) -> U
     return user
 
 def activate_subscription(db: Session, user_id: int) -> bool:
-    """Activates subscription for a user based on internal DB ID and commits."""
+    """Activates subscription for a user. Each activation sets a new 30-day period from now."""
     user = None
     try:
-        # with_for_update() блокирует строку пользователя до конца транзакции,
-        # что идеально подходит для защиты от гонки запросов.
+        # Блокируем строку пользователя, чтобы избежать гонки запросов от двух вебхуков
         user = db.query(User).filter(User.id == user_id).with_for_update().first()
         if user:
-            # --- НОВАЯ ЗАЩИТА ---
-            # Если подписка уже продлена очень далеко в будущее (например, больше чем на 2 месяца от сегодня),
-            # то, скорее всего, это повторный вебхук. Игнорируем его.
-            # (SUBSCRIPTION_DURATION_DAYS * 2) - это запас на 2 периода подписки
-            if user.subscription_expires_at and user.subscription_expires_at > datetime.now(timezone.utc) + timedelta(days=SUBSCRIPTION_DURATION_DAYS * 2):
-                logger.warning(f"Subscription for user {user.telegram_id} seems to be already extended far in the future ({user.subscription_expires_at}). Ignoring duplicate activation call.")
-                return True # Возвращаем True, чтобы YooKassa получила ответ 200 OK, но ничего не делаем.
-
-            logger.info(f"Activating subscription for user {user.telegram_id} (DB ID: {user_id})")
             now = datetime.now(timezone.utc)
-            start_date = now
-
-            # Главная проверка: если у пользователя уже есть подписка, и она заканчивается в будущем...
-            if user.is_subscribed and user.subscription_expires_at and user.subscription_expires_at > now:
-                # ...то новую подписку нужно "прибавить" к концу старой.
-                start_date = user.subscription_expires_at
-                logger.info(f"User {user.telegram_id} already has an active subscription until {user.subscription_expires_at}. Extending from this date.")
-            else:
-                # Иначе подписка начинается с текущего момента.
-                logger.info(f"User {user.telegram_id} has no active subscription or it has expired. Starting new subscription from {now}.")
             
-            # --- ИЗМЕНЕНИЕ: Используем relativedelta для добавления месяцев ---
-            # Предположим, что SUBSCRIPTION_DURATION_DAYS = 30 означает 1 месяц
-            # Если 60 - 2 месяца и т.д.
-            num_months = round(SUBSCRIPTION_DURATION_DAYS / 30)
-            if num_months < 1:
-                num_months = 1 # Минимум 1 месяц
+            # --- НОВАЯ, УПРОЩЕННАЯ ЛОГИКА ---
+            # Каждая новая покупка устанавливает дату окончания на 30 дней от ТЕКУЩЕГО МОМЕНТА.
+            # Старая дата окончания просто перезаписывается.
+            expiry_date = now + timedelta(days=SUBSCRIPTION_DURATION_DAYS)
             
-            expiry_date = start_date + relativedelta(months=num_months)
-            # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+            logger.info(
+                f"Activating/resetting subscription for user {user.telegram_id} (DB ID: {user_id}). "
+                f"Old expiry: {user.subscription_expires_at}. New expiry: {expiry_date}."
+            )
 
             user.is_subscribed = True
             user.subscription_expires_at = expiry_date
-            user.daily_message_count = 0
-            user.last_message_reset = now
+            # Также обнуляем счетчик сообщений при покупке подписки
+            user.monthly_message_count = 0
+            user.message_count_reset_at = now
+            
             db.commit()
-            logger.info(f"Subscription activated/extended for user {user.telegram_id} until {expiry_date}")
+            logger.info(f"Subscription for user {user.telegram_id} is now active until {expiry_date}")
             return True
         else:
              logger.warning(f"User with DB ID {user_id} not found for subscription activation.")
