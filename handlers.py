@@ -1903,8 +1903,8 @@ async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             logger.warning(f"User {user_id} clearing context for ChatBotInstance {chat_bot_instance_id} (Persona '{persona_name_raw}') in chat {chat_id_str}.")
 
             # Создаем SQL запрос на удаление
-            from sqlalchemy import text
-            stmt = text(f"DELETE FROM chat_context WHERE chat_bot_instance_id = {chat_bot_instance_id}")
+                        # БЕЗОПАСНОЕ УДАЛЕНИЕ через SQLAlchemy ORM
+            stmt = delete(ChatContext).where(ChatContext.chat_bot_instance_id == chat_bot_instance_id)
             result = db.execute(stmt)
             deleted_count = result.rowcount
             db.commit()
@@ -1938,7 +1938,7 @@ async def create_persona(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     await context.bot.send_chat_action(chat_id=chat_id_str, action=ChatAction.TYPING)
 
-    usage_text = escape_markdown_v2("формат: `/createpersona <имя> [описание]`\n_имя обязательно, описание нет._")
+    usage_text = "формат: /createpersona <имя> [описание]\n\nсовет: подробное описание напрямую влияет на характер и поведение личности."
     error_name_len = escape_markdown_v2("❌ имя личности: 2\\-50 символов.")
     error_desc_len = escape_markdown_v2("❌ описание: до 1500 символов.")
     error_limit_reached_fmt_raw = "упс! 😕 достигнут лимит личностей ({current_count}/{limit}) для статуса {status_text}\\. чтобы создавать больше, используй /subscribe"
@@ -1949,7 +1949,7 @@ async def create_persona(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     args = context.args
     if not args:
-        await update.message.reply_text(usage_text, parse_mode=ParseMode.MARKDOWN_V2)
+        await update.message.reply_text(usage_text, parse_mode=None)
         return
     persona_name = args[0]
     persona_description = " ".join(args[1:]) if len(args) > 1 else None
@@ -2062,11 +2062,10 @@ async def my_personas(update: Union[Update, CallbackQuery], context: ContextType
     error_general = escape_markdown_v2("❌ произошла ошибка при получении списка личностей.")
     error_user_not_found = escape_markdown_v2("❌ ошибка: не удалось найти пользователя.")
     info_no_personas_fmt_raw = (
-        "У тебя пока нет личностей ({count}/{limit}).\n"
-        "Создай первую: `/createpersona <имя> [описание]`\n\n"
-        "Подробное описание помогает личности лучше понять свою роль и вести себя более последовательно."
+        "у тебя пока нет личностей ({count}/{limit}).\n"
+        "создай первую: /createpersona <имя> [описание]"
     )
-    info_list_header_fmt_raw = "🎭 *твои личности* \\({count}/{limit}\\):"
+    info_list_header_fmt_raw = "🎭 твои личности ({count}/{limit}):"
     fallback_text_plain_parts = []
 
     final_text_to_send = ""
@@ -2096,7 +2095,7 @@ async def my_personas(update: Union[Update, CallbackQuery], context: ContextType
                     count=str(persona_count),
                     limit=str(persona_limit)
                 )
-                final_text_to_send = escape_markdown_v2(raw_text_no_personas)
+                final_text_to_send = raw_text_no_personas
                 
                 fallback_text_plain_parts.append(
                     f"У тебя пока нет личностей ({persona_count}/{persona_limit}).\n"
@@ -2115,9 +2114,9 @@ async def my_personas(update: Union[Update, CallbackQuery], context: ContextType
                 fallback_text_plain_parts.append(f"Твои личности ({persona_count}/{persona_limit}):")
 
                 for p in personas:
-                    persona_text = f"\n👤 *{escape_markdown_v2(p.name)}* \\(ID: `{p.id}`\\)"
+                    persona_text = f"\n👤 {p.name} (id: {p.id})"
                     message_lines.append(persona_text)
-                    fallback_text_plain_parts.append(f"\n- {p.name} (ID: {p.id})")
+                    fallback_text_plain_parts.append(f"\n- {p.name} (id: {p.id})")
                     edit_cb = f"edit_persona_{p.id}"
                     delete_cb = f"delete_persona_{p.id}"
                     add_cb = f"add_bot_{p.id}"
@@ -2160,7 +2159,7 @@ async def my_personas(update: Union[Update, CallbackQuery], context: ContextType
             chat_id=chat_id, 
             text=final_text_to_send, 
             reply_markup=final_reply_markup, 
-            parse_mode=final_parse_mode
+            parse_mode=None # Отправляем как простой текст
         )
 
     except TelegramError as e_send:

@@ -103,17 +103,17 @@ async def check_subscription_expiry_task(context: ContextTypes.DEFAULT_TYPE):
                  text_raw_part2 = "\n\nЧтобы продолжить пользоваться всеми возможностями, вы можете снова оформить подписку командой `/subscribe`."
 
                  text_to_send = (
-                     escape_markdown_v2(text_raw_part1) +
-                     f"*Текущие лимиты \\(Free\\):*\\n" +
-                     f"Сообщения \\(в мес\\.\\): `{monthly_limit_str}`\n" +
-                     f"Личности: `{persona_limit_str}`" +
-                     escape_markdown_v2(text_raw_part2)
+                     text_raw_part1 +
+                     f"текущие лимиты (free):\n" +
+                     f"• сообщения (в мес.): {monthly_limit_str}\n" +
+                     f"• личности: {persona_limit_str}" +
+                     text_raw_part2
                  )
                  # --- КОНЕЦ ИСПРАВЛЕННОГО БЛОКА V2 ---
                  await application.bot.send_message(
                      chat_id=telegram_id,
                      text=text_to_send,
-                     parse_mode=ParseMode.MARKDOWN_V2
+                     parse_mode=None
                  )
                  logger.info(f"Sent expiry notification to user {telegram_id}.")
                  await asyncio.sleep(0.1)
