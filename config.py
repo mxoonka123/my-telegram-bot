@@ -64,6 +64,8 @@ SUBSCRIPTION_CURRENCY = "RUB"
 SUBSCRIPTION_DURATION_DAYS = 30
 FREE_PERSONA_LIMIT = 1
 PAID_PERSONA_LIMIT = 10
+FREE_USER_MONTHLY_PHOTO_LIMIT = 2 # 2 фото для бесплатных пользователей, как и запрашивалось
+PREMIUM_USER_MONTHLY_PHOTO_LIMIT = 15
 FREE_USER_MONTHLY_MESSAGE_LIMIT = 30 # Бесплатные пользователи: 50 сообщений в месяц
 
 # Настройки контекста и ответов

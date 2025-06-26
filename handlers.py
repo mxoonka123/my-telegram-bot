@@ -3841,53 +3841,54 @@ async def edit_group_reply_received(update: Update, context: ContextTypes.DEFAUL
 # --- Edit Media Reaction ---
 async def edit_media_reaction_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     persona_id = context.user_data.get('edit_persona_id')
-    query = update.callback_query # Добавлено для получения query
-    user_id = query.from_user.id if query else update.effective_user.id # Получаем user_id для проверки подписки
+    query = update.callback_query
+    user_id = query.from_user.id if query else update.effective_user.id
     
     with get_db() as db:
         current_config = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
         if not current_config:
-            # Обработка случая, если личность не найдена
             if update.callback_query:
                 await update.callback_query.answer("Ошибка: личность не найдена.", show_alert=True)
             return ConversationHandler.END
         
-        # Получаем владельца персоны и проверяем подписку
         current_owner = db.query(User).filter(User.id == current_config.owner_id).first()
         is_premium_user = current_owner.is_active_subscriber if current_owner else False
-        
         current = current_config.media_reaction or "text_only"
        
-        # Определяем, какие опции доступны только для премиум
-    premium_options = ["text_and_all_media", "all_media_no_text", "photo_only", "voice_only"]
-    
+    # --- НОВАЯ ЛОГИКА ОТОБРАЖЕНИЯ ---
+    # Проверяем, может ли бесплатный пользователь выбрать опцию "на всё"
+    can_free_user_select_all = not is_premium_user and (current_owner.monthly_photo_count < current_owner.photo_limit)
+
     media_react_map = {
-        "text_and_all_media": f"на всё (текст, фото, голос){PREMIUM_STAR if not is_premium_user else ''}", 
         "text_only": "только текст",
+        "none": "никак не реагировать",
+        # Премиум опции
+        "text_and_all_media": f"на всё (текст, фото, голос){PREMIUM_STAR if not is_premium_user and not can_free_user_select_all else ''}",
         "all_media_no_text": f"только медиа (фото, голос){PREMIUM_STAR if not is_premium_user else ''}",
-            "photo_only": f"только фото{PREMIUM_STAR if not is_premium_user else ''}",
+        "photo_only": f"только фото{PREMIUM_STAR if not is_premium_user else ''}",
         "voice_only": f"только голос{PREMIUM_STAR if not is_premium_user else ''}",
-        "none": "никак не реагировать"
     }
-    # Совместимость со старыми значениями
+    # --- КОНЕЦ НОВОЙ ЛОГИКИ ---
+
     if current == "all": current = "text_and_all_media"
     
-    current_display_text = media_react_map.get(current, "только текст") # Fallback
+    current_display_text = media_react_map.get(current, "только текст")
     prompt_text = escape_markdown_v2(f"🖼️ как реагировать на текст и медиа (текущее: {current_display_text}):")
     
-    keyboard_buttons = []
-    for key, text_val in media_react_map.items():
-        button_text = f"{'✅ ' if current == key else ''}{text_val}"
-        keyboard_buttons.append([InlineKeyboardButton(button_text, callback_data=f"set_media_react_{key}")])
+    # Кнопки теперь создаются в определенном порядке для лучшего вида
+    keyboard_buttons = [
+        [InlineKeyboardButton(f"{'✅ ' if current == 'text_only' else ''}{media_react_map['text_only']}", callback_data="set_media_react_text_only")],
+        [InlineKeyboardButton(f"{'✅ ' if current == 'text_and_all_media' else ''}{media_react_map['text_and_all_media']}", callback_data="set_media_react_text_and_all_media")],
+        [InlineKeyboardButton(f"{'✅ ' if current == 'photo_only' else ''}{media_react_map['photo_only']}", callback_data="set_media_react_photo_only")],
+        [InlineKeyboardButton(f"{'✅ ' if current == 'voice_only' else ''}{media_react_map['voice_only']}", callback_data="set_media_react_voice_only")],
+        [InlineKeyboardButton(f"{'✅ ' if current == 'all_media_no_text' else ''}{media_react_map['all_media_no_text']}", callback_data="set_media_react_all_media_no_text")],
+        [InlineKeyboardButton(f"{'✅ ' if current == 'none' else ''}{media_react_map['none']}", callback_data="set_media_react_none")],
+        [InlineKeyboardButton("⬅️ Назад", callback_data="back_to_wizard_menu")]
+    ]
     
-    keyboard_buttons.append([InlineKeyboardButton("⬅️ Назад", callback_data="back_to_wizard_menu")])
-    
-    # Убедимся, что _send_prompt вызывается правильно, если это коллбэк
     if update.callback_query and update.callback_query.message:
         await _send_prompt(update, context, prompt_text, InlineKeyboardMarkup(keyboard_buttons))
     else:
-        # Если это не коллбэк (маловероятно для этой функции, но на всякий случай)
-        # или сообщение в коллбэке отсутствует
         chat_id_to_send = update.effective_chat.id
         if chat_id_to_send:
             await context.bot.send_message(chat_id=chat_id_to_send, text=prompt_text, reply_markup=InlineKeyboardMarkup(keyboard_buttons), parse_mode=ParseMode.MARKDOWN_V2)
@@ -3913,22 +3914,26 @@ async def edit_media_reaction_received(update: Update, context: ContextTypes.DEF
     if data.startswith("set_media_react_"):
         new_value = data.replace("set_media_react_", "")
         
-        # Определяем премиум-опции
-        premium_options = ["text_and_all_media", "all_media_no_text", "photo_only", "voice_only"]
-        
         try:
             with get_db() as db:
-                # Проверяем наличие премиум-подписки у пользователя
                 user = db.query(User).filter(User.telegram_id == user_id).first()
                 is_premium_user = user.is_active_subscriber if user else False
 
-                # Если выбрана премиум-опция, но у пользователя нет подписки
-                if new_value in premium_options and not is_premium_user:
-                    await query.answer(f"{PREMIUM_STAR} Эта опция доступна только по подписке.", show_alert=True)
-                    # Возвращаемся к выбору без сохранения изменений
-                    await edit_media_reaction_prompt(update, context)
-                    return EDIT_MEDIA_REACTION
-                
+                # --- НОВАЯ ЛОГИКА ПРОВЕРКИ ---
+                is_premium_option = new_value in ["text_and_all_media", "all_media_no_text", "photo_only", "voice_only"]
+                if is_premium_option and not is_premium_user:
+                    # Особая проверка для опции "на всё" для бесплатных пользователей
+                    if new_value == "text_and_all_media":
+                        if user.monthly_photo_count >= user.photo_limit:
+                            await query.answer(f"❗ Ваш лимит на фото ({user.photo_limit}) исчерпан.", show_alert=True)
+                            await edit_media_reaction_prompt(update, context) # Обновляем меню
+                            return EDIT_MEDIA_REACTION
+                    else: # Для всех остальных премиум-опций
+                        await query.answer(f"{PREMIUM_STAR} Эта опция доступна только по подписке.", show_alert=True)
+                        await edit_media_reaction_prompt(update, context) # Обновляем меню
+                        return EDIT_MEDIA_REACTION
+                # --- КОНЕЦ НОВОЙ ЛОГИКИ ---
+
                 persona = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).with_for_update().first()
                 if persona:
                     persona.media_reaction = new_value
