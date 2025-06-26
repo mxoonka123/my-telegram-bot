@@ -4447,42 +4447,29 @@ async def edit_persona_finish(update: Update, context: ContextTypes.DEFAULT_TYPE
     """Handles finishing the persona editing conversation via the 'Завершить' button."""
     query = update.callback_query
     user_id = update.effective_user.id
-    persona_id_from_data = context.user_data.get('edit_persona_id', 'N/A') # Используем то, что в user_data
+    persona_id_from_data = context.user_data.get('edit_persona_id', 'N/A')
     logger.info(f"User {user_id} initiated FINISH for edit persona session {persona_id_from_data}.")
 
-    finish_message = escape_markdown_v2("✅ Редактирование завершено.")
+    # Простое текстовое сообщение без форматирования
+    finish_message = "✅ редактирование завершено."
     
-    # Сначала отвечаем на коллбэк, если он есть
     if query:
         try:
             await query.answer()
         except Exception as e_ans:
             logger.debug(f"edit_persona_finish: Could not answer query: {e_ans}")
-
-    # Пытаемся отредактировать сообщение, на котором была кнопка "Завершить"
-    # Это сообщение - меню настроек.
-    if query and query.message:
-        try:
-            await query.edit_message_text(finish_message, reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2)
-            logger.info(f"edit_persona_finish: Edited message {query.message.message_id} to show completion.")
-        except BadRequest as e:
-            if "message to edit not found" in str(e).lower() or "message can't be edited" in str(e).lower():
-                logger.warning(f"Could not edit finish message (not found/too old). Sending new for user {user_id}.")
-                try: # Отправляем новое, если редактирование не удалось
-                    await context.bot.send_message(chat_id=query.message.chat.id, text=finish_message, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
-                except Exception as send_e:
-                    logger.error(f"Failed to send new finish message: {send_e}")
-            else: # Другая ошибка BadRequest
-                logger.error(f"BadRequest editing finish message: {e}")
-                # Можно попытаться отправить новое сообщение и здесь
-        except Exception as e: # Любая другая ошибка при редактировании
-            logger.warning(f"Error editing finish confirmation for user {user_id}: {e}. Attempting to send new.")
+        
+        # Редактируем сообщение, если можем, иначе просто игнорируем ошибку
+        if query.message:
             try:
-                await context.bot.send_message(chat_id=query.message.chat.id, text=finish_message, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
-            except Exception as send_e:
-                logger.error(f"Failed to send new finish message after other edit error: {send_e}")
-    elif update.effective_message: # Если это не коллбэк, а, например, /cancel в текстовом виде (хотя для finish это маловероятно)
-        await update.effective_message.reply_text(finish_message, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
+                await query.edit_message_text(finish_message, reply_markup=None, parse_mode=None)
+                logger.info(f"edit_persona_finish: Edited message {query.message.message_id} to show completion.")
+            except Exception as e_edit:
+                logger.warning(f"Could not edit wizard menu on finish: {e_edit}. Message might have been deleted.")
+
+    else: # Fallback для команды /cancel, если она будет вызывать этот же обработчик
+        if update.effective_message:
+            await update.effective_message.reply_text(finish_message, reply_markup=ReplyKeyboardRemove(), parse_mode=None)
 
     logger.debug(f"edit_persona_finish: Clearing user_data for user {user_id}.")
     context.user_data.clear()
