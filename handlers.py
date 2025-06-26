@@ -91,7 +91,7 @@ from db import (
     get_context_for_chat_bot, add_message_to_context,
     set_mood_for_chat_bot, get_mood_for_chat_bot, get_or_create_user,
     create_persona_config, get_personas_by_owner, get_persona_by_name_and_owner,
-    get_persona_by_id_and_owner, check_and_update_user_limits, activate_subscription,
+    get_persona_by_id_and_owner, activate_subscription,
     create_bot_instance, link_bot_instance_to_chat, delete_persona_config,
     get_all_active_chat_bot_instances,
     get_persona_and_context_with_owner,
