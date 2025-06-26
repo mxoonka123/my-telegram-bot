@@ -3715,13 +3715,23 @@ async def edit_group_reply_prompt(update: Update, context: ContextTypes.DEFAULT_
     persona_id = context.user_data.get('edit_persona_id')
     with get_db() as db:
         current = db.query(DBPersonaConfig.group_reply_preference).filter(DBPersonaConfig.id == persona_id).scalar() or "mentioned_or_contextual"
-    prompt_text = escape_markdown_v2(f"👥 как отвечать в группах (текущее: {current}):")
+    
+    # Словарь для красивого отображения текущего значения
+    display_map = {
+        "always": "всегда",
+        "mentioned_only": "только по упоминанию (@)",
+        "mentioned_or_contextual": "по @ или контексту",
+        "never": "никогда"
+    }
+    current_display = display_map.get(current, current) # Получаем понятный текст
+
+    prompt_text = escape_markdown_v2(f"👥 как отвечать в группах (текущее: {current_display}):")
     keyboard = [
-        [InlineKeyboardButton(f"{'✅ ' if current == 'always' else ''}📢 Всегда", callback_data="set_group_reply_always")],
-        [InlineKeyboardButton(f"{'✅ ' if current == 'mentioned_only' else ''}🎯 Только по упоминанию (@)", callback_data="set_group_reply_mentioned_only")],
-        [InlineKeyboardButton(f"{'✅ ' if current == 'mentioned_or_contextual' else ''}🤔 По @ или контексту", callback_data="set_group_reply_mentioned_or_contextual")],
-        [InlineKeyboardButton(f"{'✅ ' if current == 'never' else ''}🚫 Никогда", callback_data="set_group_reply_never")],
-        [InlineKeyboardButton("⬅️ Назад", callback_data="back_to_wizard_menu")]
+        [InlineKeyboardButton(f"{'✅ ' if current == 'always' else ''}📢 всегда", callback_data="set_group_reply_always")],
+        [InlineKeyboardButton(f"{'✅ ' if current == 'mentioned_only' else ''}🎯 только по упоминанию (@)", callback_data="set_group_reply_mentioned_only")],
+        [InlineKeyboardButton(f"{'✅ ' if current == 'mentioned_or_contextual' else ''}🤔 по @ или контексту", callback_data="set_group_reply_mentioned_or_contextual")],
+        [InlineKeyboardButton(f"{'✅ ' if current == 'never' else ''}🚫 никогда", callback_data="set_group_reply_never")],
+        [InlineKeyboardButton("⬅️ назад", callback_data="back_to_wizard_menu")]
     ]
     await _send_prompt(update, context, prompt_text, InlineKeyboardMarkup(keyboard))
     return EDIT_GROUP_REPLY
