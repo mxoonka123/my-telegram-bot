@@ -3971,7 +3971,6 @@ async def _show_edit_wizard_menu(update: Update, context: ContextTypes.DEFAULT_T
         group_reply = persona_config.group_reply_preference or "mentioned_or_contextual"
         media_react = persona_config.media_reaction or "text_only"
         
-        # Словари со значениями в нижнем регистре
         style_map = {"neutral": "нейтральный", "friendly": "дружелюбный", "sarcastic": "саркастичный", "formal": "формальный", "brief": "краткий"}
         verbosity_map = {"concise": "лаконичный", "medium": "средний", "talkative": "разговорчивый"}
         group_reply_map = {"always": "всегда", "mentioned_only": "по @", "mentioned_or_contextual": "по @ / контексту", "never": "никогда"}
@@ -3984,7 +3983,6 @@ async def _show_edit_wizard_menu(update: Update, context: ContextTypes.DEFAULT_T
         elif current_max_msgs_setting == 3: display_for_max_msgs_button = "стандартно"
         elif current_max_msgs_setting == 6: display_for_max_msgs_button = "побольше"
             
-        # Кнопки с текстом в нижнем регистре
         keyboard = [
             [
                 InlineKeyboardButton("✏️ имя", callback_data="edit_wizard_name"),
@@ -4000,11 +3998,16 @@ async def _show_edit_wizard_menu(update: Update, context: ContextTypes.DEFAULT_T
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        # Текст сообщения в нижнем регистре и с правильным форматированием
-        msg_text = f"""⚙️ *настройка личности: {escape_markdown_v2(persona_config.name)}* (id: `{persona_id}`)
-
-выберите, что изменить:"""
+        persona_name_escaped = escape_markdown_v2(persona_config.name)
+        part1 = escape_markdown_v2("⚙️ ")
+        part2 = f"*{escape_markdown_v2('настройка личности: ')}{persona_name_escaped}* "
+        part3 = escape_markdown_v2(f"(id: ")
+        part4 = f"`{persona_id}`"
+        part5 = escape_markdown_v2(")")
+        part6 = escape_markdown_v2("\n\nвыберите, что изменить:")
         
+        msg_text = f"{part1}{part2}{part3}{part4}{part5}{part6}"
+
         sent_message = None
         current_session_wizard_menu_id = context.user_data.get('wizard_menu_message_id')
         
