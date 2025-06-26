@@ -2541,12 +2541,16 @@ async def profile(update: Union[Update, CallbackQuery], context: ContextTypes.DE
             persona_limit_escaped = escape_markdown_v2(persona_limit_raw)
             msg_limit_escaped = escape_markdown_v2(msg_limit_raw)
 
+            photo_limit_raw = f"{user_db.monthly_photo_count}/{user_db.photo_limit}"
+            photo_limit_escaped = escape_markdown_v2(photo_limit_raw)
+            
             profile_text_md = (
                 f"👤 *твой профиль*\n\n"
                 f"*статус:* {status_text_escaped}\n"
                 f"{expires_text_md}\n\n"
                 f"**лимиты:**\n"
                 f"{escape_markdown_v2(message_limit_label)} {msg_limit_escaped}\n"
+                f"{escape_markdown_v2('фотографий в этом месяце:')} {photo_limit_escaped}\n"
                 f"{escape_markdown_v2('создано личностей:')} {persona_limit_escaped}\n\n"
             )
             promo_text_md = "🚀 хочешь больше\\? жми `/subscribe` или кнопку 'подписка' в `/menu`\\!"
@@ -2560,6 +2564,7 @@ async def profile(update: Union[Update, CallbackQuery], context: ContextTypes.DE
                 f"{expires_text_plain}\n\n"
                 f"Лимиты:\n"
                 f"Сообщения в этом месяце: {msg_limit_raw}\n"
+                f"Фотографий в этом месяце: {photo_limit_raw}\n"
                 f"Создано личностей: {persona_limit_raw}\n\n"
             )
             if not is_active_subscriber:

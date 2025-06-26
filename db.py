@@ -145,6 +145,7 @@ class User(Base):
 
     # Monthly limits for premium users
     monthly_message_count = Column(Integer, default=0, nullable=False)
+    monthly_photo_count = Column(Integer, default=0, nullable=False)
     message_count_reset_at = Column(DateTime(timezone=True), nullable=True)  # Storing as timezone-aware
 
     persona_configs = relationship("PersonaConfig", back_populates="owner", cascade="all, delete-orphan", lazy="selectin")
@@ -152,23 +153,29 @@ class User(Base):
 
     @property
     def is_active_subscriber(self) -> bool:
-        if self.telegram_id == ADMIN_USER_ID: return True
+        if self.telegram_id in ADMIN_USER_ID: return True
         return self.is_subscribed and self.subscription_expires_at and self.subscription_expires_at > datetime.now(timezone.utc)
 
     @property
     def message_limit(self) -> int:
         # Returns the monthly message limit based on subscription status
-        if self.telegram_id == ADMIN_USER_ID: return PREMIUM_USER_MONTHLY_MESSAGE_LIMIT # Admin has premium limit
+        if self.telegram_id in ADMIN_USER_ID: return PREMIUM_USER_MONTHLY_MESSAGE_LIMIT # Admin has premium limit
         return PREMIUM_USER_MONTHLY_MESSAGE_LIMIT if self.is_active_subscriber else FREE_USER_MONTHLY_MESSAGE_LIMIT
 
     @property
     def persona_limit(self) -> int:
-        if self.telegram_id == ADMIN_USER_ID: return PAID_PERSONA_LIMIT
+        if self.telegram_id in ADMIN_USER_ID: return PAID_PERSONA_LIMIT
         return PAID_PERSONA_LIMIT if self.is_active_subscriber else FREE_PERSONA_LIMIT
 
     @property
+    def photo_limit(self) -> int:
+        if self.telegram_id in ADMIN_USER_ID:
+            return PREMIUM_USER_MONTHLY_PHOTO_LIMIT
+        return PREMIUM_USER_MONTHLY_PHOTO_LIMIT if self.is_active_subscriber else FREE_USER_MONTHLY_PHOTO_LIMIT
+
+    @property
     def can_create_persona(self) -> bool:
-        if self.telegram_id == ADMIN_USER_ID: return True
+        if self.telegram_id in ADMIN_USER_ID: return True
         try:
             if 'persona_configs' in self.__dict__ and self.persona_configs is not None:
                  count = len(self.persona_configs)
