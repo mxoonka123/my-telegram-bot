@@ -1263,6 +1263,48 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
             persona, _, owner_user = persona_context_owner_tuple
             logger.debug(f"Handling {media_type} for persona '{persona.name}' owned by {owner_user.id}")
 
+            # --- НАЧАЛО: БЛОК ПРОВЕРКИ И СБРОСА ЛИМИТОВ ---
+            now_utc = datetime.now(timezone.utc)
+            current_month_start = now_utc.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            if owner_user.message_count_reset_at is None or owner_user.message_count_reset_at < current_month_start:
+                logger.info(f"Resetting monthly counts for user {owner_user.id} (TG: {owner_user.telegram_id}).")
+                owner_user.monthly_message_count = 0
+                owner_user.monthly_photo_count = 0 # Сбрасываем и счетчик фото
+                owner_user.message_count_reset_at = current_month_start
+                db.add(owner_user)
+
+            limit_exceeded = False
+            if media_type == "photo":
+                if owner_user.monthly_photo_count >= owner_user.photo_limit:
+                    limit_exceeded = True
+                    limit_type = "фотографий"
+                    current_count = owner_user.monthly_photo_count
+                    limit_value = owner_user.photo_limit
+            elif media_type == "voice":
+                if owner_user.monthly_message_count >= owner_user.message_limit:
+                    limit_exceeded = True
+                    limit_type = "сообщений"
+                    current_count = owner_user.monthly_message_count
+                    limit_value = owner_user.message_limit
+            
+            if limit_exceeded:
+                logger.info(f"User {owner_user.id} (TG: {owner_user.telegram_id}) exceeded monthly {limit_type} limit. Count: {current_count}, Limit: {limit_value}")
+                await update.message.reply_text(
+                    f"😔 Вы исчерпали свой месячный лимит на {limit_type} ({limit_value}).\n"
+                    f"Для увеличения лимитов оформите подписку: /subscribe"
+                )
+                db.commit() # Сохраняем сброс счетчиков, если он был
+                return
+            # --- КОНЕЦ: БЛОК ПРОВЕРКИ И СБРОСА ЛИМИТОВ ---
+
+            # Увеличиваем счетчик сразу после проверки лимита, ДО отправки запроса к LLM.
+            if media_type == "photo":
+                owner_user.monthly_photo_count += 1
+                logger.info(f"Incrementing photo count for user {owner_user.id} to {owner_user.monthly_photo_count} (before LLM call).")
+            elif media_type == "voice":
+                owner_user.monthly_message_count += 1
+                logger.info(f"Incrementing message count for user {owner_user.id} to {owner_user.monthly_message_count} (via voice, before LLM call).")
+
             user_message_content = ""
             system_prompt = None
             image_data = None
@@ -1278,7 +1320,6 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
                         image_data_io = await file.download_as_bytearray()
                         image_data = bytes(image_data_io)
                         logger.info(f"Downloaded image: {len(image_data)} bytes")
-                        # *** ИСПРАВЛЕНИЕ: Используем подпись или даём явную инструкцию ***
                         if caption:
                             user_message_content = f"{username}: {caption}"
                         else:
@@ -1296,11 +1337,9 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
                         voice_bytes = await voice_file.download_as_bytearray()
                         audio_data = bytes(voice_bytes)
                         transcribed_text = None
-                        # Проверяем, загружена ли модель. Если нет - пытаемся загрузить.
                         if vosk_model is None:
                             load_vosk_model(VOSK_MODEL_PATH)
                         
-                        # Теперь вызываем транскрипцию
                         if vosk_model:
                             transcribed_text = await transcribe_audio_with_vosk(audio_data, update.message.voice.mime_type)
                         else:
@@ -1318,22 +1357,25 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
 
             else:
                 logger.error(f"Unsupported media_type '{media_type}' in handle_media")
-                return # Убираем rollback, т.к. транзакция может быть не нужна
+                return
 
             if not system_prompt:
-                logger.info(f"Persona {persona.name} in chat {chat_id_str} is configured not to react to {media_type}. Saving user message to context.")
+                logger.info(f"Persona {persona.name} in chat {chat_id_str} is configured not to react to {media_type}. Saving user message to context and committing.")
                 if persona.chat_instance and user_message_content:
                     try:
                         add_message_to_context(db, persona.chat_instance.id, "user", user_message_content)
-                        db.commit()
+                        db.commit() # Коммитим, т.к. выходим из функции
                     except Exception as e_ctx_ignore:
                         logger.error(f"DB Error saving user message for ignored media: {e_ctx_ignore}")
                         db.rollback()
+                else: # Если нет контента, но был сброс или увеличение счетчика
+                    db.commit()
                 return
             
             if not persona.chat_instance:
                 logger.error("Cannot proceed, chat_instance is None.")
                 if update.effective_message: await update.effective_message.reply_text(escape_markdown_v2("❌ системная ошибка: не удалось связать медиа с личностью."), parse_mode=ParseMode.MARKDOWN_V2)
+                db.rollback() # Откатываем увеличение счетчика
                 return
 
             if persona.chat_instance.is_muted:
@@ -1342,34 +1384,11 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
                 db.commit()
                 return
 
-            # --- НАЧАЛО: Проверка лимитов перед отправкой в LLM ---
-            limit_exceeded, limit_message = check_and_update_user_limits(owner_user, media_type)
-            if limit_exceeded:
-                logger.warning(f"User {user_id} exceeded {media_type} limit. Message: {limit_message}")
-                # Используем parse_mode=None для простого текста
-                await update.message.reply_text(limit_message, parse_mode=None)
-                return # Прерываем выполнение, если лимит превышен
-            # --- КОНЕЦ: Проверка лимитов ---
-
-            # --- НОВОЕ МЕСТО ДЛЯ УВЕЛИЧЕНИЯ СЧЕТЧИКОВ ---
-            # Увеличиваем счетчик сразу после проверки лимита, ДО отправки запроса к LLM.
-            # Это гарантирует, что попытка будет засчитана.
-            if media_type == "photo":
-                owner_user.monthly_photo_count += 1
-                logger.info(f"Incrementing photo count for user {owner_user.id} to {owner_user.monthly_photo_count} (before LLM call).")
-            elif media_type == "voice":
-                owner_user.monthly_message_count += 1
-                logger.info(f"Incrementing message count for user {owner_user.id} to {owner_user.monthly_message_count} (via voice, before LLM call).")
-            # --- КОНЕЦ НОВОГО МЕСТА ---
-
-            # *** ИСПРАВЛЕНИЕ: Получаем историю и обрабатываем временные разрывы ***
             history_with_timestamps = get_context_for_chat_bot(db, persona.chat_instance.id)
             context_for_ai = _process_history_for_time_gaps(history_with_timestamps)
             
-            # Добавляем ТЕКУЩЕЕ сообщение пользователя в историю для LLM
             context_for_ai.append({"role": "user", "content": user_message_content})
 
-            # Добавляем сообщение в БД для будущих запросов
             add_message_to_context(db, persona.chat_instance.id, "user", user_message_content)
             
             ai_response_text = await send_to_openrouter(system_prompt, context_for_ai, image_data=image_data, audio_data=audio_data)

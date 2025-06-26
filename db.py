@@ -981,10 +981,4 @@ def get_persona_and_context_with_owner(chat_id: str, db: Session) -> Optional[Tu
         return None
 
 
-def check_and_update_user_limits(db: Session, user: User) -> bool:
-    """УСТАРЕВШАЯ ФУНКЦИЯ для обратной совместимости.
-    Заменена на прямую проверку и обновление monthly_message_count.
-    """
-    logger.warning(f"Deprecated function check_and_update_user_limits called for user {user.id}")
-    # Всегда возвращаем True, так как реальная проверка теперь делается непосредственно в обработчиках
-    return True 
+
