@@ -2,6 +2,7 @@ import logging
 import asyncio
 import os
 from datetime import timedelta
+import signal
 import json
 
 # --- Настройка логирования в самом начале ---
@@ -449,14 +450,17 @@ async def main():
 
     # --- Запуск фоновых задач и веб-сервера в контексте приложения ---
     async with application:
-        # Задачи, которые должны быть запущены до run_polling
+        # Инициализация приложения
         await application.initialize()
 
-        # --- post_init логика ---
+        # Режим запуска: webhook (по умолчанию для Railway) или polling
+        run_mode = os.environ.get("RUN_MODE", "webhook").strip().lower()
+        logger.info(f"RUN_MODE={run_mode}")
+
+        # Общая пост-инициализация
         me = await application.bot.get_me()
         logger.info(f"Bot started as @{me.username} (ID: {me.id})")
         application.bot_data['bot_username'] = me.username
-        # Сохраняем id главного бота для дальнейших проверок (отключение команд на привязанных ботах и т.д.)
         application.bot_data['main_bot_id'] = me.id
         commands = [
             BotCommand("start", "начало работы"),
@@ -468,34 +472,63 @@ async def main():
         ]
         await application.bot.set_my_commands(commands)
         logger.info("Bot menu commands set.")
-        
-        
-        # --- Запуск веб-сервера ---
-        port = int(os.environ.get("PORT", 8080))
-        hypercorn_config = HypercornConfig()
-        hypercorn_config.bind = [f"0.0.0.0:{port}"]
-        
-        # Запускаем веб-сервер как фоновую задачу asyncio
-        # Flask (WSGI) оборачиваем в ASGI для Hypercorn
-        asgi_app = WsgiToAsgi(flask_app)
-        web_server_task = asyncio.create_task(serve(asgi_app, hypercorn_config))
-        logger.info(f"Web server scheduled to run on port {port}.")
-        
-        # --- Запуск бота ---
-        logger.info("Starting bot polling...")
-        await application.start()
-        await application.updater.start_polling()
 
-        # Сохраняем текущий event loop для дальнейшей прокладки апдейтов из вебхука
+        # Подготовка к graceful shutdown
+        stop_event = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        try:
+            loop.add_signal_handler(signal.SIGTERM, stop_event.set)
+            loop.add_signal_handler(signal.SIGINT, stop_event.set)
+        except NotImplementedError:
+            # На Windows сигналов может не быть — игнорируем
+            pass
+
         global application_loop
         application_loop = asyncio.get_running_loop()
-        
-        # Ждем, пока одна из задач не завершится (что не должно произойти)
-        await web_server_task
-        
-        # Если мы сюда дошли, что-то пошло не так, останавливаем бота
-        await application.updater.stop()
-        await application.stop()
+
+        web_server_task = None
+
+        if run_mode == 'webhook':
+            # Запускаем только веб-сервер для приема вебхуков; polling не запускаем
+            port = int(os.environ.get("PORT", 8080))
+            hypercorn_config = HypercornConfig()
+            hypercorn_config.bind = [f"0.0.0.0:{port}"]
+
+            asgi_app = WsgiToAsgi(flask_app)
+
+            # Запускаем PTB (без polling), чтобы работали контексты/очереди
+            await application.start()
+
+            web_server_task = asyncio.create_task(serve(asgi_app, hypercorn_config))
+            logger.info(f"Web server running on port {port} (webhook mode). Waiting for shutdown signal...")
+
+            # Ждём сигнал остановки
+            await stop_event.wait()
+
+            logger.info("Shutdown signal received. Stopping web server and application...")
+            if web_server_task:
+                web_server_task.cancel()
+                try:
+                    await web_server_task
+                except asyncio.CancelledError:
+                    pass
+
+            await application.stop()
+            await application.shutdown()
+
+        else:
+            # Polling mode: запускаем только polling без веб-сервера
+            await application.start()
+            logger.info("Starting polling (no web server)...")
+            await application.updater.start_polling()
+
+            # Ждем сигнал остановки
+            await stop_event.wait()
+
+            logger.info("Shutdown signal received. Stopping polling and application...")
+            await application.updater.stop()
+            await application.stop()
+            await application.shutdown()
 
 
 # --- 3. Точка входа ---
