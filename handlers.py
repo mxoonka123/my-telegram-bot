@@ -2703,7 +2703,7 @@ async def profile(update: Union[Update, CallbackQuery], context: ContextTypes.DE
                 user_db = get_or_create_user(db, user_id, username)
                 db.commit()
                 db.refresh(user_db)
-                user_db = db.query(User).options(selectinload(User.persona_configs)).filter(User.id == user_db.id).one()
+                user_db = db.query(User).options(selectinload(User.persona_configs)).filter(User.id == user_db.id).one_or_none()
                 if not user_db:
                     logger.error(f"User {user_id} not found after get_or_create/refresh in profile.")
                     await context.bot.send_message(chat_id, error_user_not_found, parse_mode=ParseMode.MARKDOWN_V2)
