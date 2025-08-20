@@ -460,6 +460,32 @@ def create_tables():
     try:
         Base.metadata.create_all(engine)
         logger.info("Database tables verified/created successfully.")
+
+        # --- HOTFIX: apply minimal schema patches for BotInstance without Alembic ---
+        try:
+            from sqlalchemy import text as sa_text
+        except Exception:
+            sa_text = None
+
+        try:
+            with engine.begin() as conn:
+                logger.info("Applying schema hotfixes for 'bot_instances' (if needed)...")
+                # Add columns if missing (PostgreSQL syntax)
+                conn.exec_driver_sql("ALTER TABLE bot_instances ADD COLUMN IF NOT EXISTS bot_token TEXT")
+                conn.exec_driver_sql("ALTER TABLE bot_instances ADD COLUMN IF NOT EXISTS telegram_bot_id VARCHAR")
+                conn.exec_driver_sql("ALTER TABLE bot_instances ADD COLUMN IF NOT EXISTS telegram_username VARCHAR")
+                conn.exec_driver_sql("ALTER TABLE bot_instances ADD COLUMN IF NOT EXISTS status VARCHAR NOT NULL DEFAULT 'unregistered'")
+                conn.exec_driver_sql("ALTER TABLE bot_instances ADD COLUMN IF NOT EXISTS last_webhook_set_at TIMESTAMPTZ NULL")
+
+                # Ensure unique constraint on persona_config_id (enforce one-to-one)
+                conn.exec_driver_sql("CREATE UNIQUE INDEX IF NOT EXISTS ux_bot_instances_persona_config_id ON bot_instances(persona_config_id)")
+                # Helpful indexes
+                conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_bot_instances_telegram_bot_id ON bot_instances(telegram_bot_id)")
+                conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_bot_instances_telegram_username ON bot_instances(telegram_username)")
+                logger.info("Schema hotfixes for 'bot_instances' applied (or already present).")
+        except Exception as patch_err:
+            logger.error(f"Failed to apply schema hotfixes for 'bot_instances': {patch_err}", exc_info=True)
+            # Do not raise to keep app running; handlers relying on these fields may still fail until migration is fixed
     except (OperationalError, psycopg.OperationalError, ProgrammingError) as op_err:
          db_log_url_on_error = str(engine.url).split('@')[-1] if '@' in str(engine.url) else str(engine.url)
          logger.critical(f"FATAL: Database error during create_tables for {db_log_url_on_error}: {op_err}", exc_info=False)
