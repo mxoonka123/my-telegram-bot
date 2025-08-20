@@ -1507,7 +1507,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                     f"/subscribe - узнать о подписке"
                 )
 
-                keyboard = [[InlineKeyboardButton("🚀 Меню Команд", callback_data="show_menu")]]
+                keyboard = [[InlineKeyboardButton("меню команд", callback_data="show_menu")]]
                 reply_markup = InlineKeyboardMarkup(keyboard)
 
             logger.debug(f"/start: Sending final message to user {user_id}.")
@@ -1630,17 +1630,17 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             await send_subscription_required_message(update, context)
             return
 
-    menu_text_raw = "🚀 панель управления\n\nвыберите действие:"
+    menu_text_raw = "панель управления\n\nвыберите действие:"
     menu_text_escaped = escape_markdown_v2(menu_text_raw)
 
     keyboard = [
         [
-            InlineKeyboardButton("👤 профиль", callback_data="show_profile"),
-            InlineKeyboardButton("🎭 мои личности", callback_data="show_mypersonas")
+            InlineKeyboardButton("профиль", callback_data="show_profile"),
+            InlineKeyboardButton("мои личности", callback_data="show_mypersonas")
         ],
         [
-            InlineKeyboardButton("⭐ подписка", callback_data="subscribe_info"),
-            InlineKeyboardButton("❓ помощь", callback_data="show_help")
+            InlineKeyboardButton("подписка", callback_data="subscribe_info"),
+            InlineKeyboardButton("помощь", callback_data="show_help")
         ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
