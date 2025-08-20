@@ -56,7 +56,7 @@ def load_vosk_model(model_path: str):
 # Загружаем модель при старте
 load_vosk_model(VOSK_MODEL_PATH)
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove, Bot
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove, Bot, CallbackQuery
 from telegram.constants import ChatAction, ParseMode, ChatMemberStatus, ChatType
 from telegram.error import BadRequest, Forbidden, TelegramError, TimedOut
 from telegram.ext import (
