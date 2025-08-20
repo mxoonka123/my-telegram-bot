@@ -1,5 +1,9 @@
 FROM python:3.11-slim
 
+# Гарантируем немедленный вывод логов
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+
 # Установка зависимостей системы
 RUN apt-get update && apt-get install -y \
     ffmpeg \
@@ -29,5 +33,9 @@ RUN mkdir -p model_vosk_ru && \
     mv vosk-model-small-ru-0.22/* model_vosk_ru/ && \
     rm -rf vosk-model-small-ru-0.22.zip vosk-model-small-ru-0.22
 
-# Запуск приложения
-CMD ["python", "main.py"]
+# Healthcheck для платформы (опционально)
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+  CMD wget -qO- http://127.0.0.1:${PORT:-8080}/healthz || exit 1
+
+# Запуск приложения (unbuffered)
+CMD ["python", "-u", "main.py"]
