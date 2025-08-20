@@ -232,7 +232,17 @@ async def botsettings_menu_show(update: Update, context: ContextTypes.DEFAULT_TY
             [InlineKeyboardButton("⬅️ Закрыть", callback_data="botset_close")],
         ]
         if q:
-            await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=None)
+            try:
+                await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=None)
+            except BadRequest as e_br:
+                # Игнорируем безвредную ошибку от Telegram: "message is not modified"
+                if "message is not modified" in str(e_br).lower():
+                    try:
+                        await q.answer("Нет изменений", show_alert=False)
+                    except Exception:
+                        pass
+                else:
+                    raise
         else:
             await context.bot.send_message(chat_id, text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=None)
     return BOTSET_MENU
@@ -288,10 +298,10 @@ async def botsettings_wl_add_prompt(update: Update, context: ContextTypes.DEFAUL
     q = update.callback_query
     if q:
         await q.answer()
-        await q.edit_message_text("Отправьте numeric Telegram ID пользователя для добавления в whitelist:")
+        await q.edit_message_text("Отправьте numeric Telegram ID пользователя для добавления в whitelist:", parse_mode=None)
     else:
         if update.message:
-            await update.message.reply_text("Отправьте numeric Telegram ID пользователя для добавления в whitelist:")
+            await update.message.reply_text("Отправьте numeric Telegram ID пользователя для добавления в whitelist:", parse_mode=None)
     return BOTSET_WHITELIST_ADD
 
 async def botsettings_wl_add_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -299,17 +309,17 @@ async def botsettings_wl_add_receive(update: Update, context: ContextTypes.DEFAU
         return BOTSET_WHITELIST_ADD
     text = update.message.text.strip()
     if not text.isdigit():
-        await update.message.reply_text("Нужно отправить числовой Telegram ID.")
+        await update.message.reply_text("Нужно отправить числовой Telegram ID.", parse_mode=None)
         return BOTSET_WHITELIST_ADD
     add_id = int(text)
     bot_id = context.user_data.get('botsettings_bot_id')
     if not bot_id:
-        await update.message.reply_text("Сессия настройки утеряна, запустите /botsettings заново.")
+        await update.message.reply_text("Сессия настройки утеряна, запустите /botsettings заново.", parse_mode=None)
         return ConversationHandler.END
     with get_db() as db:
         bi = db.query(DBBotInstance).filter(DBBotInstance.id == bot_id).first()
         if not bi:
-            await update.message.reply_text("Бот не найден.")
+            await update.message.reply_text("Бот не найден.", parse_mode=None)
             return ConversationHandler.END
         try:
             wl = json.loads(bi.whitelisted_users_json or '[]')
@@ -320,7 +330,7 @@ async def botsettings_wl_add_receive(update: Update, context: ContextTypes.DEFAU
             bi.whitelisted_users_json = json.dumps(wl, ensure_ascii=False)
             db.add(bi)
             db.commit()
-    await update.message.reply_text("Пользователь добавлен в whitelist.")
+    await update.message.reply_text("Пользователь добавлен в whitelist.", parse_mode=None)
     return await botsettings_menu_show(update, context)
 
 async def botsettings_wl_remove_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -341,12 +351,12 @@ async def botsettings_wl_remove_prompt(update: Update, context: ContextTypes.DEF
         except Exception:
             wl = []
         if not wl:
-            await q.edit_message_text("Белый список пуст.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="botset_back")]]))
+            await q.edit_message_text("Белый список пуст.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="botset_back")]]), parse_mode=None)
             return BOTSET_MENU
         kb = [[InlineKeyboardButton(f"Удалить {uid}", callback_data=f"botset_wl_del_{uid}")]]
         kb = [[InlineKeyboardButton(f"Удалить {uid}", callback_data=f"botset_wl_del_{uid}")] for uid in wl]
         kb.append([InlineKeyboardButton("⬅️ Назад", callback_data="botset_back")])
-        await q.edit_message_text("Выберите пользователя для удаления:", reply_markup=InlineKeyboardMarkup(kb))
+        await q.edit_message_text("Выберите пользователя для удаления:", reply_markup=InlineKeyboardMarkup(kb), parse_mode=None)
     return BOTSET_WHITELIST_REMOVE
 
 async def botsettings_wl_remove_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3098,7 +3108,8 @@ async def profile(update: Union[Update, CallbackQuery], context: ContextTypes.DE
                 f"ℹ️ Кредиты списываются за текст, изображения и распознавание аудио."
             )
 
-            final_text_to_send = profile_text_md
+            # Во избежание ошибок MarkdownV2 отправляем простой текст без форматирования
+            final_text_to_send = profile_text_plain
 
             keyboard = [[
                 InlineKeyboardButton("💳 Пополнить кредиты", callback_data="buycredits_open")
@@ -3109,11 +3120,11 @@ async def profile(update: Union[Update, CallbackQuery], context: ContextTypes.DE
 
             if is_callback:
                 if message_target.text != final_text_to_send or message_target.reply_markup != reply_markup:
-                    await query.edit_message_text(final_text_to_send, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
+                    await query.edit_message_text(final_text_to_send, reply_markup=reply_markup, parse_mode=None)
                 else:
                     await query.answer()
             else:
-                await message_target.reply_text(final_text_to_send, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
+                await message_target.reply_text(final_text_to_send, reply_markup=reply_markup, parse_mode=None)
 
         except SQLAlchemyError as e:
             logger.error(f"Database error during profile for user {user_id}: {e}", exc_info=True)
