@@ -1,5 +1,6 @@
 import asyncio
 import httpx
+import uuid
 import json
 import logging
 import re
@@ -55,7 +56,7 @@ def load_vosk_model(model_path: str):
 # Загружаем модель при старте
 load_vosk_model(VOSK_MODEL_PATH)
 
-from telegram import Update, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup, Chat as TgChat, CallbackQuery
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove, Bot
 from telegram.constants import ChatAction, ParseMode, ChatMemberStatus, ChatType
 from telegram.error import BadRequest, Forbidden, TelegramError, TimedOut
 from telegram.ext import (
@@ -2336,7 +2337,41 @@ async def bind_bot_token_received(update: Update, context: ContextTypes.DEFAULT_
                 await update.message.reply_text("❌ этот бот уже привязан к другой личности.", parse_mode=None)
                 return ConversationHandler.END
             elif status in ("created", "updated", "race_condition_resolved"):
-                await update.message.reply_text(f"✅ бот @{bot_username} привязан к личности '{persona.name}'.", parse_mode=None)
+                # Пытаемся установить webhook для нового бота
+                try:
+                    webhook_url = f"{config.WEBHOOK_URL_BASE}/telegram/{token}"
+                    temp_bot = Bot(token=token)
+                    await temp_bot.set_webhook(
+                        url=webhook_url,
+                        allowed_updates=["message", "callback_query", "chat_member", "my_chat_member"],
+                        secret_token=str(uuid.uuid4())
+                    )
+                    # фиксируем установку вебхука в БД (если поле есть)
+                    try:
+                        from datetime import datetime, timezone
+                        if hasattr(instance, 'last_webhook_set_at'):
+                            instance.last_webhook_set_at = datetime.now(timezone.utc)
+                        if hasattr(instance, 'status'):
+                            instance.status = 'active'
+                        db.commit()
+                    except Exception as e_db_commit:
+                        logger.error(f"bind_bot_token_received: failed to commit webhook timestamp/status: {e_db_commit}", exc_info=True)
+                        db.rollback()
+
+                    await update.message.reply_text(
+                        f"✅ бот @{bot_username} привязан к личности '{persona.name}' и готов к работе.", parse_mode=None
+                    )
+                except Exception as e_webhook:
+                    logger.error(f"bind_bot_token_received: failed to set webhook for @{bot_username}: {e_webhook}", exc_info=True)
+                    try:
+                        if hasattr(instance, 'status'):
+                            instance.status = 'webhook_error'
+                        db.commit()
+                    except Exception:
+                        db.rollback()
+                    await update.message.reply_text(
+                        f"⚠️ бот @{bot_username} сохранен, но не удалось настроить вебхук. попробуй позже.", parse_mode=None
+                    )
             else:
                 await update.message.reply_text("❌ не удалось сохранить токен. попробуй позже.", parse_mode=None)
                 return ConversationHandler.END

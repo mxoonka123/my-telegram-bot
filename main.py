@@ -61,6 +61,29 @@ except Exception as e:
 # Глобальная переменная для доступа к PTB Application из вебхука
 application_instance: Application | None = None
 
+@flask_app.route('/telegram/<string:token>', methods=['POST'])
+def handle_telegram_webhook(token: str):
+    """Единый обработчик вебхуков Telegram для всех пользовательских ботов."""
+    global application_instance
+    if not application_instance:
+        flask_logger.error("telegram webhook received but application_instance is not set.")
+        return Response(status=500)
+
+    try:
+        update_data = request.get_json(force=True)
+        # Преобразуем JSON в объект Update и прокидываем в PTB
+        update = Update.de_json(update_data, application_instance.bot)
+        asyncio.run_coroutine_threadsafe(
+            application_instance.process_update(update),
+            application_instance.loop
+        )
+        return Response(status=200)
+    except Exception as e:
+        # Часто тело может быть большим, поэтому логируем только окончание токена
+        tail = token[-6:] if token else "(no-token)"
+        flask_logger.error(f"error processing telegram webhook for token ...{tail}: {e}", exc_info=True)
+        return Response(status=500)
+
 @flask_app.route('/yookassa/webhook', methods=['POST'])
 def handle_yookassa_webhook():
     """Обработчик вебхуков от YooKassa."""
