@@ -79,9 +79,28 @@ class Persona:
         self.name = self.config.name or "Без имени"
         self.description = self.config.description or f"личность по имени {self.name}"
 
-        # Load structured settings from DB object
-        self.communication_style = self.config.communication_style or "neutral"
-        self.verbosity_level = self.config.verbosity_level or "medium"
+        # Load structured settings from DB object (normalize to Enums)
+        raw_style = self.config.communication_style
+        if isinstance(raw_style, str):
+            try:
+                self.communication_style = CommunicationStyle(raw_style)
+            except Exception:
+                self.communication_style = CommunicationStyle.NEUTRAL
+        elif isinstance(raw_style, CommunicationStyle):
+            self.communication_style = raw_style
+        else:
+            self.communication_style = CommunicationStyle.NEUTRAL
+
+        raw_verbosity = self.config.verbosity_level
+        if isinstance(raw_verbosity, str):
+            try:
+                self.verbosity_level = Verbosity(raw_verbosity)
+            except Exception:
+                self.verbosity_level = Verbosity.MEDIUM
+        elif isinstance(raw_verbosity, Verbosity):
+            self.verbosity_level = raw_verbosity
+        else:
+            self.verbosity_level = Verbosity.MEDIUM
         self.group_reply_preference = self.config.group_reply_preference or "mentioned_or_contextual"
         self.media_reaction = self.config.media_reaction or "text_only"
         self.max_response_messages = self.config.max_response_messages or 3
@@ -169,23 +188,25 @@ class Persona:
         instructions = []
         # Style
         style_map = {
-            "neutral": "общайся спокойно, нейтрально.",
-            "friendly": "общайся дружелюбно, позитивно.",
-            "sarcastic": "общайся с сарказмом, немного язвительно.",
-            "formal": "общайся формально, вежливо, избегай сленга.",
-            "brief": "отвечай кратко и по делу.",
+            CommunicationStyle.NEUTRAL: "общайся спокойно, нейтрально.",
+            CommunicationStyle.FRIENDLY: "общайся дружелюбно, позитивно.",
+            CommunicationStyle.SARCASTIC: "общайся с сарказмом, немного язвительно.",
+            CommunicationStyle.FORMAL: "общайся формально, вежливо, избегай сленга.",
+            CommunicationStyle.BRIEF: "отвечай кратко и по делу.",
         }
-        style_instruction = style_map.get(self.communication_style, style_map["neutral"])
-        if style_instruction: instructions.append(style_instruction)
+        style_instruction = style_map.get(self.communication_style, style_map[CommunicationStyle.NEUTRAL])
+        if style_instruction:
+            instructions.append(style_instruction)
 
         # Verbosity
         verbosity_map = {
-            "concise": "старайся быть лаконичным.",
-            "medium": "отвечай со средней подробностью.",
-            "talkative": "будь разговорчивым, можешь добавлять детали.",
+            Verbosity.CONCISE: "старайся быть лаконичным.",
+            Verbosity.MEDIUM: "отвечай со средней подробностью.",
+            Verbosity.TALKATIVE: "будь разговорчивым, можешь добавлять детали.",
         }
-        verbosity_instruction = verbosity_map.get(self.verbosity_level, verbosity_map["medium"])
-        if verbosity_instruction: instructions.append(verbosity_instruction)
+        verbosity_instruction = verbosity_map.get(self.verbosity_level, verbosity_map[Verbosity.MEDIUM])
+        if verbosity_instruction:
+            instructions.append(verbosity_instruction)
 
         return instructions
 

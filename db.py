@@ -223,7 +223,8 @@ class PersonaConfig(Base):
     media_system_prompt_template = Column(Text, nullable=False, default=MEDIA_SYSTEM_PROMPT_TEMPLATE)
 
     owner = relationship("User", back_populates="persona_configs", lazy="selectin")
-    bot_instances = relationship("BotInstance", back_populates="persona_config", cascade="all, delete-orphan", lazy="selectin")
+    # one-to-one link to BotInstance
+    bot_instance = relationship("BotInstance", back_populates="persona_config", cascade="all, delete-orphan", lazy="selectin", uselist=False)
 
     __table_args__ = (UniqueConstraint('owner_id', 'name', name='_owner_persona_name_uc'),)
 
@@ -268,16 +269,27 @@ class PersonaConfig(Base):
 class BotInstance(Base):
     __tablename__ = 'bot_instances'
     id = Column(Integer, primary_key=True)
-    persona_config_id = Column(Integer, ForeignKey('persona_configs.id', ondelete='CASCADE'), nullable=False, index=True)
+    # enforce one-to-one per persona via unique index
+    persona_config_id = Column(Integer, ForeignKey('persona_configs.id', ondelete='CASCADE'), nullable=False, index=True, unique=True)
     owner_id = Column(Integer, ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True)
     name = Column(String, nullable=True)
 
-    persona_config = relationship("PersonaConfig", back_populates="bot_instances", lazy="selectin")
+    # new fields for telegram bot management
+    bot_token = Column(Text, nullable=True)  # raw token; secure storage recommended in production
+    telegram_bot_id = Column(String, nullable=True, index=True)  # bot id from getMe().id (string to avoid int size issues)
+    telegram_username = Column(String, nullable=True, index=True)
+    status = Column(String, nullable=False, default='unregistered')  # unregistered|active|invalid|disabled
+    last_webhook_set_at = Column(DateTime(timezone=True), nullable=True)
+
+    persona_config = relationship("PersonaConfig", back_populates="bot_instance", lazy="selectin")
     owner = relationship("User", back_populates="bot_instances", lazy="selectin")
     chat_links = relationship("ChatBotInstance", back_populates="bot_instance_ref", cascade="all, delete-orphan", lazy="selectin")
 
     def __repr__(self):
-        return f"<BotInstance(id={self.id}, name='{self.name}', persona_config_id={self.persona_config_id}, owner_id={self.owner_id})>"
+        return (
+            f"<BotInstance(id={self.id}, name='{self.name}', persona_config_id={self.persona_config_id}, owner_id={self.owner_id}, "
+            f"tg_id={self.telegram_bot_id}, username='{self.telegram_username}', status='{self.status}')>"
+        )
 
 class ChatBotInstance(Base):
     __tablename__ = 'chat_bot_instances'
@@ -702,6 +714,78 @@ def get_bot_instance_by_id(db: Session, instance_id: int) -> Optional[BotInstanc
     except SQLAlchemyError as e:
         logger.error(f"DB error getting bot instance by ID {instance_id}: {e}", exc_info=True)
         return None
+
+def set_bot_instance_token(db: Session, owner_id: int, persona_config_id: int, token: str, bot_id: Union[int, str], bot_username: str) -> Tuple[Optional[BotInstance], str]:
+    """
+    Создает или обновляет BotInstance для личности, сохраняя токен и данные бота.
+    Возвращает кортеж (экземпляр, статус):
+      - created | updated | already_registered | race_condition_resolved | error
+    Примечание: не логируем сам токен.
+    """
+    logger.info(f"Attempting to set token for persona_id {persona_config_id} by owner_id {owner_id}.")
+
+    try:
+        # Проверка, не используется ли этот бот другой личностью
+        existing_bot = db.query(BotInstance).filter(
+            (BotInstance.telegram_bot_id == str(bot_id)) | (BotInstance.bot_token == token)
+        ).first()
+
+        if existing_bot and existing_bot.persona_config_id != persona_config_id:
+            logger.warning(
+                f"Bot id {bot_id} or token already linked to another persona (persona_config_id: {existing_bot.persona_config_id})."
+            )
+            return None, "already_registered"
+
+        # Ищем существующий экземпляр для текущей личности
+        instance = db.query(BotInstance).filter(
+            BotInstance.persona_config_id == persona_config_id,
+            BotInstance.owner_id == owner_id
+        ).with_for_update(of=BotInstance).first()
+
+        if instance:
+            # Обновляем существующий
+            logger.info(f"Updating existing BotInstance {instance.id} for persona {persona_config_id}.")
+            instance.bot_token = token
+            instance.telegram_bot_id = str(bot_id)
+            instance.telegram_username = bot_username
+            instance.status = "active"
+            db.commit()
+            try:
+                db.refresh(instance)
+            except SQLAlchemyError:
+                pass
+            return instance, "updated"
+        else:
+            # Создаем новый
+            logger.info(f"Creating new BotInstance for persona {persona_config_id}.")
+            new_instance = BotInstance(
+                persona_config_id=persona_config_id,
+                owner_id=owner_id,
+                bot_token=token,
+                telegram_bot_id=str(bot_id),
+                telegram_username=bot_username,
+                status="active"
+            )
+            try:
+                db.add(new_instance)
+                db.commit()
+                try:
+                    db.refresh(new_instance)
+                except SQLAlchemyError:
+                    pass
+                return new_instance, "created"
+            except IntegrityError as e:
+                db.rollback()
+                logger.error(f"IntegrityError creating BotInstance for persona {persona_config_id}: {e}")
+                # Возможна гонка: попробуем найти снова
+                instance = db.query(BotInstance).filter(BotInstance.persona_config_id == persona_config_id).first()
+                if instance:
+                    return instance, "race_condition_resolved"
+                return None, "error"
+    except SQLAlchemyError as e:
+        logger.error(f"DB error in set_bot_instance_token for persona {persona_config_id}: {e}", exc_info=True)
+        db.rollback()
+        return None, "error"
 
 # --- Chat Link Operations ---
 

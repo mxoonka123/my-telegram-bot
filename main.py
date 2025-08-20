@@ -196,7 +196,16 @@ async def main():
         fallbacks=[CommandHandler('cancel', handlers.delete_persona_cancel), CallbackQueryHandler(handlers.delete_persona_cancel, pattern='^delete_persona_cancel$')],
         per_message=False, name="delete_persona_conversation", conversation_timeout=timedelta(minutes=5).total_seconds(), allow_reentry=True
     )
+    bind_bot_conv_handler = ConversationHandler(
+        entry_points=[CallbackQueryHandler(handlers.bind_bot_start, pattern=r'^bind_bot_\d+$')],
+        states={
+            handlers.REGISTER_BOT_TOKEN: [MessageHandler(handlers.filters.TEXT & ~handlers.filters.COMMAND, handlers.bind_bot_token_received)]
+        },
+        fallbacks=[CommandHandler('cancel', handlers.edit_persona_cancel)],
+        per_message=False, name="bind_bot_token_flow", conversation_timeout=timedelta(minutes=5).total_seconds(), allow_reentry=True
+    )
     application.add_handler(edit_persona_conv_handler)
+    application.add_handler(bind_bot_conv_handler)
     application.add_handler(delete_persona_conv_handler)
     application.add_handler(CommandHandler("start", handlers.start))
     application.add_handler(CommandHandler("help", handlers.help_command))

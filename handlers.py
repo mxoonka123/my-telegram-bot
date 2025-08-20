@@ -97,9 +97,10 @@ from db import (
     get_persona_and_context_with_owner,
     User, PersonaConfig as DBPersonaConfig, BotInstance as DBBotInstance,
     ChatBotInstance as DBChatBotInstance, ChatContext, func, get_db,
-    DEFAULT_SYSTEM_PROMPT_TEMPLATE, DEFAULT_MOOD_PROMPTS
+    DEFAULT_SYSTEM_PROMPT_TEMPLATE, DEFAULT_MOOD_PROMPTS,
+    set_bot_instance_token
 )
-from persona import Persona
+from persona import Persona, CommunicationStyle, Verbosity
 from utils import (
     postprocess_response,
     extract_gif_links,
@@ -360,6 +361,9 @@ DELETE_PERSONA_CONFIRM,
 EDIT_MAX_MESSAGES,
 # EDIT_MESSAGE_VOLUME removed
 ) = range(9) # Total 9 states now
+
+# --- Bot Token Registration State ---
+REGISTER_BOT_TOKEN = 100
 
 # --- Terms of Service Text ---
 TOS_TEXT_RAW = """
@@ -2099,12 +2103,16 @@ async def my_personas(update: Union[Update, CallbackQuery], context: ContextType
 
     try:
         with get_db() as db:
-            user_with_personas = db.query(User).options(selectinload(User.persona_configs)).filter(User.telegram_id == user_id).first()
+            user_with_personas = db.query(User).options(
+                selectinload(User.persona_configs).selectinload(DBPersonaConfig.bot_instance)
+            ).filter(User.telegram_id == user_id).first()
 
             if not user_with_personas:
                 user_with_personas = get_or_create_user(db, user_id, username)
                 db.commit(); db.refresh(user_with_personas)
-                user_with_personas = db.query(User).options(selectinload(User.persona_configs)).filter(User.id == user_with_personas.id).one_or_none()
+                user_with_personas = db.query(User).options(
+                    selectinload(User.persona_configs).selectinload(DBPersonaConfig.bot_instance)
+                ).filter(User.id == user_with_personas.id).one_or_none()
                 if not user_with_personas:
                     logger.error(f"User {user_id} not found even after get_or_create/refresh in my_personas.")
                     final_text_to_send = error_user_not_found
@@ -2139,16 +2147,33 @@ async def my_personas(update: Union[Update, CallbackQuery], context: ContextType
                 fallback_text_plain_parts.append(f"Твои личности ({persona_count}/{persona_limit}):")
 
                 for p in personas:
-                    persona_text = f"\n👤 {p.name} (id: {p.id})"
+                    # статус привязки бота
+                    bot_status_line = ""
+                    if getattr(p, 'bot_instance', None) and p.bot_instance:
+                        bi = p.bot_instance
+                        if bi.status == 'active' and bi.telegram_username:
+                            bot_status_line = f"\n🤖 привязан: @{bi.telegram_username}"
+                        else:
+                            bot_status_line = f"\n🤖 не привязан"
+                    else:
+                        bot_status_line = f"\n🤖 не привязан"
+
+                    persona_text = f"\n👤 {p.name} (id: {p.id}){bot_status_line}"
                     message_lines.append(persona_text)
                     fallback_text_plain_parts.append(f"\n- {p.name} (id: {p.id})")
+
                     edit_cb = f"edit_persona_{p.id}"
                     delete_cb = f"delete_persona_{p.id}"
                     add_cb = f"add_bot_{p.id}"
+                    bind_cb = f"bind_bot_{p.id}"
+
                     keyboard_personas.append([
                         InlineKeyboardButton("⚙️ настроить", callback_data=edit_cb),
                         InlineKeyboardButton("🗑️ удалить", callback_data=delete_cb),
                         InlineKeyboardButton("➕ в чат", callback_data=add_cb)
+                    ])
+                    keyboard_personas.append([
+                        InlineKeyboardButton("🔗 привязать бота", callback_data=bind_cb)
                     ])
                 
                 final_text_to_send = "\n".join(message_lines)
@@ -2209,6 +2234,120 @@ async def my_personas(update: Union[Update, CallbackQuery], context: ContextType
         try:
             await context.bot.send_message(chat_id=chat_id, text="Произошла критическая ошибка.", parse_mode=None)
         except Exception: pass
+
+
+async def bind_bot_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Запускает диалог привязки токена бота для выбранной личности."""
+    is_callback = update.callback_query is not None
+    if not is_callback or not update.callback_query.data:
+        return ConversationHandler.END
+    try:
+        persona_id = int(update.callback_query.data.split('_')[-1])
+    except (IndexError, ValueError):
+        await update.callback_query.answer("❌ ошибка: неверный id", show_alert=True)
+        return ConversationHandler.END
+
+    user_id = update.effective_user.id
+    username = update.effective_user.username or f"id_{user_id}"
+    chat_id = update.callback_query.message.chat.id if update.callback_query.message else user_id
+    chat_id_str = str(chat_id)
+
+    await update.callback_query.answer("запускаю привязку бота…")
+    await context.bot.send_chat_action(chat_id=chat_id_str, action=ChatAction.TYPING)
+
+    # проверим, что персона принадлежит пользователю
+    with get_db() as db:
+        persona = get_persona_by_id_and_owner(db, user_id, persona_id)
+        if not persona:
+            try:
+                await context.bot.send_message(chat_id=chat_id, text="❌ личность не найдена или не твоя.", parse_mode=None)
+            except Exception: pass
+            return ConversationHandler.END
+
+    context.user_data['bind_persona_id'] = persona_id
+    prompt_text = (
+        "введи токен телеграм-бота, которого хочешь привязать к этой личности.\n"
+        "мы проверим токен через getme и сохраним id и username бота.\n\n"
+        "важно: не публикуй токен в открытых чатах."
+    )
+    try:
+        await context.bot.send_message(chat_id=chat_id, text=prompt_text, parse_mode=None)
+    except Exception as e:
+        logger.error(f"bind_bot_start: failed to send prompt: {e}")
+        return ConversationHandler.END
+    return REGISTER_BOT_TOKEN
+
+
+async def bind_bot_token_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Принимает токен, валидирует через getMe, сохраняет через set_bot_instance_token."""
+    if not update.message or not update.message.text:
+        return REGISTER_BOT_TOKEN
+
+    token = update.message.text.strip()
+    user_id = update.effective_user.id
+    username = update.effective_user.username or f"id_{user_id}"
+    chat_id = update.message.chat.id
+    chat_id_str = str(chat_id)
+
+    await context.bot.send_chat_action(chat_id=chat_id_str, action=ChatAction.TYPING)
+
+    # валидируем токен через getMe
+    bot_id = None
+    bot_username = None
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.get(f"https://api.telegram.org/bot{token}/getMe")
+            data = resp.json() if resp is not None else {}
+            if not data.get('ok'):
+                await update.message.reply_text("❌ токен невалиден или недоступен. проверь и попробуй снова.", parse_mode=None)
+                return REGISTER_BOT_TOKEN
+            result = data.get('result') or {}
+            bot_id = result.get('id')
+            bot_username = result.get('username')
+            if not bot_id or not bot_username:
+                await update.message.reply_text("❌ не удалось получить данные бота через getme.", parse_mode=None)
+                return REGISTER_BOT_TOKEN
+    except Exception as e:
+        logger.error(f"bind_bot_token_received: getMe failed: {e}")
+        await update.message.reply_text("❌ ошибка при запросе getme. попробуй еще раз позже.", parse_mode=None)
+        return REGISTER_BOT_TOKEN
+
+    persona_id = context.user_data.get('bind_persona_id')
+    if not persona_id:
+        await update.message.reply_text("❌ внутренняя ошибка: нет id личности.", parse_mode=None)
+        return ConversationHandler.END
+
+    # сохраняем в БД
+    try:
+        with get_db() as db:
+            # получаем/создаем пользователя и удостоверимся, что персона его
+            user_obj = db.query(User).filter(User.telegram_id == user_id).first()
+            if not user_obj:
+                user_obj = get_or_create_user(db, user_id, username)
+                db.commit(); db.refresh(user_obj)
+
+            persona = get_persona_by_id_and_owner(db, user_id, persona_id)
+            if not persona:
+                await update.message.reply_text("❌ личность не найдена или не твоя.", parse_mode=None)
+                return ConversationHandler.END
+
+            instance, status = set_bot_instance_token(db, user_obj.id, persona_id, token, bot_id, bot_username)
+            if status == "already_registered":
+                await update.message.reply_text("❌ этот бот уже привязан к другой личности.", parse_mode=None)
+                return ConversationHandler.END
+            elif status in ("created", "updated", "race_condition_resolved"):
+                await update.message.reply_text(f"✅ бот @{bot_username} привязан к личности '{persona.name}'.", parse_mode=None)
+            else:
+                await update.message.reply_text("❌ не удалось сохранить токен. попробуй позже.", parse_mode=None)
+                return ConversationHandler.END
+    except Exception as e:
+        logger.error(f"bind_bot_token_received: DB error: {e}", exc_info=True)
+        await update.message.reply_text("❌ ошибка базы данных при сохранении токена.", parse_mode=None)
+        return ConversationHandler.END
+
+    # очищаем state
+    context.user_data.pop('bind_persona_id', None)
+    return ConversationHandler.END
 
 
 async def add_bot_to_chat(update: Update, context: ContextTypes.DEFAULT_TYPE, persona_id: Optional[int] = None) -> None:
@@ -3564,14 +3703,19 @@ async def edit_description_received(update: Update, context: ContextTypes.DEFAUL
 async def edit_comm_style_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     persona_id = context.user_data.get('edit_persona_id')
     with get_db() as db:
-        current_style = db.query(DBPersonaConfig.communication_style).filter(DBPersonaConfig.id == persona_id).scalar() or "neutral"
-    prompt_text = escape_markdown_v2(f"💬 выберите стиль общения (текущий: {current_style}):")
+        current_style = db.query(DBPersonaConfig.communication_style).filter(DBPersonaConfig.id == persona_id).scalar()
+    # normalize to enum
+    try:
+        current_style_enum = CommunicationStyle(current_style) if current_style else CommunicationStyle.NEUTRAL
+    except Exception:
+        current_style_enum = CommunicationStyle.NEUTRAL
+    prompt_text = escape_markdown_v2(f"💬 выберите стиль общения (текущий: {current_style_enum.value}):")
     keyboard = [
-        [InlineKeyboardButton(f"{'✅ ' if current_style == 'neutral' else ''}😐 нейтральный", callback_data="set_comm_style_neutral")],
-        [InlineKeyboardButton(f"{'✅ ' if current_style == 'friendly' else ''}😊 дружелюбный", callback_data="set_comm_style_friendly")],
-        [InlineKeyboardButton(f"{'✅ ' if current_style == 'sarcastic' else ''}😏 саркастичный", callback_data="set_comm_style_sarcastic")],
-        [InlineKeyboardButton(f"{'✅ ' if current_style == 'formal' else ''}✍️ формальный", callback_data="set_comm_style_formal")],
-        [InlineKeyboardButton(f"{'✅ ' if current_style == 'brief' else ''}🗣️ краткий", callback_data="set_comm_style_brief")],
+        [InlineKeyboardButton(f"{'✅ ' if current_style_enum == CommunicationStyle.NEUTRAL else ''}😐 нейтральный", callback_data=f"set_comm_style_{CommunicationStyle.NEUTRAL.value}")],
+        [InlineKeyboardButton(f"{'✅ ' if current_style_enum == CommunicationStyle.FRIENDLY else ''}😊 дружелюбный", callback_data=f"set_comm_style_{CommunicationStyle.FRIENDLY.value}")],
+        [InlineKeyboardButton(f"{'✅ ' if current_style_enum == CommunicationStyle.SARCASTIC else ''}😏 саркастичный", callback_data=f"set_comm_style_{CommunicationStyle.SARCASTIC.value}")],
+        [InlineKeyboardButton(f"{'✅ ' if current_style_enum == CommunicationStyle.FORMAL else ''}✍️ формальный", callback_data=f"set_comm_style_{CommunicationStyle.FORMAL.value}")],
+        [InlineKeyboardButton(f"{'✅ ' if current_style_enum == CommunicationStyle.BRIEF else ''}🗣️ краткий", callback_data=f"set_comm_style_{CommunicationStyle.BRIEF.value}")],
         [InlineKeyboardButton("⬅️ назад", callback_data="back_to_wizard_menu")]
     ]
     await _send_prompt(update, context, prompt_text, InlineKeyboardMarkup(keyboard))
@@ -3588,13 +3732,20 @@ async def edit_comm_style_received(update: Update, context: ContextTypes.DEFAULT
 
     if data.startswith("set_comm_style_"):
         new_style = data.replace("set_comm_style_", "")
+        # validate via enum
+        try:
+            style_enum = CommunicationStyle(new_style)
+        except Exception:
+            logger.warning(f"Invalid communication style received: {new_style}")
+            await query.edit_message_text(escape_markdown_v2("❌ неверное значение стиля общения."))
+            return EDIT_COMM_STYLE
         try:
             with get_db() as db:
                 persona = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).with_for_update().first()
                 if persona:
-                    persona.communication_style = new_style
+                    persona.communication_style = style_enum.value
                     db.commit()
-                    logger.info(f"Set communication_style to {new_style} for persona {persona_id}")
+                    logger.info(f"Set communication_style to {style_enum.value} for persona {persona_id}")
                     return await _handle_back_to_wizard_menu(update, context, persona_id)
                 else:
                     await query.edit_message_text(escape_markdown_v2("❌ Ошибка: личность не найдена."))
@@ -3761,12 +3912,17 @@ async def edit_max_messages_received(update: Update, context: ContextTypes.DEFAU
 async def edit_verbosity_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     persona_id = context.user_data.get('edit_persona_id')
     with get_db() as db:
-        current = db.query(DBPersonaConfig.verbosity_level).filter(DBPersonaConfig.id == persona_id).scalar() or "medium"
-    prompt_text = escape_markdown_v2(f"🗣️ выберите разговорчивость (текущая: {current}):")
+        current = db.query(DBPersonaConfig.verbosity_level).filter(DBPersonaConfig.id == persona_id).scalar()
+    # normalize to enum
+    try:
+        current_enum = Verbosity(current) if current else Verbosity.MEDIUM
+    except Exception:
+        current_enum = Verbosity.MEDIUM
+    prompt_text = escape_markdown_v2(f"🗣️ выберите разговорчивость (текущая: {current_enum.value}):")
     keyboard = [
-        [InlineKeyboardButton(f"{'✅ ' if current == 'concise' else ''}🤏 лаконичный", callback_data="set_verbosity_concise")],
-        [InlineKeyboardButton(f"{'✅ ' if current == 'medium' else ''}💬 средний", callback_data="set_verbosity_medium")],
-        [InlineKeyboardButton(f"{'✅ ' if current == 'talkative' else ''}📚 болтливый", callback_data="set_verbosity_talkative")],
+        [InlineKeyboardButton(f"{'✅ ' if current_enum == Verbosity.CONCISE else ''}🤏 лаконичный", callback_data=f"set_verbosity_{Verbosity.CONCISE.value}")],
+        [InlineKeyboardButton(f"{'✅ ' if current_enum == Verbosity.MEDIUM else ''}💬 средний", callback_data=f"set_verbosity_{Verbosity.MEDIUM.value}")],
+        [InlineKeyboardButton(f"{'✅ ' if current_enum == Verbosity.TALKATIVE else ''}📚 болтливый", callback_data=f"set_verbosity_{Verbosity.TALKATIVE.value}")],
         [InlineKeyboardButton("⬅️ назад", callback_data="back_to_wizard_menu")]
     ]
     await _send_prompt(update, context, prompt_text, InlineKeyboardMarkup(keyboard))
@@ -3785,13 +3941,20 @@ async def edit_verbosity_received(update: Update, context: ContextTypes.DEFAULT_
 
     if data.startswith("set_verbosity_"):
         new_value = data.replace("set_verbosity_", "")
+        # validate via enum
+        try:
+            verbosity_enum = Verbosity(new_value)
+        except Exception:
+            logger.warning(f"Invalid verbosity value received: {new_value}")
+            await query.edit_message_text(escape_markdown_v2("❌ неверное значение разговорчивости."))
+            return EDIT_VERBOSITY
         try:
             with get_db() as db:
                 persona = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).with_for_update().first()
                 if persona:
-                    persona.verbosity_level = new_value
+                    persona.verbosity_level = verbosity_enum.value
                     db.commit()
-                    logger.info(f"Set verbosity_level to {new_value} for persona {persona_id}")
+                    logger.info(f"Set verbosity_level to {verbosity_enum.value} for persona {persona_id}")
                     return await _handle_back_to_wizard_menu(update, context, persona_id)
                 else:
                     await query.edit_message_text(escape_markdown_v2("❌ Ошибка: личность не найдена."))
