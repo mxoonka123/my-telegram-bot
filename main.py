@@ -73,10 +73,43 @@ application_instance: Application | None = None
 application_loop: asyncio.AbstractEventLoop | None = None
 bot_swap_lock = threading.RLock()
 
+async def process_telegram_update(update_data, token: str, bot_username_for_log: str) -> None:
+    """Асинхронная функция для полной обработки одного Telegram-апдейта.
+    Выполняет безопасную подмену application_instance.bot на временный инициализированный Bot,
+    обрабатывает апдейт и гарантированно восстанавливает исходного бота.
+    """
+    global application_instance, bot_swap_lock
+    if not application_instance:
+        return
+
+    user_bot = Bot(token=token)
+    original_bot = application_instance.bot
+    try:
+        # КЛЮЧЕВОЕ: получаем getMe/username, чтобы CommandHandler мог корректно парсить команды вида /cmd@username
+        await user_bot.initialize()
+        update = Update.de_json(update_data, user_bot)
+
+        # Подмена бота в защищенной секции
+        with bot_swap_lock:
+            application_instance.bot = user_bot
+
+        await application_instance.process_update(update)
+
+    except Exception as e:
+        flask_logger.error(f"error processing telegram webhook for @{bot_username_for_log}: {e}", exc_info=True)
+    finally:
+        # Восстановление исходного бота и корректное выключение временного
+        with bot_swap_lock:
+            application_instance.bot = original_bot
+        try:
+            await user_bot.shutdown()
+        except Exception:
+            pass
+
 @flask_app.route('/telegram/<string:token>', methods=['POST'])
 def handle_telegram_webhook(token: str):
-    """Единый обработчик вебхуков Telegram с проверкой секрета и временной подменой бота."""
-    global application_instance, application_loop, bot_swap_lock
+    """Синхронный обработчик, который запускает асинхронную обработку апдейта."""
+    global application_instance, application_loop
     if not application_instance or application_loop is None:
         flask_logger.error("telegram webhook received but application is not fully initialized.")
         return Response(status=500)
@@ -99,38 +132,24 @@ def handle_telegram_webhook(token: str):
         flask_logger.error(f"invalid secret for bot @{bot_instance.telegram_username} (id={bot_instance.telegram_bot_id})")
         return Response(status=403)
 
-    # Готовим апдейт и временного бота
+    # Готовим апдейт
     try:
         update_data = request.get_json(force=True)
     except Exception:
         return Response(status=400)
 
-    user_bot = Bot(token=token)
-    original_bot = application_instance.bot
-
+    # Планируем асинхронную обработку апдейта в event loop PTB
     try:
-        update = Update.de_json(update_data, user_bot)
-        # Подмена и обработка в защищённой секции
-        with bot_swap_lock:
-            application_instance.bot = user_bot
-            future = asyncio.run_coroutine_threadsafe(
-                application_instance.process_update(update),
-                application_loop
-            )
-        # Дожидаемся завершения обработки для гарантированного отката
-        future.result()
-        return Response(status=200)
+        asyncio.run_coroutine_threadsafe(
+            process_telegram_update(update_data, token, bot_instance.telegram_username or "unknown"),
+            application_loop
+        )
     except Exception as e:
-        flask_logger.error(f"error processing telegram webhook for @{bot_instance.telegram_username}: {e}", exc_info=True)
+        flask_logger.error(f"failed to schedule telegram update processing: {e}")
         return Response(status=500)
-    finally:
-        # Восстанавливаем исходного бота и закрываем временный
-        with bot_swap_lock:
-            application_instance.bot = original_bot
-        try:
-            asyncio.run_coroutine_threadsafe(user_bot.shutdown(), application_loop).result()
-        except Exception:
-            pass
+
+    # Возвращаем 200 сразу; обработка идет в фоне
+    return Response(status=200)
 
 @flask_app.route('/yookassa/webhook', methods=['POST'])
 def handle_yookassa_webhook():

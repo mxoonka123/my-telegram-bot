@@ -59,9 +59,6 @@ YOOKASSA_SECRET_KEY = os.getenv("YOOKASSA_SECRET_KEY", "") # Секретный 
 # URL вашего приложения на Railway
 WEBHOOK_URL_BASE = os.getenv("WEBHOOK_URL_BASE", "")
 
-# LANGDOCK_BASE_URL = os.getenv("LANGDOCK_BASE_URL", "https://api.langdock.com/anthropic/eu/")
-# LANGDOCK_MODEL = os.getenv("LANGDOCK_MODEL", "claude-3-5-sonnet-20240620")
-
 # Параметры подписки и лимиты
 SUBSCRIPTION_PRICE_RUB = 699.00
 SUBSCRIPTION_CURRENCY = "RUB"

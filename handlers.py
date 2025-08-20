@@ -2102,7 +2102,7 @@ async def my_personas(update: Union[Update, CallbackQuery], context: ContextType
 
     final_text_to_send = ""
     final_reply_markup = None
-    final_parse_mode = ParseMode.MARKDOWN_V2
+    final_parse_mode = None
 
     try:
         with get_db() as db:
@@ -2132,36 +2132,40 @@ async def my_personas(update: Union[Update, CallbackQuery], context: ContextType
                     limit=str(persona_limit)
                 )
                 final_text_to_send = raw_text_no_personas
+                final_parse_mode = None
                 
                 fallback_text_plain_parts.append(
                     f"У тебя пока нет личностей ({persona_count}/{persona_limit}).\n"
                     f"Создай первую: /createpersona <имя> [описание]\n\n"
                     f"Подробное описание помогает личности лучше понять свою роль."
                 )
-                keyboard_no_personas = [[InlineKeyboardButton("⬅️ Назад в Меню", callback_data="show_menu")]] if is_callback else None
+                keyboard_no_personas = [[InlineKeyboardButton("⬅️ назад в меню", callback_data="show_menu")]] if is_callback else None
                 final_reply_markup = InlineKeyboardMarkup(keyboard_no_personas) if keyboard_no_personas else ReplyKeyboardRemove()
             else:
-                header_text = info_list_header_fmt_raw.format(
-                    count=escape_markdown_v2(str(persona_count)), 
-                    limit=escape_markdown_v2(str(persona_limit))
+                header_text_raw = info_list_header_fmt_raw.format(
+                    count=str(persona_count), 
+                    limit=str(persona_limit)
                 )
+                header_text = escape_markdown_v2(header_text_raw)
                 message_lines = [header_text]
                 keyboard_personas = []
                 fallback_text_plain_parts.append(f"Твои личности ({persona_count}/{persona_limit}):")
 
                 for p in personas:
-                    # статус привязки бота (без эмодзи)
+                    # статус привязки бота (markdownv2, нижний регистр)
                     bot_status_line = ""
                     if getattr(p, 'bot_instance', None) and p.bot_instance:
                         bi = p.bot_instance
                         if bi.status == 'active' and bi.telegram_username:
-                            bot_status_line = f"\nпривязан: @{bi.telegram_username}"
+                            escaped_username = escape_markdown_v2(bi.telegram_username)
+                            bot_status_line = f"\n*привязан:* `@{escaped_username}`"
                         else:
-                            bot_status_line = f"\nне привязан"
+                            bot_status_line = f"\n*статус:* не привязан"
                     else:
-                        bot_status_line = f"\nне привязан"
+                        bot_status_line = f"\n*статус:* не привязан"
 
-                    persona_text = f"\n{p.name} (id: {p.id}){bot_status_line}"
+                    escaped_name = escape_markdown_v2(p.name)
+                    persona_text = f"\n*{escaped_name}* \\(id: `{p.id}`\\){bot_status_line}"
                     message_lines.append(persona_text)
                     fallback_text_plain_parts.append(f"\n- {p.name} (id: {p.id})")
 
@@ -2181,6 +2185,7 @@ async def my_personas(update: Union[Update, CallbackQuery], context: ContextType
                     ])
                 
                 final_text_to_send = "\n".join(message_lines)
+                final_parse_mode = ParseMode.MARKDOWN_V2
                 if is_callback:
                     keyboard_personas.append([InlineKeyboardButton("⬅️ назад в меню", callback_data="show_menu")])
                 final_reply_markup = InlineKeyboardMarkup(keyboard_personas)
@@ -2210,10 +2215,10 @@ async def my_personas(update: Union[Update, CallbackQuery], context: ContextType
                 logger.warning(f"my_personas (callback): Could not delete previous message {message_to_delete_if_callback.message_id}: {e_del}")
         
         await context.bot.send_message(
-            chat_id=chat_id, 
-            text=final_text_to_send, 
-            reply_markup=final_reply_markup, 
-            parse_mode=None # Отправляем как простой текст
+            chat_id=chat_id,
+            text=final_text_to_send,
+            reply_markup=final_reply_markup,
+            parse_mode=final_parse_mode
         )
 
     except TelegramError as e_send:

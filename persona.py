@@ -263,7 +263,7 @@ class Persona:
                 f"Ты {self.name}. {self.description}.",
                 f"Стиль: {style_text}. Разговорчивость: {verbosity_text}.",
                 f"Настроение: {mood_name} ({mood_instruction}).",
-                f"Ответь на сообщение от {username} (id: {user_id}) в чате {chat_id_info}: {message}"
+                f"Ответь на последнее сообщение от {username} (id: {user_id}) в чате {chat_id_info}."
             ]
             formatted_prompt = " ".join(fallback_parts)
             logger.warning("Using fallback system prompt due to template error.")
@@ -276,7 +276,7 @@ class Persona:
                 f"Ты {self.name}. {self.description}.",
                 f"Стиль: {style_text}. Разговорчивость: {verbosity_text}.",
                 f"Настроение: {mood_name} ({mood_instruction}).",
-                f"Ответь на сообщение от {username} (id: {user_id}) в чате {chat_id_info}: {message}"
+                f"Ответь на последнее сообщение от {username} (id: {user_id}) в чате {chat_id_info}."
             ]
             formatted_prompt = " ".join(fallback_parts)
             logger.warning("Using fallback system prompt due to unexpected formatting error.")
