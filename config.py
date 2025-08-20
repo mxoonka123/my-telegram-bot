@@ -93,3 +93,36 @@ if not TELEGRAM_TOKEN:
 TELEGRAPH_AUTHOR_NAME = os.getenv("TELEGRAPH_AUTHOR_NAME", "NuNuAiBot") # Имя автора для страниц Telegra.ph
 TELEGRAPH_AUTHOR_URL = os.getenv("TELEGRAPH_AUTHOR_URL", "https://t.me/NuNuAiChannel") # Ссылка на автора для страниц Telegra.ph
 TELEGRAPH_ACCESS_TOKEN = os.getenv("TELEGRAPH_ACCESS_TOKEN", None) # Токен для Telegra.ph
+
+# --- Цены кредитной системы (базовые, можно менять без деплоя через env) ---
+# Стоимость указывается в кредитах за 1k токенов или за единицу медиа.
+# input_tokens/output_tokens — асимметричные ставки.
+CREDIT_COSTS = {
+    "input_tokens_per_1k": float(os.getenv("CREDIT_INPUT_PER_1K", "0.2")),
+    "output_tokens_per_1k": float(os.getenv("CREDIT_OUTPUT_PER_1K", "0.6")),
+    "image_per_item": float(os.getenv("CREDIT_IMAGE_PER_ITEM", "2.5")),
+    "audio_per_minute": float(os.getenv("CREDIT_AUDIO_PER_MIN", "1.0")),
+}
+
+# Коэффициент для разных моделей (по умолчанию 1.0 для OPENROUTER_MODEL_NAME)
+MODEL_PRICE_MULTIPLIERS = {
+    OPENROUTER_MODEL_NAME: float(os.getenv("CREDIT_MODEL_MULTIPLIER", "1.0")),
+}
+
+# Минимальный буфер выходных токенов для предварительной проверки баланса
+CREDIT_MIN_OUTPUT_TOKENS = int(os.getenv("CREDIT_MIN_OUTPUT_TOKENS", "200"))
+# Минимальная тарификация по голосу в минутах
+CREDIT_MIN_AUDIO_MINUTES = float(os.getenv("CREDIT_MIN_AUDIO_MINUTES", "1.0"))
+
+# Пакеты кредитов для покупки (id -> {credits, price_rub, title})
+# Значения по умолчанию можно переопределять через окружение в будущем
+CREDIT_PACKAGES = {
+    "starter": {"credits": 50.0, "price_rub": 199.0, "title": "Starter 50"},
+    "basic":   {"credits": 150.0, "price_rub": 499.0, "title": "Basic 150"},
+    "pro":     {"credits": 400.0, "price_rub": 999.0, "title": "Pro 400"},
+    "ultra":   {"credits": 1200.0, "price_rub": 2399.0, "title": "Ultra 1200"},
+}
+
+# --- Low Balance Warning ---
+# Порог в кредитах, при котором пользователю будет отправлено уведомление о низком балансе
+LOW_BALANCE_WARNING_THRESHOLD = float(os.getenv("LOW_BALANCE_WARNING_THRESHOLD", "50.0"))

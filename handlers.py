@@ -84,7 +84,8 @@ from config import (
     FREE_PERSONA_LIMIT,
     PREMIUM_USER_MONTHLY_MESSAGE_LIMIT,
     FREE_USER_MONTHLY_MESSAGE_LIMIT,
-    MAX_CONTEXT_MESSAGES_SENT_TO_LLM
+    MAX_CONTEXT_MESSAGES_SENT_TO_LLM,
+    CREDIT_PACKAGES
 )
 # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
 
@@ -112,6 +113,8 @@ from utils import (
 )
 
 # --- Constants ---
+BOTSET_SELECT, BOTSET_MENU, BOTSET_WHITELIST_ADD, BOTSET_WHITELIST_REMOVE = range(4)
+
 def _process_history_for_time_gaps(history: List[Dict[str, Any]]) -> List[Dict[str, str]]:
     """
     Processes message history to insert system notes about time gaps.
@@ -146,6 +149,246 @@ def _process_history_for_time_gaps(history: List[Dict[str, Any]]) -> List[Dict[s
         last_timestamp = current_timestamp
         
     return processed_history
+
+# =====================
+# /botsettings (ACL/Whitelist Management)
+# =====================
+
+async def botsettings_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /botsettings — показать список ваших ботов для настройки ACL."""
+    user = update.effective_user
+    if not update.message:
+        return ConversationHandler.END
+    with get_db() as db:
+        owner = db.query(User).filter(User.telegram_id == user.id).first()
+        if not owner:
+            await update.message.reply_text("Сначала используйте /start")
+            return ConversationHandler.END
+        bots = db.query(DBBotInstance).filter(DBBotInstance.owner_id == owner.id).order_by(DBBotInstance.name).all()
+        if not bots:
+            await update.message.reply_text("У вас нет активных ботов. Создайте личность и привяжите бота.")
+            return ConversationHandler.END
+        kb = []
+        for b in bots:
+            label = b.telegram_username or b.name or f"Bot #{b.id}"
+            kb.append([InlineKeyboardButton(label, callback_data=f"botset_pick_{b.id}")])
+        await update.message.reply_text("Выберите бота для настройки:", reply_markup=InlineKeyboardMarkup(kb))
+        return BOTSET_SELECT
+
+async def botsettings_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if not q:
+        return ConversationHandler.END
+    await q.answer()
+    m = re.match(r"^botset_pick_(\d+)$", q.data)
+    if not m:
+        return ConversationHandler.END
+    bot_id = int(m.group(1))
+    context.user_data['botsettings_bot_id'] = bot_id
+    return await botsettings_menu_show(update, context)
+
+async def botsettings_menu_show(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показать меню настроек для выбранного бота."""
+    q = update.callback_query
+    chat_id = None
+    if q and q.message:
+        chat_id = q.message.chat.id
+    elif update.effective_chat:
+        chat_id = update.effective_chat.id
+    bot_id = context.user_data.get('botsettings_bot_id')
+    if not bot_id:
+        if q:
+            await q.edit_message_text("Не удалось определить выбранного бота. Запустите /botsettings заново.")
+        else:
+            await context.bot.send_message(chat_id, "Не удалось определить выбранного бота. Запустите /botsettings заново.")
+        return ConversationHandler.END
+    with get_db() as db:
+        bi = db.query(DBBotInstance).filter(DBBotInstance.id == bot_id).first()
+        if not bi:
+            if q:
+                await q.edit_message_text("Бот не найден.")
+            else:
+                await context.bot.send_message(chat_id, "Бот не найден.")
+            return ConversationHandler.END
+        title = bi.telegram_username or bi.name or f"Bot #{bi.id}"
+        access = bi.access_level or 'owner_only'
+        try:
+            wl = json.loads(bi.whitelisted_users_json or '[]')
+        except Exception:
+            wl = []
+        wl_count = len(wl)
+        text = (
+            f"Настройки бота: {title}\n"
+            f"Доступ: {access}\n"
+            f"Белый список: {wl_count} пользователей"
+        )
+        kb = [
+            [InlineKeyboardButton("Доступ: public", callback_data="botset_access_public")],
+            [InlineKeyboardButton("Доступ: whitelist", callback_data="botset_access_whitelist")],
+            [InlineKeyboardButton("Доступ: owner_only", callback_data="botset_access_owner_only")],
+            [InlineKeyboardButton("👁 Просмотр whitelist", callback_data="botset_wl_show")],
+            [InlineKeyboardButton("➕ Добавить в whitelist", callback_data="botset_wl_add")],
+            [InlineKeyboardButton("➖ Удалить из whitelist", callback_data="botset_wl_remove")],
+            [InlineKeyboardButton("⬅️ Закрыть", callback_data="botset_close")],
+        ]
+        if q:
+            await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=None)
+        else:
+            await context.bot.send_message(chat_id, text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=None)
+    return BOTSET_MENU
+
+async def botsettings_set_access(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if not q:
+        return ConversationHandler.END
+    await q.answer()
+    m = re.match(r"^botset_access_(public|whitelist|owner_only)$", q.data)
+    if not m:
+        return ConversationHandler.END
+    new_level = m.group(1)
+    bot_id = context.user_data.get('botsettings_bot_id')
+    if not bot_id:
+        return ConversationHandler.END
+    with get_db() as db:
+        bi = db.query(DBBotInstance).filter(DBBotInstance.id == bot_id).first()
+        if not bi:
+            await q.edit_message_text("Бот не найден.")
+            return ConversationHandler.END
+        bi.access_level = new_level
+        db.add(bi)
+        db.commit()
+    return await botsettings_menu_show(update, context)
+
+async def botsettings_wl_show(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if not q:
+        return ConversationHandler.END
+    await q.answer()
+    bot_id = context.user_data.get('botsettings_bot_id')
+    if not bot_id:
+        return ConversationHandler.END
+    with get_db() as db:
+        bi = db.query(DBBotInstance).filter(DBBotInstance.id == bot_id).first()
+        if not bi:
+            await q.edit_message_text("Бот не найден.")
+            return ConversationHandler.END
+        try:
+            wl = json.loads(bi.whitelisted_users_json or '[]')
+        except Exception:
+            wl = []
+        if not wl:
+            text = "Белый список пуст."
+        else:
+            text = "Белый список (TG IDs):\n" + "\n".join(f"• {uid}" for uid in wl)
+        kb = [[InlineKeyboardButton("⬅️ Назад", callback_data="botset_back")]]
+        await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=None)
+    return BOTSET_MENU
+
+async def botsettings_wl_add_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if q:
+        await q.answer()
+        await q.edit_message_text("Отправьте numeric Telegram ID пользователя для добавления в whitelist:")
+    else:
+        if update.message:
+            await update.message.reply_text("Отправьте numeric Telegram ID пользователя для добавления в whitelist:")
+    return BOTSET_WHITELIST_ADD
+
+async def botsettings_wl_add_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text:
+        return BOTSET_WHITELIST_ADD
+    text = update.message.text.strip()
+    if not text.isdigit():
+        await update.message.reply_text("Нужно отправить числовой Telegram ID.")
+        return BOTSET_WHITELIST_ADD
+    add_id = int(text)
+    bot_id = context.user_data.get('botsettings_bot_id')
+    if not bot_id:
+        await update.message.reply_text("Сессия настройки утеряна, запустите /botsettings заново.")
+        return ConversationHandler.END
+    with get_db() as db:
+        bi = db.query(DBBotInstance).filter(DBBotInstance.id == bot_id).first()
+        if not bi:
+            await update.message.reply_text("Бот не найден.")
+            return ConversationHandler.END
+        try:
+            wl = json.loads(bi.whitelisted_users_json or '[]')
+        except Exception:
+            wl = []
+        if add_id not in wl:
+            wl.append(add_id)
+            bi.whitelisted_users_json = json.dumps(wl, ensure_ascii=False)
+            db.add(bi)
+            db.commit()
+    await update.message.reply_text("Пользователь добавлен в whitelist.")
+    return await botsettings_menu_show(update, context)
+
+async def botsettings_wl_remove_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if not q:
+        return ConversationHandler.END
+    await q.answer()
+    bot_id = context.user_data.get('botsettings_bot_id')
+    if not bot_id:
+        return ConversationHandler.END
+    with get_db() as db:
+        bi = db.query(DBBotInstance).filter(DBBotInstance.id == bot_id).first()
+        if not bi:
+            await q.edit_message_text("Бот не найден.")
+            return ConversationHandler.END
+        try:
+            wl = json.loads(bi.whitelisted_users_json or '[]')
+        except Exception:
+            wl = []
+        if not wl:
+            await q.edit_message_text("Белый список пуст.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="botset_back")]]))
+            return BOTSET_MENU
+        kb = [[InlineKeyboardButton(f"Удалить {uid}", callback_data=f"botset_wl_del_{uid}")]]
+        kb = [[InlineKeyboardButton(f"Удалить {uid}", callback_data=f"botset_wl_del_{uid}")] for uid in wl]
+        kb.append([InlineKeyboardButton("⬅️ Назад", callback_data="botset_back")])
+        await q.edit_message_text("Выберите пользователя для удаления:", reply_markup=InlineKeyboardMarkup(kb))
+    return BOTSET_WHITELIST_REMOVE
+
+async def botsettings_wl_remove_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if not q:
+        return ConversationHandler.END
+    await q.answer()
+    m = re.match(r"^botset_wl_del_(\d+)$", q.data)
+    if not m:
+        return BOTSET_WHITELIST_REMOVE
+    rem_id = int(m.group(1))
+    bot_id = context.user_data.get('botsettings_bot_id')
+    if not bot_id:
+        return ConversationHandler.END
+    with get_db() as db:
+        bi = db.query(DBBotInstance).filter(DBBotInstance.id == bot_id).first()
+        if not bi:
+            await q.edit_message_text("Бот не найден.")
+            return ConversationHandler.END
+        try:
+            wl = json.loads(bi.whitelisted_users_json or '[]')
+        except Exception:
+            wl = []
+        if rem_id in wl:
+            wl = [x for x in wl if x != rem_id]
+            bi.whitelisted_users_json = json.dumps(wl, ensure_ascii=False)
+            db.add(bi)
+            db.commit()
+    return await botsettings_menu_show(update, context)
+
+async def botsettings_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    return await botsettings_menu_show(update, context)
+
+async def botsettings_close(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if q:
+        await q.answer()
+        try:
+            await q.edit_message_text("Настройки закрыты.")
+        except Exception:
+            pass
+    return ConversationHandler.END
 
 async def transcribe_audio_with_vosk(audio_data: bytes, original_mime_type: str) -> Optional[str]:
     """
@@ -954,6 +1197,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             logger.debug("handle_message: Exiting - No message or text/caption.")
             return
 
+        # --- Block commands on attached (non-main) bots ---
+        try:
+            entities = update.message.entities or []
+            text_raw = update.message.text or ''
+            is_command = any((e.type == 'bot_command') for e in entities) or text_raw.startswith('/')
+            main_bot_id = context.bot_data.get('main_bot_id')
+            if is_command and main_bot_id and str(context.bot.id) != str(main_bot_id):
+                logger.info(f"handle_message: Skip command on attached bot (current={context.bot.id}, main={main_bot_id}).")
+                return
+        except Exception as e_cmd_chk:
+            logger.error(f"handle_message: error checking command on attached bot: {e_cmd_chk}")
+
         chat_id_str = str(update.effective_chat.id)
         user_id = update.effective_user.id
         username = update.effective_user.username or f"user_{user_id}"
@@ -1192,6 +1447,44 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                         logger.info(f"Incremented monthly message count for user {owner_user.id} (TG: {owner_user.telegram_id}) to {owner_user.monthly_message_count}")
                         limit_state_changed = True 
 
+                        # --- Credit deduction stub (text) ---
+                        try:
+                            from config import CREDIT_COSTS, MODEL_PRICE_MULTIPLIERS, OPENROUTER_MODEL_NAME
+                            input_tokens = count_openai_compatible_tokens(message_text, OPENROUTER_MODEL_NAME)
+                            output_tokens = count_openai_compatible_tokens(assistant_response_text or "", OPENROUTER_MODEL_NAME)
+                            mult = MODEL_PRICE_MULTIPLIERS.get(OPENROUTER_MODEL_NAME, 1.0)
+                            cost = (
+                                (input_tokens / 1000.0) * CREDIT_COSTS.get("input_tokens_per_1k", 0.0) +
+                                (output_tokens / 1000.0) * CREDIT_COSTS.get("output_tokens_per_1k", 0.0)
+                            ) * mult
+                            cost = round(cost, 6)
+                            prev_credits = getattr(owner_user, 'credits', 0.0) or 0.0
+                            if prev_credits >= cost and cost > 0:
+                                owner_user.credits = round(prev_credits - cost, 6)
+                                db_session.add(owner_user)
+                                logger.info(f"Credits deducted (text): user {owner_user.id}, cost={cost}, new_balance={owner_user.credits}")
+
+                                # --- НОВОЕ: предупреждение о низком балансе ---
+                                try:
+                                    if (
+                                        owner_user.credits < config.LOW_BALANCE_WARNING_THRESHOLD and
+                                        prev_credits >= config.LOW_BALANCE_WARNING_THRESHOLD
+                                    ):
+                                        warning_text = (
+                                            f"⚠️ Предупреждение: на вашем балансе осталось меньше {config.LOW_BALANCE_WARNING_THRESHOLD:.0f} кредитов!\n"
+                                            f"Текущий баланс: {owner_user.credits:.2f} кр.\n\n"
+                                            f"Пополните баланс командой /buycredits"
+                                        )
+                                        main_bot = context.application.bot
+                                        await main_bot.send_message(chat_id=owner_user.telegram_id, text=warning_text, parse_mode=None)
+                                        logger.info(f"Sent low balance warning to user {owner_user.id} (text handler)")
+                                except Exception as warn_e:
+                                    logger.error(f"Failed to send low balance warning (text): {warn_e}")
+                            else:
+                                logger.info(f"Credits not deducted (text): user {owner_user.id}, cost={cost}, balance={prev_credits} (stub mode)")
+                        except Exception as e_credit:
+                            logger.error(f"Credit calc/deduct failed in handle_message: {e_credit}")
+
                     if limit_state_changed or context_user_msg_added or context_response_prepared:
                         try:
                             logger.debug(f"handle_message: Final commit. Limit: {limit_state_changed}, UserCtx: {context_user_msg_added}, RespCtx: {context_response_prepared}")
@@ -1386,6 +1679,70 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
             
             ai_response_text = await send_to_openrouter(system_prompt, context_for_ai, image_data=image_data, audio_data=audio_data)
             logger.debug(f"Received response from AI for {media_type}: {ai_response_text[:100]}...")
+
+            # --- Credit deduction stub (media) ---
+            try:
+                from config import CREDIT_COSTS, MODEL_PRICE_MULTIPLIERS, OPENROUTER_MODEL_NAME
+                mult = MODEL_PRICE_MULTIPLIERS.get(OPENROUTER_MODEL_NAME, 1.0)
+
+                # Base media cost
+                media_cost = 0.0
+                if media_type == "photo":
+                    media_cost += CREDIT_COSTS.get("image_per_item", 0.0)
+                elif media_type == "voice":
+                    # Try to estimate minutes from voice duration if available
+                    minutes = 0.0
+                    try:
+                        if update.message and update.message.voice and update.message.voice.duration:
+                            minutes = max(1.0, (update.message.voice.duration or 0) / 60.0)
+                    except Exception:
+                        minutes = 1.0
+                    media_cost += CREDIT_COSTS.get("audio_per_minute", 0.0) * minutes
+
+                # Token costs for input (caption/transcript) and output text
+                input_text_for_tokens = (caption or "") if media_type == "photo" else (user_message_content or "")
+                output_text_for_tokens = ai_response_text or ""
+                try:
+                    input_tok = count_openai_compatible_tokens(input_text_for_tokens, OPENROUTER_MODEL_NAME)
+                except Exception:
+                    input_tok = 0
+                try:
+                    output_tok = count_openai_compatible_tokens(output_text_for_tokens, OPENROUTER_MODEL_NAME)
+                except Exception:
+                    output_tok = 0
+
+                tokens_cost = (
+                    (input_tok / 1000.0) * CREDIT_COSTS.get("input_tokens_per_1k", 0.0) +
+                    (output_tok / 1000.0) * CREDIT_COSTS.get("output_tokens_per_1k", 0.0)
+                )
+
+                total_cost = round((media_cost + tokens_cost) * mult, 6)
+                prev_credits = getattr(owner_user, 'credits', 0.0) or 0.0
+                if prev_credits >= total_cost and total_cost > 0:
+                    owner_user.credits = round(prev_credits - total_cost, 6)
+                    db.add(owner_user)
+                    logger.info(f"Credits deducted (media={media_type}): user {owner_user.id}, cost={total_cost}, new_balance={owner_user.credits}")
+
+                    # --- НОВОЕ: предупреждение о низком балансе ---
+                    try:
+                        if (
+                            owner_user.credits < config.LOW_BALANCE_WARNING_THRESHOLD and
+                            prev_credits >= config.LOW_BALANCE_WARNING_THRESHOLD
+                        ):
+                            warning_text = (
+                                f"⚠️ Предупреждение: на вашем балансе осталось меньше {config.LOW_BALANCE_WARNING_THRESHOLD:.0f} кредитов!\n"
+                                f"Текущий баланс: {owner_user.credits:.2f} кр.\n\n"
+                                f"Пополните баланс командой /buycredits"
+                            )
+                            main_bot = context.application.bot
+                            await main_bot.send_message(chat_id=owner_user.telegram_id, text=warning_text, parse_mode=None)
+                            logger.info(f"Sent low balance warning to user {owner_user.id} (media handler)")
+                    except Exception as warn_e:
+                        logger.error(f"Failed to send low balance warning (media): {warn_e}")
+                else:
+                    logger.info(f"Credits not deducted (media={media_type}): user {owner_user.id}, cost={total_cost}, balance={prev_credits} (stub mode)")
+            except Exception as e_credit_media:
+                logger.error(f"Credit calc/deduct failed in handle_media: {e_credit_media}")
 
             await process_and_send_response(
                 update, context, chat_id_str, persona, ai_response_text, db, reply_to_message_id=message_id
@@ -2720,71 +3077,34 @@ async def profile(update: Union[Update, CallbackQuery], context: ContextTypes.DE
                     await context.bot.send_message(chat_id, error_user_not_found, parse_mode=ParseMode.MARKDOWN_V2)
                     return
 
-            now = datetime.now(timezone.utc)
-            is_active_subscriber = user_db.is_active_subscriber
-            status_text_escaped = escape_markdown_v2("⭐ Premium" if is_active_subscriber else "🆓 Free")
-            expires_text_md = ""
-            expires_text_plain = ""
-
-            if is_active_subscriber and user_db.subscription_expires_at:
-                try:
-                    if user_db.subscription_expires_at > now + timedelta(days=365*10):
-                        expires_text_md = escape_markdown_v2("активна (бессрочно)")
-                        expires_text_plain = "активна (бессрочно)"
-                    else:
-                        date_str = user_db.subscription_expires_at.strftime('%d.%m.%Y %H:%M')
-                        expires_text_md = f"активна до: *{escape_markdown_v2(date_str)}* UTC"
-                        expires_text_plain = f"активна до: {date_str} UTC"
-                except AttributeError:
-                        expires_text_md = escape_markdown_v2("активна (дата истечения некорректна)")
-                        expires_text_plain = "активна (дата истечения некорректна)"
-            elif is_active_subscriber:
-                expires_text_md = escape_markdown_v2("активна (бессрочно)")
-                expires_text_plain = "активна (бессрочно)"
-            else:
-                expires_text_md = escape_markdown_v2("нет активной подписки")
-                expires_text_plain = "нет активной подписки"
-
+            # Новый профиль: показываем баланс кредитов и базовую информацию
             persona_count = len(user_db.persona_configs) if user_db.persona_configs is not None else 0
             persona_limit_raw = f"{persona_count}/{user_db.persona_limit}"
-            msg_limit_raw = f"{user_db.monthly_message_count}/{user_db.message_limit}"
-            message_limit_label = "сообщения в этом месяце:"
-
             persona_limit_escaped = escape_markdown_v2(persona_limit_raw)
-            msg_limit_escaped = escape_markdown_v2(msg_limit_raw)
+            credits_balance = float(user_db.credits or 0.0)
+            credits_text = escape_markdown_v2(f"{credits_balance:.2f}")
 
-            photo_limit_raw = f"{user_db.monthly_photo_count}/{user_db.photo_limit}"
-            photo_limit_escaped = escape_markdown_v2(photo_limit_raw)
-            
             profile_text_md = (
                 f"👤 *твой профиль*\n\n"
-                f"*статус:* {status_text_escaped}\n"
-                f"{expires_text_md}\n\n"
-                f"**лимиты:**\n"
-                f"{escape_markdown_v2(message_limit_label)} {msg_limit_escaped}\n"
-                f"{escape_markdown_v2('фотографий в этом месяце:')} {photo_limit_escaped}\n"
+                f"*баланс кредитов:* {credits_text}\n"
                 f"{escape_markdown_v2('создано личностей:')} {persona_limit_escaped}\n\n"
+                f"ℹ️ кредиты списываются за текст, изображения и распознавание аудио."
             )
-            promo_text_md = "🚀 хочешь больше\\? жми `/subscribe` или кнопку 'подписка' в `/menu`\\!"
-            promo_text_plain = "🚀 хочешь больше? жми /subscribe или кнопку 'подписка' в /menu !"
-            if not is_active_subscriber:
-                profile_text_md += promo_text_md
 
             profile_text_plain = (
                 f"👤 Твой профиль\n\n"
-                f"Статус: {'Premium' if is_active_subscriber else 'Free'}\n"
-                f"{expires_text_plain}\n\n"
-                f"Лимиты:\n"
-                f"Сообщения в этом месяце: {msg_limit_raw}\n"
-                f"Фотографий в этом месяце: {photo_limit_raw}\n"
+                f"Баланс кредитов: {credits_balance:.2f}\n"
                 f"Создано личностей: {persona_limit_raw}\n\n"
+                f"ℹ️ Кредиты списываются за текст, изображения и распознавание аудио."
             )
-            if not is_active_subscriber:
-                profile_text_plain += promo_text_plain
 
             final_text_to_send = profile_text_md
 
-            keyboard = [[InlineKeyboardButton("⬅️ Назад в Меню", callback_data="show_menu")]] if is_callback else None
+            keyboard = [[
+                InlineKeyboardButton("💳 Пополнить кредиты", callback_data="buycredits_open")
+            ], [
+                InlineKeyboardButton("⬅️ Назад в Меню", callback_data="show_menu")
+            ]] if is_callback else None
             reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
 
             if is_callback:
@@ -2816,271 +3136,156 @@ async def profile(update: Union[Update, CallbackQuery], context: ContextTypes.DE
             await context.bot.send_message(chat_id, error_general, parse_mode=ParseMode.MARKDOWN_V2)
 
 
-async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE, from_callback: bool = False) -> None:
-    """Handles the /subscribe command and the subscribe_info callback."""
-    is_callback = update.callback_query is not None
+async def buycredits(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Команда /buycredits: показывает доступные пакеты и кнопки оплаты."""
     user = update.effective_user
-    user_id = user.id
-    username = user.username or f"id_{user_id}"
-    logger.info(f"CMD /subscribe or Info Callback < User {user_id} ({username})")
+    if not user:
+        return
+    chat_id = update.effective_chat.id if update.effective_chat else user.id
 
-    message_to_update_or_reply = update.callback_query.message if is_callback else update.message
-    if not message_to_update_or_reply: return
-    chat_id = message_to_update_or_reply.chat.id
-
-    if not from_callback:
-        if not await check_channel_subscription(update, context):
-            await send_subscription_required_message(update, context)
-            return
-
-    # --- НАЧАЛО ИЗМЕНЕНИЙ ---
-    with get_db() as db:
-        user_db = db.query(User).filter(User.telegram_id == user_id).first()
-        if user_db and user_db.is_active_subscriber:
-            # Пользователь уже подписан, показываем ему статус
-            expires_text_md = ""
-            if user_db.subscription_expires_at:
-                if user_db.subscription_expires_at > datetime.now(timezone.utc) + timedelta(days=365*10):
-                    expires_text_md = escape_markdown_v2("бессрочно")
-                else:
-                    date_str = user_db.subscription_expires_at.strftime('%d.%m.%Y %H:%M')
-                    expires_text_md = f"до *{escape_markdown_v2(date_str)}* UTC"
-            else:
-                expires_text_md = escape_markdown_v2("бессрочно (нет даты окончания)")
-
-            status_text_md = (
-                f"⭐ *ваша премиум подписка активна\\!*\n\n"
-                f"срок действия: {expires_text_md}\n\n"
-                f"спасибо за вашу поддержку\\! 🎉"
-            )
-            keyboard = [[InlineKeyboardButton("⬅️ назад в меню", callback_data="show_menu")]]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-
-            try:
-                if is_callback:
-                    await update.callback_query.edit_message_text(status_text_md, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
-                else:
-                    await message_to_update_or_reply.reply_text(status_text_md, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
-            except Exception as e:
-                logger.error(f"Failed to send 'already subscribed' message to user {user_id}: {e}")
-            return # Завершаем выполнение функции
-
-    # Если у пользователя нет активной подписки, продолжаем со старой логикой
+    # Проверка доступности YooKassa
     yookassa_ready = bool(YOOKASSA_SHOP_ID and YOOKASSA_SECRET_KEY and YOOKASSA_SHOP_ID.isdigit())
-    # --- КОНЕЦ ИЗМЕНЕНИЙ ---
-
-    error_payment_unavailable = escape_markdown_v2("❌ к сожалению, функция оплаты сейчас недоступна \\(проблема с настройками\\)\\. 😥")
-
-    text = ""
-    reply_markup = None
-    text_raw = ""
-
     if not yookassa_ready:
-        text = error_payment_unavailable
-        keyboard = [[InlineKeyboardButton("⬅️ Назад", callback_data="show_menu")]] if is_callback else [[InlineKeyboardButton("⬅️ Назад в Меню", callback_data="show_menu")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        logger.warning("Yookassa credentials not set or shop ID is not numeric in subscribe handler.")
-    else:
-        price_raw = f"{SUBSCRIPTION_PRICE_RUB:.0f}"
-        duration_raw = str(SUBSCRIPTION_DURATION_DAYS)
-        paid_limit_raw = str(PREMIUM_USER_MONTHLY_MESSAGE_LIMIT)
-        free_limit_raw = str(FREE_USER_MONTHLY_MESSAGE_LIMIT)
-        paid_persona_raw = str(PAID_PERSONA_LIMIT)
-        free_persona_raw = str(FREE_PERSONA_LIMIT)
+        await context.bot.send_message(chat_id, escape_markdown_v2("❌ платежи временно недоступны."), parse_mode=ParseMode.MARKDOWN_V2)
+        return
 
-        text_md = (
-            f"✨ *премиум подписка* \\({escape_markdown_v2(price_raw)} {escape_markdown_v2(SUBSCRIPTION_CURRENCY)}/мес\\) ✨\n\n"
-            f"*получите максимум возможностей:*\n"
-            f"✅ до {escape_markdown_v2(paid_limit_raw)} сообщений в месяц \\(вместо {escape_markdown_v2(free_limit_raw)}\\)\n"
-            f"✅ до {escape_markdown_v2(paid_persona_raw)} личностей \\(вместо {escape_markdown_v2(free_persona_raw)}\\)\n"
-            f"✅ полная настройка поведения\n"
-            f"✅ создание и редактирование своих настроений\n"
-            f"✅ приоритетная поддержка\n\n"
-            f"*срок действия:* {escape_markdown_v2(duration_raw)} дней\\."
-        )
-        text = text_md
+    # Формируем список пакетов
+    lines = ["💳 *пополнение кредитов*\n"]
+    keyboard_rows = []
+    for pkg_id, pkg in (CREDIT_PACKAGES or {}).items():
+        title = pkg.get('title') or pkg_id
+        credits = float(pkg.get('credits', 0))
+        price = float(pkg.get('price_rub', 0))
+        lines.append(f"• {escape_markdown_v2(title)} — {escape_markdown_v2(f'{credits:.0f} кр.')} за {escape_markdown_v2(f'{price:.0f} ₽')}")
+        keyboard_rows.append([InlineKeyboardButton(f"Купить {int(credits)} кр. за {int(price)} ₽", callback_data=f"buycredits_pkg_{pkg_id}")])
 
-        text_raw = (
-            f"✨ Премиум подписка ({price_raw} {SUBSCRIPTION_CURRENCY}/мес) ✨\n\n"
-            f"Получите максимум возможностей:\n"
-            f"✅ {paid_limit_raw} сообщений в месяц (вместо {free_limit_raw})\n"
-            f"✅ {paid_persona_raw} личностей (вместо {free_persona_raw})\n"
-            f"✅ полная настройка поведения\n"
-            f"✅ создание и редактирование своих настроений\n"
-            f"✅ приоритетная поддержка\n\n"
-            f"Срок действия: {duration_raw} дней."
-        )
+    text_md = "\n".join(lines)
+    keyboard_rows.append([InlineKeyboardButton("⬅️ Назад в Меню", callback_data="show_menu")])
+    await context.bot.send_message(chat_id, text_md, reply_markup=InlineKeyboardMarkup(keyboard_rows), parse_mode=ParseMode.MARKDOWN_V2)
 
-        keyboard = [
-            [InlineKeyboardButton("📜 условия использования", callback_data="view_tos")],
-            [InlineKeyboardButton("✅ принять и оплатить", callback_data="confirm_pay")]
+
+async def buycredits_pkg_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Создает платеж YooKassa для выбранного кредитного пакета."""
+    query = update.callback_query
+    if not query:
+        return
+    user_id = query.from_user.id
+
+    await query.answer()
+
+    data = query.data or ""
+    try:
+        pkg_id = data.split("buycredits_pkg_")[-1]
+    except Exception:
+        await query.answer("Некорректный пакет", show_alert=True)
+        return
+
+    pkg = (CREDIT_PACKAGES or {}).get(pkg_id)
+    if not pkg:
+        await query.answer("Пакет недоступен", show_alert=True)
+        return
+
+    credits = float(pkg.get('credits', 0))
+    price_rub = float(pkg.get('price_rub', 0))
+    bot_username = context.bot_data.get('bot_username', 'NunuAiBot')
+    return_url = f"https://t.me/{bot_username}"
+
+    if not (YOOKASSA_SHOP_ID and YOOKASSA_SECRET_KEY and YOOKASSA_SHOP_ID.isdigit()):
+        await query.edit_message_text("❌ платежи недоступны", parse_mode=None)
+        return
+
+    idempotence_key = str(uuid.uuid4())
+    description = f"Покупка кредитов для @{bot_username}: {int(credits)} кр. (User ID: {user_id})"
+    metadata = {
+        'telegram_user_id': str(user_id),
+        'package_id': str(pkg_id),
+        'credits': str(int(credits)),
+    }
+
+    # Чек
+    try:
+        receipt_items = [
+            ReceiptItem({
+                "description": f"Кредиты для @{bot_username} ({int(credits)} кр.)",
+                "quantity": 1.0,
+                "amount": {"value": f"{price_rub:.2f}", "currency": SUBSCRIPTION_CURRENCY},
+                "vat_code": "1",
+                "payment_mode": "full_prepayment",
+                "payment_subject": "service"
+            })
         ]
-        if is_callback:
-            keyboard.append([InlineKeyboardButton("⬅️ назад в меню", callback_data="show_menu")])
-        reply_markup = InlineKeyboardMarkup(keyboard)
+        receipt_data = Receipt({
+            "customer": {"email": f"user_{user_id}@telegram.bot"},
+            "items": receipt_items,
+        })
+    except Exception as e:
+        logger.error(f"Error preparing receipt for credits: {e}")
+        await query.edit_message_text("❌ ошибка формирования платежа", parse_mode=None)
+        return
 
     try:
-        if is_callback:
-            query = update.callback_query
-            if query.message.text != text or query.message.reply_markup != reply_markup:
-                await query.edit_message_text(text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
-            else:
-                await query.answer()
-        else:
-            await message_to_update_or_reply.reply_text(text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
-    except BadRequest as e:
-        logger.error(f"Failed sending subscribe message (BadRequest): {e} - Text MD: '{text[:100]}...'")
-        try:
-            target_chat_id = update.effective_chat.id
-            if is_callback:
-                await update.callback_query.message.delete()
-            await context.bot.send_message(chat_id=target_chat_id, text=text_raw, reply_markup=reply_markup, parse_mode=None)
-        except Exception as fallback_e:
-            logger.error(f"Failed sending fallback subscribe message: {fallback_e}")
-    except Exception as e:
-        logger.error(f"Failed to send/edit subscribe message for user {user_id}: {e}")
-        if from_callback and isinstance(e, (BadRequest, TelegramError)):
-            try:
-                await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
-            except Exception as send_e:
-                logger.error(f"Failed to send fallback subscribe message for user {user_id}: {send_e}")
+        builder = PaymentRequestBuilder()
+        builder.set_amount({"value": f"{price_rub:.2f}", "currency": SUBSCRIPTION_CURRENCY}) \
+            .set_capture(True) \
+            .set_confirmation({"type": "redirect", "return_url": return_url}) \
+            .set_description(description) \
+            .set_metadata(metadata) \
+            .set_receipt(receipt_data)
+        request = builder.build()
 
+        payment_response = await asyncio.to_thread(Payment.create, request, idempotence_key)
+        if not payment_response or not getattr(payment_response, 'confirmation', None) or not getattr(payment_response.confirmation, 'confirmation_url', None):
+            await query.edit_message_text("❌ ошибка получения ссылки оплаты", parse_mode=None)
+            return
+
+        confirmation_url = payment_response.confirmation.confirmation_url
+        keyboard = [[InlineKeyboardButton("🔗 Перейти к оплате", url=confirmation_url)]]
+        try:
+            await query.edit_message_text("✅ Ссылка на оплату создана.", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=None)
+        except BadRequest:
+            # Если редактирование не получилось, отправим новое сообщение
+            await context.bot.send_message(query.message.chat.id, "✅ Ссылка на оплату создана.", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=None)
+    except Exception as e:
+        logger.error(f"Yookassa create payment error (credits) for user {user_id}: {e}", exc_info=True)
+        await query.edit_message_text("❌ ошибка при создании платежа", parse_mode=None)
+
+async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE, from_callback: bool = False) -> None:
+    """[DEPRECATED] /subscribe — больше не поддерживается. Оставлено как заглушка."""
+    is_callback = update.callback_query is not None
+    msg = update.callback_query.message if is_callback else update.message
+    if not msg:
+        return
+    try:
+        text = "ℹ️ Подписки больше не поддерживаются. Используйте /buycredits для пополнения кредитов."
+        if is_callback:
+            await update.callback_query.edit_message_text(text, parse_mode=None)
+        else:
+            await msg.reply_text(text, parse_mode=None)
+    except Exception:
+        pass
 
 async def view_tos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handles the view_tos callback to show Terms of Service."""
+    """[DEPRECATED] Показ ToS для подписок — отключен."""
     query = update.callback_query
-    if not query or not query.message: return
-    user_id = query.from_user.id
-    logger.info(f"User {user_id} requested to view ToS.")
-
-    tos_url = context.bot_data.get('tos_url')
-    error_tos_link = "❌ Не удалось отобразить ссылку на соглашение."
-    error_tos_load = escape_markdown_v2("❌ не удалось загрузить ссылку на пользовательское соглашение. попробуйте позже.")
-    info_tos = escape_markdown_v2("ознакомьтесь с пользовательским соглашением, открыв его по ссылке ниже:")
-
-    if tos_url:
-        keyboard = [
-            [InlineKeyboardButton("📜 открыть соглашение", url=tos_url)],
-            [InlineKeyboardButton("⬅️ назад", callback_data="subscribe_info")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        text = info_tos
-        try:
-            if query.message.text != text or query.message.reply_markup != reply_markup:
-                await query.edit_message_text(text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
-            else:
-                await query.answer()
-        except Exception as e:
-            logger.error(f"Failed to show ToS link to user {user_id}: {e}")
-            await query.answer(error_tos_link, show_alert=True)
-    else:
-        logger.error(f"ToS URL not found in bot_data for user {user_id}.")
-        text = error_tos_load
-        keyboard = [[InlineKeyboardButton("⬅️ Назад", callback_data="subscribe_info")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        try:
-            if query.message.text != text or query.message.reply_markup != reply_markup:
-                await query.edit_message_text(text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
-            else:
-                await query.answer()
-        except Exception as e:
-            logger.error(f"Failed to show ToS error message to user {user_id}: {e}")
-            await query.answer("❌ Ошибка загрузки соглашения.", show_alert=True)
-
+    if not query: return
+    try:
+        await query.answer("Подписки отключены. Используйте /buycredits", show_alert=True)
+    except Exception:
+        pass
 
 async def confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handles the confirm_pay callback after user agrees to ToS."""
+    """[DEPRECATED] Подтверждение оплаты подписки — отключено."""
     query = update.callback_query
-    if not query or not query.message: return
-    user_id = query.from_user.id
-    logger.info(f"User {user_id} confirmed ToS agreement, proceeding to payment button.")
-
-    # --- НАЧАЛО ИЗМЕНЕНИЙ: Проверка на активную подписку ---
-    with get_db() as db:
-        user_db = db.query(User).filter(User.telegram_id == user_id).first()
-        if user_db and user_db.is_active_subscriber:
-            await query.answer("⭐ У вас уже есть активная подписка!", show_alert=True)
-            # Можно дополнительно отредактировать сообщение, чтобы убрать кнопки оплаты
-            try:
-                await query.edit_message_text(
-                    text="⭐ У вас уже есть активная премиум подписка.",
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ назад в меню", callback_data="show_menu")]])
-                )
-            except Exception:
-                pass # Если не получилось, ничего страшного
-            return
-    # --- КОНЕЦ ИЗМЕНЕНИЙ ---
-
-    tos_url = context.bot_data.get('tos_url')
-    yookassa_ready = bool(YOOKASSA_SHOP_ID and YOOKASSA_SECRET_KEY and YOOKASSA_SHOP_ID.isdigit())
-
-    # --- УПРОЩЕНИЕ: Готовим простой текст без Markdown ---
-    info_text_raw = (
-        "✅ отлично!\n\n"
-        "нажимая кнопку 'оплатить' ниже, вы подтверждаете, что ознакомились и полностью согласны с "
-        "пользовательским соглашением.\n\n"
-        "👇"
-    )
-    error_payment_unavailable_raw = "❌ к сожалению, функция оплаты сейчас недоступна (проблема с настройками). 😥"
-
-    text_to_send = ""
-    keyboard_rows = []
-
-    if not yookassa_ready:
-        text_to_send = error_payment_unavailable_raw
-        keyboard_rows.append([InlineKeyboardButton("⬅️ назад", callback_data="subscribe_info")])
-        logger.warning("Yookassa credentials not set or shop ID is not numeric in confirm_pay handler.")
-    else:
-        text_to_send = info_text_raw
-        price_raw = f"{SUBSCRIPTION_PRICE_RUB:.0f}"
-        currency_raw = SUBSCRIPTION_CURRENCY
-        # --- ИСПРАВЛЕНИЕ: Текст на кнопке тоже строчными буквами ---
-        button_text = f"💳 оплатить {price_raw} {currency_raw}"
-
-        keyboard_rows.append([InlineKeyboardButton(button_text, callback_data="subscribe_pay")])
-
-        if tos_url:
-            keyboard_rows.append([InlineKeyboardButton("📜 условия использования (прочитано)", url=tos_url)])
-        else:
-            keyboard_rows.append([InlineKeyboardButton("📜 условия (ошибка загрузки)", callback_data="view_tos")])
-
-        keyboard_rows.append([InlineKeyboardButton("⬅️ назад", callback_data="subscribe_info")])
-
-    reply_markup = InlineKeyboardMarkup(keyboard_rows)
-
+    if not query: return
     try:
-        # --- ИСПРАВЛЕНИЕ: Отправляем как простой текст ---
-        if query.message.text != text_to_send or query.message.reply_markup != reply_markup:
-            await query.edit_message_text(
-                text=text_to_send,
-                reply_markup=reply_markup,
-                disable_web_page_preview=True,
-                parse_mode=None  # <--- Устраняет ошибку
-            )
-        else:
-            await query.answer()
-    except Exception as e:
-        logger.error(f"Failed to show final payment confirmation to user {user_id}: {e}", exc_info=True)
-        try:
-            await query.answer("произошла ошибка", show_alert=True)
-        except Exception:
-            pass
-
+        await query.answer("Подписки отключены. Используйте /buycredits", show_alert=True)
+    except Exception:
+        pass
 
 async def generate_payment_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Generates and sends the Yookassa payment link."""
+    """[DEPRECATED] Генерация ссылки для подписки — отключена."""
     query = update.callback_query
-    if not query or not query.message: return
-
-    user_id = query.from_user.id
-    logger.info(f"--- generate_payment_link ENTERED for user {user_id} ---")
-
-    error_yk_not_ready = escape_markdown_v2("❌ ошибка: сервис оплаты не настроен правильно.")
-    error_yk_config = escape_markdown_v2("❌ ошибка конфигурации платежной системы.")
-    error_receipt = escape_markdown_v2("❌ ошибка при формировании данных чека.")
-    error_link_get_fmt_raw = "❌ не удалось получить ссылку от платежной системы{status_info}\\\\. попробуй позже."
-    error_link_create_raw = "❌ не удалось создать ссылку для оплаты\\\\. {error_detail}\\\\. попробуй еще раз позже или свяжись с поддержкой."
-    # Убираем ручное экранирование
+    if not query: return
     success_link_raw = (
         "✨ Ссылка для оплаты создана!\n\n"
         "Нажмите кнопку ниже для перехода к оплате.\n"

@@ -150,6 +150,9 @@ class User(Base):
     monthly_photo_count = Column(Integer, default=0, nullable=False)
     message_count_reset_at = Column(DateTime(timezone=True), nullable=True)  # Storing as timezone-aware
 
+    # --- NEW: credit balance for economic model ---
+    credits = Column(Float, default=0.0, nullable=False)
+
     persona_configs = relationship("PersonaConfig", back_populates="owner", cascade="all, delete-orphan", lazy="selectin")
     bot_instances = relationship("BotInstance", back_populates="owner", cascade="all, delete-orphan", lazy="selectin")
 
@@ -282,6 +285,12 @@ class BotInstance(Base):
     last_webhook_set_at = Column(DateTime(timezone=True), nullable=True)
     # секрет для проверки подлинности вебхука telegram
     webhook_secret = Column(String, nullable=True)
+
+    # --- NEW: Access control fields ---
+    # 'public' - everyone can write; 'whitelist' - only from list; 'owner_only' - only owner
+    access_level = Column(String, nullable=False, default='owner_only', index=True)
+    # JSON array of Telegram user IDs permitted for 'whitelist' mode
+    whitelisted_users_json = Column(Text, default='[]')
 
     persona_config = relationship("PersonaConfig", back_populates="bot_instance", lazy="selectin")
     owner = relationship("User", back_populates="bot_instances", lazy="selectin")

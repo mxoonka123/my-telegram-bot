@@ -116,9 +116,15 @@ def handle_telegram_webhook(token: str):
 
     # Проверка токена и секрета по БД
     try:
-        from db import get_db, BotInstance  # локальный импорт, чтобы избежать циклов
+        from db import get_db, BotInstance, User  # локальный импорт, чтобы избежать циклов
+        from sqlalchemy.orm import selectinload
         with get_db() as db_session:
-            bot_instance = db_session.query(BotInstance).filter(BotInstance.bot_token == token).first()
+            bot_instance = (
+                db_session.query(BotInstance)
+                .options(selectinload(BotInstance.owner))
+                .filter(BotInstance.bot_token == token)
+                .first()
+            )
     except Exception as e:
         flask_logger.error(f"db error while fetching bot_instance for token ...{token[-6:]}: {e}")
         return Response(status=500)
@@ -137,6 +143,70 @@ def handle_telegram_webhook(token: str):
         update_data = request.get_json(force=True)
     except Exception:
         return Response(status=400)
+
+    # --- ACL: проверка доступа ---
+    try:
+        actor_id = None
+        if isinstance(update_data, dict):
+            # самые частые случаи
+            actor_id = (
+                update_data.get('message', {}).get('from', {}).get('id') or
+                update_data.get('edited_message', {}).get('from', {}).get('id') or
+                (update_data.get('callback_query', {}) or {}).get('from', {}).get('id') or
+                (update_data.get('my_chat_member', {}) or {}).get('from', {}).get('id') or
+                (update_data.get('chat_member', {}) or {}).get('from', {}).get('id')
+            )
+
+        # Если не нашли отправителя (например, channel_post) — просто пропускаем ACL (не пользовательская инициатива)
+        if actor_id:
+            owner_tg_id = bot_instance.owner.telegram_id if bot_instance.owner else None
+            access_level = (bot_instance.access_level or 'owner_only').lower()
+
+            allowed = False
+            if owner_tg_id and int(actor_id) == int(owner_tg_id):
+                allowed = True  # владелец всегда имеет доступ
+            elif access_level == 'public':
+                allowed = True
+            elif access_level == 'owner_only':
+                allowed = False
+            elif access_level == 'whitelist':
+                try:
+                    import json as _json
+                    wl = _json.loads(bot_instance.whitelisted_users_json or '[]')
+                    wl_ids = {int(x) for x in wl if str(x).strip()}
+                    allowed = int(actor_id) in wl_ids
+                except Exception:
+                    allowed = False
+
+            if not allowed:
+                # молча игнорируем апдейт для неавторизованных пользователей
+                flask_logger.info(
+                    f"access denied for user {actor_id} on bot @{bot_instance.telegram_username} (access_level={access_level})"
+                )
+                return Response(status=200)
+    except Exception as e:
+        flask_logger.error(f"acl check failed (fallback to deny): {e}", exc_info=True)
+        return Response(status=200)
+
+    # --- Disable commands on attached (non-main) bots ---
+    try:
+        is_command_update = False
+        if isinstance(update_data, dict):
+            msg = update_data.get('message') or update_data.get('edited_message')
+            if msg:
+                entities = msg.get('entities') or []
+                text = msg.get('text') or ''
+                is_command_update = any((e or {}).get('type') == 'bot_command' for e in entities) or text.startswith('/')
+
+        main_bot_id = application_instance and application_instance.bot_data.get('main_bot_id')
+        current_bot_id = bot_instance.telegram_bot_id
+        if is_command_update and main_bot_id and str(main_bot_id) != str(current_bot_id or ''):
+            flask_logger.info(
+                f"skip command update for attached bot @{bot_instance.telegram_username} (bot_id={current_bot_id}, main_id={main_bot_id})"
+            )
+            return Response(status=200)
+    except Exception as e:
+        flask_logger.error(f"error while checking command disable for attached bots: {e}")
 
     # Планируем асинхронную обработку апдейта в event loop PTB
     try:
@@ -165,35 +235,66 @@ def handle_yookassa_webhook():
         flask_logger.info(f"Processing event: {notification_object.event}, Payment ID: {payment.id}, Status: {payment.status}")
 
         if notification_object.event == 'payment.succeeded' and payment.status == 'succeeded':
-            metadata = payment.metadata
-            if not metadata or 'telegram_user_id' not in metadata:
+            metadata = payment.metadata or {}
+            if 'telegram_user_id' not in metadata:
                 flask_logger.error(f"Webhook error: 'telegram_user_id' missing in metadata for payment {payment.id}.")
                 return Response(status=200)
 
             telegram_user_id = int(metadata['telegram_user_id'])
-            
-            # Активация подписки в БД
+            pkg_id = metadata.get('package_id')
+            credits_to_add = 0.0
+            try:
+                credits_to_add = float(metadata.get('credits', 0))
+            except Exception:
+                credits_to_add = 0.0
+
+            # Начисление кредитов в БД
             with db.get_db() as db_session:
                 user = db_session.query(db.User).filter(db.User.telegram_id == telegram_user_id).first()
-                if user:
-                    if db.activate_subscription(db_session, user.id):
-                        flask_logger.info(f"Subscription activated for user {telegram_user_id} via webhook.")
-                        # Отправка уведомления пользователю
-                        if application_instance:
-                            success_text_raw = (f"✅ ваша премиум подписка успешно активирована!\n"
-                                                f"срок действия: {config.SUBSCRIPTION_DURATION_DAYS} дней.\n\n"
-                                                f"спасибо за поддержку! 🎉")
-                            success_text_escaped = escape_markdown_v2(success_text_raw)
-                            
-                            # Запускаем отправку в цикле событий asyncio
-                            asyncio.run_coroutine_threadsafe(
-                                application_instance.bot.send_message(
-                                    chat_id=telegram_user_id,
-                                    text=success_text_escaped,
-                                    parse_mode=ParseMode.MARKDOWN_V2
-                                ),
-                                application_loop
-                            )
+                if not user:
+                    flask_logger.error(f"Webhook: user {telegram_user_id} not found for payment {payment.id}.")
+                    return Response(status=200)
+
+                if credits_to_add <= 0:
+                    # Попытка определить из конфига по package_id
+                    try:
+                        if pkg_id and pkg_id in (config.CREDIT_PACKAGES or {}):
+                            credits_to_add = float(config.CREDIT_PACKAGES[pkg_id]['credits'])
+                    except Exception:
+                        pass
+
+                user.credits = float(user.credits or 0) + float(credits_to_add or 0)
+                db_session.commit()
+
+                flask_logger.info(f"Credited {credits_to_add} credits to user {telegram_user_id} via webhook. New balance: {user.credits}")
+
+                # Отправка уведомления пользователю
+                if application_instance:
+                    try:
+                        pkg_title = None
+                        try:
+                            if pkg_id and pkg_id in (config.CREDIT_PACKAGES or {}):
+                                pkg_title = config.CREDIT_PACKAGES[pkg_id].get('title')
+                        except Exception:
+                            pkg_title = None
+                        credited_part = f"Зачислено {credits_to_add:.0f} кредитов" if credits_to_add else "Оплата успешно проведена"
+                        pkg_part = f" ({pkg_title})" if pkg_title else ""
+                        success_text_raw = (
+                            f"✅ {credited_part}{pkg_part}.\n"
+                            f"Текущий баланс: {user.credits:.2f} кредитов.\n\n"
+                            f"Спасибо за поддержку! 🎉"
+                        )
+                        success_text_escaped = escape_markdown_v2(success_text_raw)
+                        asyncio.run_coroutine_threadsafe(
+                            application_instance.bot.send_message(
+                                chat_id=telegram_user_id,
+                                text=success_text_escaped,
+                                parse_mode=ParseMode.MARKDOWN_V2
+                            ),
+                            application_loop
+                        )
+                    except Exception as notify_e:
+                        flask_logger.error(f"Failed to notify user {telegram_user_id} about credit top-up: {notify_e}")
         return Response(status=200)
     except Exception as e:
         flask_logger.error(f"Unexpected error in webhook handler: {e}", exc_info=True)
@@ -300,8 +401,35 @@ async def main():
     application.add_handler(CommandHandler("start", handlers.start))
     application.add_handler(CommandHandler("help", handlers.help_command))
     application.add_handler(CommandHandler("menu", handlers.menu_command))
+    # --- Botsettings (ACL/Whitelist) Conversation ---
+    botsettings_conv = ConversationHandler(
+        entry_points=[CommandHandler('botsettings', handlers.botsettings_start)],
+        states={
+            handlers.BOTSET_SELECT: [CallbackQueryHandler(handlers.botsettings_pick, pattern=r'^botset_pick_\d+$')],
+            handlers.BOTSET_MENU: [
+                CallbackQueryHandler(handlers.botsettings_set_access, pattern=r'^botset_access_(public|whitelist|owner_only)$'),
+                CallbackQueryHandler(handlers.botsettings_wl_show, pattern=r'^botset_wl_show$'),
+                CallbackQueryHandler(handlers.botsettings_wl_add_prompt, pattern=r'^botset_wl_add$'),
+                CallbackQueryHandler(handlers.botsettings_wl_remove_prompt, pattern=r'^botset_wl_remove$'),
+                CallbackQueryHandler(handlers.botsettings_back, pattern=r'^botset_back$'),
+                CallbackQueryHandler(handlers.botsettings_close, pattern=r'^botset_close$'),
+            ],
+            handlers.BOTSET_WHITELIST_ADD: [
+                MessageHandler(handlers.filters.TEXT & ~handlers.filters.COMMAND, handlers.botsettings_wl_add_receive),
+                CallbackQueryHandler(handlers.botsettings_back, pattern=r'^botset_back$')
+            ],
+            handlers.BOTSET_WHITELIST_REMOVE: [
+                CallbackQueryHandler(handlers.botsettings_wl_remove_confirm, pattern=r'^botset_wl_del_\d+$'),
+                CallbackQueryHandler(handlers.botsettings_back, pattern=r'^botset_back$')
+            ],
+        },
+        fallbacks=[CommandHandler('cancel', handlers.botsettings_close)],
+        per_message=False, name="botsettings_conv", conversation_timeout=timedelta(minutes=10).total_seconds(), allow_reentry=True
+    )
+    application.add_handler(botsettings_conv)
+
     application.add_handler(CommandHandler("profile", handlers.profile))
-    application.add_handler(CommandHandler("subscribe", handlers.subscribe))
+    application.add_handler(CommandHandler("buycredits", handlers.buycredits))
     application.add_handler(CommandHandler("createpersona", handlers.create_persona))
     application.add_handler(CommandHandler("mypersonas", handlers.my_personas))
     application.add_handler(CommandHandler("addbot", handlers.add_bot_to_chat))
@@ -313,6 +441,8 @@ async def main():
     application.add_handler(MessageHandler(handlers.filters.PHOTO & ~handlers.filters.COMMAND, handlers.handle_photo))
     application.add_handler(MessageHandler(handlers.filters.VOICE & ~handlers.filters.COMMAND, handlers.handle_voice))
     application.add_handler(MessageHandler(handlers.filters.TEXT & ~handlers.filters.COMMAND, handlers.handle_message))
+    application.add_handler(CallbackQueryHandler(handlers.buycredits_pkg_callback, pattern=r'^buycredits_pkg_'))
+    application.add_handler(CallbackQueryHandler(handlers.buycredits, pattern=r'^buycredits_open$'))
     application.add_handler(CallbackQueryHandler(handlers.handle_callback_query))
     application.add_error_handler(handlers.error_handler)
     logger.info("All handlers registered.")
@@ -326,26 +456,19 @@ async def main():
         me = await application.bot.get_me()
         logger.info(f"Bot started as @{me.username} (ID: {me.id})")
         application.bot_data['bot_username'] = me.username
+        # Сохраняем id главного бота для дальнейших проверок (отключение команд на привязанных ботах и т.д.)
+        application.bot_data['main_bot_id'] = me.id
         commands = [
             BotCommand("start", "начало работы"),
             BotCommand("menu", "главное меню"),
             BotCommand("help", "помощь"),
-            BotCommand("subscribe", "подписка"),
-            BotCommand("profile", "профиль"),
+            BotCommand("profile", "профиль и баланс"),
+            BotCommand("buycredits", "пополнить кредиты"),
+            BotCommand("botsettings", "настройки бота (ACL)"),
         ]
         await application.bot.set_my_commands(commands)
         logger.info("Bot menu commands set.")
         
-        # Запускаем фоновую задачу для проверки подписок
-        if application.job_queue:
-            application.job_queue.run_repeating(
-                tasks.check_subscription_expiry_task,
-                interval=timedelta(minutes=30),
-                first=timedelta(seconds=10),
-                name="subscription_expiry_check",
-                data=application
-            )
-            logger.info("Subscription check task scheduled.")
         
         # --- Запуск веб-сервера ---
         port = int(os.environ.get("PORT", 8080))
