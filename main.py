@@ -308,11 +308,11 @@ async def main():
         logger.info(f"Bot started as @{me.username} (ID: {me.id})")
         application.bot_data['bot_username'] = me.username
         commands = [
-            BotCommand("start", "🚀 Начало работы"),
-            BotCommand("menu", "🧭 Главное меню"),
-            BotCommand("help", "❓ Помощь"),
-            BotCommand("subscribe", "⭐ Подписка"),
-            BotCommand("profile", "👤 Профиль"),
+            BotCommand("start", "начало работы"),
+            BotCommand("menu", "главное меню"),
+            BotCommand("help", "помощь"),
+            BotCommand("subscribe", "подписка"),
+            BotCommand("profile", "профиль"),
         ]
         await application.bot.set_my_commands(commands)
         logger.info("Bot menu commands set.")
