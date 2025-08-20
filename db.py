@@ -624,9 +624,9 @@ def delete_persona_config(db: Session, persona_id: int, owner_id: int) -> bool:
     logger.warning(f"--- delete_persona_config: Attempting to delete PersonaConfig ID={persona_id} owned by User ID={owner_id} ---")
     try:
         logger.debug(f"Querying for PersonaConfig id={persona_id} owner_id={owner_id}...")
-        # Загружаем сразу связанные bot_instances и их chat_links для эффективности
+        # Загружаем сразу связанный bot_instance (one-to-one) и его chat_links для эффективности
         persona = db.query(PersonaConfig).options(
-            selectinload(PersonaConfig.bot_instances).selectinload(BotInstance.chat_links)
+            selectinload(PersonaConfig.bot_instance).selectinload(BotInstance.chat_links)
         ).filter(
             PersonaConfig.id == persona_id,
             PersonaConfig.owner_id == owner_id
@@ -638,10 +638,11 @@ def delete_persona_config(db: Session, persona_id: int, owner_id: int) -> bool:
 
             # --- НАЧАЛО: Ручное удаление ChatContext ---
             chat_bot_instance_ids_to_clear = []
-            if persona.bot_instances:
-                for bot_instance in persona.bot_instances:
-                    if bot_instance.chat_links:
-                        chat_bot_instance_ids_to_clear.extend([link.id for link in bot_instance.chat_links])
+            # persona.bot_instance: one-to-one связь, может быть None
+            if persona.bot_instance:
+                bot_instance = persona.bot_instance
+                if bot_instance.chat_links:
+                    chat_bot_instance_ids_to_clear.extend([link.id for link in bot_instance.chat_links])
 
             if chat_bot_instance_ids_to_clear:
                 logger.info(f"Manually deleting ChatContext records for ChatBotInstance IDs: {chat_bot_instance_ids_to_clear}")
