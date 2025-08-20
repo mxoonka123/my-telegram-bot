@@ -1483,9 +1483,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 message_limit_raw = f"{user.monthly_message_count}/{user.message_limit}"
 
                 start_text_md = (
-                    f"привет\\! 👋 я бот для создания ai\\-собеседников \\(`@{escape_markdown_v2(context.bot.username)}`\\)\\.\n\n"
-                    f"*твой статус:* {escape_markdown_v2(status_raw)} {escape_markdown_v2(expires_raw)}\n"
-                    f"*личности:* `{escape_markdown_v2(persona_limit_raw)}` \\| *сообщения:* `{escape_markdown_v2(message_limit_raw)}`\n\n"
+                    f"привет! я бот для создания ai-собеседников (\`@{escape_markdown_v2(context.bot.username)}\`).\n\n"
+                    f"я помогу создать и настроить личности для разных задач.\n\n"
                     f"*начало работы:*\n"
                     f"`/createpersona <имя>` \\- создай ai\\-личность\n"
                     f"`/mypersonas` \\- список твоих личностей\n"
@@ -1496,9 +1495,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 reply_text_final = start_text_md
 
                 fallback_text_raw = (
-                    f"привет! 👋 я бот для создания ai-собеседников (@{context.bot.username}).\n\n"
-                    f"твой статус: {status_raw} {expires_raw}\n"
-                    f"личности: {persona_limit_raw} | сообщения: {message_limit_raw}\n\n"
+                    f"привет! я бот для создания ai-собеседников (@{context.bot.username}).\n\n"
+                    f"я помогу создать и настроить личности для разных задач.\n\n"
                     f"начало работы:\n"
                     f"/createpersona <имя> - создай ai-личность\n"
                     f"/mypersonas - список твоих личностей\n"
@@ -1571,14 +1569,14 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 *_личности:_*
 `/createpersona <имя> [описание]` \\- {escape_markdown_v2("создать новую личность")}
-`/mypersonas`   \\- {escape_markdown_v2("список, кнопка '➕ в чат', удаление и редактирование")}
+`/mypersonas`   \\- {escape_markdown_v2("список твоих личностей, привязка бота, удаление и редактирование")}
 `/editpersona <id>`   \\- {escape_markdown_v2("настройки: стиль, настроения, реакции на медиа")}
 `/deletepersona <id>` \\- {escape_markdown_v2("удалить личность (с очищением истории)")}
 
 *_советы:_*
 • {escape_markdown_v2("в группах бот отвечает по настройке: по умолчанию — на упоминания или по контексту.")}
 • {escape_markdown_v2("если бот молчит, проверь: не заглушен ли он (/mutebot) и есть ли активная личность в чате.")}
-• {escape_markdown_v2("для добавления личности в чат открой /mypersonas и нажми '➕ в чат'.")}
+• {escape_markdown_v2("чтобы использовать личность в чате, открой /mypersonas, выбери личность и при необходимости привяжи бота.")}
 """
     help_text_md = help_text_md.strip()
     help_text_raw_no_md = re.sub(r'[`*_~\\[\\]()|{}+#-.!=]', '', help_text_md)
@@ -1975,7 +1973,7 @@ async def create_persona(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     error_desc_len = escape_markdown_v2("❌ описание: до 1500 символов.")
     error_limit_reached_fmt_raw = "упс! 😕 достигнут лимит личностей ({current_count}/{limit}) для статуса {status_text}\\. чтобы создавать больше, используй /subscribe"
     error_name_exists_fmt_raw = "❌ личность с именем '{persona_name}' уже есть\\. выбери другое\\."
-    success_create_fmt_raw = "✅ личность '{name}' создана\\!\nID: `{id}`\nописание: {description}\n\nтеперь можно настроить поведение через `/editpersona {id}` или сразу добавить в чат через `/mypersonas`"
+    success_create_fmt_raw = "✅ личность '{name}' создана\\!\nID: `{id}`\nописание: {description}\n\nтеперь можно настроить поведение через `/editpersona {id}` или привязать бота в `/mypersonas`"
     error_db = escape_markdown_v2("❌ ошибка базы данных при создании личности.")
     error_general = escape_markdown_v2("❌ ошибка при создании личности.")
 
@@ -2150,33 +2148,34 @@ async def my_personas(update: Union[Update, CallbackQuery], context: ContextType
                 fallback_text_plain_parts.append(f"Твои личности ({persona_count}/{persona_limit}):")
 
                 for p in personas:
-                    # статус привязки бота
+                    # статус привязки бота (без эмодзи)
                     bot_status_line = ""
                     if getattr(p, 'bot_instance', None) and p.bot_instance:
                         bi = p.bot_instance
                         if bi.status == 'active' and bi.telegram_username:
-                            bot_status_line = f"\n🤖 привязан: @{bi.telegram_username}"
+                            bot_status_line = f"\nпривязан: @{bi.telegram_username}"
                         else:
-                            bot_status_line = f"\n🤖 не привязан"
+                            bot_status_line = f"\nне привязан"
                     else:
-                        bot_status_line = f"\n🤖 не привязан"
+                        bot_status_line = f"\nне привязан"
 
-                    persona_text = f"\n👤 {p.name} (id: {p.id}){bot_status_line}"
+                    persona_text = f"\n{p.name} (id: {p.id}){bot_status_line}"
                     message_lines.append(persona_text)
                     fallback_text_plain_parts.append(f"\n- {p.name} (id: {p.id})")
 
                     edit_cb = f"edit_persona_{p.id}"
                     delete_cb = f"delete_persona_{p.id}"
-                    add_cb = f"add_bot_{p.id}"
                     bind_cb = f"bind_bot_{p.id}"
 
+                    # Кнопки без эмодзи; третью кнопку заменяем на привязку/перепривязку
                     keyboard_personas.append([
-                        InlineKeyboardButton("⚙️ настроить", callback_data=edit_cb),
-                        InlineKeyboardButton("🗑️ удалить", callback_data=delete_cb),
-                        InlineKeyboardButton("➕ в чат", callback_data=add_cb)
+                        InlineKeyboardButton("настроить", callback_data=edit_cb),
+                        InlineKeyboardButton("удалить", callback_data=delete_cb)
                     ])
+                    # Подпись привязки зависит от текущего состояния
+                    bind_label = "перепривязать бота" if (getattr(p, 'bot_instance', None) and p.bot_instance) else "привязать бота"
                     keyboard_personas.append([
-                        InlineKeyboardButton("🔗 привязать бота", callback_data=bind_cb)
+                        InlineKeyboardButton(bind_label, callback_data=bind_cb)
                     ])
                 
                 final_text_to_send = "\n".join(message_lines)
@@ -3583,8 +3582,8 @@ async def edit_name_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     persona_id = context.user_data.get('edit_persona_id')
     with get_db() as db:
         current_name = db.query(DBPersonaConfig.name).filter(DBPersonaConfig.id == persona_id).scalar() or "N/A"
-    prompt_text = escape_markdown_v2(f"✏️ введите новое имя (текущее: '{current_name}', 2-50 симв.):")
-    keyboard = [[InlineKeyboardButton("⬅️ Назад", callback_data="back_to_wizard_menu")]]
+    prompt_text = escape_markdown_v2(f"введите новое имя (текущее: '{current_name}', 2-50 симв.):")
+    keyboard = [[InlineKeyboardButton("назад", callback_data="back_to_wizard_menu")]]
     await _send_prompt(update, context, prompt_text, InlineKeyboardMarkup(keyboard))
     return EDIT_NAME
 
@@ -3643,10 +3642,10 @@ async def edit_description_prompt(update: Update, context: ContextTypes.DEFAULT_
     current_desc_preview = (current_desc[:100] + '...') if len(current_desc) > 100 else current_desc
     
     # Создаем простой текст без специальных символов
-    prompt_text = f"✏️ введите новое описание (макс. 1500 символов).\n\nтекущее (начало):\n{current_desc_preview}"
+    prompt_text = f"введите новое описание (макс. 1500 символов).\n\nтекущее (начало):\n{current_desc_preview}"
     
-    # Создаем клавиатуру с кнопкой Назад
-    keyboard = [[InlineKeyboardButton("⬅️ Назад", callback_data="back_to_wizard_menu")]]
+    # Создаем клавиатуру с кнопкой назад
+    keyboard = [[InlineKeyboardButton("назад", callback_data="back_to_wizard_menu")]]
     
     # Используем query.message для редактирования текущего сообщения
     query = update.callback_query
@@ -3749,14 +3748,14 @@ async def edit_comm_style_prompt(update: Update, context: ContextTypes.DEFAULT_T
         current_style_enum = CommunicationStyle(current_style) if current_style else CommunicationStyle.NEUTRAL
     except Exception:
         current_style_enum = CommunicationStyle.NEUTRAL
-    prompt_text = escape_markdown_v2(f"💬 выберите стиль общения (текущий: {current_style_enum.value}):")
+    prompt_text = escape_markdown_v2(f"выберите стиль общения (текущий: {current_style_enum.value}):")
     keyboard = [
-        [InlineKeyboardButton(f"{'✅ ' if current_style_enum == CommunicationStyle.NEUTRAL else ''}😐 нейтральный", callback_data=f"set_comm_style_{CommunicationStyle.NEUTRAL.value}")],
-        [InlineKeyboardButton(f"{'✅ ' if current_style_enum == CommunicationStyle.FRIENDLY else ''}😊 дружелюбный", callback_data=f"set_comm_style_{CommunicationStyle.FRIENDLY.value}")],
-        [InlineKeyboardButton(f"{'✅ ' if current_style_enum == CommunicationStyle.SARCASTIC else ''}😏 саркастичный", callback_data=f"set_comm_style_{CommunicationStyle.SARCASTIC.value}")],
-        [InlineKeyboardButton(f"{'✅ ' if current_style_enum == CommunicationStyle.FORMAL else ''}✍️ формальный", callback_data=f"set_comm_style_{CommunicationStyle.FORMAL.value}")],
-        [InlineKeyboardButton(f"{'✅ ' if current_style_enum == CommunicationStyle.BRIEF else ''}🗣️ краткий", callback_data=f"set_comm_style_{CommunicationStyle.BRIEF.value}")],
-        [InlineKeyboardButton("⬅️ назад", callback_data="back_to_wizard_menu")]
+        [InlineKeyboardButton("нейтральный", callback_data=f"set_comm_style_{CommunicationStyle.NEUTRAL.value}")],
+        [InlineKeyboardButton("дружелюбный", callback_data=f"set_comm_style_{CommunicationStyle.FRIENDLY.value}")],
+        [InlineKeyboardButton("саркастичный", callback_data=f"set_comm_style_{CommunicationStyle.SARCASTIC.value}")],
+        [InlineKeyboardButton("формальный", callback_data=f"set_comm_style_{CommunicationStyle.FORMAL.value}")],
+        [InlineKeyboardButton("краткий", callback_data=f"set_comm_style_{CommunicationStyle.BRIEF.value}")],
+        [InlineKeyboardButton("назад", callback_data="back_to_wizard_menu")]
     ]
     await _send_prompt(update, context, prompt_text, InlineKeyboardMarkup(keyboard))
     return EDIT_COMM_STYLE
@@ -3841,25 +3840,25 @@ async def edit_max_messages_prompt(update: Update, context: ContextTypes.DEFAULT
     premium_options = ["many", "random"]
     
     display_map = {
-        "few": "🦋 поменьше",
-        "normal": "💬 стандартно",
-        "many": f"📚 побольше{PREMIUM_STAR if not is_premium_user else ''}",
-        "random": f"🎲 случайно{PREMIUM_STAR if not is_premium_user else ''}"
+        "few": "поменьше",
+        "normal": "стандартно",
+        "many": f"побольше{PREMIUM_STAR if not is_premium_user else ''}",
+        "random": f"случайно{PREMIUM_STAR if not is_premium_user else ''}"
     }
     current_display = display_map.get(current_value_str, "стандартно")
 
-    prompt_text = escape_markdown_v2(f"🗨️ количество сообщений в ответе (тек.: {current_display}):")
+    prompt_text = escape_markdown_v2(f"количество сообщений в ответе (тек.: {current_display}):")
 
     keyboard = [
         [
-            InlineKeyboardButton(f"{CHECK_MARK if current_value_str == 'few' else ''}{display_map['few']}", callback_data="set_max_msgs_few"),
-            InlineKeyboardButton(f"{CHECK_MARK if current_value_str == 'normal' else ''}{display_map['normal']}", callback_data="set_max_msgs_normal"),
+            InlineKeyboardButton(display_map['few'], callback_data="set_max_msgs_few"),
+            InlineKeyboardButton(display_map['normal'], callback_data="set_max_msgs_normal"),
         ],
         [
-            InlineKeyboardButton(f"{CHECK_MARK if current_value_str == 'many' else ''}{display_map['many']}", callback_data="set_max_msgs_many"),
-            InlineKeyboardButton(f"{CHECK_MARK if current_value_str == 'random' else ''}{display_map['random']}", callback_data="set_max_msgs_random"),
+            InlineKeyboardButton(display_map['many'], callback_data="set_max_msgs_many"),
+            InlineKeyboardButton(display_map['random'], callback_data="set_max_msgs_random"),
         ],
-        [InlineKeyboardButton("⬅️ Назад", callback_data="back_to_wizard_menu")] # Возврат в главное меню
+        [InlineKeyboardButton("назад", callback_data="back_to_wizard_menu")] # Возврат в главное меню
     ]
     
     # Редактируем текущее сообщение (которое было главным меню) на это подменю
@@ -3958,12 +3957,12 @@ async def edit_verbosity_prompt(update: Update, context: ContextTypes.DEFAULT_TY
         current_enum = Verbosity(current) if current else Verbosity.MEDIUM
     except Exception:
         current_enum = Verbosity.MEDIUM
-    prompt_text = escape_markdown_v2(f"🗣️ выберите разговорчивость (текущая: {current_enum.value}):")
+    prompt_text = escape_markdown_v2(f"выберите разговорчивость (текущая: {current_enum.value}):")
     keyboard = [
-        [InlineKeyboardButton(f"{'✅ ' if current_enum == Verbosity.CONCISE else ''}🤏 лаконичный", callback_data=f"set_verbosity_{Verbosity.CONCISE.value}")],
-        [InlineKeyboardButton(f"{'✅ ' if current_enum == Verbosity.MEDIUM else ''}💬 средний", callback_data=f"set_verbosity_{Verbosity.MEDIUM.value}")],
-        [InlineKeyboardButton(f"{'✅ ' if current_enum == Verbosity.TALKATIVE else ''}📚 болтливый", callback_data=f"set_verbosity_{Verbosity.TALKATIVE.value}")],
-        [InlineKeyboardButton("⬅️ назад", callback_data="back_to_wizard_menu")]
+        [InlineKeyboardButton("лаконичный", callback_data=f"set_verbosity_{Verbosity.CONCISE.value}")],
+        [InlineKeyboardButton("средний", callback_data=f"set_verbosity_{Verbosity.MEDIUM.value}")],
+        [InlineKeyboardButton("болтливый", callback_data=f"set_verbosity_{Verbosity.TALKATIVE.value}")],
+        [InlineKeyboardButton("назад", callback_data="back_to_wizard_menu")]
     ]
     await _send_prompt(update, context, prompt_text, InlineKeyboardMarkup(keyboard))
     return EDIT_VERBOSITY
@@ -4026,13 +4025,13 @@ async def edit_group_reply_prompt(update: Update, context: ContextTypes.DEFAULT_
     }
     current_display = display_map.get(current, current) # Получаем понятный текст
 
-    prompt_text = escape_markdown_v2(f"👥 как отвечать в группах (текущее: {current_display}):")
+    prompt_text = escape_markdown_v2(f"как отвечать в группах (текущее: {current_display}):")
     keyboard = [
-        [InlineKeyboardButton(f"{'✅ ' if current == 'always' else ''}📢 всегда", callback_data="set_group_reply_always")],
-        [InlineKeyboardButton(f"{'✅ ' if current == 'mentioned_only' else ''}🎯 только по упоминанию (@)", callback_data="set_group_reply_mentioned_only")],
-        [InlineKeyboardButton(f"{'✅ ' if current == 'mentioned_or_contextual' else ''}🤔 по @ или контексту", callback_data="set_group_reply_mentioned_or_contextual")],
-        [InlineKeyboardButton(f"{'✅ ' if current == 'never' else ''}🚫 никогда", callback_data="set_group_reply_never")],
-        [InlineKeyboardButton("⬅️ назад", callback_data="back_to_wizard_menu")]
+        [InlineKeyboardButton("всегда", callback_data="set_group_reply_always")],
+        [InlineKeyboardButton("только по упоминанию (@)", callback_data="set_group_reply_mentioned_only")],
+        [InlineKeyboardButton("по @ или контексту", callback_data="set_group_reply_mentioned_or_contextual")],
+        [InlineKeyboardButton("никогда", callback_data="set_group_reply_never")],
+        [InlineKeyboardButton("назад", callback_data="back_to_wizard_menu")]
     ]
     await _send_prompt(update, context, prompt_text, InlineKeyboardMarkup(keyboard))
     return EDIT_GROUP_REPLY
@@ -4108,17 +4107,17 @@ async def edit_media_reaction_prompt(update: Update, context: ContextTypes.DEFAU
     if current == "all": current = "text_and_all_media"
     
     current_display_text = media_react_map.get(current, "только текст")
-    prompt_text = escape_markdown_v2(f"🖼️ как реагировать на текст и медиа (текущее: {current_display_text}):")
+    prompt_text = escape_markdown_v2(f"как реагировать на текст и медиа (текущее: {current_display_text}):")
     
     # Кнопки теперь создаются в определенном порядке для лучшего вида
     keyboard_buttons = [
-        [InlineKeyboardButton(f"{'✅ ' if current == 'text_only' else ''}{media_react_map['text_only']}", callback_data="set_media_react_text_only")],
-        [InlineKeyboardButton(f"{'✅ ' if current == 'text_and_all_media' else ''}{media_react_map['text_and_all_media']}", callback_data="set_media_react_text_and_all_media")],
-        [InlineKeyboardButton(f"{'✅ ' if current == 'photo_only' else ''}{media_react_map['photo_only']}", callback_data="set_media_react_photo_only")],
-        [InlineKeyboardButton(f"{'✅ ' if current == 'voice_only' else ''}{media_react_map['voice_only']}", callback_data="set_media_react_voice_only")],
-        [InlineKeyboardButton(f"{'✅ ' if current == 'all_media_no_text' else ''}{media_react_map['all_media_no_text']}", callback_data="set_media_react_all_media_no_text")],
-        [InlineKeyboardButton(f"{'✅ ' if current == 'none' else ''}{media_react_map['none']}", callback_data="set_media_react_none")],
-        [InlineKeyboardButton("⬅️ Назад", callback_data="back_to_wizard_menu")]
+        [InlineKeyboardButton(media_react_map['text_only'], callback_data="set_media_react_text_only")],
+        [InlineKeyboardButton(media_react_map['text_and_all_media'], callback_data="set_media_react_text_and_all_media")],
+        [InlineKeyboardButton(media_react_map['photo_only'], callback_data="set_media_react_photo_only")],
+        [InlineKeyboardButton(media_react_map['voice_only'], callback_data="set_media_react_voice_only")],
+        [InlineKeyboardButton(media_react_map['all_media_no_text'], callback_data="set_media_react_all_media_no_text")],
+        [InlineKeyboardButton(media_react_map['none'], callback_data="set_media_react_none")],
+        [InlineKeyboardButton("назад", callback_data="back_to_wizard_menu")]
     ]
     
     if update.callback_query and update.callback_query.message:
@@ -4236,21 +4235,21 @@ async def _show_edit_wizard_menu(update: Update, context: ContextTypes.DEFAULT_T
             
         keyboard = [
             [
-                InlineKeyboardButton("✏️ имя", callback_data="edit_wizard_name"),
-                InlineKeyboardButton("📜 описание", callback_data="edit_wizard_description")
+                InlineKeyboardButton("имя", callback_data="edit_wizard_name"),
+                InlineKeyboardButton("описание", callback_data="edit_wizard_description")
             ],
-            [InlineKeyboardButton(f"💬 стиль ({style_map.get(style, '?')})", callback_data="edit_wizard_comm_style")],
-            [InlineKeyboardButton(f"🗣️ разговорчивость ({verbosity_map.get(verbosity, '?')})", callback_data="edit_wizard_verbosity")],
-            [InlineKeyboardButton(f"👥 ответы в группе ({group_reply_map.get(group_reply, '?')})", callback_data="edit_wizard_group_reply")],
-            [InlineKeyboardButton(f"🖼️ реакция на медиа ({media_react_map.get(media_react, '?')})", callback_data="edit_wizard_media_reaction")],
-            [InlineKeyboardButton(f"🗨️ макс. сообщ. ({display_for_max_msgs_button})", callback_data="edit_wizard_max_msgs")],
-            # [InlineKeyboardButton(f"🎭 настроения{star if not is_premium else ''}", callback_data="edit_wizard_moods")], # <-- ЗАКОММЕНТИРОВАНО
-            [InlineKeyboardButton("✅ завершить", callback_data="finish_edit")]
+            [InlineKeyboardButton(f"стиль ({style_map.get(style, '?')})", callback_data="edit_wizard_comm_style")],
+            [InlineKeyboardButton(f"разговорчивость ({verbosity_map.get(verbosity, '?')})", callback_data="edit_wizard_verbosity")],
+            [InlineKeyboardButton(f"ответы в группе ({group_reply_map.get(group_reply, '?')})", callback_data="edit_wizard_group_reply")],
+            [InlineKeyboardButton(f"реакция на медиа ({media_react_map.get(media_react, '?')})", callback_data="edit_wizard_media_reaction")],
+            [InlineKeyboardButton(f"макс. сообщ. ({display_for_max_msgs_button})", callback_data="edit_wizard_max_msgs")],
+            # [InlineKeyboardButton(f"настроения{star if not is_premium else ''}", callback_data="edit_wizard_moods")], # <-- ЗАКОММЕНТИРОВАНО
+            [InlineKeyboardButton("завершить", callback_data="finish_edit")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         persona_name_escaped = escape_markdown_v2(persona_config.name)
-        part1 = escape_markdown_v2("⚙️ ")
+        part1 = ""
         part2 = f"*{escape_markdown_v2('настройка личности: ')}{persona_name_escaped}* "
         part3 = escape_markdown_v2(f"(id: ")
         part4 = f"`{persona_id}`"
