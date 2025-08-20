@@ -1434,6 +1434,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await context.bot.send_chat_action(chat_id=chat_id_str, action=ChatAction.TYPING)
     reply_text_final = ""
     reply_markup = ReplyKeyboardRemove()
+    reply_parse_mode = ParseMode.MARKDOWN_V2
     status_raw = ""
     expires_raw = ""
     persona_limit_raw = ""
@@ -1458,6 +1459,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 part1_raw = f"привет! я {persona.name}. я уже активен в этом чате.\n"
                 part2_raw = "используй /menu для списка команд."
                 reply_text_final = escape_markdown_v2(part1_raw + part2_raw)
+                reply_parse_mode = ParseMode.MARKDOWN_V2
                 fallback_text_raw = part1_raw + part2_raw
                 reply_markup = ReplyKeyboardRemove()
             else:
@@ -1483,17 +1485,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 message_limit_raw = f"{user.monthly_message_count}/{user.message_limit}"
 
                 start_text_md = (
-                    f"привет! я бот для создания ai-собеседников (\`@{escape_markdown_v2(context.bot.username)}\`).\n\n"
+                    f"привет! я бот для создания ai-собеседников (@{escape_markdown_v2(context.bot.username)}).\n\n"
                     f"я помогу создать и настроить личности для разных задач.\n\n"
-                    f"*начало работы:*\n"
-                    f"`/createpersona <имя>` \\- создай ai\\-личность\n"
-                    f"`/mypersonas` \\- список твоих личностей\n"
-                    f"`/menu` \\- панель управления\n"
-                    f"`/profile` \\- детали статуса\n"
-                    f"`/subscribe` \\- узнать о подписке"
+                    f"начало работы:\n"
+                    f"/createpersona <имя> - создай ai-личность\n"
+                    f"/mypersonas - список твоих личностей\n"
+                    f"/menu - панель управления\n"
+                    f"/profile - детали статуса\n"
+                    f"/subscribe - узнать о подписке"
                 )
-                reply_text_final = start_text_md
-
                 fallback_text_raw = (
                     f"привет! я бот для создания ai-собеседников (@{context.bot.username}).\n\n"
                     f"я помогу создать и настроить личности для разных задач.\n\n"
@@ -1504,12 +1504,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                     f"/profile - детали статуса\n"
                     f"/subscribe - узнать о подписке"
                 )
-
+                # Ветку приветствия отправляем без Markdown, чтобы не ловить ошибки экранирования
+                reply_text_final = fallback_text_raw
+                reply_parse_mode = None
                 keyboard = [[InlineKeyboardButton("меню команд", callback_data="show_menu")]]
                 reply_markup = InlineKeyboardMarkup(keyboard)
 
             logger.debug(f"/start: Sending final message to user {user_id}.")
-            await update.message.reply_text(reply_text_final, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
+            await update.message.reply_text(reply_text_final, reply_markup=reply_markup, parse_mode=reply_parse_mode)
 
     except SQLAlchemyError as e:
         logger.error(f"Database error during /start for user {user_id}: {e}", exc_info=True)
