@@ -24,6 +24,7 @@ from config import (
     MAX_CONTEXT_MESSAGES_SENT_TO_LLM,
     ADMIN_USER_ID
 )
+import config
 
 # --- Default Templates ---
 
@@ -348,8 +349,8 @@ def initialize_database():
     elif db_url_str.startswith("postgres"):
         # Базовые настройки пула
         engine_args.update({
-            "pool_size": 10, # Можно уменьшить для прямого подключения, например 5
-            "max_overflow": 5, # Можно уменьшить, например 2
+            "pool_size": config.DB_POOL_SIZE,
+            "max_overflow": config.DB_MAX_OVERFLOW,
             "pool_timeout": 30,
             "pool_recycle": 1800,
             "pool_pre_ping": True,

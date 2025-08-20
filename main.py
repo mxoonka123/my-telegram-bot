@@ -176,7 +176,7 @@ async def main():
     # (Вся ваша логика регистрации ConversationHandler, CommandHandler и т.д.)
     # --- Conversation Handlers Definition ---
     edit_persona_conv_handler = ConversationHandler(
-        entry_points=[CommandHandler('editpersona', handlers.edit_persona_start), CallbackQueryHandler(handlers.edit_persona_button_callback, pattern='^edit_persona_')],
+        entry_points=[CommandHandler('editpersona', handlers.edit_persona_start), CallbackQueryHandler(handlers.edit_persona_button_callback, pattern=r'^edit_persona_\d+$')],
         states={
             handlers.EDIT_WIZARD_MENU: [CallbackQueryHandler(handlers.edit_wizard_menu_handler, pattern='^edit_wizard_|^finish_edit$|^back_to_wizard_menu$|^set_max_msgs_')],
             handlers.EDIT_NAME: [MessageHandler(handlers.filters.TEXT & ~handlers.filters.COMMAND, handlers.edit_name_received), CallbackQueryHandler(handlers.edit_wizard_menu_handler, pattern='^back_to_wizard_menu$')],
@@ -192,7 +192,7 @@ async def main():
     )
     delete_persona_conv_handler = ConversationHandler(
         entry_points=[CommandHandler('deletepersona', handlers.delete_persona_start), CallbackQueryHandler(handlers.delete_persona_button_callback, pattern=r'^delete_persona_\d+$')],
-        states={handlers.DELETE_PERSONA_CONFIRM: [CallbackQueryHandler(handlers.delete_persona_confirmed, pattern='^delete_persona_confirm_'), CallbackQueryHandler(handlers.delete_persona_cancel, pattern='^delete_persona_cancel$')]},
+        states={handlers.DELETE_PERSONA_CONFIRM: [CallbackQueryHandler(handlers.delete_persona_confirmed, pattern=r'^delete_persona_confirm_\d+$'), CallbackQueryHandler(handlers.delete_persona_cancel, pattern='^delete_persona_cancel$')]},
         fallbacks=[CommandHandler('cancel', handlers.delete_persona_cancel), CallbackQueryHandler(handlers.delete_persona_cancel, pattern='^delete_persona_cancel$')],
         per_message=False, name="delete_persona_conversation", conversation_timeout=timedelta(minutes=5).total_seconds(), allow_reentry=True
     )

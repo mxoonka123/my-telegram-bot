@@ -4,6 +4,7 @@ from typing import Dict, Any, List, Optional, Union, Tuple
 from datetime import datetime, timezone, timedelta
 import logging
 import urllib.parse
+from enum import Enum
 
 # Убедимся, что импортируем нужные вещи
 from db import (
@@ -54,6 +55,18 @@ Example: `["о, на фото кот, какой пушистый", "сразу 
 from utils import get_time_info
 
 logger = logging.getLogger(__name__)
+
+class CommunicationStyle(str, Enum):
+    NEUTRAL = "neutral"
+    FRIENDLY = "friendly"
+    SARCASTIC = "sarcastic"
+    FORMAL = "formal"
+    BRIEF = "brief"
+
+class Verbosity(str, Enum):
+    CONCISE = "concise"
+    MEDIUM = "medium"
+    TALKATIVE = "talkative"
 
 class Persona:
     def __init__(self, persona_config_db_obj: PersonaConfig, chat_bot_instance_db_obj: Optional[ChatBotInstance] = None):

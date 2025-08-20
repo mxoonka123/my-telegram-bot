@@ -847,28 +847,16 @@ async def process_and_send_response(update: Update, context: ContextTypes.DEFAUL
                         reply_to_message_id=current_reply_id_text, read_timeout=30, write_timeout=30
                     )
                     message_sent_successfully = True
-                except BadRequest as e_md_send:
-                    if "can't parse entities" in str(e_md_send).lower():
-                        logger.error(f"process_and_send_response [JSON]: MDv2 parse failed part {i+1}. Retrying plain. Error: {e_md_send}")
-                        try:
-                            await context.bot.send_message(
-                                chat_id=chat_id_str, text=part_raw_send, parse_mode=None,
-                                reply_to_message_id=current_reply_id_text, read_timeout=30, write_timeout=30
-                            )
-                            message_sent_successfully = True
-                        except Exception as e_plain_send:
-                            logger.error(f"process_and_send_response [JSON]: Failed plain send part {i+1}: {e_plain_send}", exc_info=True)
-                            break
-                    elif "reply message not found" in str(e_md_send).lower():
-                        logger.warning(f"process_and_send_response [JSON]: Reply message {reply_to_message_id} not found part {i+1}. Sending without reply.")
-                        try:
-                            await context.bot.send_message(chat_id=chat_id_str, text=escaped_part_send, parse_mode=ParseMode.MARKDOWN_V2, reply_to_message_id=None, read_timeout=30, write_timeout=30)
-                            message_sent_successfully = True
-                        except Exception as e_no_reply_send:
-                            logger.error(f"process_and_send_response [JSON]: Failed send part {i+1} w/o reply: {e_no_reply_send}", exc_info=True)
-                            break
-                    else:
-                        logger.error(f"process_and_send_response [JSON]: Unhandled BadRequest sending part {i+1}: {e_md_send}", exc_info=True)
+                except (BadRequest, TimedOut, Forbidden) as e_md_send:
+                    logger.error(f"process_and_send_response [JSON]: MDv2 send failed part {i+1}. Error: {e_md_send}. Retrying plain.")
+                    try:
+                        await context.bot.send_message(
+                            chat_id=chat_id_str, text=part_raw_send, parse_mode=None,
+                            reply_to_message_id=current_reply_id_text, read_timeout=30, write_timeout=30
+                        )
+                        message_sent_successfully = True
+                    except Exception as e_plain_send:
+                        logger.error(f"process_and_send_response [JSON]: Failed plain send part {i+1}: {e_plain_send}", exc_info=True)
                         break
                 except Exception as e_other_send:
                     logger.error(f"process_and_send_response [JSON]: Unexpected error sending part {i+1}: {e_other_send}", exc_info=True)
