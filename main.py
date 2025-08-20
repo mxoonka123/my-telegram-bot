@@ -30,7 +30,7 @@ from telegram.ext import (
     Application, Defaults, CommandHandler, MessageHandler, CallbackQueryHandler,
     ConversationHandler
 )
-from telegram import Update, BotCommand
+from telegram import Update, BotCommand, Bot
 from telegram.constants import ParseMode
 
 from flask import Flask, request, abort, Response
@@ -39,6 +39,7 @@ from yookassa.domain.notification import WebhookNotification
 from hypercorn.asyncio import serve
 from hypercorn.config import Config as HypercornConfig
 from asgiref.wsgi import WsgiToAsgi
+import threading
 
 # --- Новые импорты для Telegra.ph ---
 from telegraph import Telegraph
@@ -70,32 +71,66 @@ except Exception as e:
 # Глобальные переменные для доступа к PTB Application и его event loop из вебхука
 application_instance: Application | None = None
 application_loop: asyncio.AbstractEventLoop | None = None
+bot_swap_lock = threading.RLock()
 
 @flask_app.route('/telegram/<string:token>', methods=['POST'])
 def handle_telegram_webhook(token: str):
-    """Единый обработчик вебхуков Telegram для всех пользовательских ботов."""
-    global application_instance, application_loop
-    if not application_instance:
-        flask_logger.error("telegram webhook received but application_instance is not set.")
+    """Единый обработчик вебхуков Telegram с проверкой секрета и временной подменой бота."""
+    global application_instance, application_loop, bot_swap_lock
+    if not application_instance or application_loop is None:
+        flask_logger.error("telegram webhook received but application is not fully initialized.")
         return Response(status=500)
 
+    # Проверка токена и секрета по БД
+    try:
+        from db import get_db, BotInstance  # локальный импорт, чтобы избежать циклов
+        with get_db() as db_session:
+            bot_instance = db_session.query(BotInstance).filter(BotInstance.bot_token == token).first()
+    except Exception as e:
+        flask_logger.error(f"db error while fetching bot_instance for token ...{token[-6:]}: {e}")
+        return Response(status=500)
+
+    if not bot_instance or bot_instance.status != 'active':
+        flask_logger.warning(f"webhook for unknown/inactive token ...{token[-6:]} (status={getattr(bot_instance, 'status', None)})")
+        return Response(status=404)
+
+    secret_header = request.headers.get("X-Telegram-Bot-Api-Secret-Token") or request.headers.get("x-telegram-bot-api-secret-token")
+    if bot_instance.webhook_secret and secret_header != bot_instance.webhook_secret:
+        flask_logger.error(f"invalid secret for bot @{bot_instance.telegram_username} (id={bot_instance.telegram_bot_id})")
+        return Response(status=403)
+
+    # Готовим апдейт и временного бота
     try:
         update_data = request.get_json(force=True)
-        # Преобразуем JSON в объект Update и прокидываем в PTB
-        update = Update.de_json(update_data, application_instance.bot)
-        if application_loop is None:
-            flask_logger.error("telegram webhook received but application_loop is not set.")
-            return Response(status=500)
-        asyncio.run_coroutine_threadsafe(
-            application_instance.process_update(update),
-            application_loop
-        )
+    except Exception:
+        return Response(status=400)
+
+    user_bot = Bot(token=token)
+    original_bot = application_instance.bot
+
+    try:
+        update = Update.de_json(update_data, user_bot)
+        # Подмена и обработка в защищённой секции
+        with bot_swap_lock:
+            application_instance.bot = user_bot
+            future = asyncio.run_coroutine_threadsafe(
+                application_instance.process_update(update),
+                application_loop
+            )
+        # Дожидаемся завершения обработки для гарантированного отката
+        future.result()
         return Response(status=200)
     except Exception as e:
-        # Часто тело может быть большим, поэтому логируем только окончание токена
-        tail = token[-6:] if token else "(no-token)"
-        flask_logger.error(f"error processing telegram webhook for token ...{tail}: {e}", exc_info=True)
+        flask_logger.error(f"error processing telegram webhook for @{bot_instance.telegram_username}: {e}", exc_info=True)
         return Response(status=500)
+    finally:
+        # Восстанавливаем исходного бота и закрываем временный
+        with bot_swap_lock:
+            application_instance.bot = original_bot
+        try:
+            asyncio.run_coroutine_threadsafe(user_bot.shutdown(), application_loop).result()
+        except Exception:
+            pass
 
 @flask_app.route('/yookassa/webhook', methods=['POST'])
 def handle_yookassa_webhook():

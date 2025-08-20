@@ -2341,21 +2341,24 @@ async def bind_bot_token_received(update: Update, context: ContextTypes.DEFAULT_
                 try:
                     webhook_url = f"{config.WEBHOOK_URL_BASE}/telegram/{token}"
                     temp_bot = Bot(token=token)
+                    secret = str(uuid.uuid4())
                     await temp_bot.set_webhook(
                         url=webhook_url,
                         allowed_updates=["message", "callback_query", "chat_member", "my_chat_member"],
-                        secret_token=str(uuid.uuid4())
+                        secret_token=secret
                     )
-                    # фиксируем установку вебхука в БД (если поле есть)
+                    # фиксируем установку вебхука и секрет в БД (если поля есть)
                     try:
                         from datetime import datetime, timezone
+                        if hasattr(instance, 'webhook_secret'):
+                            instance.webhook_secret = secret
                         if hasattr(instance, 'last_webhook_set_at'):
                             instance.last_webhook_set_at = datetime.now(timezone.utc)
                         if hasattr(instance, 'status'):
                             instance.status = 'active'
                         db.commit()
                     except Exception as e_db_commit:
-                        logger.error(f"bind_bot_token_received: failed to commit webhook timestamp/status: {e_db_commit}", exc_info=True)
+                        logger.error(f"bind_bot_token_received: failed to commit webhook secret/timestamp/status: {e_db_commit}", exc_info=True)
                         db.rollback()
 
                     await update.message.reply_text(

@@ -280,6 +280,8 @@ class BotInstance(Base):
     telegram_username = Column(String, nullable=True, index=True)
     status = Column(String, nullable=False, default='unregistered')  # unregistered|active|invalid|disabled
     last_webhook_set_at = Column(DateTime(timezone=True), nullable=True)
+    # секрет для проверки подлинности вебхука telegram
+    webhook_secret = Column(String, nullable=True)
 
     persona_config = relationship("PersonaConfig", back_populates="bot_instance", lazy="selectin")
     owner = relationship("User", back_populates="bot_instances", lazy="selectin")
@@ -476,6 +478,7 @@ def create_tables():
                 conn.exec_driver_sql("ALTER TABLE bot_instances ADD COLUMN IF NOT EXISTS telegram_username VARCHAR")
                 conn.exec_driver_sql("ALTER TABLE bot_instances ADD COLUMN IF NOT EXISTS status VARCHAR NOT NULL DEFAULT 'unregistered'")
                 conn.exec_driver_sql("ALTER TABLE bot_instances ADD COLUMN IF NOT EXISTS last_webhook_set_at TIMESTAMPTZ NULL")
+                conn.exec_driver_sql("ALTER TABLE bot_instances ADD COLUMN IF NOT EXISTS webhook_secret VARCHAR NULL")
 
                 # Ensure unique constraint on persona_config_id (enforce one-to-one)
                 conn.exec_driver_sql("CREATE UNIQUE INDEX IF NOT EXISTS ux_bot_instances_persona_config_id ON bot_instances(persona_config_id)")
