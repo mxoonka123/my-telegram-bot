@@ -49,6 +49,14 @@ from handlers import formatted_tos_text_for_bot
 flask_app = Flask(__name__)
 flask_logger = logging.getLogger('flask_webhook')
 
+@flask_app.get("/")
+def root_health():
+    return "ok", 200
+
+@flask_app.get("/healthz")
+def healthz():
+    return "ok", 200
+
 try:
     if config.YOOKASSA_SHOP_ID and config.YOOKASSA_SECRET_KEY and config.YOOKASSA_SHOP_ID.isdigit():
         YookassaConfig.configure(account_id=int(config.YOOKASSA_SHOP_ID), secret_key=config.YOOKASSA_SECRET_KEY)
