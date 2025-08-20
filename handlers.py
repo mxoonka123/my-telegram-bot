@@ -1553,30 +1553,32 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             return
 
     help_text_md = f"""
-*_основные команды:_*
-`/start`        \\- {escape_markdown_v2("начало работы")}
+*_быстрый старт:_*
+`/start`        \\- {escape_markdown_v2("запустить и показать приветствие")}
+`/menu`         \\- {escape_markdown_v2("панель с кнопками: профиль, личности, подписка, помощь")}
 `/help`         \\- {escape_markdown_v2("эта справка")}
-`/menu`         \\- {escape_markdown_v2("главное меню")}
-`/profile`      \\- {escape_markdown_v2("ваш профиль и лимиты")}
-`/subscribe`    \\- {escape_markdown_v2("информация о подписке")}
 
-*_управление личностью в чате:_*
-`/mood`         \\- {escape_markdown_v2("сменить настроение")}
-`/clear`        \\- {escape_markdown_v2("очистить память (контекст)")}
+*_личный профиль:_*
+`/profile`      \\- {escape_markdown_v2("статус, лимиты, срок подписки")}
+`/subscribe`    \\- {escape_markdown_v2("как оформить или продлить подписку")}
+
+*_управление в текущем чате:_*
+`/mood`         \\- {escape_markdown_v2("выбрать настроение личности")}
+`/clear`        \\- {escape_markdown_v2("очистить память чата (контекст)")}
 `/reset`        \\- {escape_markdown_v2("сбросить диалог (то же, что /clear)")}
-`/mutebot`      \\- {escape_markdown_v2("запретить отвечать в чате")}
-`/unmutebot`    \\- {escape_markdown_v2("разрешить отвечать в чате")}
+`/mutebot`      \\- {escape_markdown_v2("временно отключить ответы бота в этом чате")}
+`/unmutebot`    \\- {escape_markdown_v2("включить ответы обратно")}
 
-*_создание и настройка личностей:_*
-`/createpersona <имя> [описание]` \\- {escape_markdown_v2("создать новую")}
-`/mypersonas`    \\- {escape_markdown_v2("список ваших личностей")}
-`/editpersona <id>`   \\- {escape_markdown_v2("редактировать (имя, описание, стиль, настроения и др.)")}
-`/deletepersona <id>` \\- {escape_markdown_v2("удалить личность")}
+*_личности:_*
+`/createpersona <имя> [описание]` \\- {escape_markdown_v2("создать новую личность")}
+`/mypersonas`   \\- {escape_markdown_v2("список, кнопка '➕ в чат', удаление и редактирование")}
+`/editpersona <id>`   \\- {escape_markdown_v2("настройки: стиль, настроения, реакции на медиа")}
+`/deletepersona <id>` \\- {escape_markdown_v2("удалить личность (с очищением истории)")}
 
-*_дополнительно:_*
-• {escape_markdown_v2("бот может реагировать на фото и голосовые сообщения (настраивается в /editpersona <id>).")}
-• {escape_markdown_v2("в группах бот отвечает согласно настройке (по умолчанию - на упоминания или по контексту).")}
-• {escape_markdown_v2("чтобы добавить созданную личность в чат, используйте кнопку '➕ в чат' в /mypersonas.")}
+*_советы:_*
+• {escape_markdown_v2("в группах бот отвечает по настройке: по умолчанию — на упоминания или по контексту.")}
+• {escape_markdown_v2("если бот молчит, проверь: не заглушен ли он (/mutebot) и есть ли активная личность в чате.")}
+• {escape_markdown_v2("для добавления личности в чат открой /mypersonas и нажми '➕ в чат'.")}
 """
     help_text_md = help_text_md.strip()
     help_text_raw_no_md = re.sub(r'[`*_~\\[\\]()|{}+#-.!=]', '', help_text_md)
