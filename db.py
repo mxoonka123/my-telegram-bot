@@ -288,8 +288,8 @@ class ChatBotInstance(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     is_muted = Column(Boolean, default=False, nullable=False)
 
-    bot_instance_ref = relationship("BotInstance", back_populates="chat_links", lazy="selectin")
-    context = relationship("ChatContext", backref="chat_bot_instance", order_by="ChatContext.message_order", cascade="all, delete-orphan", lazy="dynamic")
+    bot_instance_ref = relationship("BotInstance", back_populates="chat_links", lazy="joined")
+    context = relationship("ChatContext", back_populates="chat_bot_instance", order_by="ChatContext.message_order", cascade="all, delete-orphan", lazy="dynamic")
 
     __table_args__ = (UniqueConstraint('chat_id', 'bot_instance_id', name='_chat_bot_uc'),)
 
@@ -304,6 +304,9 @@ class ChatContext(Base):
     role = Column(String, nullable=False)
     content = Column(Text, nullable=False)
     timestamp = Column(DateTime(timezone=True), server_default=func.now())
+
+    # Связанная сторона для back_populates
+    chat_bot_instance = relationship("ChatBotInstance", back_populates="context")
 
     def __repr__(self):
         content_preview = (self.content[:50] + '...') if len(self.content) > 50 else self.content
@@ -364,6 +367,7 @@ def initialize_database():
             connect_args = engine_args.get('connect_args', {})
             connect_args['prepare_threshold'] = None  # Отключение prepared statements
             connect_args['options'] = "-c statement_timeout=60000 -c idle_in_transaction_session_timeout=60000"
+            connect_args['connect_timeout'] = 30  # Добавляем таймаут подключения в 30 секунд
             engine_args['connect_args'] = connect_args
             
             logger.info("PostgreSQL: Disabled prepared statements and set timeouts to prevent transaction issues")
@@ -382,9 +386,10 @@ def initialize_database():
         SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
         logger.info("Database engine and session maker initialized with prepared statements disabled.")
 
-        logger.info("Attempting to establish initial database connection...")
-        with engine.connect() as connection:
-             logger.info("Database connection successful.")
+        # Первичную проверку соединения при старте отключаем. pool_pre_ping=True проверит соединение при первом запросе.
+        # logger.info("Attempting to establish initial database connection...")
+        # with engine.connect() as connection:
+        #      logger.info("Database connection successful.")
 
     except OperationalError as e:
          err_str = str(e).lower()
@@ -464,19 +469,16 @@ def get_or_create_user(db: Session, telegram_id: int, username: str = None) -> U
             if user.username != username and username is not None:
                  user.username = username
                  modified = True
-            if user.telegram_id == ADMIN_USER_ID and not user.is_active_subscriber:
+            if user.telegram_id in ADMIN_USER_ID and not user.is_active_subscriber:
                 user.is_subscribed = True
                 user.subscription_expires_at = datetime(2099, 12, 31, tzinfo=timezone.utc)
                 modified = True
             if modified:
-                flag_modified(user, "username")
-                flag_modified(user, "is_subscribed")
-                flag_modified(user, "subscription_expires_at")
                 logger.info(f"User {telegram_id} updated (username/admin status). Pending commit.")
         else:
             logger.info(f"Creating new user for telegram_id {telegram_id} (Username: {username})")
             user = User(telegram_id=telegram_id, username=username)
-            if telegram_id == ADMIN_USER_ID:
+            if telegram_id in ADMIN_USER_ID:
                 logger.info(f"Setting admin user {telegram_id} as subscribed indefinitely upon creation.")
                 user.is_subscribed = True
                 user.subscription_expires_at = datetime(2099, 12, 31, tzinfo=timezone.utc)

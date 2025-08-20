@@ -347,8 +347,8 @@ async def send_subscription_required_message(update: Update, context: ContextTyp
         logger.error(f"Failed to send subscription required message: {e}")
 
 def is_admin(user_id: int) -> bool:
-    """Checks if the user ID belongs to the admin."""
-    return user_id == config.ADMIN_USER_ID
+    """Checks if the user ID belongs to an admin."""
+    return user_id in config.ADMIN_USER_ID
 
 # --- Conversation States ---
 # Edit Persona Wizard States
