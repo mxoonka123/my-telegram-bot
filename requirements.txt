@@ -16,6 +16,7 @@ hypercorn==0.16.0
 # Added requests as a potential Yookassa dependency, although httpx is primary
 requests>=2.25.1
 aiohttp==3.9.3
+asgiref>=3.7.2
 
 # Для распознавания голосовых сообщений
 vosk==0.3.45

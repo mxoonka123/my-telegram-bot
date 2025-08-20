@@ -38,6 +38,7 @@ from yookassa import Configuration as YookassaConfig
 from yookassa.domain.notification import WebhookNotification
 from hypercorn.asyncio import serve
 from hypercorn.config import Config as HypercornConfig
+from asgiref.wsgi import WsgiToAsgi
 
 # --- Новые импорты для Telegra.ph ---
 from telegraph import Telegraph
@@ -66,13 +67,14 @@ try:
 except Exception as e:
     flask_logger.error(f"Failed to configure Yookassa SDK for webhook: {e}")
 
-# Глобальная переменная для доступа к PTB Application из вебхука
+# Глобальные переменные для доступа к PTB Application и его event loop из вебхука
 application_instance: Application | None = None
+application_loop: asyncio.AbstractEventLoop | None = None
 
 @flask_app.route('/telegram/<string:token>', methods=['POST'])
 def handle_telegram_webhook(token: str):
     """Единый обработчик вебхуков Telegram для всех пользовательских ботов."""
-    global application_instance
+    global application_instance, application_loop
     if not application_instance:
         flask_logger.error("telegram webhook received but application_instance is not set.")
         return Response(status=500)
@@ -81,9 +83,12 @@ def handle_telegram_webhook(token: str):
         update_data = request.get_json(force=True)
         # Преобразуем JSON в объект Update и прокидываем в PTB
         update = Update.de_json(update_data, application_instance.bot)
+        if application_loop is None:
+            flask_logger.error("telegram webhook received but application_loop is not set.")
+            return Response(status=500)
         asyncio.run_coroutine_threadsafe(
             application_instance.process_update(update),
-            application_instance.loop
+            application_loop
         )
         return Response(status=200)
     except Exception as e:
@@ -95,7 +100,7 @@ def handle_telegram_webhook(token: str):
 @flask_app.route('/yookassa/webhook', methods=['POST'])
 def handle_yookassa_webhook():
     """Обработчик вебхуков от YooKassa."""
-    global application_instance
+    global application_instance, application_loop
     event_json = None
     try:
         event_json = request.get_json(force=True)
@@ -133,7 +138,7 @@ def handle_yookassa_webhook():
                                     text=success_text_escaped,
                                     parse_mode=ParseMode.MARKDOWN_V2
                                 ),
-                                application_instance.loop
+                                application_loop
                             )
         return Response(status=200)
     except Exception as e:
@@ -294,13 +299,19 @@ async def main():
         hypercorn_config.bind = [f"0.0.0.0:{port}"]
         
         # Запускаем веб-сервер как фоновую задачу asyncio
-        web_server_task = asyncio.create_task(serve(flask_app, hypercorn_config))
+        # Flask (WSGI) оборачиваем в ASGI для Hypercorn
+        asgi_app = WsgiToAsgi(flask_app)
+        web_server_task = asyncio.create_task(serve(asgi_app, hypercorn_config))
         logger.info(f"Web server scheduled to run on port {port}.")
         
         # --- Запуск бота ---
         logger.info("Starting bot polling...")
         await application.start()
         await application.updater.start_polling()
+
+        # Сохраняем текущий event loop для дальнейшей прокладки апдейтов из вебхука
+        global application_loop
+        application_loop = asyncio.get_running_loop()
         
         # Ждем, пока одна из задач не завершится (что не должно произойти)
         await web_server_task
