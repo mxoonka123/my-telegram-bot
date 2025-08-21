@@ -162,6 +162,42 @@ async def botsettings_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
         return ConversationHandler.END
 
+    # Разрешаем только владельцу и глобальным админам
+    from_id = int(user.id) if user else None
+    try:
+        admin_ids = set((getattr(config, 'ADMIN_USER_ID', []) or []))
+    except Exception:
+        admin_ids = set()
+
+    with get_db() as db:
+        db_user = db.query(User).filter(User.telegram_id == from_id).first() if from_id else None
+        if not db_user:
+            await update.message.reply_text("пользователь не найден в системе. напишите /start.", parse_mode=None)
+            return ConversationHandler.END
+
+        # Владелец видит только свои боты. Админ — все активные.
+        q = db.query(DBBotInstance).filter(DBBotInstance.status == 'active')
+        if from_id not in admin_ids:
+            q = q.filter(DBBotInstance.owner_id == db_user.id)
+
+        bots = list(q.order_by(DBBotInstance.id.desc()).all())
+
+        if not bots:
+            await update.message.reply_text("у вас пока нет активных ботов.", parse_mode=None)
+            return ConversationHandler.END
+
+        kb = []
+        for bi in bots:
+            title = bi.telegram_username or bi.name or f"bot #{bi.id}"
+            kb.append([InlineKeyboardButton(title, callback_data=f"botset_pick_{bi.id}")])
+
+        await update.message.reply_text(
+            "выберите бота для настройки:",
+            reply_markup=InlineKeyboardMarkup(kb),
+            parse_mode=None
+        )
+        return BOTSET_SELECT
+
 
 # --- Chat member updates (auto-link/unlink bot to group chat) ---
 async def on_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -616,7 +652,6 @@ async def check_channel_subscription(update: Update, context: ContextTypes.DEFAU
     logger.debug(f"Checking subscription status for user {user_id} in channel {config.CHANNEL_ID}")
     try:
         member = await context.bot.get_chat_member(chat_id=config.CHANNEL_ID, user_id=user_id, read_timeout=10)
-        # Check if user status is one of the allowed ones
         allowed_statuses = [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]
         logger.debug(f"User {user_id} status in {config.CHANNEL_ID}: {member.status}")
         if member.status in allowed_statuses:
@@ -639,36 +674,50 @@ async def check_channel_subscription(update: Update, context: ContextTypes.DEFAU
                 logger.error(f"Failed to send 'Timeout' error message: {send_err}")
         return False
     except Forbidden as e:
-        logger.error(f"Forbidden error checking subscription for user {user_id} in channel {config.CHANNEL_ID}: {e}. Ensure bot is admin in the channel.")
-        # Try to inform the user about the permission issue
-        target_message = getattr(update, 'effective_message', None) or getattr(getattr(update, 'callback_query', None), 'message', None)
-        if target_message:
-            try:
-                await target_message.reply_text(
-                    escape_markdown_v2("❌ не удалось проверить подписку на канал. убедитесь, что бот добавлен в канал как администратор."),
-                    parse_mode=ParseMode.MARKDOWN_V2
-                )
-            except Exception as send_err:
-                logger.error(f"Failed to send 'Forbidden' error message: {send_err}")
+        logger.error(f"Forbidden when checking subscription via current bot: {e}. Trying main bot fallback...")
+        # Fallback to main bot
+        try:
+            from telegram import Bot as _TGBot
+            main_token = getattr(config, 'TELEGRAM_TOKEN', None)
+            if main_token:
+                main_bot = _TGBot(token=main_token)
+                member = await main_bot.get_chat_member(chat_id=config.CHANNEL_ID, user_id=user_id, read_timeout=10)
+                allowed_statuses = [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]
+                if member.status in allowed_statuses:
+                    return True
+                else:
+                    return False
+        except Exception as fb_err:
+            logger.error(f"Main bot fallback failed (Forbidden path): {fb_err}")
         return False
     except BadRequest as e:
         error_message = str(e).lower()
         logger.error(f"BadRequest checking subscription for user {user_id} in channel {config.CHANNEL_ID}: {e}")
-        reply_text_raw = "❌ произошла ошибка при проверке подписки (badrequest). попробуйте позже."
-        if "member list is inaccessible" in error_message:
-            logger.error(f"-> Specific BadRequest: Member list is inaccessible. Bot might lack permissions or channel privacy settings restrictive?")
-            reply_text_raw = "❌ не удается получить доступ к списку участников канала для проверки подписки. возможно, настройки канала не позволяют это сделать."
-        elif "user not found" in error_message:
-            logger.info(f"-> Specific BadRequest: User {user_id} not found in channel {config.CHANNEL_ID}.")
-            return False
-        elif "chat not found" in error_message:
-                logger.error(f"-> Specific BadRequest: Chat {config.CHANNEL_ID} not found. Check CHANNEL_ID config.")
-                reply_text_raw = "❌ ошибка: не удалось найти указанный канал для проверки подписки. проверьте настройки бота."
-
+        # Try fallback via main bot for cases like 'member list is inaccessible'
+        try:
+            from telegram import Bot as _TGBot
+            main_token = getattr(config, 'TELEGRAM_TOKEN', None)
+            if main_token:
+                main_bot = _TGBot(token=main_token)
+                member = await main_bot.get_chat_member(chat_id=config.CHANNEL_ID, user_id=user_id, read_timeout=10)
+                allowed_statuses = [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]
+                if member.status in allowed_statuses:
+                    return True
+                else:
+                    return False
+        except Exception as fb_err:
+            logger.error(f"Main bot fallback failed (BadRequest path): {fb_err}")
+        # Inform the user succinctly
         target_message = getattr(update, 'effective_message', None) or getattr(getattr(update, 'callback_query', None), 'message', None)
         if target_message:
-            try: await target_message.reply_text(escape_markdown_v2(reply_text_raw), parse_mode=ParseMode.MARKDOWN_V2)
-            except Exception as send_err: logger.error(f"Failed to send 'BadRequest' error message: {send_err}")
+            try:
+                await target_message.reply_text(
+                    escape_markdown_v2("❗ для использования бота необходимо подписаться на канал @" + str(config.CHANNEL_ID).lstrip('@')),
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("перейти к каналу", url=f"https://t.me/{str(config.CHANNEL_ID).lstrip('@')}")]])
+                )
+            except Exception as send_err:
+                logger.error(f"Failed to send 'subscribe required' message: {send_err}")
         return False
     except TelegramError as e:
         logger.error(f"Telegram error checking subscription for user {user_id} in channel {config.CHANNEL_ID}: {e}")

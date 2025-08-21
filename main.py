@@ -264,8 +264,8 @@ def handle_telegram_webhook(token: str):
             return Response(status=200)
         # 1) Attached-боты: блокируем команды, кроме allowlist
         if is_command_update and main_bot_id and str(main_bot_id) != str(current_bot_id or ''):
-            # Разрешаем небольшой список команд на attached-ботах
-            allowed_on_attached = {"/mutebot", "/unmutebot"}
+            # Полный запрет команд на attached-ботах
+            allowed_on_attached = set()
             cmd_name = None
             try:
                 first_token = (text or '').split()[0].lower()
