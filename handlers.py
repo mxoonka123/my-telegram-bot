@@ -1249,7 +1249,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 db_session = db
                 logger.debug("handle_message: DB session acquired.")
 
-                persona_context_owner_tuple = get_persona_and_context_with_owner(chat_id_str, db_session)
+                # Передаем id текущего телеграм-бота, чтобы выбрать верную персону, привязанную к этому боту
+                current_bot_id_str = str(context.bot.id) if getattr(context, 'bot', None) and getattr(context.bot, 'id', None) else None
+                logger.debug(f"handle_message: selecting persona for chat {chat_id_str} with current_bot_id={current_bot_id_str}")
+                persona_context_owner_tuple = get_persona_and_context_with_owner(chat_id_str, db_session, current_bot_id_str)
                 if not persona_context_owner_tuple:
                     logger.warning(f"handle_message: No active persona found for chat {chat_id_str}.")
                     return
@@ -1552,7 +1555,9 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
 
     with get_db() as db:
         try:
-            persona_context_owner_tuple = get_persona_and_context_with_owner(chat_id_str, db)
+            current_bot_id_str = str(context.bot.id) if getattr(context, 'bot', None) and getattr(context.bot, 'id', None) else None
+            logger.debug(f"handle_media: selecting persona for chat {chat_id_str} with current_bot_id={current_bot_id_str}")
+            persona_context_owner_tuple = get_persona_and_context_with_owner(chat_id_str, db, current_bot_id_str)
             if not persona_context_owner_tuple:
                 logger.debug(f"No active persona in chat {chat_id_str} for media message.")
                 return
@@ -1820,7 +1825,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
             logger.debug(f"/start: Checking for active persona in chat {chat_id_str}...")
             # В основном боте всегда показываем основное приветствие, независимо от активной личности
-            persona_info_tuple = get_persona_and_context_with_owner(chat_id_str, db)
+            current_bot_id_str = str(context.bot.id) if getattr(context, 'bot', None) and getattr(context.bot, 'id', None) else None
+            persona_info_tuple = get_persona_and_context_with_owner(chat_id_str, db, current_bot_id_str)
             if persona_info_tuple:
                 logger.info(f"/start: Active persona exists in chat {chat_id_str}, but showing generic welcome for main bot.")
 
@@ -2072,7 +2078,8 @@ async def mood(update: Update, context: ContextTypes.DEFAULT_TYPE, db: Optional[
             close_db_later = True
 
         if local_persona is None:
-            persona_info_tuple = get_persona_and_context_with_owner(chat_id_str, db_session)
+            current_bot_id_str = str(context.bot.id) if getattr(context, 'bot', None) and getattr(context.bot, 'id', None) else None
+            persona_info_tuple = get_persona_and_context_with_owner(chat_id_str, db_session, current_bot_id_str)
             if not persona_info_tuple:
                 reply_target = update.callback_query.message if is_callback else message_or_callback_msg
                 if is_callback: await update.callback_query.answer("Нет активной личности", show_alert=True)
@@ -2269,7 +2276,8 @@ async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     with get_db() as db:
         try:
             # Находим активную личность и ее владельца
-            persona_info_tuple = get_persona_and_context_with_owner(chat_id_str, db)
+            current_bot_id_str = str(context.bot.id) if getattr(context, 'bot', None) and getattr(context.bot, 'id', None) else None
+            persona_info_tuple = get_persona_and_context_with_owner(chat_id_str, db, current_bot_id_str)
             if not persona_info_tuple:
                 await update.message.reply_text(msg_no_persona_raw, reply_markup=ReplyKeyboardRemove(), parse_mode=None)
                 return
@@ -5378,7 +5386,8 @@ async def mute_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     with get_db() as db:
         try:
-            instance_info = get_persona_and_context_with_owner(chat_id_str, db)
+            current_bot_id_str = str(context.bot.id) if getattr(context, 'bot', None) and getattr(context.bot, 'id', None) else None
+            instance_info = get_persona_and_context_with_owner(chat_id_str, db, current_bot_id_str)
             if not instance_info:
                 await update.message.reply_text(error_no_persona, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
                 return
@@ -5436,7 +5445,8 @@ async def unmute_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     with get_db() as db:
         try:
-            instance_info = get_persona_and_context_with_owner(db, chat_id_str)
+            current_bot_id_str = str(context.bot.id) if getattr(context, 'bot', None) and getattr(context.bot, 'id', None) else None
+            instance_info = get_persona_and_context_with_owner(chat_id_str, db, current_bot_id_str)
 
             if not instance_info:
                 await update.message.reply_text(error_no_persona, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
@@ -5575,7 +5585,8 @@ async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     with get_db() as db:
         try:
-            persona_info_tuple = get_persona_and_context_with_owner(chat_id_str, db)
+            current_bot_id_str = str(context.bot.id) if getattr(context, 'bot', None) and getattr(context.bot, 'id', None) else None
+            persona_info_tuple = get_persona_and_context_with_owner(chat_id_str, db, current_bot_id_str)
             if not persona_info_tuple:
                 # Используем parse_mode=None
                 await update.message.reply_text(error_no_persona_raw, reply_markup=ReplyKeyboardRemove(), parse_mode=None)
