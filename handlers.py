@@ -626,7 +626,18 @@ async def transcribe_audio_with_vosk(audio_data: bytes, original_mime_type: str)
 # --- Helper Functions ---
 
 async def check_channel_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    """Checks if the user is subscribed to the required channel."""
+    """Checks if the user is subscribed to the required channel.
+    This check is skipped for any bot that is not the main bot.
+    """
+    # --- skip for attached (non-main) bots ---
+    try:
+        main_bot_id = context.bot_data.get('main_bot_id')
+        current_bot_id = getattr(context.bot, 'id', None)
+        if main_bot_id and current_bot_id and current_bot_id != main_bot_id:
+            logger.debug(f"subscription check skipped for attached bot id={current_bot_id} (main={main_bot_id})")
+            return True
+    except Exception as e:
+        logger.error(f"error detecting main/attached bot in subscription check: {e}. continuing with normal check")
     if not config.CHANNEL_ID:
         logger.warning("CHANNEL_ID not set in config. Skipping subscription check.")
         return True # Skip check if no channel is configured
