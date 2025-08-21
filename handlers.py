@@ -2772,11 +2772,11 @@ async def create_persona(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await context.bot.send_chat_action(chat_id=chat_id_str, action=ChatAction.TYPING)
 
     usage_text = "формат: /createpersona <имя> [описание]\n\nсовет: подробное описание напрямую влияет на характер и поведение личности."
-    error_name_len = escape_markdown_v2("❌ имя личности: 2\\-50 символов.")
-    error_desc_len = escape_markdown_v2("❌ описание: до 1500 символов.")
-    error_limit_reached_fmt_raw = "упс! 😕 достигнут лимит личностей ({current_count}/{limit}) для статуса {status_text}\\. чтобы создавать больше, используй /subscribe"
-    error_name_exists_fmt_raw = "❌ личность с именем '{persona_name}' уже есть\\. выбери другое\\."
-    success_create_fmt_raw = "✅ личность '{name}' создана\\!\nID: `{id}`\nописание: {description}\n\nтеперь можно настроить поведение через `/editpersona {id}` или привязать бота в `/mypersonas`"
+    error_name_len = escape_markdown_v2("❌ имя личности: 2\-50 символов.")
+    error_desc_len = escape_markdown_v2("❌ описание: до 2500 символов.")
+    error_limit_reached_fmt_raw = "упс! 😕 достигнут лимит личностей ({current_count}/{limit}) для статуса {status_text}\. чтобы создавать больше, используй /subscribe"
+    error_name_exists_fmt_raw = "❌ личность с именем '{persona_name}' уже есть\. выбери другое\."
+    success_create_fmt_raw = "✅ личность '{name}' создана\!\nID: `{id}`\nописание: {description}\n\nтеперь можно настроить поведение через `/editpersona {id}` или привязать бота в `/mypersonas`"
     error_db = escape_markdown_v2("❌ ошибка базы данных при создании личности.")
     error_general = escape_markdown_v2("❌ ошибка при создании личности.")
 
@@ -2790,7 +2790,7 @@ async def create_persona(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if len(persona_name) < 2 or len(persona_name) > 50:
         await update.message.reply_text(error_name_len, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
         return
-    if persona_description and len(persona_description) > 1500:
+    if persona_description and len(persona_description) > 2500:
         await update.message.reply_text(error_desc_len, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
         return
 
@@ -4326,7 +4326,7 @@ async def edit_description_prompt(update: Update, context: ContextTypes.DEFAULT_
     current_desc_preview = (current_desc[:100] + '...') if len(current_desc) > 100 else current_desc
     
     # Создаем простой текст без специальных символов
-    prompt_text = f"введите новое описание (макс. 1500 символов).\n\nтекущее (начало):\n{current_desc_preview}"
+    prompt_text = f"введите новое описание (макс. 2500 символов).\n\nтекущее (начало):\n{current_desc_preview}"
     
     # Создаем клавиатуру с кнопкой назад
     keyboard = [[InlineKeyboardButton("назад", callback_data="back_to_wizard_menu")]]
@@ -4378,7 +4378,7 @@ async def edit_description_prompt(update: Update, context: ContextTypes.DEFAULT_
             # Запасной вариант с максимально простым сообщением
             await context.bot.send_message(
                 chat_id=chat_id,
-                text="Введите новое описание (максимум 1500 символов)",
+                text="введите новое описание (максимум 2500 символов)",
                 reply_markup=InlineKeyboardMarkup(keyboard),
                 parse_mode=None
             )
@@ -4394,8 +4394,8 @@ async def edit_description_received(update: Update, context: ContextTypes.DEFAUL
     new_desc = update.message.text.strip()
     persona_id = context.user_data.get('edit_persona_id')
 
-    if len(new_desc) > 1500:
-        await update.message.reply_text(escape_markdown_v2("❌ Описание: макс. 1500 симв. Попробуйте еще:"))
+    if len(new_desc) > 2500:
+        await update.message.reply_text(escape_markdown_v2("❌ описание: макс. 2500 симв. попробуйте еще:"))
         return EDIT_DESCRIPTION
 
     try:
