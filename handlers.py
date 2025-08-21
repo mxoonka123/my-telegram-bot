@@ -1961,7 +1961,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             reply_parse_mode = None
             keyboard = [
                 [InlineKeyboardButton("меню команд", callback_data="show_menu")],
-                [InlineKeyboardButton("📜 пользовательское соглашение", callback_data="show_tos")]
+                [InlineKeyboardButton("пользовательское соглашение", callback_data="show_tos")]
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -2076,7 +2076,7 @@ async def show_tos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     tos_text_md = TOS_TEXT  # уже экранирован MarkdownV2
-    keyboard_inline = [[InlineKeyboardButton("⬅️ назад в меню", callback_data="show_menu")]]
+    keyboard_inline = [[InlineKeyboardButton("назад в меню", callback_data="show_menu")]]
     reply_markup = InlineKeyboardMarkup(keyboard_inline)
 
     try:
@@ -2121,11 +2121,11 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     keyboard = [
         [
-            InlineKeyboardButton("👤 профиль", callback_data="show_profile"),
-            InlineKeyboardButton("🎭 мои личности", callback_data="show_mypersonas")
+            InlineKeyboardButton("профиль", callback_data="show_profile"),
+            InlineKeyboardButton("мои личности", callback_data="show_mypersonas")
         ],
         [
-            InlineKeyboardButton("❓ помощь", callback_data="show_help")
+            InlineKeyboardButton("помощь", callback_data="show_help")
         ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -2584,7 +2584,7 @@ async def my_personas(update: Union[Update, CallbackQuery], context: ContextType
         "у тебя пока нет личностей ({count}/{limit}).\n"
         "создай первую: /createpersona <имя> [описание]"
     )
-    info_list_header_fmt_raw = "🎭 твои личности ({count}/{limit}):"
+    info_list_header_fmt_raw = "твои личности ({count}/{limit}):"
     fallback_text_plain_parts = []
 
     final_text_to_send = ""
@@ -3238,26 +3238,26 @@ async def profile(update: Union[Update, CallbackQuery], context: ContextTypes.DE
             credits_text = escape_markdown_v2(f"{credits_balance:.2f}")
 
             profile_text_md = (
-                f"👤 *твой профиль*\n\n"
+                f"*твой профиль*\n\n"
                 f"*баланс кредитов:* {credits_text}\n"
                 f"{escape_markdown_v2('создано личностей:')} {persona_limit_escaped}\n\n"
-                f"ℹ️ кредиты списываются за текст, изображения и распознавание аудио."
+                f"кредиты списываются за текст, изображения и распознавание аудио."
             )
 
             profile_text_plain = (
-                f"👤 твой профиль\n\n"
+                f"твой профиль\n\n"
                 f"баланс кредитов: {credits_balance:.2f}\n"
                 f"создано личностей: {persona_limit_raw}\n\n"
-                f"ℹ️ кредиты списываются за текст, изображения и распознавание аудио."
+                f"кредиты списываются за текст, изображения и распознавание аудио."
             )
 
             # Во избежание ошибок MarkdownV2 отправляем простой текст без форматирования
             final_text_to_send = profile_text_plain
 
             keyboard = [[
-                InlineKeyboardButton("💳 пополнить кредиты", callback_data="buycredits_open")
+                InlineKeyboardButton("пополнить кредиты", callback_data="buycredits_open")
             ], [
-                InlineKeyboardButton("⬅️ назад в меню", callback_data="show_menu")
+                InlineKeyboardButton("назад в меню", callback_data="show_menu")
             ]] if is_callback else None
             reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
 
@@ -3304,7 +3304,7 @@ async def buycredits(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
 
     # Формируем список пакетов
-    lines = ["💳 *пополнение кредитов*\n"]
+    lines = ["*пополнение кредитов*\n"]
     keyboard_rows = []
     for pkg_id, pkg in (CREDIT_PACKAGES or {}).items():
         title = pkg.get('title') or pkg_id
@@ -4613,7 +4613,7 @@ async def _show_edit_wizard_menu(update: Update, context: ContextTypes.DEFAULT_T
             [InlineKeyboardButton(f"реакция на медиа ({media_react_map.get(media_react, '?')})", callback_data="edit_wizard_media_reaction")],
             [InlineKeyboardButton(f"макс. сообщ. ({display_for_max_msgs_button})", callback_data="edit_wizard_max_msgs")],
             # [InlineKeyboardButton(f"настроения{star if not is_premium else ''}", callback_data="edit_wizard_moods")], # <-- ЗАКОММЕНТИРОВАНО
-            [InlineKeyboardButton("🗑️ очистить память", callback_data="edit_wizard_clear_context")],
+            [InlineKeyboardButton("очистить память", callback_data="edit_wizard_clear_context")],
             [InlineKeyboardButton("завершить", callback_data="finish_edit")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -4691,17 +4691,34 @@ async def clear_persona_context_from_wizard(update: Update, context: ContextType
                 return ConversationHandler.END
 
             bot_instance = db.query(DBBotInstance).filter(DBBotInstance.persona_config_id == persona.id).first()
+            total_deleted = 0
+            links_count = 0
             if bot_instance:
                 links = db.query(DBChatBotInstance).filter(DBChatBotInstance.bot_instance_id == bot_instance.id).all()
-                total_deleted = 0
+                links_count = len(links)
                 for link in links:
                     deleted = db.query(ChatContext).filter(ChatContext.chat_bot_instance_id == link.id).delete(synchronize_session=False)
                     total_deleted += int(deleted or 0)
                 db.commit()
-                logger.info(f"Cleared {total_deleted} context messages for persona {persona.id} across {len(links)} chats")
+                logger.info(f"Cleared {total_deleted} context messages for persona {persona.id} across {links_count} chats")
 
-        try: await query.answer("память очищена")
-        except Exception: pass
+        # Показать явное подтверждение пользователю (маленькими буквами)
+        # Сформируем текст подтверждения и покажем всплывающий alert + дублируем сообщением в чат
+        chat_id = query.message.chat.id if query.message else None
+        if total_deleted > 0:
+            msg_raw = f"память очищена. удалено сообщений: {total_deleted}"
+        else:
+            msg_raw = "память пуста. удалять нечего"
+        try:
+            await query.answer(msg_raw, show_alert=True)
+        except Exception:
+            pass
+        try:
+            if chat_id is not None:
+                await context.bot.send_message(chat_id, escape_markdown_v2(msg_raw), parse_mode=ParseMode.MARKDOWN_V2)
+        except Exception as e:
+            logger.warning(f"Failed to send confirmation message after clear: {e}")
+
         # Вернемся в меню визарда
         with get_db() as db2:
             persona_ref = db2.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
