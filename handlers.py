@@ -1819,63 +1819,56 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 logger.debug(f"/start: User {user_id} already exists and is up-to-date.")
 
             logger.debug(f"/start: Checking for active persona in chat {chat_id_str}...")
+            # В основном боте всегда показываем основное приветствие, независимо от активной личности
             persona_info_tuple = get_persona_and_context_with_owner(chat_id_str, db)
             if persona_info_tuple:
-                persona, _, _ = persona_info_tuple
-                logger.info(f"/start: Persona '{persona.name}' is active in chat {chat_id_str}.")
-                part1_raw = f"привет! я {persona.name}. я уже активен в этом чате.\n"
-                part2_raw = "используй /menu для списка команд."
-                reply_text_final = escape_markdown_v2(part1_raw + part2_raw)
-                reply_parse_mode = ParseMode.MARKDOWN_V2
-                fallback_text_raw = part1_raw + part2_raw
-                reply_markup = ReplyKeyboardRemove()
-            else:
-                logger.info(f"/start: No active persona in chat {chat_id_str}. Showing welcome message.")
-                if not db.is_modified(user):
-                    user = db.query(User).options(selectinload(User.persona_configs)).filter(User.id == user.id).one()
+                logger.info(f"/start: Active persona exists in chat {chat_id_str}, but showing generic welcome for main bot.")
 
-                now = datetime.now(timezone.utc)
-                status_raw = "⭐ Premium" if user.is_active_subscriber else "🆓 Free"
-                expires_raw = ""
-                if user.is_active_subscriber and user.subscription_expires_at:
-                    subscription_expires_dt_for_comparison = user.subscription_expires_at
-                    if subscription_expires_dt_for_comparison.tzinfo is None:
-                        subscription_expires_dt_for_comparison = subscription_expires_dt_for_comparison.replace(tzinfo=timezone.utc)
+            if not db.is_modified(user):
+                user = db.query(User).options(selectinload(User.persona_configs)).filter(User.id == user.id).one()
 
-                    if subscription_expires_dt_for_comparison > now + timedelta(days=365*10):
-                        expires_raw = "(бессрочно)"
-                    else:
-                        expires_raw = f"до {user.subscription_expires_at.strftime('%d.%m.%Y')}"
+            now = datetime.now(timezone.utc)
+            status_raw = "⭐ Premium" if user.is_active_subscriber else "🆓 Free"
+            expires_raw = ""
+            if user.is_active_subscriber and user.subscription_expires_at:
+                subscription_expires_dt_for_comparison = user.subscription_expires_at
+                if subscription_expires_dt_for_comparison.tzinfo is None:
+                    subscription_expires_dt_for_comparison = subscription_expires_dt_for_comparison.replace(tzinfo=timezone.utc)
 
-                persona_count = len(user.persona_configs) if user.persona_configs else 0
-                persona_limit_raw = f"{persona_count}/{user.persona_limit}"
-                message_limit_raw = f"{user.monthly_message_count}/{user.message_limit}"
+                if subscription_expires_dt_for_comparison > now + timedelta(days=365*10):
+                    expires_raw = "(бессрочно)"
+                else:
+                    expires_raw = f"до {user.subscription_expires_at.strftime('%d.%m.%Y')}"
 
-                start_text_md = (
-                    f"привет! я бот для создания ai-собеседников (@{escape_markdown_v2(context.bot.username)}).\n\n"
-                    f"я помогу создать и настроить личности для разных задач.\n\n"
-                    f"начало работы:\n"
-                    f"/createpersona <имя> - создай ai-личность\n"
-                    f"/mypersonas - список твоих личностей\n"
-                    f"/menu - панель управления\n"
-                    f"/profile - детали статуса\n"
-                    f"/subscribe - узнать о подписке"
-                )
-                fallback_text_raw = (
-                    f"привет! я бот для создания ai-собеседников (@{context.bot.username}).\n\n"
-                    f"я помогу создать и настроить личности для разных задач.\n\n"
-                    f"начало работы:\n"
-                    f"/createpersona <имя> - создай ai-личность\n"
-                    f"/mypersonas - список твоих личностей\n"
-                    f"/menu - панель управления\n"
-                    f"/profile - детали статуса\n"
-                    f"/subscribe - узнать о подписке"
-                )
-                # Ветку приветствия отправляем без Markdown, чтобы не ловить ошибки экранирования
-                reply_text_final = fallback_text_raw
-                reply_parse_mode = None
-                keyboard = [[InlineKeyboardButton("меню команд", callback_data="show_menu")]]
-                reply_markup = InlineKeyboardMarkup(keyboard)
+            persona_count = len(user.persona_configs) if user.persona_configs else 0
+            persona_limit_raw = f"{persona_count}/{user.persona_limit}"
+            message_limit_raw = f"{user.monthly_message_count}/{user.message_limit}"
+
+            start_text_md = (
+                f"привет! я бот для создания ai-собеседников (@{escape_markdown_v2(context.bot.username)}).\n\n"
+                f"я помогу создать и настроить личности для разных задач.\n\n"
+                f"начало работы:\n"
+                f"/createpersona <имя> - создай ai-личность\n"
+                f"/mypersonas - список твоих личностей\n"
+                f"/menu - панель управления\n"
+                f"/profile - детали статуса\n"
+                f"/subscribe - узнать о подписке"
+            )
+            fallback_text_raw = (
+                f"привет! я бот для создания ai-собеседников (@{context.bot.username}).\n\n"
+                f"я помогу создать и настроить личности для разных задач.\n\n"
+                f"начало работы:\n"
+                f"/createpersona <имя> - создай ai-личность\n"
+                f"/mypersonas - список твоих личностей\n"
+                f"/menu - панель управления\n"
+                f"/profile - детали статуса\n"
+                f"/subscribe - узнать о подписке"
+            )
+            # Ветку приветствия отправляем без Markdown, чтобы не ловить ошибки экранирования
+            reply_text_final = fallback_text_raw
+            reply_parse_mode = None
+            keyboard = [[InlineKeyboardButton("меню команд", callback_data="show_menu")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
 
             logger.debug(f"/start: Sending final message to user {user_id}.")
             await update.message.reply_text(reply_text_final, reply_markup=reply_markup, parse_mode=reply_parse_mode)
