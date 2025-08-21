@@ -27,7 +27,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 # OpenRouter Settings
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 OPENROUTER_API_BASE_URL = "https://openrouter.ai/api/v1"
-OPENROUTER_MODEL_NAME = "google/gemini-2.0-flash-001"
+OPENROUTER_MODEL_NAME = "mistralai/mistral-small-3.2-24b-instruct:free"
 
 # Gemini Settings (using OpenRouter key by default)
 GEMINI_API_KEY = OPENROUTER_API_KEY
@@ -70,7 +70,7 @@ PREMIUM_USER_MONTHLY_PHOTO_LIMIT = 15
 FREE_USER_MONTHLY_MESSAGE_LIMIT = 30 # Бесплатные пользователи: 50 сообщений в месяц
 
 # Настройки контекста и ответов
-MAX_CONTEXT_MESSAGES_SENT_TO_LLM = 30 # Сколько последних сообщений отправлять в LLM
+MAX_CONTEXT_MESSAGES_SENT_TO_LLM = 200 # Сколько последних сообщений отправлять в LLM
 # DEFAULT_MAX_RESPONSE_MESSAGES = 3 # Это значение теперь в db.py как default для колонки
 
 # Messaging settings configuration automatically added per user request

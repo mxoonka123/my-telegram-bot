@@ -131,7 +131,7 @@ logger = logging.getLogger(__name__)
 Base = declarative_base()
 
 # How many messages to keep in the DB history per chat instance
-MAX_CONTEXT_MESSAGES_STORED = 200
+MAX_CONTEXT_MESSAGES_STORED = 400
 
 class User(Base):
     __tablename__ = 'users'
