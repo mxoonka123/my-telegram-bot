@@ -1443,10 +1443,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 logger.debug(f"handle_message: selecting persona for chat {chat_id_str} with current_bot_id={current_bot_id_str}")
                 persona_context_owner_tuple = get_persona_and_context_with_owner(chat_id_str, db_session, current_bot_id_str)
                 if not persona_context_owner_tuple:
-                    # Попытка авто-связывания для групп, если бота только что добавили и связи нет
-                    try:
-                        chat_type = (update.effective_chat and update.effective_chat.type) or ""
-                        if str(chat_type) in {"group", "supergroup"} and current_bot_id_str:
+                    # авто-связывание для групп и приватных чатов, если связи нет
+                    chat_type = str(getattr(update.effective_chat, 'type', ''))
+                    if chat_type in {"group", "supergroup", "private"} and current_bot_id_str:
+                        logger.info(f"автоматическая привязка личности для чата {chat_id_str} (тип: {chat_type})")
+                        try:
                             bot_instance = db_session.query(DBBotInstance).filter(
                                 DBBotInstance.telegram_bot_id == str(current_bot_id_str),
                                 DBBotInstance.status == 'active'
@@ -1454,12 +1455,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                             if bot_instance:
                                 link = link_bot_instance_to_chat(db_session, bot_instance.id, chat_id_str)
                                 if link:
+                                    logger.info(f"авто-привязка успешна. повторный поиск личности для чата {chat_id_str}.")
                                     # повторная попытка получить персону
                                     persona_context_owner_tuple = get_persona_and_context_with_owner(chat_id_str, db_session, current_bot_id_str)
-                    except Exception as _auto_link_err:
-                        logger.error(f"auto-link on first message failed for chat {chat_id_str}: {_auto_link_err}", exc_info=True)
+                        except Exception as auto_link_err:
+                            logger.error(f"ошибка авто-привязки при первом сообщении для чата {chat_id_str}: {auto_link_err}", exc_info=True)
                 if not persona_context_owner_tuple:
-                    logger.warning(f"handle_message: No active persona found for chat {chat_id_str}.")
+                    logger.warning(f"handle_message: No active persona found for chat {chat_id_str} even after auto-link attempt.")
                     return
                 
                 # Распаковываем кортеж правильно. Второй элемент - это ChatBotInstance, а не контекст.
