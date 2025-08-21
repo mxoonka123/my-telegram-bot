@@ -1921,7 +1921,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "5) в основном боте доступны меню, профиль и пополнение кредитов\n\n"
         "важно\n"
         "• авто-команды в чатах привязанных ботов отключены — команды пиши в основном боте\n"
-        "• если тишина — проверь /mutebot и что личность активна в чате бота\n\n"
+        "• если тишина — убедись, что личность активна в чате бота\n\n"
         "основные команды\n"
         "/start — начало работы\n"
         "/menu — главное меню\n"
@@ -1930,9 +1930,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/buycredits — пополнить кредиты\n"
         "/createpersona — создать личность\n"
         "/mypersonas — мои личности\n"
-        "/addbot — привязать бота к личности\n"
-        "/mutebot — заглушить ответы в этом чате\n"
-        "/unmutebot — включить ответы в этом чате\n"
         "/reset — очистить память диалога\n"
     ).strip()
 
@@ -1945,8 +1942,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             ["/start", "/menu", "/help"],
             ["/profile", "/buycredits"],
             ["/createpersona", "/mypersonas"],
-            ["/addbot"],
-            ["/mutebot", "/unmutebot"],
             ["/reset"],
         ]
         reply_markup = ReplyKeyboardMarkup(commands_kb, resize_keyboard=True, one_time_keyboard=True)
