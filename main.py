@@ -4,6 +4,7 @@ import os
 from datetime import timedelta
 import signal
 import json
+import uuid
 
 # --- Настройка логирования в самом начале ---
 logging.basicConfig(
@@ -472,6 +473,90 @@ async def main():
         ]
         await application.bot.set_my_commands(commands)
         logger.info("Bot menu commands set.")
+
+        # --- Авто-upsert главного бота в БД и установка вебхука ---
+        try:
+            if not config.WEBHOOK_URL_BASE:
+                logger.warning("WEBHOOK_URL_BASE не задан, пропускаю авто-настройку вебхука для главного бота.")
+            else:
+                with db.get_db() as db_session:
+                    # Определяем владельца: используем первого ADMIN_USER_ID, если задан
+                    owner_tg_id = None
+                    try:
+                        owner_tg_id = (config.ADMIN_USER_ID[0] if getattr(config, 'ADMIN_USER_ID', None) else None)
+                    except Exception:
+                        owner_tg_id = None
+
+                    if not owner_tg_id:
+                        logger.warning("ADMIN_USER_ID пуст. Пропускаю авто-upsert главного бота (нет владельца).")
+                    else:
+                        # Получаем/создаем пользователя-владельца
+                        user = db_session.query(db.User).filter(db.User.telegram_id == owner_tg_id).first()
+                        if not user:
+                            user = db.get_or_create_user(db_session, owner_tg_id, username="admin")
+                            db_session.commit();
+                            try:
+                                db_session.refresh(user)
+                            except Exception:
+                                pass
+
+                        # Получаем/создаем специальную персону для главного бота
+                        persona = db_session.query(db.PersonaConfig).filter(
+                            db.PersonaConfig.owner_id == user.id,
+                            db.PersonaConfig.name == 'Main Bot'
+                        ).first()
+                        if not persona:
+                            persona = db.create_persona_config(db_session, owner_id=user.id, name='Main Bot', description='System main bot persona')
+                            db_session.commit();
+                            try:
+                                db_session.refresh(persona)
+                            except Exception:
+                                pass
+
+                        # Создаем/обновляем BotInstance для главного бота
+                        instance, status = db.set_bot_instance_token(
+                            db_session,
+                            owner_id=user.id,
+                            persona_config_id=persona.id,
+                            token=config.TELEGRAM_TOKEN,
+                            bot_id=me.id,
+                            bot_username=me.username
+                        )
+
+                        # Устанавливаем webhook для главного бота
+                        webhook_url = f"{config.WEBHOOK_URL_BASE}/telegram/{config.TELEGRAM_TOKEN}"
+                        secret = str(uuid.uuid4())
+                        try:
+                            await application.bot.set_webhook(
+                                url=webhook_url,
+                                allowed_updates=["message", "callback_query", "chat_member", "my_chat_member"],
+                                secret_token=secret
+                            )
+                            # Сохраняем секрет/время/статус
+                            from datetime import datetime, timezone as _tz
+                            try:
+                                if instance is not None:
+                                    if hasattr(instance, 'webhook_secret'):
+                                        instance.webhook_secret = secret
+                                    if hasattr(instance, 'last_webhook_set_at'):
+                                        instance.last_webhook_set_at = datetime.now(_tz.utc)
+                                    if hasattr(instance, 'status'):
+                                        instance.status = 'active'
+                                    db_session.commit()
+                            except Exception as e_commit:
+                                logger.error(f"Auto-upsert main bot: commit failed after set_webhook: {e_commit}", exc_info=True)
+                                db_session.rollback()
+                            logger.info(f"Main bot webhook set to {webhook_url}")
+                        except Exception as e_webhook:
+                            logger.error(f"Failed to set webhook for main bot @{me.username}: {e_webhook}", exc_info=True)
+                            try:
+                                if instance is not None and hasattr(instance, 'status'):
+                                    instance.status = 'webhook_error'
+                                    db_session.commit()
+                            except Exception:
+                                db_session.rollback()
+        except Exception as e_auto:
+            logger.error(f"Auto-upsert of main bot failed: {e_auto}", exc_info=True)
 
         # Подготовка к graceful shutdown
         stop_event = asyncio.Event()
