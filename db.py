@@ -1079,7 +1079,10 @@ def get_persona_and_context_with_owner(chat_id: str, db: Session, current_telegr
                 logger.error(f"get_persona_and_context_with_owner: error selecting per-bot instance: {per_bot_err}", exc_info=True)
 
         # 2) Фолбэк к единственной активной ссылке в чате
-        if not chat_bot_instance:
+        # ВАЖНО: если передан current_telegram_bot_id, но специфичная связь для этого бота не найдена,
+        # мы НЕ делаем фолбэк на любую активную связь, чтобы избежать "перетекания" состояния (например, mute)
+        # между ботами. В таком случае возвращаем None, а вызывающий код решает, как отвечать (обычно никак).
+        if not chat_bot_instance and not current_telegram_bot_id:
             chat_bot_instance = db.query(ChatBotInstance).filter(
                 ChatBotInstance.chat_id == chat_id,
                 ChatBotInstance.active == True
@@ -1091,6 +1094,11 @@ def get_persona_and_context_with_owner(chat_id: str, db: Session, current_telegr
                 logger.info(
                     f"get_persona_and_context_with_owner: fallback selected active ChatBotInstance id={chat_bot_instance.id} for chat={chat_id}"
                 )
+        elif not chat_bot_instance and current_telegram_bot_id:
+            logger.debug(
+                f"get_persona_and_context_with_owner: no per-bot link for tg_bot_id={current_telegram_bot_id} in chat={chat_id}; returning None (no fallback)"
+            )
+            return None
 
         if not chat_bot_instance or not chat_bot_instance.bot_instance_ref:
             logger.debug(f"get_persona_and_context_with_owner: no ChatBotInstance found for chat={chat_id}")
