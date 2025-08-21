@@ -442,7 +442,9 @@ async def main():
     edit_persona_conv_handler = ConversationHandler(
         entry_points=[CommandHandler('editpersona', handlers.edit_persona_start), CallbackQueryHandler(handlers.edit_persona_button_callback, pattern=r'^edit_persona_\d+$')],
         states={
-            handlers.EDIT_WIZARD_MENU: [CallbackQueryHandler(handlers.edit_wizard_menu_handler, pattern='^edit_wizard_|^finish_edit$|^back_to_wizard_menu$|^set_max_msgs_')],
+            handlers.EDIT_WIZARD_MENU: [
+                CallbackQueryHandler(handlers.edit_wizard_menu_handler, pattern='^edit_wizard_|^finish_edit$|^back_to_wizard_menu$|^set_max_msgs_|^start_char_wizard$')
+            ],
             handlers.EDIT_NAME: [MessageHandler(handlers.filters.TEXT & ~handlers.filters.COMMAND, handlers.edit_name_received), CallbackQueryHandler(handlers.edit_wizard_menu_handler, pattern='^back_to_wizard_menu$')],
             handlers.EDIT_DESCRIPTION: [MessageHandler(handlers.filters.TEXT & ~handlers.filters.COMMAND, handlers.edit_description_received), CallbackQueryHandler(handlers.edit_wizard_menu_handler, pattern='^back_to_wizard_menu$')],
             handlers.EDIT_COMM_STYLE: [CallbackQueryHandler(handlers.edit_comm_style_received, pattern='^set_comm_style_|^back_to_wizard_menu$')],
@@ -450,6 +452,42 @@ async def main():
             handlers.EDIT_GROUP_REPLY: [CallbackQueryHandler(handlers.edit_group_reply_received, pattern='^set_group_reply_|^back_to_wizard_menu$')],
             handlers.EDIT_MEDIA_REACTION: [CallbackQueryHandler(handlers.edit_media_reaction_received, pattern='^set_media_react_|^back_to_wizard_menu$')],
             handlers.EDIT_MAX_MESSAGES: [CallbackQueryHandler(handlers.edit_max_messages_received, pattern='^set_max_msgs_'), CallbackQueryHandler(handlers.edit_wizard_menu_handler, pattern='^back_to_wizard_menu$')],
+            # Character Setup Wizard states
+            handlers.CHAR_WIZ_BIO: [
+                MessageHandler(handlers.filters.TEXT & ~handlers.filters.COMMAND, handlers.char_wiz_bio_received),
+                CallbackQueryHandler(handlers.char_wiz_skip, pattern='^charwiz_skip$'),
+                CallbackQueryHandler(handlers.char_wiz_cancel, pattern='^charwiz_cancel$')
+            ],
+            handlers.CHAR_WIZ_TRAITS: [
+                MessageHandler(handlers.filters.TEXT & ~handlers.filters.COMMAND, handlers.char_wiz_traits_received),
+                CallbackQueryHandler(handlers.char_wiz_skip, pattern='^charwiz_skip$'),
+                CallbackQueryHandler(handlers.char_wiz_cancel, pattern='^charwiz_cancel$')
+            ],
+            handlers.CHAR_WIZ_SPEECH: [
+                MessageHandler(handlers.filters.TEXT & ~handlers.filters.COMMAND, handlers.char_wiz_speech_received),
+                CallbackQueryHandler(handlers.char_wiz_skip, pattern='^charwiz_skip$'),
+                CallbackQueryHandler(handlers.char_wiz_cancel, pattern='^charwiz_cancel$')
+            ],
+            handlers.CHAR_WIZ_LIKES: [
+                MessageHandler(handlers.filters.TEXT & ~handlers.filters.COMMAND, handlers.char_wiz_likes_received),
+                CallbackQueryHandler(handlers.char_wiz_skip, pattern='^charwiz_skip$'),
+                CallbackQueryHandler(handlers.char_wiz_cancel, pattern='^charwiz_cancel$')
+            ],
+            handlers.CHAR_WIZ_DISLIKES: [
+                MessageHandler(handlers.filters.TEXT & ~handlers.filters.COMMAND, handlers.char_wiz_dislikes_received),
+                CallbackQueryHandler(handlers.char_wiz_skip, pattern='^charwiz_skip$'),
+                CallbackQueryHandler(handlers.char_wiz_cancel, pattern='^charwiz_cancel$')
+            ],
+            handlers.CHAR_WIZ_GOALS: [
+                MessageHandler(handlers.filters.TEXT & ~handlers.filters.COMMAND, handlers.char_wiz_goals_received),
+                CallbackQueryHandler(handlers.char_wiz_skip, pattern='^charwiz_skip$'),
+                CallbackQueryHandler(handlers.char_wiz_cancel, pattern='^charwiz_cancel$')
+            ],
+            handlers.CHAR_WIZ_TABOOS: [
+                MessageHandler(handlers.filters.TEXT & ~handlers.filters.COMMAND, handlers.char_wiz_taboos_received),
+                CallbackQueryHandler(handlers.char_wiz_skip, pattern='^charwiz_skip$'),
+                CallbackQueryHandler(handlers.char_wiz_cancel, pattern='^charwiz_cancel$')
+            ],
         },
         fallbacks=[CommandHandler('cancel', handlers.edit_persona_cancel), CallbackQueryHandler(handlers.edit_persona_finish, pattern='^finish_edit$'), CallbackQueryHandler(handlers.edit_persona_cancel, pattern='^cancel_wizard$')],
         per_message=False, name="edit_persona_wizard", conversation_timeout=timedelta(minutes=15).total_seconds(), allow_reentry=True

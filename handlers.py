@@ -787,6 +787,12 @@ EDIT_MAX_MESSAGES,
 # EDIT_MESSAGE_VOLUME removed
 ) = range(9) # Total 9 states now
 
+# Character Setup Wizard States
+(
+    CHAR_WIZ_BIO, CHAR_WIZ_TRAITS, CHAR_WIZ_SPEECH,
+    CHAR_WIZ_LIKES, CHAR_WIZ_DISLIKES, CHAR_WIZ_GOALS, CHAR_WIZ_TABOOS
+) = range(20, 27) # start from a new range
+
 # --- Bot Token Registration State ---
 REGISTER_BOT_TOKEN = 100
 
@@ -2484,6 +2490,205 @@ async def mood(update: Update, context: ContextTypes.DEFAULT_TYPE, db: Optional[
             try: db_session.close()
             except Exception: pass
 
+# === Character Setup Wizard (step-by-step) ===
+async def char_wiz_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """entry from edit menu button. initializes wizard state and asks for bio."""
+    query = update.callback_query
+    if not query:
+        return ConversationHandler.END
+    persona_id = context.user_data.get('edit_persona_id')
+    if not persona_id:
+        try: await query.answer("ошибка: сессия редактирования не найдена", show_alert=True)
+        except Exception: pass
+        return ConversationHandler.END
+    # init storage
+    context.user_data['charwiz'] = {
+        'bio': None, 'traits': None, 'speech': None,
+        'likes': None, 'dislikes': None, 'goals': None, 'taboos': None
+    }
+    context.user_data['charwiz_step'] = 'bio'
+
+    # prompt
+    text = "опиши кратко биографию и происхождение персонажа. отправь текст сообщением."
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("пропустить", callback_data="charwiz_skip")],
+        [InlineKeyboardButton("отмена", callback_data="charwiz_cancel")]
+    ])
+    try:
+        await query.edit_message_text(text=text, reply_markup=keyboard, parse_mode=None)
+    except Exception:
+        await context.bot.send_message(query.message.chat.id, text, reply_markup=keyboard, parse_mode=None)
+    return CHAR_WIZ_BIO
+
+async def _charwiz_next_step(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """moves to the next step based on current charwiz_step in user_data."""
+    query = update.callback_query
+    message = update.message
+    chat_id = query.message.chat.id if query and query.message else (message.chat.id if message else None)
+    if chat_id is None:
+        return ConversationHandler.END
+    step = context.user_data.get('charwiz_step')
+    order = ['bio','traits','speech','likes','dislikes','goals','taboos']
+    try:
+        idx = order.index(step) if step in order else -1
+    except Exception:
+        idx = -1
+    next_idx = idx + 1
+    if next_idx >= len(order):
+        return await char_wiz_finish(update, context)
+    next_step = order[next_idx]
+    context.user_data['charwiz_step'] = next_step
+
+    prompts = {
+        'traits': "перечисли 5-8 ключевых черт характера через запятую (например: спокойный, внимательный, упорный).",
+        'speech': "опиши стиль речи и манеру общения (темп, словарный запас, обращение к собеседнику).",
+        'likes': "перечисли что персонаж любит или предпочитает (через запятую).",
+        'dislikes': "перечисли что персонаж не любит или избегает (через запятую).",
+        'goals': "обозначь цели, мотивацию и приоритеты персонажа (кратко).",
+        'taboos': "что строго не допускается в поведении и ответах персонажа (табу)."
+    }
+    text = prompts.get(next_step, "введите текст")
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("пропустить", callback_data="charwiz_skip")],
+        [InlineKeyboardButton("отмена", callback_data="charwiz_cancel")]
+    ])
+    try:
+        if query and query.message:
+            await query.edit_message_text(text=text, reply_markup=keyboard, parse_mode=None)
+        else:
+            await context.bot.send_message(chat_id, text, reply_markup=keyboard, parse_mode=None)
+    except Exception:
+        await context.bot.send_message(chat_id, text, reply_markup=keyboard, parse_mode=None)
+
+    # return appropriate state
+    return {
+        'bio': CHAR_WIZ_BIO,
+        'traits': CHAR_WIZ_TRAITS,
+        'speech': CHAR_WIZ_SPEECH,
+        'likes': CHAR_WIZ_LIKES,
+        'dislikes': CHAR_WIZ_DISLIKES,
+        'goals': CHAR_WIZ_GOALS,
+        'taboos': CHAR_WIZ_TABOOS,
+    }[next_step]
+
+async def char_wiz_skip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """skip current step and move on."""
+    q = update.callback_query
+    if q:
+        try: await q.answer()
+        except Exception: pass
+    # leave value as None and advance
+    return await _charwiz_next_step(update, context)
+
+async def char_wiz_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """cancel wizard and return to edit menu without saving."""
+    query = update.callback_query
+    if query:
+        try: await query.answer("мастер отменен")
+        except Exception: pass
+    persona_id = context.user_data.get('edit_persona_id')
+    with get_db() as db:
+        persona = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
+    if persona:
+        return await _show_edit_wizard_menu(update, context, persona)
+    return ConversationHandler.END
+
+async def _charwiz_store_and_next(update: Update, context: ContextTypes.DEFAULT_TYPE, field: str) -> int:
+    if not update.message or not update.message.text:
+        return {
+            'bio': CHAR_WIZ_BIO,
+            'traits': CHAR_WIZ_TRAITS,
+            'speech': CHAR_WIZ_SPEECH,
+            'likes': CHAR_WIZ_LIKES,
+            'dislikes': CHAR_WIZ_DISLIKES,
+            'goals': CHAR_WIZ_GOALS,
+            'taboos': CHAR_WIZ_TABOOS,
+        }[field]
+    text = (update.message.text or "").strip()
+    cw = context.user_data.get('charwiz') or {}
+    cw[field] = text
+    context.user_data['charwiz'] = cw
+    context.user_data['charwiz_step'] = field
+    return await _charwiz_next_step(update, context)
+
+async def char_wiz_bio_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    return await _charwiz_store_and_next(update, context, 'bio')
+
+async def char_wiz_traits_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    return await _charwiz_store_and_next(update, context, 'traits')
+
+async def char_wiz_speech_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    return await _charwiz_store_and_next(update, context, 'speech')
+
+async def char_wiz_likes_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    return await _charwiz_store_and_next(update, context, 'likes')
+
+async def char_wiz_dislikes_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    return await _charwiz_store_and_next(update, context, 'dislikes')
+
+async def char_wiz_goals_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    return await _charwiz_store_and_next(update, context, 'goals')
+
+async def char_wiz_taboos_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    # last step -> finish
+    res = await _charwiz_store_and_next(update, context, 'taboos')
+    return res
+
+async def char_wiz_finish(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """compose template and save to DB, then show edit menu."""
+    persona_id = context.user_data.get('edit_persona_id')
+    data = context.user_data.get('charwiz') or {}
+    # build template (with placeholders used in Persona.format_system_prompt)
+    # all static text is lowercase, no emoji
+    template_lines = [
+        "ты — {persona_name}.",
+        "описание: {persona_description}.",
+        f"био: {data.get('bio') or 'не указано'}.",
+        f"черты: {data.get('traits') or 'не указано'}.",
+        f"манера речи: {data.get('speech') or 'не указано'}.",
+        f"предпочтения: {data.get('likes') or 'не указано'}.",
+        f"не любит: {data.get('dislikes') or 'не указано'}.",
+        f"цели: {data.get('goals') or 'не указано'}.",
+        f"табу: {data.get('taboos') or 'не указано'}.",
+        "стиль общения: {communication_style}.",
+        "разговорчивость: {verbosity_level}.",
+        "если задано настроение, учти его: {mood_name} — {mood_prompt}.",
+        "взаимодействуй вежливо и по существу. избегай смайлов и эмодзи. отвечай в нижнем регистре.",
+        "контекст: пользователь @{username} (id: {user_id}), чат: {chat_id}.",
+        "время сейчас: {current_time_info}."
+    ]
+    template = "\n".join(template_lines)
+
+    try:
+        with get_db() as db:
+            persona = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).with_for_update().first()
+            if not persona:
+                raise ValueError("persona not found")
+            persona.system_prompt_template_override = template
+            db.commit()
+            logger.info(f"char_wiz_finish: saved custom system prompt for persona {persona_id}")
+    except Exception as e:
+        logger.error(f"char_wiz_finish: failed to save prompt for persona {persona_id}: {e}")
+        # try inform user but keep lowercase
+        target = update.callback_query.message if update.callback_query else update.message
+        if target:
+            try: await target.reply_text("ошибка сохранения кастомного промпта", parse_mode=None)
+            except Exception: pass
+        return ConversationHandler.END
+
+    # confirm and return to edit menu
+    target = update.callback_query.message if update.callback_query else update.message
+    try:
+        if target:
+            await target.reply_text("настройка завершена. кастомный системный промпт сохранен.", parse_mode=None)
+    except Exception:
+        pass
+    with get_db() as db2:
+        persona_ref = db2.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
+        if persona_ref:
+            return await _show_edit_wizard_menu(update, context, persona_ref)
+    return ConversationHandler.END
+
 async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handles the /reset or /clear command to clear persona context in the current chat."""
     if not update.message: return
@@ -3939,6 +4144,7 @@ async def edit_wizard_menu_handler(update: Update, context: ContextTypes.DEFAULT
             except Exception: pass
         return ConversationHandler.END
 
+    if data == "start_char_wizard": return await char_wiz_start(update, context)
     if data == "edit_wizard_name": return await edit_name_prompt(update, context)
     if data == "edit_wizard_description": return await edit_description_prompt(update, context)
     if data == "edit_wizard_comm_style": return await edit_comm_style_prompt(update, context)
@@ -4714,6 +4920,7 @@ async def _show_edit_wizard_menu(update: Update, context: ContextTypes.DEFAULT_T
         elif current_max_msgs_setting == 6: display_for_max_msgs_button = "побольше"
             
         keyboard = [
+            [InlineKeyboardButton("мастер настройки характера", callback_data="start_char_wizard")],
             [
                 InlineKeyboardButton("имя", callback_data="edit_wizard_name"),
                 InlineKeyboardButton("описание", callback_data="edit_wizard_description")
