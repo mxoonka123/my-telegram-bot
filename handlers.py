@@ -162,17 +162,17 @@ async def botsettings_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     with get_db() as db:
         owner = db.query(User).filter(User.telegram_id == user.id).first()
         if not owner:
-            await update.message.reply_text("Сначала используйте /start")
+            await update.message.reply_text("сначала используйте /start")
             return ConversationHandler.END
         bots = db.query(DBBotInstance).filter(DBBotInstance.owner_id == owner.id).order_by(DBBotInstance.name).all()
         if not bots:
-            await update.message.reply_text("У вас нет активных ботов. Создайте личность и привяжите бота.")
+            await update.message.reply_text("у вас нет активных ботов. создайте личность и привяжите бота.")
             return ConversationHandler.END
         kb = []
         for b in bots:
-            label = b.telegram_username or b.name or f"Bot #{b.id}"
+            label = b.telegram_username or b.name or f"bot #{b.id}"
             kb.append([InlineKeyboardButton(label, callback_data=f"botset_pick_{b.id}")])
-        await update.message.reply_text("Выберите бота для настройки:", reply_markup=InlineKeyboardMarkup(kb))
+        await update.message.reply_text("выберите бота для настройки:", reply_markup=InlineKeyboardMarkup(kb))
         return BOTSET_SELECT
 
 async def botsettings_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3110,19 +3110,19 @@ async def profile(update: Union[Update, CallbackQuery], context: ContextTypes.DE
             )
 
             profile_text_plain = (
-                f"👤 Твой профиль\n\n"
-                f"Баланс кредитов: {credits_balance:.2f}\n"
-                f"Создано личностей: {persona_limit_raw}\n\n"
-                f"ℹ️ Кредиты списываются за текст, изображения и распознавание аудио."
+                f"👤 твой профиль\n\n"
+                f"баланс кредитов: {credits_balance:.2f}\n"
+                f"создано личностей: {persona_limit_raw}\n\n"
+                f"ℹ️ кредиты списываются за текст, изображения и распознавание аудио."
             )
 
             # Во избежание ошибок MarkdownV2 отправляем простой текст без форматирования
             final_text_to_send = profile_text_plain
 
             keyboard = [[
-                InlineKeyboardButton("💳 Пополнить кредиты", callback_data="buycredits_open")
+                InlineKeyboardButton("💳 пополнить кредиты", callback_data="buycredits_open")
             ], [
-                InlineKeyboardButton("⬅️ Назад в Меню", callback_data="show_menu")
+                InlineKeyboardButton("⬅️ назад в меню", callback_data="show_menu")
             ]] if is_callback else None
             reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
 
@@ -3175,11 +3175,12 @@ async def buycredits(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         title = pkg.get('title') or pkg_id
         credits = float(pkg.get('credits', 0))
         price = float(pkg.get('price_rub', 0))
-        lines.append(f"• {escape_markdown_v2(title)} — {escape_markdown_v2(f'{credits:.0f} кр.')} за {escape_markdown_v2(f'{price:.0f} ₽')}")
-        keyboard_rows.append([InlineKeyboardButton(f"Купить {int(credits)} кр. за {int(price)} ₽", callback_data=f"buycredits_pkg_{pkg_id}")])
+        display_title = str(title).lower()
+        lines.append(f"• {escape_markdown_v2(display_title)} — {escape_markdown_v2(f'{credits:.0f} кр.')} за {escape_markdown_v2(f'{price:.0f} ₽')}")
+        keyboard_rows.append([InlineKeyboardButton(f"купить {int(credits)} кр. за {int(price)} ₽", callback_data=f"buycredits_pkg_{pkg_id}")])
 
     text_md = "\n".join(lines)
-    keyboard_rows.append([InlineKeyboardButton("⬅️ Назад в Меню", callback_data="show_menu")])
+    keyboard_rows.append([InlineKeyboardButton("⬅️ назад в меню", callback_data="show_menu")])
     await context.bot.send_message(chat_id, text_md, reply_markup=InlineKeyboardMarkup(keyboard_rows), parse_mode=ParseMode.MARKDOWN_V2)
 
 
