@@ -2880,9 +2880,9 @@ async def add_bot_to_chat(update: Update, context: ContextTypes.DEFAULT_TYPE, pe
                     else:
                         prev_persona_name = f"ID {existing_active_link.bot_instance_id}"
 
-                    logger.info(f"Deactivating previous bot '{prev_persona_name}' in chat {chat_id_str} before activating '{persona.name}'.")
-                    existing_active_link.active = False
-                    db.flush()
+                    # Разрешаем несколько активных связей в чате. Не деактивируем ранее активный инстанс.
+                    logger.info(f"Keeping previous active bot '{prev_persona_name}' in chat {chat_id_str} and activating '{persona.name}' alongside.")
+                    # Никаких изменений существующей активной связи не требуется.
 
             user = persona.owner
             bot_instance = db.query(DBBotInstance).filter(
