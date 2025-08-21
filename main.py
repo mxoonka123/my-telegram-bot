@@ -230,19 +230,36 @@ def handle_telegram_webhook(token: str):
     # --- Disable commands on attached (non-main) bots, except a small allowlist ---
     try:
         is_command_update = False
+        is_callback_update = False
+        is_private_chat = False
+        text = ''
         if isinstance(update_data, dict):
+            # message/edited_message branch
             msg = update_data.get('message') or update_data.get('edited_message')
             if msg:
                 entities = msg.get('entities') or []
                 text = msg.get('text') or ''
                 is_command_update = any((e or {}).get('type') == 'bot_command' for e in entities) or text.startswith('/')
+                try:
+                    chat_type_val = ((msg.get('chat') or {}).get('type'))
+                    is_private_chat = str(chat_type_val) == 'private'
+                except Exception:
+                    is_private_chat = False
+            # callback_query branch (нажатия на inline-кнопки)
+            if update_data.get('callback_query'):
+                is_callback_update = True
 
         main_bot_id = application_instance and application_instance.bot_data.get('main_bot_id')
         current_bot_id = bot_instance.telegram_bot_id
-        # 0) Главный бот: игнорируем только НЕ-командные апдейты (на команды отвечаем)
-        if (not is_command_update) and main_bot_id and str(main_bot_id) == str(current_bot_id or ''):
+        # 0) Главный бот: игнорируем только НЕ-командные апдейты в НЕ-приватных чатах и не callback'и
+        #    Разрешаем:
+        #      - команды
+        #      - callback_query (кнопки)
+        #      - любые сообщения в приватных чатах (для ввода токена и т.п.)
+        if (not is_command_update) and (not is_callback_update) and (not is_private_chat) and \
+           main_bot_id and str(main_bot_id) == str(current_bot_id or ''):
             flask_logger.info(
-                f"skip non-command update for main bot @{bot_instance.telegram_username} (id={current_bot_id})"
+                f"skip non-command non-callback non-private update for main bot @{bot_instance.telegram_username} (id={current_bot_id})"
             )
             return Response(status=200)
         # 1) Attached-боты: блокируем команды, кроме allowlist
