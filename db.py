@@ -3,7 +3,7 @@ import logging
 logging.basicConfig(level=logging.INFO) # Базовая конфигурация для этой проверки
 logging.getLogger("DB_PY_VERSION_CHECK").critical("!!! DB.PY MODULE LOADED - VERSION CHECK JUNE 08 02:28 AM UTC+3 !!!")
 from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, Boolean, ForeignKey, UniqueConstraint, func, BIGINT, select, update as sql_update, delete, Float
-from sqlalchemy.orm import sessionmaker, relationship, Session, joinedload, selectinload
+from sqlalchemy.orm import sessionmaker, relationship, Session, joinedload, selectinload, noload
 from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy.orm import declarative_base
 from contextlib import contextmanager # ДОБАВЛЕН ИМПОРТ
@@ -808,10 +808,11 @@ def link_bot_instance_to_chat(db: Session, bot_instance_id: int, chat_id: Union[
     created_new = False
     session_valid = True
     try:
-        chat_link = db.query(ChatBotInstance).filter(
+        # ВАЖНО: отключаем подгрузку отношений, чтобы избежать OUTER JOIN при FOR UPDATE (Postgres запрещает)
+        chat_link = db.query(ChatBotInstance).options(noload('*')).filter(
             ChatBotInstance.chat_id == chat_id_str,
             ChatBotInstance.bot_instance_id == bot_instance_id
-        ).with_for_update().first()
+        ).with_for_update(of=ChatBotInstance).first()
 
         if chat_link:
             needs_commit = False
@@ -904,11 +905,11 @@ def unlink_bot_instance_from_chat(db: Session, chat_id: Union[str, int], bot_ins
     """Deactivates a ChatBotInstance link (marks active=False) and commits."""
     chat_id_str = str(chat_id)
     try:
-        chat_link = db.query(ChatBotInstance).filter(
+        chat_link = db.query(ChatBotInstance).options(noload('*')).filter(
             ChatBotInstance.chat_id == chat_id_str,
             ChatBotInstance.bot_instance_id == bot_instance_id,
             ChatBotInstance.active == True
-        ).with_for_update().first()
+        ).with_for_update(of=ChatBotInstance).first()
 
         if chat_link:
             logger.info(f"Deactivating ChatBotInstance {chat_link.id} for bot {bot_instance_id} in chat {chat_id_str}")

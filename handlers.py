@@ -2741,18 +2741,18 @@ async def bind_bot_token_received(update: Update, context: ContextTypes.DEFAULT_
                         chat_link = link_bot_instance_to_chat(db, instance.id, chat_id_str)
                         if chat_link:
                             await update.message.reply_text(
-                                f"✅ бот @{bot_username} привязан к личности '{persona.name}' и активирован в этом чате. память очищена.",
+                                f"✅ бот @{bot_username} привязан к личности '{persona.name}' и активирован в чате привязанного бота. память очищена.",
                                 parse_mode=None
                             )
                         else:
                             await update.message.reply_text(
-                                f"⚠️ бот @{bot_username} привязан к личности '{persona.name}', но не удалось автоматически активировать в этом чате. Используй /addbot {persona_id}.",
+                                f"⚠️ бот @{bot_username} привязан к личности '{persona.name}', но не удалось автоматически активировать в чате привязанного бота. Напиши любое сообщение в чате этого бота или используй /addbot {persona_id}.",
                                 parse_mode=None
                             )
                     except Exception as link_err:
                         logger.error(f"bind_bot_token_received: auto-activate link failed: {link_err}", exc_info=True)
                         await update.message.reply_text(
-                            f"⚠️ бот @{bot_username} привязан к личности '{persona.name}', но авто-активация не удалась. Используй /addbot {persona_id}.",
+                            f"⚠️ бот @{bot_username} привязан к личности '{persona.name}', но авто-активация не удалась. Напиши любое сообщение в чате этого бота или используй /addbot {persona_id}.",
                             parse_mode=None
                         )
                 except Exception as e_webhook:
