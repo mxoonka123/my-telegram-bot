@@ -132,6 +132,37 @@ def handle_telegram_webhook(token: str):
         return Response(status=500)
 
     if not bot_instance or bot_instance.status != 'active':
+        # Самовосстановление для основного бота: если токен совпадает, пытаемся заново создать/активировать инстанс
+        try:
+            if token == getattr(config, 'TELEGRAM_TOKEN', None):
+                flask_logger.warning("main bot token received but instance is unknown/inactive -> attempting self-heal upsert")
+                with db.get_db() as _s:
+                    # владелец = первый админ
+                    owner_tg_id = None
+                    try:
+                        owner_tg_id = (config.ADMIN_USER_ID[0] if getattr(config, 'ADMIN_USER_ID', None) else None)
+                    except Exception:
+                        owner_tg_id = None
+                    if owner_tg_id:
+                        owner = _s.query(db.User).filter(db.User.telegram_id == owner_tg_id).first() or db.get_or_create_user(_s, owner_tg_id, username="admin")
+                        persona = _s.query(db.PersonaConfig).filter(
+                            db.PersonaConfig.owner_id == owner.id,
+                            db.PersonaConfig.name == 'Main Bot'
+                        ).first() or db.create_persona_config(_s, owner_id=owner.id, name='Main Bot', description='System main bot persona')
+                        # Узнаем данные бота из application_instance
+                        me_id = application_instance and application_instance.bot_data.get('main_bot_id')
+                        me_username = application_instance and application_instance.bot_data.get('main_bot_username')
+                        inst, st = db.set_bot_instance_token(_s, owner.id, persona.id, token, me_id or "", me_username or "")
+                        try:
+                            if inst is not None and hasattr(inst, 'access_level') and inst.access_level != 'public':
+                                inst.access_level = 'public'
+                                _s.commit()
+                        except Exception:
+                            _s.rollback()
+                # Возвращаем 200: Telegram перешлёт апдейты снова, а инстанс уже будет восстановлен
+                return Response(status=200)
+        except Exception as _heal_err:
+            flask_logger.error(f"self-heal upsert for main bot failed: {_heal_err}", exc_info=True)
         flask_logger.warning(f"webhook for unknown/inactive token ...{token[-6:]} (status={getattr(bot_instance, 'status', None)})")
         return Response(status=404)
 
@@ -530,6 +561,13 @@ async def main():
                             bot_id=me.id,
                             bot_username=me.username
                         )
+                        # Делаем главный бот публичным
+                        try:
+                            if instance is not None and hasattr(instance, 'access_level') and instance.access_level != 'public':
+                                instance.access_level = 'public'
+                                db_session.commit()
+                        except Exception:
+                            db_session.rollback()
 
                         # Устанавливаем webhook для главного бота
                         webhook_url = f"{config.WEBHOOK_URL_BASE}/telegram/{config.TELEGRAM_TOKEN}"
