@@ -108,6 +108,7 @@ from utils import (
     postprocess_response,
     extract_gif_links,
     get_time_info,
+    escape_markdown_v2,
     TELEGRAM_MAX_LEN,
     count_openai_compatible_tokens,
     send_safe_message,
