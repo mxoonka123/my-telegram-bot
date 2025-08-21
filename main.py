@@ -239,6 +239,13 @@ def handle_telegram_webhook(token: str):
 
         main_bot_id = application_instance and application_instance.bot_data.get('main_bot_id')
         current_bot_id = bot_instance.telegram_bot_id
+        # 0) Главный бот: игнорируем все НЕ-командные апдейты, чтобы он не отвечал в чатах
+        if (not is_command_update) and main_bot_id and str(main_bot_id) == str(current_bot_id or ''):
+            flask_logger.info(
+                f"skip non-command update for main bot @{bot_instance.telegram_username} (id={current_bot_id})"
+            )
+            return Response(status=200)
+        # 1) Attached-боты: блокируем команды, кроме allowlist
         if is_command_update and main_bot_id and str(main_bot_id) != str(current_bot_id or ''):
             # Разрешаем небольшой список команд на attached-ботах
             allowed_on_attached = {"/mutebot", "/unmutebot"}
