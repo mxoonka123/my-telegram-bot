@@ -1912,61 +1912,65 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             await send_subscription_required_message(update, context)
             return
 
-    help_text_md = f"""
-*_быстрый старт:_*
-`/start`        \\- {escape_markdown_v2("запустить и показать приветствие")}
-`/menu`         \\- {escape_markdown_v2("панель с кнопками: профиль, личности, подписка, помощь")}
-`/help`         \\- {escape_markdown_v2("эта справка")}
+    help_text_plain = (
+        "как работает бот\n\n"
+        "1) создай личность: /createpersona <имя> [описание]\n"
+        "2) открой /mypersonas и выбери личность\n"
+        "3) при необходимости привяжи к личности отдельного бота (кнопка 'привязать бота')\n"
+        "4) авто-активация произойдет в чате привязанного бота; пиши ему и общайся\n"
+        "5) в основном боте доступны меню, профиль и пополнение кредитов\n\n"
+        "важно\n"
+        "• авто-команды в чатах привязанных ботов отключены — команды пиши в основном боте\n"
+        "• если тишина — проверь /mutebot и что личность активна в чате бота\n\n"
+        "основные команды\n"
+        "/start — начало работы\n"
+        "/menu — главное меню\n"
+        "/help — помощь\n"
+        "/profile — профиль и баланс\n"
+        "/buycredits — пополнить кредиты\n"
+        "/createpersona — создать личность\n"
+        "/mypersonas — мои личности\n"
+        "/addbot — привязать бота к личности\n"
+        "/mutebot — заглушить ответы в этом чате\n"
+        "/unmutebot — включить ответы в этом чате\n"
+        "/reset — очистить память диалога\n"
+    ).strip()
 
-*_личный профиль:_*
-`/profile`      \\- {escape_markdown_v2("статус, лимиты, срок подписки")}
-`/subscribe`    \\- {escape_markdown_v2("как оформить или продлить подписку")}
-
-*_управление в текущем чате:_*
-`/mood`         \\- {escape_markdown_v2("выбрать настроение личности")}
-`/clear`        \\- {escape_markdown_v2("очистить память чата (контекст)")}
-`/reset`        \\- {escape_markdown_v2("сбросить диалог (то же, что /clear)")}
-`/mutebot`      \\- {escape_markdown_v2("временно отключить ответы бота в этом чате")}
-`/unmutebot`    \\- {escape_markdown_v2("включить ответы обратно")}
-
-*_личности:_*
-`/createpersona <имя> [описание]` \\- {escape_markdown_v2("создать новую личность")}
-`/mypersonas`   \\- {escape_markdown_v2("список твоих личностей, привязка бота, удаление и редактирование")}
-`/editpersona <id>`   \\- {escape_markdown_v2("настройки: стиль, настроения, реакции на медиа")}
-`/deletepersona <id>` \\- {escape_markdown_v2("удалить личность (с очищением истории)")}
-
-*_советы:_*
-• {escape_markdown_v2("в группах бот отвечает по настройке: по умолчанию — на упоминания или по контексту.")}
-• {escape_markdown_v2("если бот молчит, проверь: не заглушен ли он (/mutebot) и есть ли активная личность в чате.")}
-• {escape_markdown_v2("чтобы использовать личность в чате, открой /mypersonas, выбери личность и при необходимости привяжи бота.")}
-"""
-    help_text_md = help_text_md.strip()
-    help_text_raw_no_md = re.sub(r'[`*_~\\[\\]()|{}+#-.!=]', '', help_text_md)
-
-    keyboard = [[InlineKeyboardButton("⬅️ Назад в Меню", callback_data="show_menu")]] if is_callback else None
-    reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else ReplyKeyboardRemove()
+    if is_callback:
+        keyboard_inline = [[InlineKeyboardButton("⬅️ назад в меню", callback_data="show_menu")]]
+        reply_markup = InlineKeyboardMarkup(keyboard_inline)
+    else:
+        from telegram import ReplyKeyboardMarkup
+        commands_kb = [
+            ["/start", "/menu", "/help"],
+            ["/profile", "/buycredits"],
+            ["/createpersona", "/mypersonas"],
+            ["/addbot"],
+            ["/mutebot", "/unmutebot"],
+            ["/reset"],
+        ]
+        reply_markup = ReplyKeyboardMarkup(commands_kb, resize_keyboard=True, one_time_keyboard=True)
 
     try:
         if is_callback:
             query = update.callback_query
-            if query.message.text != help_text_md or query.message.reply_markup != reply_markup:
-                await query.edit_message_text(help_text_md, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
+            if query.message.text != help_text_plain or query.message.reply_markup != reply_markup:
+                await query.edit_message_text(help_text_plain, reply_markup=reply_markup, parse_mode=None)
             else:
                 await query.answer()
         else:
-            await message_or_query.reply_text(help_text_md, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
+            await message_or_query.reply_text(help_text_plain, reply_markup=reply_markup, parse_mode=None)
     except BadRequest as e:
         if is_callback and "Message is not modified" in str(e):
             logger.debug("Help message not modified, skipping edit.")
             await query.answer()
         else:
             logger.error(f"Failed sending/editing help message (BadRequest): {e}", exc_info=True)
-            logger.error(f"Failed help text (MD): '{help_text_md[:200]}...'")
             try:
                 if is_callback:
-                    await query.edit_message_text(help_text_raw_no_md, reply_markup=reply_markup, parse_mode=None)
+                    await query.edit_message_text(help_text_plain, reply_markup=reply_markup, parse_mode=None)
                 else:
-                    await message_or_query.reply_text(help_text_raw_no_md, reply_markup=reply_markup, parse_mode=None)
+                    await message_or_query.reply_text(help_text_plain, reply_markup=reply_markup, parse_mode=None)
             except Exception as fallback_e:
                 logger.error(f"Failed sending plain help message: {fallback_e}")
                 if is_callback: await query.answer("❌ Ошибка отображения справки", show_alert=True)
