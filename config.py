@@ -27,7 +27,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 # OpenRouter Settings
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 OPENROUTER_API_BASE_URL = "https://openrouter.ai/api/v1"
-OPENROUTER_MODEL_NAME = "mistralai/mistral-small-3.2-24b-instruct:free"
+OPENROUTER_MODEL_NAME = "openai/gpt-5-nano"
 
 # Gemini Settings (using OpenRouter key by default)
 GEMINI_API_KEY = OPENROUTER_API_KEY
