@@ -100,13 +100,11 @@ async def process_telegram_update(update_data, token: str, bot_username_for_log:
     except Exception as e:
         flask_logger.error(f"error processing telegram webhook for @{bot_username_for_log}: {e}", exc_info=True)
     finally:
-        # Восстановление исходного бота и корректное выключение временного
+        # Восстановление исходного бота. Не выключаем временный user_bot сразу,
+        # чтобы не ломать отложенные send_message ("HTTPXRequest is not initialized").
         with bot_swap_lock:
             application_instance.bot = original_bot
-        try:
-            await user_bot.shutdown()
-        except Exception:
-            pass
+        # Пропускаем await user_bot.shutdown(); ресурсы будут собраны GC/реюзнуты.
 
 @flask_app.route('/telegram/<string:token>', methods=['POST'])
 def handle_telegram_webhook(token: str):
