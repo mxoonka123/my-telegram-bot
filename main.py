@@ -473,12 +473,10 @@ async def main():
     application.add_handler(CommandHandler("buycredits", handlers.buycredits))
     application.add_handler(CommandHandler("createpersona", handlers.create_persona))
     application.add_handler(CommandHandler("mypersonas", handlers.my_personas))
-    application.add_handler(CommandHandler("addbot", handlers.add_bot_to_chat))
     application.add_handler(CommandHandler("mood", handlers.mood))
     application.add_handler(CommandHandler("reset", handlers.reset))
     application.add_handler(CommandHandler("clear", handlers.reset))
-    application.add_handler(CommandHandler("mutebot", handlers.mute_bot))
-    application.add_handler(CommandHandler("unmutebot", handlers.unmute_bot))
+    # deprecated commands removed: /addbot, /mutebot, /unmutebot
     application.add_handler(MessageHandler(handlers.filters.PHOTO & ~handlers.filters.COMMAND, handlers.handle_photo))
     application.add_handler(MessageHandler(handlers.filters.VOICE & ~handlers.filters.COMMAND, handlers.handle_voice))
     application.add_handler(MessageHandler(handlers.filters.TEXT & ~handlers.filters.COMMAND, handlers.handle_message))
