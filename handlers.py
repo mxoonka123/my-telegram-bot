@@ -1166,8 +1166,9 @@ async def send_limit_exceeded_message(update: Update, context: ContextTypes.DEFA
             
             try:
                 logger.debug(f"Attempting to send limit message (MD) to {target_chat_id}")
-                await context.bot.send_message(
-                    target_chat_id,
+                bot = context.bot
+                await bot.send_message(
+                    chat_id=target_chat_id,
                     text=text_to_send,
                     reply_markup=reply_markup,
                     parse_mode=ParseMode.MARKDOWN_V2
