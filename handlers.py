@@ -97,6 +97,7 @@ from db import (
     create_bot_instance, link_bot_instance_to_chat, delete_persona_config,
     get_all_active_chat_bot_instances,
     get_persona_and_context_with_owner,
+    unlink_bot_instance_from_chat,
     User, PersonaConfig as DBPersonaConfig, BotInstance as DBBotInstance,
     ChatBotInstance as DBChatBotInstance, ChatContext, func, get_db,
     DEFAULT_SYSTEM_PROMPT_TEMPLATE, DEFAULT_MOOD_PROMPTS,
@@ -107,7 +108,7 @@ from utils import (
     postprocess_response,
     extract_gif_links,
     get_time_info,
-    escape_markdown_v2,
+    safe_markdown_v2,
     TELEGRAM_MAX_LEN,
     count_openai_compatible_tokens,
     send_safe_message,
@@ -160,21 +161,59 @@ async def botsettings_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if not update.message:
         return ConversationHandler.END
-    with get_db() as db:
-        owner = db.query(User).filter(User.telegram_id == user.id).first()
-        if not owner:
-            await update.message.reply_text("сначала используйте /start")
-            return ConversationHandler.END
-        bots = db.query(DBBotInstance).filter(DBBotInstance.owner_id == owner.id).order_by(DBBotInstance.name).all()
-        if not bots:
-            await update.message.reply_text("у вас нет активных ботов. создайте личность и привяжите бота.")
-            return ConversationHandler.END
-        kb = []
-        for b in bots:
-            label = b.telegram_username or b.name or f"bot #{b.id}"
-            kb.append([InlineKeyboardButton(label, callback_data=f"botset_pick_{b.id}")])
-        await update.message.reply_text("выберите бота для настройки:", reply_markup=InlineKeyboardMarkup(kb))
-        return BOTSET_SELECT
+
+
+# --- Chat member updates (auto-link/unlink bot to group chat) ---
+async def on_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    try:
+        cmu = update.my_chat_member
+        if not cmu:
+            return
+        chat = cmu.chat
+        if not chat:
+            return
+        chat_id_str = str(chat.id)
+        new_status = (cmu.new_chat_member and cmu.new_chat_member.status) or None
+        old_status = (cmu.old_chat_member and cmu.old_chat_member.status) or None
+        bot_id_str = str(context.bot.id) if getattr(context, 'bot', None) and getattr(context.bot, 'id', None) else None
+
+        logger.info(f"my_chat_member in chat {chat_id_str}: {old_status} -> {new_status} for bot {bot_id_str}")
+
+        # Интересны только группы/супергруппы
+        chat_type = str(getattr(chat, 'type', ''))
+        if chat_type not in {"group", "supergroup"}:
+            return
+
+        with get_db() as db:
+            bot_instance = None
+            if bot_id_str:
+                bot_instance = db.query(DBBotInstance).filter(
+                    DBBotInstance.telegram_bot_id == bot_id_str,
+                    DBBotInstance.status == 'active'
+                ).first()
+            if not bot_instance:
+                logger.warning(f"on_my_chat_member: bot instance not found for tg_bot_id={bot_id_str}")
+                return
+
+            # Статусы, означающие присутствие бота в чате
+            present_statuses = {"member", "administrator", "creator", "owner"}
+            gone_statuses = {"left", "kicked", "restricted"}
+
+            if new_status and new_status.lower() in present_statuses:
+                link = link_bot_instance_to_chat(db, bot_instance.id, chat_id_str)
+                if link:
+                    logger.info(f"on_my_chat_member: linked bot_instance {bot_instance.id} to chat {chat_id_str}")
+                else:
+                    logger.warning(f"on_my_chat_member: failed to link bot_instance {bot_instance.id} to chat {chat_id_str}")
+            elif new_status and new_status.lower() in gone_statuses:
+                ok = unlink_bot_instance_from_chat(db, chat_id_str, bot_instance.id)
+                if ok:
+                    logger.info(f"on_my_chat_member: unlinked bot_instance {bot_instance.id} from chat {chat_id_str}")
+                else:
+                    logger.warning(f"on_my_chat_member: no active link to unlink for bot_instance {bot_instance.id} chat {chat_id_str}")
+    except Exception as e:
+        logger.error(f"on_my_chat_member failed: {e}", exc_info=True)
+    return None
 
 async def botsettings_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -1337,6 +1376,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 current_bot_id_str = str(context.bot.id) if getattr(context, 'bot', None) and getattr(context.bot, 'id', None) else None
                 logger.debug(f"handle_message: selecting persona for chat {chat_id_str} with current_bot_id={current_bot_id_str}")
                 persona_context_owner_tuple = get_persona_and_context_with_owner(chat_id_str, db_session, current_bot_id_str)
+                if not persona_context_owner_tuple:
+                    # Попытка авто-связывания для групп, если бота только что добавили и связи нет
+                    try:
+                        chat_type = (update.effective_chat and update.effective_chat.type) or ""
+                        if str(chat_type) in {"group", "supergroup"} and current_bot_id_str:
+                            bot_instance = db_session.query(DBBotInstance).filter(
+                                DBBotInstance.telegram_bot_id == str(current_bot_id_str),
+                                DBBotInstance.status == 'active'
+                            ).first()
+                            if bot_instance:
+                                link = link_bot_instance_to_chat(db_session, bot_instance.id, chat_id_str)
+                                if link:
+                                    # повторная попытка получить персону
+                                    persona_context_owner_tuple = get_persona_and_context_with_owner(chat_id_str, db_session, current_bot_id_str)
+                    except Exception as _auto_link_err:
+                        logger.error(f"auto-link on first message failed for chat {chat_id_str}: {_auto_link_err}", exc_info=True)
                 if not persona_context_owner_tuple:
                     logger.warning(f"handle_message: No active persona found for chat {chat_id_str}.")
                     return

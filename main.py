@@ -30,7 +30,7 @@ from utils import escape_markdown_v2
 # --- Импорты библиотек ---
 from telegram.ext import (
     Application, Defaults, CommandHandler, MessageHandler, CallbackQueryHandler,
-    ConversationHandler
+    ConversationHandler, ChatMemberHandler
 )
 from telegram import Update, BotCommand, Bot
 from telegram.constants import ParseMode
@@ -516,6 +516,8 @@ async def main():
     application.add_handler(MessageHandler(handlers.filters.PHOTO & ~handlers.filters.COMMAND, handlers.handle_photo))
     application.add_handler(MessageHandler(handlers.filters.VOICE & ~handlers.filters.COMMAND, handlers.handle_voice))
     application.add_handler(MessageHandler(handlers.filters.TEXT & ~handlers.filters.COMMAND, handlers.handle_message))
+    # Обработчик обновлений статуса бота в чатах (для автопривязки/отвязки в группах)
+    application.add_handler(ChatMemberHandler(handlers.on_my_chat_member, chat_member_types=ChatMemberHandler.MY_CHAT_MEMBER))
     application.add_handler(CallbackQueryHandler(handlers.buycredits_pkg_callback, pattern=r'^buycredits_pkg_'))
     application.add_handler(CallbackQueryHandler(handlers.buycredits, pattern=r'^buycredits_open$'))
     application.add_handler(CallbackQueryHandler(handlers.handle_callback_query))
