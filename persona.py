@@ -374,19 +374,15 @@ class Persona:
         verbosity_text = verbosity_map.get(self.verbosity_level, verbosity_map["medium"])
         # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
         
-        # Выбор шаблона и инструкции
-        template = None
-        media_instruction = f"Пользователь ({username}, id: {user_id}) в чате {chat_id} прислал(а) {media_type_text}."
-        
+        # Выбор шаблона и инструкции (унифицировано)
+        template = self.config.media_system_prompt_template or DEFAULT_MEDIA_SYSTEM_PROMPT_TEMPLATE
+        # Базовая инструкция формируется динамически по типу медиа
         if media_type_text == "фото":
-            # Используем специальный шаблон для фото, если он есть, иначе fallback
-            template = self.config.photo_system_prompt_template if hasattr(self.config, 'photo_system_prompt_template') and self.config.photo_system_prompt_template else PHOTO_SYSTEM_PROMPT_TEMPLATE_FALLBACK
-            # Для фото инструкция уже встроена в шаблон
-            media_instruction = "" 
-        else: # Для голоса и других потенциальных типов
-            template = self.config.media_system_prompt_template if self.config.media_system_prompt_template else DEFAULT_MEDIA_SYSTEM_PROMPT_TEMPLATE
-            # Если есть расшифровка, она будет добавлена в `user_message` на этапе `handle_media`
-            media_instruction += " Тебе нужно отреагировать на это, продолжая диалог."
+            media_instruction = "Пользователь прислал(а) фото. Опиши свои эмоции и мысли по поводу увиденного."
+        elif media_type_text == "голосовое сообщение":
+            media_instruction = "Пользователь прислал(а) голосовое сообщение. Тебе нужно отреагировать на его содержание, продолжая диалог."
+        else:
+            media_instruction = f"Пользователь прислал(а) {media_type_text}. Отреагируй на это."
 
         if not template:
             logger.error(f"No suitable template found for media type: {media_type_text}")
@@ -417,7 +413,7 @@ class Persona:
             logger.error(f"Error formatting media system prompt for persona {self.id}: Missing key {e}. Template: {template[:150]}...", exc_info=True)
             # --- УЛУЧШЕННЫЙ FALLBACK ---
             # Fallback на дефолтный шаблон с теми же переменными, чтобы избежать падения
-            fallback_template = PHOTO_SYSTEM_PROMPT_TEMPLATE_FALLBACK if media_type_text == "фото" else DEFAULT_MEDIA_SYSTEM_PROMPT_TEMPLATE
+            fallback_template = DEFAULT_MEDIA_SYSTEM_PROMPT_TEMPLATE
             try:
                 # Используем только те ключи, которые точно есть в fallback-шаблоне
                 fallback_vars = {k: v for k, v in template_vars.items() if f"{{{k}}}" in fallback_template}
