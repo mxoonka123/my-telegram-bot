@@ -1667,48 +1667,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                         except Exception as e_send_empty: logger.error(f"Failed to send empty/error response message: {e_send_empty}")
 
                     if llm_call_succeeded:
-                        owner_user.monthly_message_count += 1
-                        db_session.add(owner_user)
-                        logger.info(f"Incremented monthly message count for user {owner_user.id} (TG: {owner_user.telegram_id}) to {owner_user.monthly_message_count}")
-                        limit_state_changed = True 
-
-                        # --- Credit deduction stub (text) ---
-                        try:
-                            from config import CREDIT_COSTS, MODEL_PRICE_MULTIPLIERS, OPENROUTER_MODEL_NAME
-                            input_tokens = count_openai_compatible_tokens(message_text, OPENROUTER_MODEL_NAME)
-                            output_tokens = count_openai_compatible_tokens(assistant_response_text or "", OPENROUTER_MODEL_NAME)
-                            mult = MODEL_PRICE_MULTIPLIERS.get(OPENROUTER_MODEL_NAME, 1.0)
-                            cost = (
-                                (input_tokens / 1000.0) * CREDIT_COSTS.get("input_tokens_per_1k", 0.0) +
-                                (output_tokens / 1000.0) * CREDIT_COSTS.get("output_tokens_per_1k", 0.0)
-                            ) * mult
-                            cost = round(cost, 6)
-                            prev_credits = getattr(owner_user, 'credits', 0.0) or 0.0
-                            if prev_credits >= cost and cost > 0:
-                                owner_user.credits = round(prev_credits - cost, 6)
-                                db_session.add(owner_user)
-                                logger.info(f"Credits deducted (text): user {owner_user.id}, cost={cost}, new_balance={owner_user.credits}")
-
-                                # --- НОВОЕ: предупреждение о низком балансе ---
-                                try:
-                                    if (
-                                        owner_user.credits < config.LOW_BALANCE_WARNING_THRESHOLD and
-                                        prev_credits >= config.LOW_BALANCE_WARNING_THRESHOLD
-                                    ):
-                                        warning_text = (
-                                            f"⚠️ Предупреждение: на вашем балансе осталось меньше {config.LOW_BALANCE_WARNING_THRESHOLD:.0f} кредитов!\n"
-                                            f"Текущий баланс: {owner_user.credits:.2f} кр.\n\n"
-                                            f"Пополните баланс командой /buycredits"
-                                        )
-                                        main_bot = context.application.bot
-                                        await main_bot.send_message(chat_id=owner_user.telegram_id, text=warning_text, parse_mode=None)
-                                        logger.info(f"Sent low balance warning to user {owner_user.id} (text handler)")
-                                except Exception as warn_e:
-                                    logger.error(f"Failed to send low balance warning (text): {warn_e}")
-                            else:
-                                logger.info(f"Credits not deducted (text): user {owner_user.id}, cost={cost}, balance={prev_credits} (stub mode)")
-                        except Exception as e_credit:
-                            logger.error(f"Credit calc/deduct failed in handle_message: {e_credit}")
+                        # --- unified credit deduction (text) ---
+                        await deduct_credits_for_interaction(
+                            db=db_session,
+                            owner_user=owner_user,
+                            input_text=message_text,
+                            output_text=assistant_response_text or "",
+                            media_type=None,
+                            main_bot=context.application.bot
+                        )
 
                     if limit_state_changed or context_user_msg_added or context_response_prepared:
                         try:
@@ -1752,6 +1719,80 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             except Exception: pass
 
 
+# --- Unified credits deduction helper ---
+async def deduct_credits_for_interaction(
+    db: Session,
+    owner_user: User,
+    input_text: str,
+    output_text: str,
+    media_type: Optional[str] = None,
+    media_duration_sec: Optional[int] = None,
+    main_bot=None,
+) -> None:
+    """Рассчитывает и списывает кредиты за одно взаимодействие (текст/фото/голос)."""
+    try:
+        from config import CREDIT_COSTS, MODEL_PRICE_MULTIPLIERS, OPENROUTER_MODEL_NAME, LOW_BALANCE_WARNING_THRESHOLD
+
+        mult = MODEL_PRICE_MULTIPLIERS.get(OPENROUTER_MODEL_NAME, 1.0)
+        total_cost = 0.0
+
+        # 1) Базовая стоимость медиа
+        if media_type == "photo":
+            total_cost += CREDIT_COSTS.get("image_per_item", 0.0)
+        elif media_type == "voice":
+            minutes = max(1.0, (media_duration_sec or 0) / 60.0)
+            total_cost += CREDIT_COSTS.get("audio_per_minute", 0.0) * minutes
+
+        # 2) Стоимость токенов
+        try:
+            input_tokens = count_openai_compatible_tokens(input_text or "", OPENROUTER_MODEL_NAME)
+        except Exception:
+            input_tokens = 0
+        try:
+            output_tokens = count_openai_compatible_tokens(output_text or "", OPENROUTER_MODEL_NAME)
+        except Exception:
+            output_tokens = 0
+
+        tokens_cost = (
+            (input_tokens / 1000.0) * CREDIT_COSTS.get("input_tokens_per_1k", 0.0) +
+            (output_tokens / 1000.0) * CREDIT_COSTS.get("output_tokens_per_1k", 0.0)
+        )
+        total_cost += tokens_cost
+
+        # 3) Применяем множитель модели
+        final_cost = round(total_cost * mult, 6)
+        prev_credits = float(getattr(owner_user, 'credits', 0.0) or 0.0)
+
+        if prev_credits >= final_cost and final_cost > 0:
+            owner_user.credits = round(prev_credits - final_cost, 6)
+            db.add(owner_user)
+            logger.info(
+                f"кредиты списаны (тип: {media_type or 'text'}): пользователь {owner_user.id}, стоимость={final_cost}, новый баланс={owner_user.credits}"
+            )
+
+            # Предупреждение о низком балансе
+            try:
+                if (
+                    owner_user.credits < LOW_BALANCE_WARNING_THRESHOLD and
+                    prev_credits >= LOW_BALANCE_WARNING_THRESHOLD and
+                    main_bot
+                ):
+                    warning_text = (
+                        f"⚠️ предупреждение: на вашем балансе осталось меньше {LOW_BALANCE_WARNING_THRESHOLD:.0f} кредитов!\n"
+                        f"текущий баланс: {owner_user.credits:.2f} кр.\n\n"
+                        f"пополните баланс командой /buycredits"
+                    )
+                    await main_bot.send_message(chat_id=owner_user.telegram_id, text=warning_text, parse_mode=None)
+                    logger.info(f"отправлено уведомление о низком балансе пользователю {owner_user.id}")
+            except Exception as warn_e:
+                logger.error(f"не удалось отправить уведомление о низком балансе: {warn_e}")
+        else:
+            logger.info(f"кредиты не списаны: пользователь {owner_user.id}, стоимость={final_cost}, баланс={prev_credits}")
+
+    except Exception as e:
+        logger.error(f"ошибка при расчете/списании кредитов: {e}", exc_info=True)
+
+
 async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media_type: str, caption: Optional[str] = None) -> None:
     """Handles incoming photo or voice messages, now with caption and time gap awareness."""
     if not update.message: return
@@ -1775,48 +1816,6 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
                 return
             persona, _, owner_user = persona_context_owner_tuple
             logger.debug(f"Handling {media_type} for persona '{persona.name}' owned by {owner_user.id}")
-
-            # --- НАЧАЛО: БЛОК ПРОВЕРКИ И СБРОСА ЛИМИТОВ ---
-            now_utc = datetime.now(timezone.utc)
-            current_month_start = now_utc.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-            if owner_user.message_count_reset_at is None or owner_user.message_count_reset_at < current_month_start:
-                logger.info(f"Resetting monthly counts for user {owner_user.id} (TG: {owner_user.telegram_id}).")
-                owner_user.monthly_message_count = 0
-                owner_user.monthly_photo_count = 0 # Сбрасываем и счетчик фото
-                owner_user.message_count_reset_at = current_month_start
-                db.add(owner_user)
-
-            limit_exceeded = False
-            if media_type == "photo":
-                if owner_user.monthly_photo_count >= owner_user.photo_limit:
-                    limit_exceeded = True
-                    limit_type = "фотографий"
-                    current_count = owner_user.monthly_photo_count
-                    limit_value = owner_user.photo_limit
-            elif media_type == "voice":
-                if owner_user.monthly_message_count >= owner_user.message_limit:
-                    limit_exceeded = True
-                    limit_type = "сообщений"
-                    current_count = owner_user.monthly_message_count
-                    limit_value = owner_user.message_limit
-            
-            if limit_exceeded:
-                logger.info(f"User {owner_user.id} (TG: {owner_user.telegram_id}) exceeded monthly {limit_type} limit. Count: {current_count}, Limit: {limit_value}")
-                await update.message.reply_text(
-                    f"😔 Вы исчерпали свой месячный лимит на {limit_type} ({limit_value}).\n"
-                    f"Для увеличения лимитов оформите подписку: /subscribe"
-                )
-                db.commit() # Сохраняем сброс счетчиков, если он был
-                return
-            # --- КОНЕЦ: БЛОК ПРОВЕРКИ И СБРОСА ЛИМИТОВ ---
-
-            # Увеличиваем счетчик сразу после проверки лимита, ДО отправки запроса к LLM.
-            if media_type == "photo":
-                owner_user.monthly_photo_count += 1
-                logger.info(f"Incrementing photo count for user {owner_user.id} to {owner_user.monthly_photo_count} (before LLM call).")
-            elif media_type == "voice":
-                owner_user.monthly_message_count += 1
-                logger.info(f"Incrementing message count for user {owner_user.id} to {owner_user.monthly_message_count} (via voice, before LLM call).")
 
             user_message_content = ""
             system_prompt = None
@@ -1907,69 +1906,16 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
             ai_response_text = await send_to_openrouter(system_prompt, context_for_ai, image_data=image_data, audio_data=audio_data)
             logger.debug(f"Received response from AI for {media_type}: {ai_response_text[:100]}...")
 
-            # --- Credit deduction stub (media) ---
-            try:
-                from config import CREDIT_COSTS, MODEL_PRICE_MULTIPLIERS, OPENROUTER_MODEL_NAME
-                mult = MODEL_PRICE_MULTIPLIERS.get(OPENROUTER_MODEL_NAME, 1.0)
-
-                # Base media cost
-                media_cost = 0.0
-                if media_type == "photo":
-                    media_cost += CREDIT_COSTS.get("image_per_item", 0.0)
-                elif media_type == "voice":
-                    # Try to estimate minutes from voice duration if available
-                    minutes = 0.0
-                    try:
-                        if update.message and update.message.voice and update.message.voice.duration:
-                            minutes = max(1.0, (update.message.voice.duration or 0) / 60.0)
-                    except Exception:
-                        minutes = 1.0
-                    media_cost += CREDIT_COSTS.get("audio_per_minute", 0.0) * minutes
-
-                # Token costs for input (caption/transcript) and output text
-                input_text_for_tokens = (caption or "") if media_type == "photo" else (user_message_content or "")
-                output_text_for_tokens = ai_response_text or ""
-                try:
-                    input_tok = count_openai_compatible_tokens(input_text_for_tokens, OPENROUTER_MODEL_NAME)
-                except Exception:
-                    input_tok = 0
-                try:
-                    output_tok = count_openai_compatible_tokens(output_text_for_tokens, OPENROUTER_MODEL_NAME)
-                except Exception:
-                    output_tok = 0
-
-                tokens_cost = (
-                    (input_tok / 1000.0) * CREDIT_COSTS.get("input_tokens_per_1k", 0.0) +
-                    (output_tok / 1000.0) * CREDIT_COSTS.get("output_tokens_per_1k", 0.0)
-                )
-
-                total_cost = round((media_cost + tokens_cost) * mult, 6)
-                prev_credits = getattr(owner_user, 'credits', 0.0) or 0.0
-                if prev_credits >= total_cost and total_cost > 0:
-                    owner_user.credits = round(prev_credits - total_cost, 6)
-                    db.add(owner_user)
-                    logger.info(f"Credits deducted (media={media_type}): user {owner_user.id}, cost={total_cost}, new_balance={owner_user.credits}")
-
-                    # --- НОВОЕ: предупреждение о низком балансе ---
-                    try:
-                        if (
-                            owner_user.credits < config.LOW_BALANCE_WARNING_THRESHOLD and
-                            prev_credits >= config.LOW_BALANCE_WARNING_THRESHOLD
-                        ):
-                            warning_text = (
-                                f"⚠️ Предупреждение: на вашем балансе осталось меньше {config.LOW_BALANCE_WARNING_THRESHOLD:.0f} кредитов!\n"
-                                f"Текущий баланс: {owner_user.credits:.2f} кр.\n\n"
-                                f"Пополните баланс командой /buycredits"
-                            )
-                            main_bot = context.application.bot
-                            await main_bot.send_message(chat_id=owner_user.telegram_id, text=warning_text, parse_mode=None)
-                            logger.info(f"Sent low balance warning to user {owner_user.id} (media handler)")
-                    except Exception as warn_e:
-                        logger.error(f"Failed to send low balance warning (media): {warn_e}")
-                else:
-                    logger.info(f"Credits not deducted (media={media_type}): user {owner_user.id}, cost={total_cost}, balance={prev_credits} (stub mode)")
-            except Exception as e_credit_media:
-                logger.error(f"Credit calc/deduct failed in handle_media: {e_credit_media}")
+            # --- новое списание кредитов ---
+            await deduct_credits_for_interaction(
+                db=db,
+                owner_user=owner_user,
+                input_text=user_message_content,
+                output_text=ai_response_text or "",
+                media_type=media_type,
+                media_duration_sec=getattr(update.message.voice, 'duration', None) if media_type == 'voice' else None,
+                main_bot=context.application.bot
+            )
 
             await process_and_send_response(
                 update, context, chat_id_str, persona, ai_response_text, db, reply_to_message_id=message_id
