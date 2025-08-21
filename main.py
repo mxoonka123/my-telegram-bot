@@ -481,6 +481,8 @@ async def main():
             handlers.BOTSET_SELECT: [CallbackQueryHandler(handlers.botsettings_pick, pattern=r'^botset_pick_\d+$')],
             handlers.BOTSET_MENU: [
                 CallbackQueryHandler(handlers.botsettings_set_access, pattern=r'^botset_access_(public|whitelist|owner_only)$'),
+                CallbackQueryHandler(handlers.botsettings_mute, pattern=r'^botset_mute$'),
+                CallbackQueryHandler(handlers.botsettings_unmute, pattern=r'^botset_unmute$'),
                 CallbackQueryHandler(handlers.botsettings_wl_show, pattern=r'^botset_wl_show$'),
                 CallbackQueryHandler(handlers.botsettings_wl_add_prompt, pattern=r'^botset_wl_add$'),
                 CallbackQueryHandler(handlers.botsettings_wl_remove_prompt, pattern=r'^botset_wl_remove$'),

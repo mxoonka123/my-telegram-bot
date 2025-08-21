@@ -217,8 +217,17 @@ async def botsettings_menu_show(update: Update, context: ContextTypes.DEFAULT_TY
         except Exception:
             wl = []
         wl_count = len(wl)
+        # Получаем mute-статус для текущего чата и выбранного бота
+        cbi = db.query(DBChatBotInstance).filter(
+            DBChatBotInstance.chat_id == str(chat_id),
+            DBChatBotInstance.bot_instance_id == bi.id,
+            DBChatBotInstance.active == True
+        ).first()
+        is_muted = bool(getattr(cbi, 'is_muted', False)) if cbi else False
+        mute_status = '🔇 заглушен' if is_muted else '🔊 активен'
         text = (
             f"настройки бота: {title}\n"
+            f"статус в этом чате: {mute_status}\n"
             f"доступ: {access}\n"
             f"белый список: {wl_count} пользователей"
         )
@@ -226,6 +235,13 @@ async def botsettings_menu_show(update: Update, context: ContextTypes.DEFAULT_TY
             [InlineKeyboardButton("доступ: public", callback_data="botset_access_public")],
             [InlineKeyboardButton("доступ: whitelist", callback_data="botset_access_whitelist")],
             [InlineKeyboardButton("доступ: owner_only", callback_data="botset_access_owner_only")],
+        ]
+        # Добавляем кнопку mute/unmute в зависимости от текущего статуса
+        if is_muted:
+            kb.append([InlineKeyboardButton("🔊 размут бота", callback_data="botset_unmute")])
+        else:
+            kb.append([InlineKeyboardButton("🔇 мут бота", callback_data="botset_mute")])
+        kb += [
             [InlineKeyboardButton("👁 просмотр whitelist", callback_data="botset_wl_show")],
             [InlineKeyboardButton("➕ добавить в whitelist", callback_data="botset_wl_add")],
             [InlineKeyboardButton("➖ удалить из whitelist", callback_data="botset_wl_remove")],
@@ -385,6 +401,72 @@ async def botsettings_wl_remove_confirm(update: Update, context: ContextTypes.DE
             bi.whitelisted_users_json = json.dumps(wl, ensure_ascii=False)
             db.add(bi)
             db.commit()
+    return await botsettings_menu_show(update, context)
+
+async def botsettings_mute(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if not q:
+        return ConversationHandler.END
+    await q.answer()
+    bot_id = context.user_data.get('botsettings_bot_id')
+    if not bot_id:
+        return ConversationHandler.END
+    chat_id = q.message.chat.id if q and q.message else (update.effective_chat.id if update.effective_chat else None)
+    if not chat_id:
+        return ConversationHandler.END
+    with get_db() as db:
+        cbi = db.query(DBChatBotInstance).filter(
+            DBChatBotInstance.chat_id == str(chat_id),
+            DBChatBotInstance.bot_instance_id == int(bot_id),
+            DBChatBotInstance.active == True
+        ).first()
+        if not cbi:
+            await q.edit_message_text("бот не привязан к этому чату или не активирован для этой личности.")
+            return ConversationHandler.END
+        if cbi.is_muted:
+            # уже заглушен — просто перерисуем меню
+            return await botsettings_menu_show(update, context)
+        try:
+            cbi.is_muted = True
+            db.add(cbi)
+            db.commit()
+        except Exception:
+            db.rollback()
+            await q.edit_message_text("не удалось применить мут (ошибка БД)")
+            return ConversationHandler.END
+    return await botsettings_menu_show(update, context)
+
+async def botsettings_unmute(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if not q:
+        return ConversationHandler.END
+    await q.answer()
+    bot_id = context.user_data.get('botsettings_bot_id')
+    if not bot_id:
+        return ConversationHandler.END
+    chat_id = q.message.chat.id if q and q.message else (update.effective_chat.id if update.effective_chat else None)
+    if not chat_id:
+        return ConversationHandler.END
+    with get_db() as db:
+        cbi = db.query(DBChatBotInstance).filter(
+            DBChatBotInstance.chat_id == str(chat_id),
+            DBChatBotInstance.bot_instance_id == int(bot_id),
+            DBChatBotInstance.active == True
+        ).first()
+        if not cbi:
+            await q.edit_message_text("бот не привязан к этому чату или не активирован для этой личности.")
+            return ConversationHandler.END
+        if not cbi.is_muted:
+            # уже размьючен — просто перерисуем меню
+            return await botsettings_menu_show(update, context)
+        try:
+            cbi.is_muted = False
+            db.add(cbi)
+            db.commit()
+        except Exception:
+            db.rollback()
+            await q.edit_message_text("не удалось применить размут (ошибка БД)")
+            return ConversationHandler.END
     return await botsettings_menu_show(update, context)
 
 async def botsettings_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
