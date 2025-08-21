@@ -1038,6 +1038,27 @@ async def process_and_send_response(update: Update, context: ContextTypes.DEFAUL
     try:
         first_message_sent = False
         chat_id_str = str(chat_id)
+        # Зафиксируем локальный бот для всех последующих отправок,
+        # чтобы избежать использования возможного подмененного Application.bot
+        local_bot = context.bot
+        try:
+            current_bot_id_str = str(getattr(local_bot, 'id', ''))
+            current_bot_username = getattr(local_bot, 'username', None)
+        except Exception:
+            current_bot_id_str = None
+            current_bot_username = None
+
+        # Страховка: отправляем только если бот текущего контекста совпадает с ботом активной персоны
+        expected_bot_id_str = None
+        try:
+            if persona and getattr(persona, 'chat_instance', None) and getattr(persona.chat_instance, 'bot_instance_ref', None):
+                expected_bot_id_str = str(getattr(persona.chat_instance.bot_instance_ref, 'telegram_bot_id', ''))
+        except Exception:
+            expected_bot_id_str = None
+        logger.info(f"process_and_send_response [v3]: --- ENTER --- ChatID: {chat_id_str}, Persona: '{persona.config.name if persona and persona.config else 'unknown'}', bot_ctx_id={current_bot_id_str}, expected_bot_id={expected_bot_id_str}")
+        if expected_bot_id_str and current_bot_id_str and expected_bot_id_str != current_bot_id_str:
+            logger.warning(f"process_and_send_response: bot mismatch -> context_bot_id={current_bot_id_str}, expected={expected_bot_id_str}. Skipping send.")
+            return context_response_prepared
 
         processed_parts_for_sending = []
         if text_parts_to_send:
@@ -1065,7 +1086,7 @@ async def process_and_send_response(update: Update, context: ContextTypes.DEFAUL
                 try:
                     current_reply_id_gif = reply_to_message_id if not first_message_sent else None
                     logger.info(f"process_and_send_response [JSON]: Attempting to send GIF {i+1}/{len(gif_links_to_send)}: {gif_url_send} (ReplyTo: {current_reply_id_gif})")
-                    await context.bot.send_animation(
+                    await local_bot.send_animation(
                         chat_id=chat_id_str, animation=gif_url_send, reply_to_message_id=current_reply_id_gif,
                         read_timeout=30, write_timeout=30
                     )
@@ -1085,7 +1106,7 @@ async def process_and_send_response(update: Update, context: ContextTypes.DEFAUL
 
                 if chat_type in [ChatType.GROUP, ChatType.SUPERGROUP]:
                     try:
-                        asyncio.create_task(context.bot.send_chat_action(chat_id=chat_id_str, action=ChatAction.TYPING))
+                        asyncio.create_task(local_bot.send_chat_action(chat_id=chat_id_str, action=ChatAction.TYPING))
                     except Exception as e:
                         logger.warning(f"Failed to send chat action: {e}")
 
@@ -1100,7 +1121,7 @@ async def process_and_send_response(update: Update, context: ContextTypes.DEFAUL
 
                 logger.info(f"process_and_send_response [JSON]: Attempting send part {i+1}/{len(text_parts_to_send)} (MDv2, ReplyTo: {current_reply_id_text}) to {chat_id_str}: '{escaped_part_send[:80]}...')")
                 try:
-                    await context.bot.send_message(
+                    await local_bot.send_message(
                         chat_id=chat_id_str, text=escaped_part_send, parse_mode=ParseMode.MARKDOWN_V2,
                         reply_to_message_id=current_reply_id_text, read_timeout=30, write_timeout=30
                     )
@@ -1108,9 +1129,11 @@ async def process_and_send_response(update: Update, context: ContextTypes.DEFAUL
                 except (BadRequest, TimedOut, Forbidden) as e_md_send:
                     logger.error(f"process_and_send_response [JSON]: MDv2 send failed part {i+1}. Error: {e_md_send}. Retrying plain.")
                     try:
-                        await context.bot.send_message(
+                        # Если причина — не найдено сообщение для ответа, пробуем без reply_to
+                        retry_reply_to = None if isinstance(e_md_send, BadRequest) and 'replied not found' in str(e_md_send).lower() else current_reply_id_text
+                        await local_bot.send_message(
                             chat_id=chat_id_str, text=part_raw_send, parse_mode=None,
-                            reply_to_message_id=current_reply_id_text, read_timeout=30, write_timeout=30
+                            reply_to_message_id=retry_reply_to, read_timeout=30, write_timeout=30
                         )
                         message_sent_successfully = True
                     except Exception as e_plain_send:
