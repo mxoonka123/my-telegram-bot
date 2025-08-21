@@ -5135,7 +5135,7 @@ async def edit_mood_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     error_unhandled_choice = escape_markdown_v2("❌ неизвестный выбор настроения.")
     error_decode_mood = escape_markdown_v2("❌ ошибка декодирования имени настроения.")
     prompt_new_name = escape_markdown_v2("введи название нового настроения \\(1\\-30 символов, буквы/цифры/дефис/подчерк\\., без пробелов\\):")
-    prompt_new_prompt_fmt_raw = "✏️ редактирование настроения: *{name}*\n\nотправь новый текст промпта \\(до 1500 симв\\.\\):"
+    prompt_new_prompt_fmt_raw = "✏️ редактирование настроения: *{name}*\n\nотправь новый текст промпта \\(до 2500 симв\\.\\):"
     prompt_confirm_delete_fmt_raw = "точно удалить настроение '{name}'?"
 
     if not persona_id:
@@ -5323,7 +5323,7 @@ async def edit_mood_prompt_received(update: Update, context: ContextTypes.DEFAUL
 
     error_no_session = escape_markdown_v2("❌ ошибка: сессия редактирования потеряна \\(нет имени настроения\\)\\. начни снова \\(/mypersonas\\)\\.")
     error_not_found = escape_markdown_v2("❌ ошибка: личность не найдена или нет доступа.")
-    error_validation = escape_markdown_v2("❌ промпт настроения: 1\\-1500 символов\\. попробуй еще:")
+    error_validation = escape_markdown_v2("❌ промпт настроения: 1\\-2500 символов\\. попробуй еще:")
     error_db = escape_markdown_v2("❌ ошибка базы данных при сохранении настроения.")
     error_general = escape_markdown_v2("❌ ошибка при сохранении настроения.")
     success_saved_fmt_raw = "✅ настроение *{name}* сохранено\\!"
@@ -5333,7 +5333,7 @@ async def edit_mood_prompt_received(update: Update, context: ContextTypes.DEFAUL
         await update.message.reply_text(error_no_session, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
         return ConversationHandler.END
 
-    if not mood_prompt or len(mood_prompt) > 1500:
+    if not mood_prompt or len(mood_prompt) > 2500:
         logger.debug(f"Validation failed for mood prompt (length={len(mood_prompt)}).")
         cancel_button = InlineKeyboardButton("❌ Отмена", callback_data="edit_moods_back_cancel")
         await update.message.reply_text(error_validation, reply_markup=InlineKeyboardMarkup([[cancel_button]]), parse_mode=ParseMode.MARKDOWN_V2)
