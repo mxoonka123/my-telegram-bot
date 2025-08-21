@@ -165,13 +165,21 @@ def handle_telegram_webhook(token: str):
             access_level = (bot_instance.access_level or 'owner_only').lower()
 
             allowed = False
-            if owner_tg_id and int(actor_id) == int(owner_tg_id):
+            # 1) Полный доступ для админов системы независимо от владения ботом/ACL
+            try:
+                if int(actor_id) in (getattr(config, 'ADMIN_USER_ID', []) or []):
+                    allowed = True
+            except Exception:
+                pass
+            # 2) Владелец бота
+            if not allowed and owner_tg_id and int(actor_id) == int(owner_tg_id):
                 allowed = True  # владелец всегда имеет доступ
-            elif access_level == 'public':
+            # 3) Режимы доступа
+            elif not allowed and access_level == 'public':
                 allowed = True
-            elif access_level == 'owner_only':
+            elif not allowed and access_level == 'owner_only':
                 allowed = False
-            elif access_level == 'whitelist':
+            elif not allowed and access_level == 'whitelist':
                 try:
                     import json as _json
                     wl = _json.loads(bot_instance.whitelisted_users_json or '[]')
