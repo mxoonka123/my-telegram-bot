@@ -50,6 +50,11 @@ INTERNET_INFO_PROMPT = (
     " у тебя есть доступ к интернету, можешь использовать актуальную информацию, искать гифки (отправляй прямой ссылкой на .gif), обсуждать новости, мемы, тренды, фильмы, игры, музыку, соцсети."
 )
 
+GROUP_CHAT_INSTRUCTION = (
+    " ты находишься в групповом чате. в истории диалога сообщения могут быть с префиксами вида 'username: текст' или 'user_ID: текст'. "
+    "в ответе учитывай, кто именно написал последнее сообщение, и обращайся корректно. не путайся между разными участниками."
+)
+
 # Simplified System Prompt v19 (Focus-Aware)
 DEFAULT_SYSTEM_PROMPT_TEMPLATE = '''[SYSTEM MANDATORY INSTRUCTIONS - FOLLOW THESE RULES EXACTLY]
 You are an AI assistant. Your ONLY task is to role-play as a character. Your entire output MUST be a valid JSON array of strings.
@@ -502,6 +507,12 @@ def get_or_create_user(db: Session, telegram_id: int, username: str = None) -> U
         else:
             logger.info(f"Creating new user for telegram_id {telegram_id} (Username: {username})")
             user = User(telegram_id=telegram_id, username=username)
+            # Начисляем стартовые пробные кредиты новому пользователю
+            try:
+                user.credits = float(config.NEW_USER_TRIAL_CREDITS)
+                logger.info(f"Assigned trial credits {user.credits} to new user {telegram_id}.")
+            except Exception as credit_err:
+                logger.error(f"Failed to assign trial credits for new user {telegram_id}: {credit_err}")
             if telegram_id in ADMIN_USER_ID:
                 logger.info(f"Setting admin user {telegram_id} as subscribed indefinitely upon creation.")
                 user.is_subscribed = True

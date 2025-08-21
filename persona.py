@@ -8,7 +8,7 @@ from enum import Enum
 
 # Убедимся, что импортируем нужные вещи
 from db import (
-    DEFAULT_MOOD_PROMPTS, BASE_PROMPT_SUFFIX, INTERNET_INFO_PROMPT
+    DEFAULT_MOOD_PROMPTS, BASE_PROMPT_SUFFIX, INTERNET_INFO_PROMPT, GROUP_CHAT_INSTRUCTION
 )
 # Шаблон DEFAULT_SYSTEM_PROMPT_TEMPLATE теперь берется из DB, но нужен для fallback
 from db import PersonaConfig, ChatBotInstance, User, DEFAULT_SYSTEM_PROMPT_TEMPLATE
@@ -215,7 +215,7 @@ class Persona:
         # Could potentially load from self.config.system_prompt_template if needed
         return DEFAULT_SYSTEM_PROMPT_TEMPLATE
 
-    def format_system_prompt(self, user_id: int, username: str) -> Optional[str]:
+    def format_system_prompt(self, user_id: int, username: str, chat_type: Optional[str] = None) -> Optional[str]:
         """Formats the main system prompt using template and dynamic info.
            The user's message is NO LONGER part of this prompt.
            Returns None if persona should not respond to text based on media_reaction.
@@ -281,6 +281,10 @@ class Persona:
             formatted_prompt = " ".join(fallback_parts)
             logger.warning("Using fallback system prompt due to unexpected formatting error.")
         # --- Конец блока try...except ---
+
+        # Если чат групповой — добавим инструкцию для корректной адресации
+        if chat_type in {"group", "supergroup"}:
+            formatted_prompt = f"{formatted_prompt} {GROUP_CHAT_INSTRUCTION}".strip()
 
         # Если нужно добавить общие инструкции *после* форматирования шаблона
         # formatted_prompt += " " + BASE_PROMPT_SUFFIX # Пример

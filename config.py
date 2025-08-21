@@ -114,6 +114,9 @@ CREDIT_MIN_OUTPUT_TOKENS = int(os.getenv("CREDIT_MIN_OUTPUT_TOKENS", "200"))
 # Минимальная тарификация по голосу в минутах
 CREDIT_MIN_AUDIO_MINUTES = float(os.getenv("CREDIT_MIN_AUDIO_MINUTES", "1.0"))
 
+# Стартовые кредиты для новых пользователей
+NEW_USER_TRIAL_CREDITS = float(os.getenv("NEW_USER_TRIAL_CREDITS", "10.0"))
+
 # Пакеты кредитов для покупки (id -> {credits, price_rub, title})
 # Значения по умолчанию можно переопределять через окружение в будущем
 CREDIT_PACKAGES = {

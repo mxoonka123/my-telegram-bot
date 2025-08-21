@@ -109,7 +109,8 @@ from utils import (
     get_time_info,
     escape_markdown_v2,
     TELEGRAM_MAX_LEN,
-    count_openai_compatible_tokens
+    count_openai_compatible_tokens,
+    send_safe_message,
 )
 
 # --- Constants ---
@@ -1528,8 +1529,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     
                     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
 
-                    # Вызываем format_system_prompt БЕЗ текста сообщения
-                    system_prompt = persona.format_system_prompt(user_id, username)
+                    # Вызываем format_system_prompt БЕЗ текста сообщения, с учетом типа чата
+                    system_prompt = persona.format_system_prompt(user_id, username, getattr(update.effective_chat, 'type', None))
                     if not system_prompt:
                         await update.message.reply_text(escape_markdown_v2("❌ ошибка при подготовке системного сообщения."), parse_mode=ParseMode.MARKDOWN_V2)
                         db_session.rollback()
@@ -2385,7 +2386,7 @@ async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             current_bot_id_str = str(context.bot.id) if getattr(context, 'bot', None) and getattr(context.bot, 'id', None) else None
             persona_info_tuple = get_persona_and_context_with_owner(chat_id_str, db, current_bot_id_str)
             if not persona_info_tuple:
-                await update.message.reply_text(msg_no_persona_raw, reply_markup=ReplyKeyboardRemove(), parse_mode=None)
+                await send_safe_message(update.message, msg_no_persona_raw, reply_markup=ReplyKeyboardRemove())
                 return
 
             persona, _, owner_user = persona_info_tuple
@@ -2394,13 +2395,13 @@ async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             # Проверяем права доступа
             if owner_user.telegram_id != user_id and not is_admin(user_id):
                 logger.warning(f"User {user_id} attempted to clear memory for persona '{persona_name_raw}' owned by {owner_user.telegram_id} in chat {chat_id_str}.")
-                await update.message.reply_text(msg_not_owner_raw, reply_markup=ReplyKeyboardRemove(), parse_mode=None)
+                await send_safe_message(update.message, msg_not_owner_raw, reply_markup=ReplyKeyboardRemove())
                 return
 
             chat_bot_instance = persona.chat_instance
             if not chat_bot_instance:
                 logger.error(f"Reset command: ChatBotInstance not found for persona {persona_name_raw} in chat {chat_id_str}")
-                await update.message.reply_text(msg_no_instance_raw, parse_mode=None)
+                await send_safe_message(update.message, msg_no_instance_raw)
                 return
 
             # Удаляем контекст
@@ -2418,15 +2419,15 @@ async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             # Форматируем сообщение об успехе
             final_success_msg_raw = msg_success_fmt_raw.format(persona_name=persona_name_raw, count=deleted_count)
 
-            await update.message.reply_text(final_success_msg_raw, reply_markup=ReplyKeyboardRemove(), parse_mode=None)
+            await send_safe_message(update.message, final_success_msg_raw, reply_markup=ReplyKeyboardRemove())
 
         except SQLAlchemyError as e:
             logger.error(f"Database error during /reset for chat {chat_id_str}: {e}", exc_info=True)
-            await update.message.reply_text(msg_db_error_raw, parse_mode=None)
+            await send_safe_message(update.message, msg_db_error_raw)
             db.rollback()
         except Exception as e:
             logger.error(f"Error in /reset handler for chat {chat_id_str}: {e}", exc_info=True)
-            await update.message.reply_text(msg_general_error_raw, parse_mode=None)
+            await send_safe_message(update.message, msg_general_error_raw)
             db.rollback()
 
 async def create_persona(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

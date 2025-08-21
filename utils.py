@@ -89,6 +89,39 @@ def escape_markdown_v2(text: Optional[str]) -> str:
     # Use a lambda function to handle escaping
     return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text)
 
+async def send_safe_message(reply_target, text: str, reply_markup=None, disable_web_page_preview: bool = None):
+    """Безопасная отправка сообщения.
+    Сначала пытается отправить MarkdownV2 (с экранированием), при ошибке — обычным текстом.
+
+    Args:
+        reply_target: объект с методом reply_text (Update.message, CallbackQuery.message и т.п.)
+        text: исходный текст (сырой)
+        reply_markup: опциональный markup
+        disable_web_page_preview: опционально, отключение предпросмотра ссылок
+    """
+    if not hasattr(reply_target, 'reply_text'):
+        logger.error("send_safe_message: reply_target has no reply_text()")
+        return
+    try:
+        escaped = escape_markdown_v2(text)
+        await reply_target.reply_text(
+            escaped,
+            parse_mode='MarkdownV2',
+            reply_markup=reply_markup,
+            disable_web_page_preview=disable_web_page_preview
+        )
+    except Exception as e:
+        logger.warning(f"send_safe_message: MarkdownV2 failed, fallback to plain. Err: {e}")
+        try:
+            await reply_target.reply_text(
+                text,
+                parse_mode=None,
+                reply_markup=reply_markup,
+                disable_web_page_preview=disable_web_page_preview
+            )
+        except Exception as fe:
+            logger.error(f"send_safe_message: plain text failed too: {fe}")
+
 def get_time_info() -> str:
     """Gets formatted time string for different timezones."""
     now_utc = datetime.now(timezone.utc)
