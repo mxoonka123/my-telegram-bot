@@ -229,7 +229,7 @@ def handle_telegram_webhook(token: str):
         flask_logger.error(f"acl check failed (fallback to deny): {e}", exc_info=True)
         return Response(status=200)
 
-    # --- Disable commands on attached (non-main) bots ---
+    # --- Disable commands on attached (non-main) bots, except a small allowlist ---
     try:
         is_command_update = False
         if isinstance(update_data, dict):
@@ -242,10 +242,20 @@ def handle_telegram_webhook(token: str):
         main_bot_id = application_instance and application_instance.bot_data.get('main_bot_id')
         current_bot_id = bot_instance.telegram_bot_id
         if is_command_update and main_bot_id and str(main_bot_id) != str(current_bot_id or ''):
-            flask_logger.info(
-                f"skip command update for attached bot @{bot_instance.telegram_username} (bot_id={current_bot_id}, main_id={main_bot_id})"
-            )
-            return Response(status=200)
+            # Разрешаем небольшой список команд на attached-ботах
+            allowed_on_attached = {"/mutebot", "/unmutebot"}
+            cmd_name = None
+            try:
+                first_token = (text or '').split()[0].lower()
+                # учитываем формат /cmd@username
+                cmd_name = first_token.split('@')[0]
+            except Exception:
+                cmd_name = None
+            if cmd_name not in allowed_on_attached:
+                flask_logger.info(
+                    f"skip command update for attached bot @{bot_instance.telegram_username} (bot_id={current_bot_id}, main_id={main_bot_id})"
+                )
+                return Response(status=200)
     except Exception as e:
         flask_logger.error(f"error while checking command disable for attached bots: {e}")
 
@@ -476,7 +486,9 @@ async def main():
     application.add_handler(CommandHandler("mood", handlers.mood))
     application.add_handler(CommandHandler("reset", handlers.reset))
     application.add_handler(CommandHandler("clear", handlers.reset))
-    # deprecated commands removed: /addbot, /mutebot, /unmutebot
+    # Разрешаем mute/unmute для каждого бота отдельно
+    application.add_handler(CommandHandler("mutebot", handlers.mutebot))
+    application.add_handler(CommandHandler("unmutebot", handlers.unmutebot))
     application.add_handler(MessageHandler(handlers.filters.PHOTO & ~handlers.filters.COMMAND, handlers.handle_photo))
     application.add_handler(MessageHandler(handlers.filters.VOICE & ~handlers.filters.COMMAND, handlers.handle_voice))
     application.add_handler(MessageHandler(handlers.filters.TEXT & ~handlers.filters.COMMAND, handlers.handle_message))

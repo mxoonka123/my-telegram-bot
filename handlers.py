@@ -5638,3 +5638,73 @@ async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             # Используем parse_mode=None
             await update.message.reply_text(f"{error_general_raw} ({type(e).__name__})", parse_mode=None)
             db.rollback()
+
+# =====================
+# mutebot / unmutebot (per-bot per-chat mute toggle)
+# =====================
+
+async def mutebot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Заглушить текущего бота (персону) в этом чате. Применяется к ChatBotInstance для текущего bot.id."""
+    user = update.effective_user
+    chat = update.effective_chat
+    if not chat or not user or not update.message:
+        return
+    chat_id_str = str(chat.id)
+    current_bot_id_str = str(context.bot.id) if getattr(context, 'bot', None) and getattr(context.bot, 'id', None) else None
+    if not current_bot_id_str:
+        await update.message.reply_text("техническая ошибка: не удалось определить bot.id")
+        return
+    with get_db() as db_session:
+        link = db_session.query(DBChatBotInstance).join(DBChatBotInstance.bot_instance_ref).filter(
+            DBChatBotInstance.chat_id == chat_id_str,
+            DBChatBotInstance.active == True,
+            DBBotInstance.telegram_bot_id == current_bot_id_str
+        ).first()
+        if not link:
+            await update.message.reply_text("бот не привязан к этому чату или не активирован для этой личности")
+            return
+        if getattr(link, 'is_muted', False):
+            await update.message.reply_text("уже заглушен")
+            return
+        try:
+            link.is_muted = True
+            db_session.commit()
+            logger.info(f"mutebot: set is_muted=True for ChatBotInstance id={link.id} chat={chat_id_str} bot_id={current_bot_id_str}")
+            await update.message.reply_text("бот заглушен в этом чате")
+        except Exception as e:
+            db_session.rollback()
+            logger.error(f"mutebot commit failed: {e}")
+            await update.message.reply_text("не удалось заглушить (ошибка БД)")
+
+async def unmutebot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Снять заглушку с текущего бота (персоны) в этом чате. Применяется к ChatBotInstance для текущего bot.id."""
+    user = update.effective_user
+    chat = update.effective_chat
+    if not chat or not user or not update.message:
+        return
+    chat_id_str = str(chat.id)
+    current_bot_id_str = str(context.bot.id) if getattr(context, 'bot', None) and getattr(context.bot, 'id', None) else None
+    if not current_bot_id_str:
+        await update.message.reply_text("техническая ошибка: не удалось определить bot.id")
+        return
+    with get_db() as db_session:
+        link = db_session.query(DBChatBotInstance).join(DBChatBotInstance.bot_instance_ref).filter(
+            DBChatBotInstance.chat_id == chat_id_str,
+            DBChatBotInstance.active == True,
+            DBBotInstance.telegram_bot_id == current_bot_id_str
+        ).first()
+        if not link:
+            await update.message.reply_text("бот не привязан к этому чату или не активирован для этой личности")
+            return
+        if not getattr(link, 'is_muted', False):
+            await update.message.reply_text("бот уже размьючен")
+            return
+        try:
+            link.is_muted = False
+            db_session.commit()
+            logger.info(f"unmutebot: set is_muted=False for ChatBotInstance id={link.id} chat={chat_id_str} bot_id={current_bot_id_str}")
+            await update.message.reply_text("бот размьючен в этом чате")
+        except Exception as e:
+            db_session.rollback()
+            logger.error(f"unmutebot commit failed: {e}")
+            await update.message.reply_text("не удалось снять заглушку (ошибка БД)")
