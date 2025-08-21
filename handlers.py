@@ -1453,11 +1453,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                                 DBBotInstance.status == 'active'
                             ).first()
                             if bot_instance:
+                                logger.info(f"найден bot_instance id={bot_instance.id} (status={bot_instance.status}) для tg_bot_id={current_bot_id_str}")
                                 link = link_bot_instance_to_chat(db_session, bot_instance.id, chat_id_str)
                                 if link:
                                     logger.info(f"авто-привязка успешна. повторный поиск личности для чата {chat_id_str}.")
                                     # повторная попытка получить персону
                                     persona_context_owner_tuple = get_persona_and_context_with_owner(chat_id_str, db_session, current_bot_id_str)
+                                else:
+                                    logger.warning(f"авто-привязка вернула None для чата {chat_id_str} и bot_instance {bot_instance.id}")
+                            else:
+                                logger.warning(f"bot_instance со status='active' не найден для tg_bot_id={current_bot_id_str}. авто-привязка невозможна")
                         except Exception as auto_link_err:
                             logger.error(f"ошибка авто-привязки при первом сообщении для чата {chat_id_str}: {auto_link_err}", exc_info=True)
                 if not persona_context_owner_tuple:
