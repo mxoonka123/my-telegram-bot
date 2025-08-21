@@ -225,7 +225,12 @@ class Persona:
             logger.debug(f"Persona {self.id} ({self.name}) configured NOT to react to TEXT with setting '{self.media_reaction}'. System prompt generation skipped.")
             return None
 
-        template = self._get_system_template() # Получаем актуальный шаблон
+        # сначала используем персональный шаблон из мастера, если задан
+        if getattr(self.config, 'system_prompt_template_override', None):
+            logger.info(f"используется персональный системный промпт (мастер) для личности {self.id}")
+            template = self.config.system_prompt_template_override
+        else:
+            template = self._get_system_template() # получаем стандартный шаблон
         mood_instruction = self.get_mood_prompt_snippet()
         mood_name = self.current_mood
 

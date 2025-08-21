@@ -2638,26 +2638,60 @@ async def char_wiz_finish(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     """compose template and save to DB, then show edit menu."""
     persona_id = context.user_data.get('edit_persona_id')
     data = context.user_data.get('charwiz') or {}
-    # build template (with placeholders used in Persona.format_system_prompt)
-    # all static text is lowercase, no emoji
-    template_lines = [
-        "ты — {persona_name}.",
-        "описание: {persona_description}.",
-        f"био: {data.get('bio') or 'не указано'}.",
-        f"черты: {data.get('traits') or 'не указано'}.",
-        f"манера речи: {data.get('speech') or 'не указано'}.",
-        f"предпочтения: {data.get('likes') or 'не указано'}.",
-        f"не любит: {data.get('dislikes') or 'не указано'}.",
-        f"цели: {data.get('goals') or 'не указано'}.",
-        f"табу: {data.get('taboos') or 'не указано'}.",
-        "стиль общения: {communication_style}.",
-        "разговорчивость: {verbosity_level}.",
-        "если задано настроение, учти его: {mood_name} — {mood_prompt}.",
-        "взаимодействуй вежливо и по существу. избегай смайлов и эмодзи. отвечай в нижнем регистре.",
-        "контекст: пользователь @{username} (id: {user_id}), чат: {chat_id}.",
-        "время сейчас: {current_time_info}."
+    # fetch base communication settings to blend into template
+    base_style = None
+    base_verbosity = None
+    try:
+        with get_db() as _db:
+            _persona = _db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
+            if _persona is not None:
+                base_style = getattr(_persona, 'communication_style', None)
+                base_verbosity = getattr(_persona, 'verbosity_level', None)
+    except Exception as _e:
+        logger.warning(f"char_wiz_finish: failed to load base style/verbosity for persona {persona_id}: {_e}")
+
+    # build smart placeholder-based template (lowercase text, no emojis)
+    character_profile_parts = [
+        "[информация о персонаже]",
+        "- имя: {persona_name}",
+        "- описание: {persona_description}",
+        f"- базовый стиль общения: {base_style or '{communication_style}'}; разговорчивость: {base_verbosity or '{verbosity_level}'}.",
     ]
-    template = "\n".join(template_lines)
+    if data.get('bio'): character_profile_parts.append(f"- биография: {data.get('bio')}")
+    if data.get('traits'): character_profile_parts.append(f"- черты характера: {data.get('traits')}")
+    if data.get('speech'): character_profile_parts.append(f"- манера речи: {data.get('speech')}")
+    if data.get('likes'): character_profile_parts.append(f"- любит: {data.get('likes')}")
+    if data.get('dislikes'): character_profile_parts.append(f"- не любит: {data.get('dislikes')}")
+    if data.get('goals'): character_profile_parts.append(f"- цели и мотивация: {data.get('goals')}")
+    if data.get('taboos'): character_profile_parts.append(f"- табу и ограничения: {data.get('taboos')}")
+
+    character_profile = "\n".join(character_profile_parts)
+
+    rules_parts = [
+        "[правила роли — строго соблюдать]",
+        "1) ты — {persona_name}. не упоминай, что ты ии или бот.",
+        "2) не выходи из образа. опирайся на профиль выше.",
+        "3) поддерживай диалог естественно и по существу.",
+        "4) отвечай без смайлов и эмодзи. пиши в нижнем регистре.",
+    ]
+    rules = "\n".join(rules_parts)
+
+    task_block = (
+        "[контекст и задача]\n"
+        "- текущее время: {current_time_info}\n"
+        "- настроение: {mood_name} ({mood_prompt})\n"
+        "- пользователь: @{username} (id: {user_id}), чат: {chat_id}\n"
+        "- твоя задача: естественно ответить на последнее сообщение пользователя в рамках роли."
+    )
+
+    format_block = (
+        "[формат ответа — критически важно]\n"
+        "верни строго валидный json-массив строк. ничего кроме. пример:\n"
+        "[\"пример\", \"ответа из двух сообщений\"]\n\n"
+        "[твой ответ в формате json]:"
+    )
+
+    template = f"{character_profile}\n\n{rules}\n\n{task_block}\n\n{format_block}"
 
     try:
         with get_db() as db:
@@ -4925,8 +4959,6 @@ async def _show_edit_wizard_menu(update: Update, context: ContextTypes.DEFAULT_T
                 InlineKeyboardButton("имя", callback_data="edit_wizard_name"),
                 InlineKeyboardButton("описание", callback_data="edit_wizard_description")
             ],
-            [InlineKeyboardButton(f"стиль ({style_map.get(style, '?')})", callback_data="edit_wizard_comm_style")],
-            [InlineKeyboardButton(f"разговорчивость ({verbosity_map.get(verbosity, '?')})", callback_data="edit_wizard_verbosity")],
             [InlineKeyboardButton(f"ответы в группе ({group_reply_map.get(group_reply, '?')})", callback_data="edit_wizard_group_reply")],
             [InlineKeyboardButton(f"реакция на медиа ({media_react_map.get(media_react, '?')})", callback_data="edit_wizard_media_reaction")],
             [InlineKeyboardButton(f"макс. сообщ. ({display_for_max_msgs_button})", callback_data="edit_wizard_max_msgs")],
