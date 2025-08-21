@@ -1964,8 +1964,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 f"/createpersona <имя> - создай ai-личность\n"
                 f"/mypersonas - список твоих личностей\n"
                 f"/menu - панель управления\n"
-                f"/profile - детали статуса\n"
-                f"/subscribe - узнать о подписке"
+                f"/profile - детали статуса"
             )
             fallback_text_raw = (
                 f"привет! я бот для создания ai-собеседников (@{context.bot.username}).\n\n"
@@ -1974,8 +1973,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 f"/createpersona <имя> - создай ai-личность\n"
                 f"/mypersonas - список твоих личностей\n"
                 f"/menu - панель управления\n"
-                f"/profile - детали статуса\n"
-                f"/subscribe - узнать о подписке"
+                f"/profile - детали статуса"
             )
             # Ветку приветствия отправляем без Markdown, чтобы не ловить ошибки экранирования
             reply_text_final = fallback_text_raw
@@ -2086,6 +2084,53 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         logger.error(f"Error sending/editing help message: {e}", exc_info=True)
         if is_callback: await query.answer("❌ Ошибка отображения справки", show_alert=True)
 
+async def show_tos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Показывает ссылку на пользовательское соглашение (из application.bot_data['tos_url'])."""
+    is_callback = update.callback_query is not None
+    message_or_query = update.callback_query if is_callback else update.message
+    if not message_or_query: 
+        return
+
+    tos_url = context.application.bot_data.get('tos_url') if context.application else None
+    if not tos_url:
+        text = "❌ ссылка на пользовательское соглашение недоступна. Попробуйте позже."
+        # Отправляем как plain текст, чтобы избежать проблем с форматированием
+        try:
+            if is_callback:
+                await update.callback_query.answer("ошибка", show_alert=True)
+                await message_or_query.reply_text(text)
+            else:
+                await message_or_query.reply_text(text)
+        except Exception as e:
+            logger.error(f"show_tos: failed to send error message: {e}")
+        return
+
+    tos_text = f"📜 пользовательское соглашение\n\n{tos_url}"
+    keyboard_inline = [[InlineKeyboardButton("⬅️ назад", callback_data="show_menu")]]
+    reply_markup = InlineKeyboardMarkup(keyboard_inline)
+
+    try:
+        if is_callback:
+            query = update.callback_query
+            # Попробуем отредактировать текущее сообщение
+            try:
+                await query.edit_message_text(tos_text, reply_markup=reply_markup, parse_mode=None, disable_web_page_preview=True)
+            except BadRequest as e:
+                if "message is not modified" in str(e).lower():
+                    await query.answer()
+                else:
+                    # Если нельзя отредактировать, отправим новым сообщением
+                    await send_safe_message(message_or_query, tos_text, reply_markup=reply_markup, disable_web_page_preview=True)
+        else:
+            await send_safe_message(message_or_query, tos_text, reply_markup=reply_markup, disable_web_page_preview=True)
+    except Exception as e:
+        logger.error(f"show_tos: failed to display ToS: {e}", exc_info=True)
+        try:
+            if is_callback:
+                await update.callback_query.answer("❌ ошибка отображения", show_alert=True)
+        except Exception:
+            pass
+
 
 async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handles the /menu command and the show_menu callback."""
@@ -2111,8 +2156,11 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             InlineKeyboardButton("мои личности", callback_data="show_mypersonas")
         ],
         [
-            InlineKeyboardButton("подписка", callback_data="subscribe_info"),
+            InlineKeyboardButton("💳 пополнить кредиты", callback_data="buycredits_open"),
             InlineKeyboardButton("помощь", callback_data="show_help")
+        ],
+        [
+            InlineKeyboardButton("📜 пользовательское соглашение", callback_data="show_tos")
         ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -3081,7 +3129,8 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     # Callbacks that DON'T require subscription check
     no_check_callbacks = (
         "view_tos", "subscribe_info", "dummy_", "confirm_pay", "subscribe_pay",
-        "show_help", "show_menu", "show_profile", "show_mypersonas", "show_settings"
+        "show_help", "show_menu", "show_profile", "show_mypersonas", "show_settings",
+        "show_tos"
     )
     if data.startswith(no_check_callbacks):
         needs_subscription_check = False
@@ -3105,6 +3154,12 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     elif data == "view_tos":
         await query.answer()
         await view_tos(update, context)
+    elif data == "buycredits_open":
+        await query.answer()
+        await buycredits(update, context)
+    elif data == "show_tos":
+        await query.answer()
+        await show_tos(update, context)
     elif data == "confirm_pay":
         await query.answer()
         await confirm_pay(update, context)
@@ -3828,6 +3883,8 @@ async def edit_wizard_menu_handler(update: Update, context: ContextTypes.DEFAULT
     
                 
     if data == "finish_edit": return await edit_persona_finish(update, context)
+    if data == "edit_wizard_clear_context":
+        return await clear_persona_context_from_wizard(update, context)
     if data == "back_to_wizard_menu": # Возврат из подменю в главное меню
         # ADDED: Delete the last specific prompt message (e.g., "Enter new name")
         last_prompt_message_id = context.user_data.pop('last_prompt_message_id', None)
@@ -3882,7 +3939,7 @@ async def edit_wizard_menu_handler(update: Update, context: ContextTypes.DEFAULT
     logger.warning(f"Unhandled wizard menu callback: {data} for persona {persona_id}")
     with get_db() as db_session:
         persona = db_session.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
-        return await _show_edit_wizard_menu(update, context, persona_config) if persona_config else ConversationHandler.END
+        return await _show_edit_wizard_menu(update, context, persona) if persona else ConversationHandler.END
 
 # --- Helper to send prompt and store message ID ---
 async def _send_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, reply_markup: InlineKeyboardMarkup) -> None:
@@ -4591,6 +4648,7 @@ async def _show_edit_wizard_menu(update: Update, context: ContextTypes.DEFAULT_T
             [InlineKeyboardButton(f"реакция на медиа ({media_react_map.get(media_react, '?')})", callback_data="edit_wizard_media_reaction")],
             [InlineKeyboardButton(f"макс. сообщ. ({display_for_max_msgs_button})", callback_data="edit_wizard_max_msgs")],
             # [InlineKeyboardButton(f"настроения{star if not is_premium else ''}", callback_data="edit_wizard_moods")], # <-- ЗАКОММЕНТИРОВАНО
+            [InlineKeyboardButton("🗑️ очистить память", callback_data="edit_wizard_clear_context")],
             [InlineKeyboardButton("завершить", callback_data="finish_edit")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -4641,6 +4699,59 @@ async def _show_edit_wizard_menu(update: Update, context: ContextTypes.DEFAULT_T
         if chat_id_fallback:
             try: await context.bot.send_message(chat_id_fallback, "Произошла критическая ошибка при отображении меню настроек.")
             except Exception: pass
+        return ConversationHandler.END
+
+# --- Clear persona context (from wizard) ---
+async def clear_persona_context_from_wizard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Очищает весь контекст (ChatContext) во всех чатах, где активна эта личность."""
+    query = update.callback_query
+    if not query:
+        return ConversationHandler.END
+    persona_id = context.user_data.get('edit_persona_id')
+    user_id = query.from_user.id
+    if not persona_id:
+        try: await query.answer("ошибка: сессия редактирования потеряна", show_alert=True)
+        except Exception: pass
+        return ConversationHandler.END
+
+    try:
+        with get_db() as db:
+            persona = db.query(DBPersonaConfig).options(selectinload(DBPersonaConfig.owner)).filter(
+                DBPersonaConfig.id == persona_id,
+                DBPersonaConfig.owner.has(User.telegram_id == user_id)
+            ).first()
+            if not persona:
+                try: await query.answer("личность не найдена", show_alert=True)
+                except Exception: pass
+                return ConversationHandler.END
+
+            bot_instance = db.query(DBBotInstance).filter(DBBotInstance.persona_config_id == persona.id).first()
+            if bot_instance:
+                links = db.query(DBChatBotInstance).filter(DBChatBotInstance.bot_instance_id == bot_instance.id).all()
+                total_deleted = 0
+                for link in links:
+                    deleted = db.query(ChatContext).filter(ChatContext.chat_bot_instance_id == link.id).delete(synchronize_session=False)
+                    total_deleted += int(deleted or 0)
+                db.commit()
+                logger.info(f"Cleared {total_deleted} context messages for persona {persona.id} across {len(links)} chats")
+
+        try: await query.answer("память очищена")
+        except Exception: pass
+        # Вернемся в меню визарда
+        with get_db() as db2:
+            persona_ref = db2.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
+            if persona_ref:
+                return await _show_edit_wizard_menu(update, context, persona_ref)
+        return ConversationHandler.END
+    except SQLAlchemyError as e:
+        logger.error(f"DB error clearing context for persona {persona_id}: {e}", exc_info=True)
+        try: await query.answer("ошибка базы данных", show_alert=True)
+        except Exception: pass
+        return ConversationHandler.END
+    except Exception as e:
+        logger.error(f"Error in clear_persona_context_from_wizard for persona {persona_id}: {e}", exc_info=True)
+        try: await query.answer("ошибка очистки памяти", show_alert=True)
+        except Exception: pass
         return ConversationHandler.END
 
 # --- Mood Editing Functions (Adapted for Wizard Flow) ---
