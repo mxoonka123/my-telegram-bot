@@ -2736,9 +2736,25 @@ async def bind_bot_token_received(update: Update, context: ContextTypes.DEFAULT_
                         logger.error(f"bind_bot_token_received: failed to commit webhook secret/timestamp/status: {e_db_commit}", exc_info=True)
                         db.rollback()
 
-                    await update.message.reply_text(
-                        f"✅ бот @{bot_username} привязан к личности '{persona.name}' и готов к работе.", parse_mode=None
-                    )
+                    # Авто-активация личности в текущем чате
+                    try:
+                        chat_link = link_bot_instance_to_chat(db, instance.id, chat_id_str)
+                        if chat_link:
+                            await update.message.reply_text(
+                                f"✅ бот @{bot_username} привязан к личности '{persona.name}' и активирован в этом чате. память очищена.",
+                                parse_mode=None
+                            )
+                        else:
+                            await update.message.reply_text(
+                                f"⚠️ бот @{bot_username} привязан к личности '{persona.name}', но не удалось автоматически активировать в этом чате. Используй /addbot {persona_id}.",
+                                parse_mode=None
+                            )
+                    except Exception as link_err:
+                        logger.error(f"bind_bot_token_received: auto-activate link failed: {link_err}", exc_info=True)
+                        await update.message.reply_text(
+                            f"⚠️ бот @{bot_username} привязан к личности '{persona.name}', но авто-активация не удалась. Используй /addbot {persona_id}.",
+                            parse_mode=None
+                        )
                 except Exception as e_webhook:
                     logger.error(f"bind_bot_token_received: failed to set webhook for @{bot_username}: {e_webhook}", exc_info=True)
                     try:
