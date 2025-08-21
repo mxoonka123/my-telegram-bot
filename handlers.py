@@ -198,19 +198,19 @@ async def botsettings_menu_show(update: Update, context: ContextTypes.DEFAULT_TY
     bot_id = context.user_data.get('botsettings_bot_id')
     if not bot_id:
         if q:
-            await q.edit_message_text("Не удалось определить выбранного бота. Запустите /botsettings заново.")
+            await q.edit_message_text("не удалось определить выбранного бота. запустите /botsettings заново.")
         else:
-            await context.bot.send_message(chat_id, "Не удалось определить выбранного бота. Запустите /botsettings заново.")
+            await context.bot.send_message(chat_id, "не удалось определить выбранного бота. запустите /botsettings заново.")
         return ConversationHandler.END
     with get_db() as db:
         bi = db.query(DBBotInstance).filter(DBBotInstance.id == bot_id).first()
         if not bi:
             if q:
-                await q.edit_message_text("Бот не найден.")
+                await q.edit_message_text("бот не найден.")
             else:
-                await context.bot.send_message(chat_id, "Бот не найден.")
+                await context.bot.send_message(chat_id, "бот не найден.")
             return ConversationHandler.END
-        title = bi.telegram_username or bi.name or f"Bot #{bi.id}"
+        title = bi.telegram_username or bi.name or f"bot #{bi.id}"
         access = bi.access_level or 'owner_only'
         try:
             wl = json.loads(bi.whitelisted_users_json or '[]')
@@ -218,18 +218,18 @@ async def botsettings_menu_show(update: Update, context: ContextTypes.DEFAULT_TY
             wl = []
         wl_count = len(wl)
         text = (
-            f"Настройки бота: {title}\n"
-            f"Доступ: {access}\n"
-            f"Белый список: {wl_count} пользователей"
+            f"настройки бота: {title}\n"
+            f"доступ: {access}\n"
+            f"белый список: {wl_count} пользователей"
         )
         kb = [
-            [InlineKeyboardButton("Доступ: public", callback_data="botset_access_public")],
-            [InlineKeyboardButton("Доступ: whitelist", callback_data="botset_access_whitelist")],
-            [InlineKeyboardButton("Доступ: owner_only", callback_data="botset_access_owner_only")],
-            [InlineKeyboardButton("👁 Просмотр whitelist", callback_data="botset_wl_show")],
-            [InlineKeyboardButton("➕ Добавить в whitelist", callback_data="botset_wl_add")],
-            [InlineKeyboardButton("➖ Удалить из whitelist", callback_data="botset_wl_remove")],
-            [InlineKeyboardButton("⬅️ Закрыть", callback_data="botset_close")],
+            [InlineKeyboardButton("доступ: public", callback_data="botset_access_public")],
+            [InlineKeyboardButton("доступ: whitelist", callback_data="botset_access_whitelist")],
+            [InlineKeyboardButton("доступ: owner_only", callback_data="botset_access_owner_only")],
+            [InlineKeyboardButton("👁 просмотр whitelist", callback_data="botset_wl_show")],
+            [InlineKeyboardButton("➕ добавить в whitelist", callback_data="botset_wl_add")],
+            [InlineKeyboardButton("➖ удалить из whitelist", callback_data="botset_wl_remove")],
+            [InlineKeyboardButton("⬅️ закрыть", callback_data="botset_close")],
         ]
         if q:
             try:
@@ -238,7 +238,7 @@ async def botsettings_menu_show(update: Update, context: ContextTypes.DEFAULT_TY
                 # Игнорируем безвредную ошибку от Telegram: "message is not modified"
                 if "message is not modified" in str(e_br).lower():
                     try:
-                        await q.answer("Нет изменений", show_alert=False)
+                        await q.answer("нет изменений", show_alert=False)
                     except Exception:
                         pass
                 else:
@@ -262,7 +262,7 @@ async def botsettings_set_access(update: Update, context: ContextTypes.DEFAULT_T
     with get_db() as db:
         bi = db.query(DBBotInstance).filter(DBBotInstance.id == bot_id).first()
         if not bi:
-            await q.edit_message_text("Бот не найден.")
+            await q.edit_message_text("бот не найден.")
             return ConversationHandler.END
         bi.access_level = new_level
         db.add(bi)
@@ -280,17 +280,17 @@ async def botsettings_wl_show(update: Update, context: ContextTypes.DEFAULT_TYPE
     with get_db() as db:
         bi = db.query(DBBotInstance).filter(DBBotInstance.id == bot_id).first()
         if not bi:
-            await q.edit_message_text("Бот не найден.")
+            await q.edit_message_text("бот не найден.")
             return ConversationHandler.END
         try:
             wl = json.loads(bi.whitelisted_users_json or '[]')
         except Exception:
             wl = []
         if not wl:
-            text = "Белый список пуст."
+            text = "белый список пуст."
         else:
-            text = "Белый список (TG IDs):\n" + "\n".join(f"• {uid}" for uid in wl)
-        kb = [[InlineKeyboardButton("⬅️ Назад", callback_data="botset_back")]]
+            text = "белый список (tg ids):\n" + "\n".join(f"• {uid}" for uid in wl)
+        kb = [[InlineKeyboardButton("⬅️ назад", callback_data="botset_back")]]
         await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=None)
     return BOTSET_MENU
 
@@ -298,10 +298,10 @@ async def botsettings_wl_add_prompt(update: Update, context: ContextTypes.DEFAUL
     q = update.callback_query
     if q:
         await q.answer()
-        await q.edit_message_text("Отправьте numeric Telegram ID пользователя для добавления в whitelist:", parse_mode=None)
+        await q.edit_message_text("отправьте numeric telegram id пользователя для добавления в whitelist:", parse_mode=None)
     else:
         if update.message:
-            await update.message.reply_text("Отправьте numeric Telegram ID пользователя для добавления в whitelist:", parse_mode=None)
+            await update.message.reply_text("отправьте numeric telegram id пользователя для добавления в whitelist:", parse_mode=None)
     return BOTSET_WHITELIST_ADD
 
 async def botsettings_wl_add_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -309,17 +309,17 @@ async def botsettings_wl_add_receive(update: Update, context: ContextTypes.DEFAU
         return BOTSET_WHITELIST_ADD
     text = update.message.text.strip()
     if not text.isdigit():
-        await update.message.reply_text("Нужно отправить числовой Telegram ID.", parse_mode=None)
+        await update.message.reply_text("нужно отправить числовой telegram id.", parse_mode=None)
         return BOTSET_WHITELIST_ADD
     add_id = int(text)
     bot_id = context.user_data.get('botsettings_bot_id')
     if not bot_id:
-        await update.message.reply_text("Сессия настройки утеряна, запустите /botsettings заново.", parse_mode=None)
+        await update.message.reply_text("сессия настройки утеряна, запустите /botsettings заново.", parse_mode=None)
         return ConversationHandler.END
     with get_db() as db:
         bi = db.query(DBBotInstance).filter(DBBotInstance.id == bot_id).first()
         if not bi:
-            await update.message.reply_text("Бот не найден.", parse_mode=None)
+            await update.message.reply_text("бот не найден.", parse_mode=None)
             return ConversationHandler.END
         try:
             wl = json.loads(bi.whitelisted_users_json or '[]')
@@ -330,7 +330,7 @@ async def botsettings_wl_add_receive(update: Update, context: ContextTypes.DEFAU
             bi.whitelisted_users_json = json.dumps(wl, ensure_ascii=False)
             db.add(bi)
             db.commit()
-    await update.message.reply_text("Пользователь добавлен в whitelist.", parse_mode=None)
+    await update.message.reply_text("пользователь добавлен в whitelist.", parse_mode=None)
     return await botsettings_menu_show(update, context)
 
 async def botsettings_wl_remove_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -344,19 +344,19 @@ async def botsettings_wl_remove_prompt(update: Update, context: ContextTypes.DEF
     with get_db() as db:
         bi = db.query(DBBotInstance).filter(DBBotInstance.id == bot_id).first()
         if not bi:
-            await q.edit_message_text("Бот не найден.")
+            await q.edit_message_text("бот не найден.")
             return ConversationHandler.END
         try:
             wl = json.loads(bi.whitelisted_users_json or '[]')
         except Exception:
             wl = []
         if not wl:
-            await q.edit_message_text("Белый список пуст.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="botset_back")]]), parse_mode=None)
+            await q.edit_message_text("белый список пуст.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ назад", callback_data="botset_back")]]), parse_mode=None)
             return BOTSET_MENU
-        kb = [[InlineKeyboardButton(f"Удалить {uid}", callback_data=f"botset_wl_del_{uid}")]]
-        kb = [[InlineKeyboardButton(f"Удалить {uid}", callback_data=f"botset_wl_del_{uid}")] for uid in wl]
-        kb.append([InlineKeyboardButton("⬅️ Назад", callback_data="botset_back")])
-        await q.edit_message_text("Выберите пользователя для удаления:", reply_markup=InlineKeyboardMarkup(kb), parse_mode=None)
+        kb = [[InlineKeyboardButton(f"удалить {uid}", callback_data=f"botset_wl_del_{uid}")]]
+        kb = [[InlineKeyboardButton(f"удалить {uid}", callback_data=f"botset_wl_del_{uid}")] for uid in wl]
+        kb.append([InlineKeyboardButton("⬅️ назад", callback_data="botset_back")])
+        await q.edit_message_text("выберите пользователя для удаления:", reply_markup=InlineKeyboardMarkup(kb), parse_mode=None)
     return BOTSET_WHITELIST_REMOVE
 
 async def botsettings_wl_remove_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -395,7 +395,7 @@ async def botsettings_close(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if q:
         await q.answer()
         try:
-            await q.edit_message_text("Настройки закрыты.")
+            await q.edit_message_text("настройки закрыты.")
         except Exception:
             pass
     return ConversationHandler.END
