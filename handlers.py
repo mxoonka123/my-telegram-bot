@@ -1017,9 +1017,10 @@ def extract_json_from_markdown(text: str) -> str:
     match = re.search(pattern, text, re.DOTALL)
     if match:
         extracted_json = match.group(1).strip()
-        # Safety: if the first standalone line is literally 'text', drop it (legacy messages)
-        if extracted_json.lower().startswith('text\n'):
-            extracted_json = extracted_json.split('\n', 1)[1].lstrip()
+        # Safety: drop a leading language marker line like 'text', 'json', 'markdown', etc.
+        # Examples to strip: 'text', 'text:\n', 'json -', 'md: ', 'plain\n'
+        lang_marker_pattern = r'^(?:json|text|markdown|plain|md)\s*(?::|-)?\s*(?:\r?\n)?'
+        extracted_json = re.sub(lang_marker_pattern, '', extracted_json, flags=re.IGNORECASE)
         logger.debug(f"Extracted JSON from markdown block. Original length: {len(text)}, Extracted length: {len(extracted_json)}")
         return extracted_json
     # If no markdown block is found, maybe the response is already a clean JSON array.
