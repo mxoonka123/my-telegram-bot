@@ -1159,7 +1159,7 @@ async def process_and_send_response(update: Update, context: ContextTypes.DEFAUL
             content_to_save_in_db = "\n".join(text_parts_to_send)
         logger.info(f"Saving CLEAN response to context: '{content_to_save_in_db[:100]}...'")
     else:
-        # --- УЛУЧШЕННЫЙ FALLBACK-БЛОК V2 с ПРЕДОХРАНИТЕЛЕМ ---
+        # --- УЛУЧШЕННЫЙ FALLBACK-БЛОК V3 с УСИЛЕННЫМ ПРЕДОХРАНИТЕЛЕМ ---
         content_to_save_in_db = raw_llm_response # Сохраняем сырой ответ в БД для отладки
         logger.warning(f"JSON parse failed or result was not a list. Using fallback text processing on: '{content_to_save_in_db[:100]}...'")
 
@@ -1167,15 +1167,18 @@ async def process_and_send_response(update: Update, context: ContextTypes.DEFAUL
         forbidden_phrases = [
             "i cannot fulfill", "i am unable to", "as an ai", "as a language model",
             "я не могу", "как языковая модель", "как ии", "простите, но я не могу",
-            "i am just a language model", "inappropriate", "offensive"
+            "i am just a language model", "inappropriate", "offensive",
+            "[ai вернул пустой ответ"  # ловим внутреннее сообщение о пустом ответе
         ]
         if any(phrase in raw_llm_response.lower() for phrase in forbidden_phrases):
-            logger.error(f"!!! ROLE-BREAK DETECTED !!! AI response contained a forbidden phrase. Overriding with a generic in-character response. Original response: '{raw_llm_response[:200]}...'")
+            logger.error(f"!!! ROLE-BREAK/SAFETY BLOCK DETECTED !!! AI response contained a forbidden phrase or was empty. Overriding with a generic in-character response. Original response: '{raw_llm_response[:200]}...'")
             # Заменяем ответ на что-то нейтральное и в рамках роли
             text_parts_to_send = random.choice([
-                ["эм", "я что-то запуталась", "давай сменим тему"],
-                ["так, стоп", "я потеряла мысль", "о чем мы говорили"],
-                ["упс", "кажется, я задумалась о своем", "спроси что-нибудь еще"]
+                ["хм, я что-то задумался", "повтори, пожалуйста, мысль"],
+                ["так, стоп", "я потерял нить разговора", "о чем мы говорили?"],
+                ["упс, я отвлекся", "прости, можешь спросить что-нибудь еще?"],
+                ["даже не знаю, что на это ответить..."],
+                ["окей, проехали", "давай о чем-нибудь другом поговорим"]
             ])
             # Сохраняем в БД все равно сырой ответ для анализа, но пользователю отправляем "безопасный"
         else:

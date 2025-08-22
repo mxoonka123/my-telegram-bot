@@ -70,8 +70,9 @@ Your task is to role-play as a character.
 -   **Mood:** {mood_name} ({mood_prompt})
 
 [USER REQUEST]
-Respond to the last message from user '{username}', considering the dialogue history.
--   Current time: {current_time_info}
+- Respond to the last message from user '{username}'.
+- Current time is {current_time_info}.
+- Use the dialogue history for context.
 
 [OUTPUT FORMAT - CRITICAL]
 Your entire response must be a valid JSON array of strings. Nothing but the array itself.
