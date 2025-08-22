@@ -5,7 +5,6 @@ import json
 import logging
 import re
 from datetime import datetime, timezone, timedelta
-from openai import AsyncOpenAI, OpenAIError
 import os
 import random
 import time
@@ -915,96 +914,6 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 
 # --- Core Logic Helpers ---
 
-# --- ИСПРАВЛЕНИЕ: Удалена дублирующаяся функция get_persona_and_context_with_owner.
-# Теперь она импортируется из db.py
-
-async def send_to_openrouter(system_prompt: str, messages: List[Dict[str, str]], image_data: Optional[bytes] = None, audio_data: Optional[bytes] = None) -> str:
-    """Sends the prompt and context to the OpenRouter API and returns the response."""
-    if not config.OPENROUTER_API_KEY:
-        logger.error("OPENROUTER_API_KEY is not set.")
-        return escape_markdown_v2("❌ ошибка: ключ api для openrouter не настроен.")
-
-    try:
-        client = AsyncOpenAI(
-            api_key=config.OPENROUTER_API_KEY,
-            base_url=config.OPENROUTER_API_BASE_URL,
-        )
-    except Exception as e:
-        logger.error(f"Failed to initialize AsyncOpenAI client for OpenRouter: {e}", exc_info=True)
-        return escape_markdown_v2("❌ ошибка: не удалось инициализировать клиент openrouter.")
-
-    # --- ПРАВИЛЬНАЯ ЛОГИКА ФОРМИРОВАНИЯ ЗАПРОСА ---
-    # 1. Системный промпт идет первым отдельным сообщением с ролью "system".
-    api_messages = [{"role": "system", "content": system_prompt.strip()}]
-
-    # 2. Добавляем всю историю сообщений.
-    for msg in messages:
-        # Роль "assistant" для модели, "user" для пользователя.
-        role = "assistant" if msg.get("role") == "assistant" else "user"
-        api_messages.append({"role": role, "content": msg.get("content", "")})
-    
-    # 3. Обрабатываем изображение, если оно есть, модифицируя ПОСЛЕДНЕЕ сообщение.
-    if image_data and api_messages and api_messages[-1]["role"] == "user":
-        logger.info("Encoding image data to Base64 for Google Gemini Vision model.")
-        last_user_message = api_messages[-1]
-        text_content = last_user_message.get("content", "")
-        base64_image = base64.b64encode(image_data).decode("utf-8")
-        
-        # Модели Vision лучше работают, когда текст и картинка передаются как части одного сообщения
-        last_user_message["content"] = [
-            {"type": "text", "text": text_content},
-            {
-                "type": "image_url",
-                "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}
-            }
-        ]
-        
-    logger.debug(f"Sending to OpenRouter. Model: {config.OPENROUTER_MODEL_NAME}. Total messages in payload: {len(api_messages)}")
-
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            chat_completion = await client.chat.completions.create(
-                model=config.OPENROUTER_MODEL_NAME,
-                messages=api_messages,
-                timeout=120.0,
-                # Можно добавить другие параметры, например, temperature, top_p из persona.config
-            )
-            
-            response_text = chat_completion.choices[0].message.content
-            if not response_text:
-                finish_reason = chat_completion.choices[0].finish_reason
-                logger.warning(f"OpenRouter: Empty text in response. Finish reason: {finish_reason}.")
-                return escape_markdown_v2(f"❌ получен пустой ответ от ai (openrouter). причина: {finish_reason}")
-            
-            return response_text.strip()
-
-        except OpenAIError as e: # Это общий класс ошибок для openai-совместимых API
-            logger.error(f"OpenRouter API request failed (attempt {attempt + 1}/{max_retries}) with status {e.status_code}: {e.response.text}", exc_info=False) # exc_info=False чтобы не дублировать stack trace
-            if e.status_code == 429: # Too Many Requests
-                if attempt < max_retries - 1:
-                    sleep_time = 5 * (attempt + 1)
-                    logger.warning(f"Rate limit exceeded. Retrying in {sleep_time} seconds...")
-                    await asyncio.sleep(sleep_time)
-                    continue
-                return escape_markdown_v2("❌ ошибка: превышен лимит запросов к ai (openrouter). попробуйте позже.")
-            
-            error_detail = e.response.json().get("error", {}).get("message", e.response.text)
-            return escape_markdown_v2(f"❌ ошибка api (openrouter) {e.status_code}: {error_detail}")
-        except httpx.RequestError as e:
-            logger.error(f"OpenRouter API network request failed (attempt {attempt + 1}/{max_retries}): {e}", exc_info=True)
-            if attempt < max_retries - 1:
-                await asyncio.sleep(3 * (attempt + 1))
-                continue
-            return escape_markdown_v2("❌ ошибка сети при обращении к ai (openrouter). попробуйте позже.")
-        except Exception as e:
-            logger.error(f"An unexpected error occurred in send_to_openrouter (attempt {attempt + 1}/{max_retries}): {e}", exc_info=True)
-            if attempt < max_retries - 1:
-                await asyncio.sleep(1)
-                continue
-            return escape_markdown_v2("❌ неизвестная ошибка при обращении к ai (openrouter).")
-
-    return escape_markdown_v2("❌ исчерпаны все попытки обращения к ai (openrouter).")
  
 async def send_to_google_gemini(system_prompt: str, messages: List[Dict[str, str]], image_data: Optional[bytes] = None) -> str:
     """Отправляет запрос напрямую в Google Gemini API и возвращает текст ответа."""
@@ -1640,7 +1549,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
                 if owner_user.is_active_subscriber or owner_user.telegram_id == config.ADMIN_USER_ID:
                     try:
-                        message_tokens = count_openai_compatible_tokens(message_text, config.OPENROUTER_MODEL_NAME)
+                        message_tokens = count_openai_compatible_tokens(message_text, config.GEMINI_MODEL_NAME_FOR_API)
                         if message_tokens > config.PREMIUM_USER_MESSAGE_TOKEN_LIMIT:
                             logger.info(f"Premium user/Admin {owner_user.id} (TG: {owner_user.telegram_id}) exceeded token limit. Tokens: {message_tokens}, Limit: {config.PREMIUM_USER_MESSAGE_TOKEN_LIMIT}")
                             await update.message.reply_text(
@@ -1863,9 +1772,9 @@ async def deduct_credits_for_interaction(
 ) -> None:
     """Рассчитывает и списывает кредиты за одно взаимодействие (текст/фото/голос)."""
     try:
-        from config import CREDIT_COSTS, MODEL_PRICE_MULTIPLIERS, OPENROUTER_MODEL_NAME, LOW_BALANCE_WARNING_THRESHOLD
+        from config import CREDIT_COSTS, MODEL_PRICE_MULTIPLIERS, GEMINI_MODEL_NAME_FOR_API, LOW_BALANCE_WARNING_THRESHOLD
 
-        mult = MODEL_PRICE_MULTIPLIERS.get(OPENROUTER_MODEL_NAME, 1.0)
+        mult = MODEL_PRICE_MULTIPLIERS.get(GEMINI_MODEL_NAME_FOR_API, 1.0)
         total_cost = 0.0
 
         # 1) Базовая стоимость медиа
@@ -1877,11 +1786,11 @@ async def deduct_credits_for_interaction(
 
         # 2) Стоимость токенов
         try:
-            input_tokens = count_openai_compatible_tokens(input_text or "", OPENROUTER_MODEL_NAME)
+            input_tokens = count_openai_compatible_tokens(input_text or "", GEMINI_MODEL_NAME_FOR_API)
         except Exception:
             input_tokens = 0
         try:
-            output_tokens = count_openai_compatible_tokens(output_text or "", OPENROUTER_MODEL_NAME)
+            output_tokens = count_openai_compatible_tokens(output_text or "", GEMINI_MODEL_NAME_FOR_API)
         except Exception:
             output_tokens = 0
 

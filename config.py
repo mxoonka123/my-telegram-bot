@@ -24,12 +24,7 @@ PREMIUM_USER_MONTHLY_MESSAGE_LIMIT = 1000
 PREMIUM_USER_MESSAGE_TOKEN_LIMIT = 120
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 
-# OpenRouter Settings
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
-OPENROUTER_API_BASE_URL = "https://openrouter.ai/api/v1"
-OPENROUTER_MODEL_NAME = "deepseek/deepseek-chat-v3.1"
-
-# Gemini Settings (native Google API)
+# Gemini Settings (native Google API only)
 # Ключ загружается из переменной окружения GEMINI_API_KEY
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_API_BASE_URL = os.getenv(
@@ -38,17 +33,12 @@ GEMINI_API_BASE_URL = os.getenv(
 )
 GEMINI_MODEL_NAME_FOR_API = os.getenv("GEMINI_MODEL_NAME_FOR_API", "gemini-2.5-pro")
 
-if not OPENROUTER_API_KEY:
-    logger.warning("WARNING: Переменная окружения OPENROUTER_API_KEY не установлена!")
-else:
-    logger.info("INFO: OPENROUTER_API_KEY успешно загружена.")
-
 if not GEMINI_API_KEY:
     logger.warning("WARNING: Переменная окружения GEMINI_API_KEY не установлена (нативный Gemini API).")
 else:
     logger.info("INFO: GEMINI_API_KEY успешно загружена для нативного Gemini API.")
-# Для отладки можно добавить print для нового ключа, если нужно
-# print(f"DEBUG config.py: OPENROUTER_API_KEY is defined, length: {len(OPENROUTER_API_KEY) if OPENROUTER_API_KEY else 0}")
+# Для отладки можно добавить print длины ключа, если нужно (не рекомендуем в прод)
+# print(f"DEBUG config.py: GEMINI_API_KEY length: {len(GEMINI_API_KEY) if GEMINI_API_KEY else 0}")
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     logger.critical("CRITICAL: Переменная окружения DATABASE_URL не установлена!")
@@ -115,9 +105,9 @@ CREDIT_COSTS = {
     "audio_per_minute": float(os.getenv("CREDIT_AUDIO_PER_MIN", "1.0")),
 }
 
-# Коэффициент для разных моделей (по умолчанию 1.0 для OPENROUTER_MODEL_NAME)
+# Коэффициент для разных моделей (по умолчанию 1.0 для текущей модели Gemini)
 MODEL_PRICE_MULTIPLIERS = {
-    OPENROUTER_MODEL_NAME: float(os.getenv("CREDIT_MODEL_MULTIPLIER", "1.0")),
+    GEMINI_MODEL_NAME_FOR_API: float(os.getenv("CREDIT_MODEL_MULTIPLIER", "1.0")),
 }
 
 # Минимальный буфер выходных токенов для предварительной проверки баланса

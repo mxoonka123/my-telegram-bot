@@ -10,18 +10,18 @@ MIN_SENSIBLE_LEN = 50   # Минимальная длина для разумн�
 import logging
 import config
 import math
-import tiktoken # Added for OpenRouter token counting
+import tiktoken # Token counting (OpenAI-compatible encodings)
 
 logger = logging.getLogger(__name__)
 
-def count_openai_compatible_tokens(text_content: str, model_identifier: str = config.OPENROUTER_MODEL_NAME) -> int:
+def count_openai_compatible_tokens(text_content: str, model_identifier: str = config.GEMINI_MODEL_NAME_FOR_API) -> int:
     """
     Counts the number of tokens in the text_content using tiktoken,
-    compatible with OpenAI models and OpenRouter's Gemini via OpenAI-compatible API.
+    compatible with OpenAI/Gemini-style model identifiers.
 
     Args:
         text_content: The text to count tokens for.
-        model_identifier: The model identifier (e.g., "google/gemini-2.0-flash-001" or "gpt-4").
+        model_identifier: The model identifier (e.g., "gemini-2.5-pro" or "gpt-4").
                           This helps select the correct tiktoken encoding.
 
     Returns:
@@ -37,7 +37,7 @@ def count_openai_compatible_tokens(text_content: str, model_identifier: str = co
             # Меняем уровень на INFO, так как это ожидаемое поведение для некоторых моделей
             logger.info(
                 f"Model '{model_identifier}' not found by tiktoken's predefined list. "
-                f"This is expected for some OpenRouter models. Using 'cl100k_base' as a reliable fallback."
+                f"Using 'cl100k_base' encoding as a reliable fallback."
             )
             encoding = tiktoken.get_encoding("cl100k_base")
 
