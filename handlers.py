@@ -2635,45 +2635,44 @@ async def char_wiz_finish(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     except Exception as _e:
         logger.warning(f"char_wiz_finish: failed to load base style/verbosity for persona {persona_id}: {_e}")
 
-    # build smart placeholder-based template (lowercase text, no emojis)
+    # build smart placeholder-based template (hybrid language: EN instructions, RU content)
     character_profile_parts = [
-        "[информация о персонаже]",
-        "- имя: {persona_name}",
-        "- описание: {persona_description}",
-        f"- базовый стиль общения: {base_style or '{communication_style}'}; разговорчивость: {base_verbosity or '{verbosity_level}'}.",
+        "[CHARACTER PROFILE]",
+        "-   **Name:** {persona_name}",
+        "-   **Description:** {persona_description}",
+        f"-   **Style:** {base_style or '{communication_style}'}, {base_verbosity or '{verbosity_level}'}.",
     ]
-    if data.get('bio'): character_profile_parts.append(f"- биография: {data.get('bio')}")
-    if data.get('traits'): character_profile_parts.append(f"- черты характера: {data.get('traits')}")
-    if data.get('speech'): character_profile_parts.append(f"- манера речи: {data.get('speech')}")
-    if data.get('likes'): character_profile_parts.append(f"- любит: {data.get('likes')}")
-    if data.get('dislikes'): character_profile_parts.append(f"- не любит: {data.get('dislikes')}")
-    if data.get('goals'): character_profile_parts.append(f"- цели и мотивация: {data.get('goals')}")
-    if data.get('taboos'): character_profile_parts.append(f"- табу и ограничения: {data.get('taboos')}")
+    if data.get('bio'): character_profile_parts.append(f"-   **Biography:** {data.get('bio')}")
+    if data.get('traits'): character_profile_parts.append(f"-   **Traits:** {data.get('traits')}")
+    if data.get('speech'): character_profile_parts.append(f"-   **Speech Manner:** {data.get('speech')}")
+    if data.get('likes'): character_profile_parts.append(f"-   **Likes:** {data.get('likes')}")
+    if data.get('dislikes'): character_profile_parts.append(f"-   **Dislikes:** {data.get('dislikes')}")
+    if data.get('goals'): character_profile_parts.append(f"-   **Goals:** {data.get('goals')}")
+    if data.get('taboos'): character_profile_parts.append(f"-   **Special Rules (Taboos):** {data.get('taboos')}")
 
     character_profile = "\n".join(character_profile_parts)
 
     rules_parts = [
-        "[правила роли — строго соблюдать]",
-        "1) ты — {persona_name}. не упоминай, что ты ии или бот.",
-        "2) не выходи из образа. опирайся на профиль выше.",
-        "3) поддерживай диалог естественно и по существу.",
-        "4) отвечай без смайлов и эмодзи. пиши в нижнем регистре.",
+        "[ROLE-PLAYING RULES - FOLLOW STRICTLY]",
+        "1.  **You are {persona_name}.** Never, under any circumstances, mention that you are an AI, language model, or bot.",
+        "2.  **Stay in character.** Your entire personality, knowledge, and opinions are defined by the profile above.",
+        "3.  **Continue the dialogue naturally.** Do not greet the user again if the conversation has already started.",
     ]
     rules = "\n".join(rules_parts)
 
     task_block = (
-        "[контекст и задача]\n"
-        "- текущее время: {current_time_info}\n"
-        "- настроение: {mood_name} ({mood_prompt})\n"
-        "- пользователь: @{username} (id: {user_id}), чат: {chat_id}\n"
-        "- твоя задача: естественно ответить на последнее сообщение пользователя в рамках роли."
+        "[TASK]\n"
+        "-   **Current Time:** {current_time_info}\n"
+        "-   **Your Mood:** {mood_name} ({mood_prompt})\n"
+        "-   **User:** @{username} (id: {user_id}), chat: {chat_id}\n"
+        "-   **Goal:** Provide a natural and engaging response to the user's last message, consistent with your role."
     )
 
     format_block = (
-        "[формат ответа — критически важно]\n"
-        "верни строго валидный json-массив строк. ничего кроме. пример:\n"
-        "[\"пример\", \"ответа из двух сообщений\"]\n\n"
-        "[твой ответ в формате json]:"
+        "[OUTPUT FORMAT - CRITICAL]\n"
+        "Your entire response MUST be a valid JSON array of strings. Start with `[` and end with `]`. Nothing else.\n"
+        "Example: `[\"Пример.\", \"Ответа из двух сообщений!\"]`\n\n"
+        "[YOUR JSON RESPONSE]:"
     )
 
     template = f"{character_profile}\n\n{rules}\n\n{task_block}\n\n{format_block}"
