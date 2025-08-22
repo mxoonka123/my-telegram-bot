@@ -29,13 +29,24 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 OPENROUTER_API_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_MODEL_NAME = "deepseek/deepseek-chat-v3.1"
 
-# Gemini Settings (using OpenRouter key by default)
-GEMINI_API_KEY = OPENROUTER_API_KEY
+# Gemini Settings (native Google API)
+# Ключ загружается из переменной окружения GEMINI_API_KEY
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GEMINI_API_BASE_URL = os.getenv(
+    "GEMINI_API_BASE_URL",
+    "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent",
+)
+GEMINI_MODEL_NAME_FOR_API = os.getenv("GEMINI_MODEL_NAME_FOR_API", "gemini-2.5-pro")
 
 if not OPENROUTER_API_KEY:
     logger.warning("WARNING: Переменная окружения OPENROUTER_API_KEY не установлена!")
 else:
     logger.info("INFO: OPENROUTER_API_KEY успешно загружена.")
+
+if not GEMINI_API_KEY:
+    logger.warning("WARNING: Переменная окружения GEMINI_API_KEY не установлена (нативный Gemini API).")
+else:
+    logger.info("INFO: GEMINI_API_KEY успешно загружена для нативного Gemini API.")
 # Для отладки можно добавить print для нового ключа, если нужно
 # print(f"DEBUG config.py: OPENROUTER_API_KEY is defined, length: {len(OPENROUTER_API_KEY) if OPENROUTER_API_KEY else 0}")
 DATABASE_URL = os.getenv("DATABASE_URL")

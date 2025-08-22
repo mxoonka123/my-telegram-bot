@@ -1005,6 +1005,102 @@ async def send_to_openrouter(system_prompt: str, messages: List[Dict[str, str]],
             return escape_markdown_v2("❌ неизвестная ошибка при обращении к ai (openrouter).")
 
     return escape_markdown_v2("❌ исчерпаны все попытки обращения к ai (openrouter).")
+ 
+async def send_to_google_gemini(system_prompt: str, messages: List[Dict[str, str]], image_data: Optional[bytes] = None) -> str:
+    """Отправляет запрос напрямую в Google Gemini API и возвращает текст ответа."""
+    if not config.GEMINI_API_KEY:
+        logger.error("GEMINI_API_KEY не установлен (нативный Gemini API).")
+        return "[ошибка: ключ api для google gemini не настроен.]"
+
+    # 1) systemInstruction
+    system_instruction = {"parts": [{"text": system_prompt.strip()}]}
+
+    # 2) contents из истории
+    contents: List[Dict[str, Any]] = []
+    for m in messages:
+        role = "model" if m.get("role") == "assistant" else "user"
+        contents.append({
+            "role": role,
+            "parts": [{"text": m.get("content", "")}]
+        })
+
+    # 3) Картинка как inlineData в последнем user-сообщении
+    if image_data and contents and contents[-1].get("role") == "user":
+        try:
+            base64_image = base64.b64encode(image_data).decode("utf-8")
+            contents[-1]["parts"].append({
+                "inlineData": {
+                    "mimeType": "image/jpeg",
+                    "data": base64_image,
+                }
+            })
+        except Exception as img_e:
+            logger.warning(f"send_to_google_gemini: failed to attach image: {img_e}")
+
+    payload = {
+        "contents": contents,
+        "systemInstruction": system_instruction,
+        "generationConfig": {
+            "responseMimeType": "application/json",
+            "temperature": 0.8,
+            "topP": 0.95,
+        }
+    }
+
+    headers = {
+        "Content-Type": "application/json",
+        "X-goog-api-key": config.GEMINI_API_KEY,
+    }
+
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                resp = await client.post(config.GEMINI_API_BASE_URL, json=payload, headers=headers)
+                resp.raise_for_status()
+
+            data = resp.json()
+            # Структура: { candidates: [ { content: { parts: [ {text: ...} ] }, finishReason } ] }
+            candidates = data.get("candidates") or []
+            if candidates:
+                content = candidates[0].get("content", {})
+                parts = content.get("parts") or []
+                if parts and isinstance(parts, list):
+                    response_text = parts[0].get("text", "")
+                    if response_text:
+                        return response_text.strip()
+            finish_reason = (candidates[0].get("finishReason") if candidates else None) or "UNKNOWN"
+            logger.warning(f"Google Gemini: пустой/некорректный ответ. finishReason={finish_reason}; full={str(data)[:300]}...")
+            return f"[ai вернул пустой ответ. причина: {finish_reason}]"
+
+        except httpx.HTTPStatusError as e:
+            status = e.response.status_code if e.response else 'NA'
+            body = e.response.text if e.response else str(e)
+            logger.error(f"Google API HTTP error (attempt {attempt+1}/{max_retries}) status={status}: {body}")
+            if status == 429 and attempt < max_retries - 1:
+                sleep_time = 5 * (attempt + 1)
+                logger.warning(f"Rate limit (Google). retry in {sleep_time}s...")
+                await asyncio.sleep(sleep_time)
+                continue
+            try:
+                detail = e.response.json().get("error", {}).get("message", body)
+            except Exception:
+                detail = body
+            return f"[ошибка google api {status}: {detail}]"
+        except httpx.RequestError as e:
+            logger.error(f"Google API network error (attempt {attempt+1}/{max_retries}): {e}")
+            if attempt < max_retries - 1:
+                await asyncio.sleep(3 * (attempt + 1))
+                continue
+            return "[сетевая ошибка при обращении к google api. попробуйте позже.]"
+        except Exception as e:
+            logger.error(f"Unexpected error in send_to_google_gemini (attempt {attempt+1}/{max_retries}): {e}", exc_info=True)
+            if attempt < max_retries - 1:
+                await asyncio.sleep(1)
+                continue
+            return "[неизвестная ошибка при обращении к google api.]"
+
+    return "[исчерпаны все попытки обращения к google api.]"
 def extract_json_from_markdown(text: str) -> str:
     """
     Extracts a JSON string from a markdown code block (e.g., ```json...```).
@@ -1679,8 +1775,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
                     # Контекст для ИИ - это история + новое сообщение
                     context_for_ai = initial_context_from_db + [{"role": "user", "content": f"{username}: {message_text}"}]
-                    # Отправляем системный промпт и контекст раздельно
-                    assistant_response_text = await send_to_openrouter(system_prompt, context_for_ai)
+                    # Отправляем системный промпт и контекст раздельно (нативный Google Gemini)
+                    assistant_response_text = await send_to_google_gemini(system_prompt, context_for_ai)
 
                     context_response_prepared = False
                     if assistant_response_text and not assistant_response_text.startswith("❌"):
@@ -1939,7 +2035,8 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
 
             add_message_to_context(db, persona.chat_instance.id, "user", user_message_content)
             
-            ai_response_text = await send_to_openrouter(system_prompt, context_for_ai, image_data=image_data, audio_data=audio_data)
+            # audio_data не передаем в нативный Google API
+            ai_response_text = await send_to_google_gemini(system_prompt, context_for_ai, image_data=image_data)
             logger.debug(f"Received response from AI for {media_type}: {ai_response_text[:100]}...")
 
             # --- новое списание кредитов ---
