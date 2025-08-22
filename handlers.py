@@ -1092,11 +1092,12 @@ async def process_and_send_response(update: Update, context: ContextTypes.DEFAUL
                 parts = [part.strip() for part in cleaned_response.split('\n') if part.strip()]
                 if parts:
                     text_parts_to_send = parts
-                    content_to_save_override = cleaned_response
+                    # Единый источник правды: сохраняем то же, что отправляем
+                    content_to_save_override = "\n".join(parts)
                 else:
                     # Совсем пусто — только тогда отправляем вежливую ошибку
                     text_parts_to_send = ["[ai вернул пустой или некорректный ответ. попробуйте еще раз.]"]
-                    content_to_save_override = f"[SYSTEM ERROR: Empty response after fallback: {raw_llm_response}]"
+                    content_to_save_override = f"[system error: empty response from llm: {raw_llm_response}]"
                 is_json_parsed = True
         else:
             # Нет \u — сразу трактуем ответ как обычный текст (скорее всего, модель просто забыła обернуть в JSON)
@@ -1105,10 +1106,11 @@ async def process_and_send_response(update: Update, context: ContextTypes.DEFAUL
             parts = [part.strip() for part in cleaned_response.split('\n') if part.strip()]
             if parts:
                 text_parts_to_send = parts
-                content_to_save_override = cleaned_response
+                # Единый источник правды: сохраняем то же, что отправляем
+                content_to_save_override = "\n".join(parts)
             else:
                 text_parts_to_send = ["[ai вернул пустой или некорректный ответ. попробуйте еще раз.]"]
-                content_to_save_override = f"[SYSTEM ERROR: Empty response after fallback: {raw_llm_response}]"
+                content_to_save_override = f"[system error: empty response from llm: {raw_llm_response}]"
             is_json_parsed = True
 
     content_to_save_in_db = ""
