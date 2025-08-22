@@ -1071,8 +1071,8 @@ async def process_and_send_response(update: Update, context: ContextTypes.DEFAUL
             is_json_parsed = False
             text_parts_to_send = None
     except (json.JSONDecodeError, TypeError):
-        # Если стандартный парсинг не удался, проверяем, есть ли в строке \u.
-        # Это может помочь, если LLM вернул некорректный JSON, но с правильными escape-последовательностями.
+        # Если стандартный парсинг не удался — пытаемся быть снисходительными.
+        # 1) Пробуем unicode_escape, если есть \u.
         if '\\u' in json_string_candidate:
             logger.warning("Standard JSON parse failed, but '\\u' found. Trying unicode_escape fallback.")
             try:
@@ -1083,20 +1083,33 @@ async def process_and_send_response(update: Update, context: ContextTypes.DEFAUL
                     is_json_parsed = True
                     logger.info(f"Successfully parsed JSON array with {len(text_parts_to_send)} items (unicode_escape fallback).")
                 else:
-                    # Unicode fallback дал валидный JSON, но не массив — считаем это ошибкой формата
+                    # Unicode fallback дал валидный JSON, но не массив — продолжаем как с обычным текстом
                     raise json.JSONDecodeError("Valid JSON but not a list", decoded_string, 0)
             except (json.JSONDecodeError, TypeError, UnicodeDecodeError) as fallback_e:
-                logger.error(f"КРИТИЧЕСКАЯ ОШИБКА JSON (unicode_escape fallback): {fallback_e}. Сырой ответ: '{raw_llm_response}'")
-                error_message = "[произошла ошибка при обработке ответа от ai. попробуйте, пожалуйста, еще раз.]"
-                text_parts_to_send = [error_message]
-                is_json_parsed = True  # чтобы обойти fallback на мусор ниже
-                content_to_save_override = f"[SYSTEM ERROR: Invalid JSON response from LLM (unicode): {raw_llm_response}]"
+                # Считаем, что модель прислала обычный текст.
+                logger.warning(f"unicode_escape fallback failed ({fallback_e}). Treating RAW response as plain text.")
+                cleaned_response = raw_llm_response.strip()
+                parts = [part.strip() for part in cleaned_response.split('\n') if part.strip()]
+                if parts:
+                    text_parts_to_send = parts
+                    content_to_save_override = cleaned_response
+                else:
+                    # Совсем пусто — только тогда отправляем вежливую ошибку
+                    text_parts_to_send = ["[ai вернул пустой или некорректный ответ. попробуйте еще раз.]"]
+                    content_to_save_override = f"[SYSTEM ERROR: Empty response after fallback: {raw_llm_response}]"
+                is_json_parsed = True
         else:
-            logger.error(f"КРИТИЧЕСКАЯ ОШИБКА JSON: модель вернула невалидный json. Candidate: '{json_string_candidate[:200]}...', RAW: '{raw_llm_response}'")
-            error_message = "[произошла ошибка при обработке ответа от ai. попробуйте, пожалуйста, еще раз.]"
-            text_parts_to_send = [error_message]
-            is_json_parsed = True  # чтобы не заходить в текстовый fallback
-            content_to_save_override = f"[SYSTEM ERROR: Invalid JSON response from LLM: {raw_llm_response}]"
+            # Нет \u — сразу трактуем ответ как обычный текст (скорее всего, модель просто забыła обернуть в JSON)
+            logger.warning(f"JSON parse failed. Treating RAW response as plain text. Candidate preview: '{json_string_candidate[:200]}...'")
+            cleaned_response = raw_llm_response.strip()
+            parts = [part.strip() for part in cleaned_response.split('\n') if part.strip()]
+            if parts:
+                text_parts_to_send = parts
+                content_to_save_override = cleaned_response
+            else:
+                text_parts_to_send = ["[ai вернул пустой или некорректный ответ. попробуйте еще раз.]"]
+                content_to_save_override = f"[SYSTEM ERROR: Empty response after fallback: {raw_llm_response}]"
+            is_json_parsed = True
 
     content_to_save_in_db = ""
     if is_json_parsed and text_parts_to_send is not None:
