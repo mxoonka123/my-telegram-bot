@@ -1049,6 +1049,7 @@ async def process_and_send_response(update: Update, context: ContextTypes.DEFAUL
     logger.debug(f"Candidate after extraction preview: '{json_string_candidate[:200]}'")
     text_parts_to_send = None
     is_json_parsed = False
+    content_to_save_override = None  # when set, will be saved into DB instead of normal content
 
     try:
         # Сначала пробуем стандартный парсинг. json.loads сам справится с \uXXXX.
@@ -1082,16 +1083,20 @@ async def process_and_send_response(update: Update, context: ContextTypes.DEFAUL
                     is_json_parsed = True
                     logger.info(f"Successfully parsed JSON array with {len(text_parts_to_send)} items (unicode_escape fallback).")
                 else:
-                    is_json_parsed = False
-                    text_parts_to_send = None
+                    # Unicode fallback дал валидный JSON, но не массив — считаем это ошибкой формата
+                    raise json.JSONDecodeError("Valid JSON but not a list", decoded_string, 0)
             except (json.JSONDecodeError, TypeError, UnicodeDecodeError) as fallback_e:
-                logger.error(f"Fallback parsing with unicode_escape also failed: {fallback_e}")
-                is_json_parsed = False
-                text_parts_to_send = None
+                logger.error(f"КРИТИЧЕСКАЯ ОШИБКА JSON (unicode_escape fallback): {fallback_e}. Сырой ответ: '{raw_llm_response}'")
+                error_message = "[произошла ошибка при обработке ответа от ai. попробуйте, пожалуйста, еще раз.]"
+                text_parts_to_send = [error_message]
+                is_json_parsed = True  # чтобы обойти fallback на мусор ниже
+                content_to_save_override = f"[SYSTEM ERROR: Invalid JSON response from LLM (unicode): {raw_llm_response}]"
         else:
-            logger.warning(f"Standard JSON parse failed. No '\\u' detected. String: '{json_string_candidate[:200]}...'")
-            is_json_parsed = False
-            text_parts_to_send = None
+            logger.error(f"КРИТИЧЕСКАЯ ОШИБКА JSON: модель вернула невалидный json. Candidate: '{json_string_candidate[:200]}...', RAW: '{raw_llm_response}'")
+            error_message = "[произошла ошибка при обработке ответа от ai. попробуйте, пожалуйста, еще раз.]"
+            text_parts_to_send = [error_message]
+            is_json_parsed = True  # чтобы не заходить в текстовый fallback
+            content_to_save_override = f"[SYSTEM ERROR: Invalid JSON response from LLM: {raw_llm_response}]"
 
     content_to_save_in_db = ""
     if is_json_parsed and text_parts_to_send is not None:
@@ -1110,7 +1115,10 @@ async def process_and_send_response(update: Update, context: ContextTypes.DEFAUL
                 except (json.JSONDecodeError, TypeError):
                     logger.warning("Failed to re-parse nested JSON string, proceeding with the original single part.")
 
-        content_to_save_in_db = "\n".join(text_parts_to_send)
+        if content_to_save_override is not None:
+            content_to_save_in_db = content_to_save_override
+        else:
+            content_to_save_in_db = "\n".join(text_parts_to_send)
         logger.info(f"Saving CLEAN response to context: '{content_to_save_in_db[:100]}...'")
     else:
         # --- УЛУЧШЕННЫЙ FALLBACK-БЛОК V2 с ПРЕДОХРАНИТЕЛЕМ ---
