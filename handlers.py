@@ -70,6 +70,7 @@ from yookassa import Configuration as YookassaConfig, Payment
 from yookassa.domain.models.currency import Currency
 from yookassa.domain.request.payment_request_builder import PaymentRequestBuilder
 from yookassa.domain.models.receipt import Receipt, ReceiptItem
+from openai import AsyncOpenAI, APIStatusError, APIConnectionError
 
 # --- ИСПРАВЛЕНИЕ: Добавлены импорты из config.py для устранения NameError ---
 import config
@@ -914,120 +915,74 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 
 # --- Core Logic Helpers ---
 
- 
-async def send_to_google_gemini(system_prompt: str, messages: List[Dict[str, str]], image_data: Optional[bytes] = None) -> str:
-    """Отправляет запрос напрямую в Google Gemini API и возвращает текст ответа."""
-    if not config.GEMINI_API_KEY:
-        logger.error("GEMINI_API_KEY не установлен (нативный Gemini API).")
-        return "[ошибка: ключ api для google gemini не настроен.]"
+# OpenRouter Async Client (initialized once)
+openrouter_client = AsyncOpenAI(
+    base_url=config.OPENROUTER_API_BASE_URL,
+    api_key=config.OPENROUTER_API_KEY,
+    default_headers={
+        "HTTP-Referer": config.OPENROUTER_SITE_URL,
+        "X-Title": "NuNuAiBot",
+    },
+)
 
-    # 1) systemInstruction
-    system_instruction = {"parts": [{"text": system_prompt.strip()}]}
+async def send_to_openrouter_llm(system_prompt: str, messages: List[Dict[str, str]], image_data: Optional[bytes] = None) -> str:
+    """Отправляет запрос в OpenRouter API (OpenAI-совместимый) и возвращает текст ответа."""
+    if not config.OPENROUTER_API_KEY:
+        logger.error("OPENROUTER_API_KEY не установлен.")
+        return "[ошибка: ключ api для openrouter не настроен.]"
 
-    # 2) contents из истории
-    contents: List[Dict[str, Any]] = []
-    for m in messages:
-        role = "model" if m.get("role") == "assistant" else "user"
-        contents.append({
-            "role": role,
-            "parts": [{"text": m.get("content", "")}]
-        })
+    # Формируем список сообщений в формате OpenAI
+    openai_messages: List[Dict[str, Any]] = [{"role": "system", "content": system_prompt.strip()}]
 
-    # 3) Картинка как inlineData в последнем user-сообщении
-    if image_data and contents and contents[-1].get("role") == "user":
-        try:
-            base64_image = base64.b64encode(image_data).decode("utf-8")
-            contents[-1]["parts"].append({
-                "inlineData": {
-                    "mimeType": "image/jpeg",
-                    "data": base64_image,
-                }
-            })
-        except Exception as img_e:
-            logger.warning(f"send_to_google_gemini: failed to attach image: {img_e}")
+    for idx, msg in enumerate(messages):
+        role = msg.get("role", "user")
+        content = msg.get("content", "")
+        is_last_user_message = (idx == len(messages) - 1 and role == "user")
 
-    payload = {
-        "contents": contents,
-        "systemInstruction": system_instruction,
-        "generationConfig": {
-            "responseMimeType": "application/json",
-            "temperature": 0.8,
-            "topP": 0.95,
-        },
-        "safetySettings": [
-            {
-                "category": "HARM_CATEGORY_HARASSMENT",
-                "threshold": "BLOCK_NONE"
-            },
-            {
-                "category": "HARM_CATEGORY_HATE_SPEECH",
-                "threshold": "BLOCK_NONE"
-            },
-            {
-                "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-                "threshold": "BLOCK_NONE"
-            },
-            {
-                "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
-                "threshold": "BLOCK_NONE"
-            }
-        ]
-    }
-
-    headers = {
-        "Content-Type": "application/json",
-        "X-goog-api-key": config.GEMINI_API_KEY,
-    }
-
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                resp = await client.post(config.GEMINI_API_BASE_URL, json=payload, headers=headers)
-                resp.raise_for_status()
-
-            data = resp.json()
-            # Структура: { candidates: [ { content: { parts: [ {text: ...} ] }, finishReason } ] }
-            candidates = data.get("candidates") or []
-            if candidates:
-                content = candidates[0].get("content", {})
-                parts = content.get("parts") or []
-                if parts and isinstance(parts, list):
-                    response_text = parts[0].get("text", "")
-                    if response_text:
-                        return response_text.strip()
-            finish_reason = (candidates[0].get("finishReason") if candidates else None) or "UNKNOWN"
-            logger.warning(f"Google Gemini: пустой/некорректный ответ. finishReason={finish_reason}; full={str(data)[:300]}...")
-            return f"[ai вернул пустой ответ. причина: {finish_reason}]"
-
-        except httpx.HTTPStatusError as e:
-            status = e.response.status_code if e.response else 'NA'
-            body = e.response.text if e.response else str(e)
-            logger.error(f"Google API HTTP error (attempt {attempt+1}/{max_retries}) status={status}: {body}")
-            if status == 429 and attempt < max_retries - 1:
-                sleep_time = 5 * (attempt + 1)
-                logger.warning(f"Rate limit (Google). retry in {sleep_time}s...")
-                await asyncio.sleep(sleep_time)
-                continue
+        if is_last_user_message and image_data:
             try:
-                detail = e.response.json().get("error", {}).get("message", body)
-            except Exception:
-                detail = body
-            return f"[ошибка google api {status}: {detail}]"
-        except httpx.RequestError as e:
-            logger.error(f"Google API network error (attempt {attempt+1}/{max_retries}): {e}")
-            if attempt < max_retries - 1:
-                await asyncio.sleep(3 * (attempt + 1))
-                continue
-            return "[сетевая ошибка при обращении к google api. попробуйте позже.]"
-        except Exception as e:
-            logger.error(f"Unexpected error in send_to_google_gemini (attempt {attempt+1}/{max_retries}): {e}", exc_info=True)
-            if attempt < max_retries - 1:
-                await asyncio.sleep(1)
-                continue
-            return "[неизвестная ошибка при обращении к google api.]"
+                base64_image = base64.b64encode(image_data).decode("utf-8")
+                openai_messages.append({
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": content},
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}},
+                    ],
+                })
+            except Exception as img_e:
+                logger.warning(f"send_to_openrouter_llm: не удалось прикрепить изображение: {img_e}")
+                openai_messages.append({"role": role, "content": content})
+        else:
+            openai_messages.append({"role": role, "content": content})
 
-    return "[исчерпаны все попытки обращения к google api.]"
+    try:
+        chat_completion = await openrouter_client.chat.completions.create(
+            model=config.OPENROUTER_MODEL_NAME,
+            messages=openai_messages,
+            temperature=0.8,
+            top_p=0.95,
+            response_format={"type": "json_object"},
+        )
+        response_text = chat_completion.choices[0].message.content
+        if not response_text:
+            finish_reason = getattr(chat_completion.choices[0], 'finish_reason', 'unknown')
+            logger.warning(f"OpenRouter: пустой ответ. Finish reason: {finish_reason}")
+            return f"[ai вернул пустой ответ. причина: {finish_reason}]"
+        return response_text.strip()
+    except APIStatusError as e:
+        try:
+            detail = e.response.json().get('error', {}).get('message', '') if e.response else ''
+        except Exception:
+            detail = ''
+        logger.error(f"OpenRouter API error (status={getattr(e, 'status_code', 'NA')}): {detail or e}")
+        return f"[ошибка openrouter api {getattr(e, 'status_code', 'NA')}: {detail or 'нет деталей'}]"
+    except APIConnectionError as e:
+        logger.error(f"OpenRouter network error: {e}")
+        return "[сетевая ошибка при обращении к openrouter api. попробуйте позже.]"
+    except Exception as e:
+        logger.error(f"Unexpected error in send_to_openrouter_llm: {e}", exc_info=True)
+        return "[неизвестная ошибка при обращении к openrouter api.]"
+    # (удалено) send_to_google_gemini(): устаревшая реализация Gemini API. Все звонки переведены на OpenRouter.
 def extract_json_from_markdown(text: str) -> str:
     """
     Extracts a JSON string from a markdown code block (e.g., ```json...```).
@@ -1705,8 +1660,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
                     # Контекст для ИИ - это история + новое сообщение
                     context_for_ai = initial_context_from_db + [{"role": "user", "content": f"{username}: {message_text}"}]
-                    # Отправляем системный промпт и контекст раздельно (нативный Google Gemini)
-                    assistant_response_text = await send_to_google_gemini(system_prompt, context_for_ai)
+                    # Отправляем системный промпт и контекст вместе в OpenRouter
+                    assistant_response_text = await send_to_openrouter_llm(system_prompt, context_for_ai)
 
                     context_response_prepared = False
                     if assistant_response_text and not assistant_response_text.startswith("❌"):
@@ -1965,8 +1920,8 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
 
             add_message_to_context(db, persona.chat_instance.id, "user", user_message_content)
             
-            # audio_data не передаем в нативный Google API
-            ai_response_text = await send_to_google_gemini(system_prompt, context_for_ai, image_data=image_data)
+            # audio_data не передаем, модель принимает текст + картинку
+            ai_response_text = await send_to_openrouter_llm(system_prompt, context_for_ai, image_data=image_data)
             logger.debug(f"Received response from AI for {media_type}: {ai_response_text[:100]}...")
 
             # --- новое списание кредитов ---
@@ -6138,86 +6093,10 @@ async def edit_message_volume_received(update: Update, context: ContextTypes.DEF
 
 # ... (остальные функции) ...
 
-async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handles the /reset command to clear persona context in the current chat."""
-    if not update.message: return
-    chat_id_str = str(update.effective_chat.id)
-    user_id = update.effective_user.id
-    username = update.effective_user.username or f"id_{user_id}"
-    logger.info(f"CMD /reset V3 < User {user_id} ({username}) in Chat {chat_id_str}") # V3
 
-    # Проверка подписки канала (если нужна)
-    if not await check_channel_subscription(update, context):
-        await send_subscription_required_message(update, context)
-        return
-
-    # Сообщения без Markdown
-    error_no_persona_raw = "🎭 в этом чате нет активной личности для сброса."
-    error_not_owner_raw = "❌ только владелец личности или админ может сбросить её память."
-    error_no_instance_raw = "❌ ошибка: не найден экземпляр бота для сброса."
-    error_db_raw = "❌ ошибка базы данных при сбросе контекста."
-    error_general_raw = "❌ ошибка при сбросе контекста."
-    success_reset_fmt_raw = "✅ память личности '{persona_name}' в этом чате очищена ({count} сообщений удалено)."
-
-    with get_db() as db:
-        try:
-            current_bot_id_str = str(context.bot.id) if getattr(context, 'bot', None) and getattr(context.bot, 'id', None) else None
-            persona_info_tuple = get_persona_and_context_with_owner(chat_id_str, db, current_bot_id_str)
-            if not persona_info_tuple:
-                # Используем parse_mode=None
-                await update.message.reply_text(error_no_persona_raw, reply_markup=ReplyKeyboardRemove(), parse_mode=None)
-                return
-            persona, _, owner_user = persona_info_tuple
-            persona_name_raw = persona.name
-
-            # Проверка прав: владелец или админ бота
-            if owner_user.telegram_id != user_id and not is_admin(user_id):
-                logger.warning(f"User {user_id} attempted to reset persona '{persona_name_raw}' owned by {owner_user.telegram_id} in chat {chat_id_str}.")
-                # Используем parse_mode=None
-                await update.message.reply_text(error_not_owner_raw, reply_markup=ReplyKeyboardRemove(), parse_mode=None)
-                return
-
-            chat_bot_instance = persona.chat_instance
-            if not chat_bot_instance:
-                logger.error(f"Reset command V3: ChatBotInstance not found for persona {persona_name_raw} in chat {chat_id_str}")
-                # Используем parse_mode=None
-                await update.message.reply_text(error_no_instance_raw, parse_mode=None)
-                return
-
-            chat_bot_instance_id = chat_bot_instance.id
-            logger.warning(f"User {user_id} resetting context for ChatBotInstance {chat_bot_instance_id} (Persona '{persona_name_raw}') in chat {chat_id_str} using explicit delete.")
-
-            # --- ИСПРАВЛЕННЫЙ КОД УДАЛЕНИЯ ---
-            stmt = delete(ChatContext).where(ChatContext.chat_bot_instance_id == chat_bot_instance_id)
-            result = db.execute(stmt)
-            deleted_count = result.rowcount
-            # --- КОНЕЦ ИСПРАВЛЕННОГО КОДА ---
-
-            # Коммитим удаление
-            db.commit()
-            logger.info(f"Deleted {deleted_count} context messages for instance {chat_bot_instance_id} via /reset V3.")
-
-            # Форматируем сообщение об успехе без Markdown
-            final_success_msg_raw = success_reset_fmt_raw.format(persona_name=persona_name_raw, count=deleted_count)
-
-            # Используем parse_mode=None
-            await update.message.reply_text(final_success_msg_raw, reply_markup=ReplyKeyboardRemove(), parse_mode=None)
-
-        except SQLAlchemyError as e:
-            specific_error = repr(e)
-            logger.error(f"Database error during /reset V3 for chat {chat_id_str}: {specific_error}", exc_info=True)
-            # Используем parse_mode=None
-            await update.message.reply_text(f"{error_db_raw} ({type(e).__name__})", parse_mode=None)
-            db.rollback()
-        except Exception as e:
-            logger.error(f"Error in /reset V3 handler for chat {chat_id_str}: {e}", exc_info=True)
-            # Используем parse_mode=None
-            await update.message.reply_text(f"{error_general_raw} ({type(e).__name__})", parse_mode=None)
-            db.rollback()
-
-# =====================
-# mutebot / unmutebot (per-bot per-chat mute toggle)
-# =====================
+    # =====================
+    # mutebot / unmutebot (per-bot per-chat mute toggle)
+    # =====================
 
 async def mutebot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Заглушить текущего бота (персону) в этом чате. Применяется к ChatBotInstance для текущего bot.id."""

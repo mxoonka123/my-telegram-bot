@@ -95,9 +95,23 @@ TELEGRAPH_AUTHOR_NAME = os.getenv("TELEGRAPH_AUTHOR_NAME", "NuNuAiBot") # Имя
 TELEGRAPH_AUTHOR_URL = os.getenv("TELEGRAPH_AUTHOR_URL", "https://t.me/NuNuAiChannel") # Ссылка на автора для страниц Telegra.ph
 TELEGRAPH_ACCESS_TOKEN = os.getenv("TELEGRAPH_ACCESS_TOKEN", None) # Токен для Telegra.ph
 
-# --- Цены кредитной системы (базовые, можно менять без деплоя через env) ---
-# Стоимость указывается в кредитах за 1k токенов или за единицу медиа.
-# input_tokens/output_tokens — асимметричные ставки.
+# --- OpenRouter Settings ---
+# Ключ загружается из переменной окружения OPENROUTER_API_KEY
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
+OPENROUTER_API_BASE_URL = os.getenv("OPENROUTER_API_BASE_URL", "https://openrouter.ai/api/v1")
+# Модель по умолчанию (можно переопределить в окружении)
+OPENROUTER_MODEL_NAME = os.getenv("OPENROUTER_MODEL_NAME", "google/gemini-2.0-flash-001")
+# Рекомендованные заголовки для OpenRouter (ссылка на проект)
+OPENROUTER_SITE_URL = os.getenv("RAILWAY_STATIC_URL", "https://t.me/NuNuAiChannel")
+
+if not OPENROUTER_API_KEY:
+    logger.warning("WARNING: Переменная окружения OPENROUTER_API_KEY не установлена.")
+else:
+    logger.info(f"INFO: OPENROUTER_API_KEY успешно загружен. Модель: {OPENROUTER_MODEL_NAME}")
+
+  # --- Цены кредитной системы (базовые, можно менять без деплоя через env) ---
+  # Стоимость указывается в кредитах за 1k токенов или за единицу медиа.
+  # input_tokens/output_tokens — асимметричные ставки.
 CREDIT_COSTS = {
     "input_tokens_per_1k": float(os.getenv("CREDIT_INPUT_PER_1K", "0.2")),
     "output_tokens_per_1k": float(os.getenv("CREDIT_OUTPUT_PER_1K", "0.6")),
@@ -108,6 +122,7 @@ CREDIT_COSTS = {
 # Коэффициент для разных моделей (по умолчанию 1.0 для текущей модели Gemini)
 MODEL_PRICE_MULTIPLIERS = {
     GEMINI_MODEL_NAME_FOR_API: float(os.getenv("CREDIT_MODEL_MULTIPLIER", "1.0")),
+    OPENROUTER_MODEL_NAME: float(os.getenv("CREDIT_MODEL_MULTIPLIER", "1.0")),
 }
 
 # Минимальный буфер выходных токенов для предварительной проверки баланса
