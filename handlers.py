@@ -1019,12 +1019,17 @@ def extract_json_from_markdown(text: str) -> str:
         extracted_json = match.group(1).strip()
         # Safety: drop a leading language marker line like 'text', 'json', 'markdown', etc.
         # Examples to strip: 'text', 'text:\n', 'json -', 'md: ', 'plain\n'
-        lang_marker_pattern = r'^(?:json|text|markdown|plain|md)\s*(?::|-)?\s*(?:\r?\n)?'
+        # Accept punctuation like :, -, ., ;, — and spaces after marker
+        lang_marker_pattern = r'^(?:json|text|markdown|plain|md)\b[\s:\-\.；;—–]*'
         extracted_json = re.sub(lang_marker_pattern, '', extracted_json, flags=re.IGNORECASE)
-        logger.debug(f"Extracted JSON from markdown block. Original length: {len(text)}, Extracted length: {len(extracted_json)}")
+        logger.debug(f"Extracted from fenced block. Original len={len(text)}, extracted len={len(extracted_json)}; preview='{extracted_json[:120]}'")
         return extracted_json
     # If no markdown block is found, maybe the response is already a clean JSON array.
-    return text.strip()
+    plain = text.strip()
+    # Also strip plain leading language markers if model put them without fences
+    plain = re.sub(r'^(?:json|text|markdown|plain|md)\b[\s:\-\.；;—–]*', '', plain, flags=re.IGNORECASE)
+    logger.debug(f"No fenced block detected. Returning plain text preview='{plain[:120]}' (orig len={len(text)})")
+    return plain
 
 # Максимальная длина входящего сообщения от пользователя в символах
 MAX_USER_MESSAGE_LENGTH_CHARS = 600
@@ -1037,9 +1042,11 @@ async def process_and_send_response(update: Update, context: ContextTypes.DEFAUL
         return False
 
     raw_llm_response = full_bot_response_text.strip()
+    logger.debug(f"RAW LLM response preview: '{raw_llm_response[:200]}' (len={len(raw_llm_response)})")
 
     # Используем существующую функцию extract_json_from_markdown для извлечения "чистого" JSON
     json_string_candidate = extract_json_from_markdown(raw_llm_response)
+    logger.debug(f"Candidate after extraction preview: '{json_string_candidate[:200]}'")
     text_parts_to_send = None
     is_json_parsed = False
 
