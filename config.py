@@ -27,7 +27,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 # OpenRouter Settings
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 OPENROUTER_API_BASE_URL = "https://openrouter.ai/api/v1"
-OPENROUTER_MODEL_NAME = "google/gemini-2.5-flash-lite"
+OPENROUTER_MODEL_NAME = "deepseek/deepseek-chat-v3.1"
 
 # Gemini Settings (using OpenRouter key by default)
 GEMINI_API_KEY = OPENROUTER_API_KEY
