@@ -490,12 +490,16 @@ async def main():
             ],
         },
         fallbacks=[CommandHandler('cancel', handlers.edit_persona_cancel), CallbackQueryHandler(handlers.edit_persona_finish, pattern='^finish_edit$'), CallbackQueryHandler(handlers.edit_persona_cancel, pattern='^cancel_wizard$')],
+        per_user=True,
+        per_chat=True,
         per_message=False, name="edit_persona_wizard", conversation_timeout=timedelta(minutes=15).total_seconds(), allow_reentry=True
     )
     delete_persona_conv_handler = ConversationHandler(
         entry_points=[CommandHandler('deletepersona', handlers.delete_persona_start), CallbackQueryHandler(handlers.delete_persona_button_callback, pattern=r'^delete_persona_\d+$')],
         states={handlers.DELETE_PERSONA_CONFIRM: [CallbackQueryHandler(handlers.delete_persona_confirmed, pattern=r'^delete_persona_confirm_\d+$'), CallbackQueryHandler(handlers.delete_persona_cancel, pattern='^delete_persona_cancel$')]},
         fallbacks=[CommandHandler('cancel', handlers.delete_persona_cancel), CallbackQueryHandler(handlers.delete_persona_cancel, pattern='^delete_persona_cancel$')],
+        per_user=True,
+        per_chat=True,
         per_message=False, name="delete_persona_conversation", conversation_timeout=timedelta(minutes=5).total_seconds(), allow_reentry=True
     )
     bind_bot_conv_handler = ConversationHandler(
@@ -504,6 +508,8 @@ async def main():
             handlers.REGISTER_BOT_TOKEN: [MessageHandler(handlers.filters.TEXT & ~handlers.filters.COMMAND, handlers.bind_bot_token_received)]
         },
         fallbacks=[CommandHandler('cancel', handlers.edit_persona_cancel)],
+        per_user=True,
+        per_chat=True,
         per_message=False, name="bind_bot_token_flow", conversation_timeout=timedelta(minutes=5).total_seconds(), allow_reentry=True
     )
     application.add_handler(edit_persona_conv_handler)
@@ -537,6 +543,8 @@ async def main():
             ],
         },
         fallbacks=[CommandHandler('cancel', handlers.botsettings_close)],
+        per_user=True,
+        per_chat=True,
         per_message=False, name="botsettings_conv", conversation_timeout=timedelta(minutes=10).total_seconds(), allow_reentry=True
     )
     application.add_handler(botsettings_conv)
