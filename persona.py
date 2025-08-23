@@ -296,6 +296,42 @@ class Persona:
 
         return formatted_prompt.strip()
 
+    def format_conversation_starter_prompt(self, history: List[Dict[str, str]]) -> Tuple[str, List[Dict[str, str]]]:
+        """Формирует системный промпт для старта диалога с учетом последних сообщений.
+
+        Возвращает кортеж (system_prompt, messages_for_llm).
+        Историю в messages_for_llm не передаем, так как саммари уже включено в системный промпт.
+        """
+        # Суммаризация последних 5 сообщений
+        history_summary_lines: List[str] = []
+        try:
+            tail = history[-5:] if history else []
+            for msg in tail:
+                role = "you" if (msg or {}).get("role") == "assistant" else "user"
+                content = str((msg or {}).get("content", ""))
+                try:
+                    # убираем возможный префикс "username: "
+                    content = re.sub(r"^\w+:\s", "", content)
+                except Exception:
+                    pass
+                preview = (content[:70] + "...") if len(content) > 70 else content
+                history_summary_lines.append(f"- {role}: {preview}")
+        except Exception:
+            history_summary_lines = []
+
+        history_summary = "\n".join(history_summary_lines) if history_summary_lines else "no recent messages."
+
+        system_prompt = (
+            f"you are the character '{self.name}'. your description: '{self.description}'.\n\n"
+            "it has been a while since the last message. your task is to start a new conversation naturally, "
+            "based on the summary of the last few messages. do not repeat questions or topics from the summary. "
+            "come up with something new and engaging.\n\n"
+            f"recent message summary:\n{history_summary}\n\n"
+            "your response must be a valid json array of one or two strings. do not greet the user."
+        )
+
+        return system_prompt, []
+
     def format_should_respond_prompt(self, message_text: str, bot_username: str, history: List[Dict[str, str]]) -> Optional[str]:
         """Formats the prompt to decide if the bot should respond in a group based on context."""
         if self.group_reply_preference != "mentioned_or_contextual":

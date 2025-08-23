@@ -4391,19 +4391,16 @@ async def proactive_chat_select_received(update: Update, context: ContextTypes.D
                 owner_user = persona.owner  # type: ignore
                 chat_id = link.chat_id
 
-                # Готовим системный промпт и сообщения
-                system_prompt = persona_obj.format_system_prompt(user_id=owner_user.telegram_id if owner_user else 0, username=getattr(owner_user, 'username', 'user') or 'user', chat_type=None)
+                # Готовим системный промпт и сообщения с учетом истории, чтобы избежать повторов
                 history = get_context_for_chat_bot(db, link.id)
-                # Стартовый триггер (короткий)
-                trigger_text = "предложи коротко начать разговор"
-                messages = history + [{"role": "user", "content": trigger_text}]
+                system_prompt, messages = persona_obj.format_conversation_starter_prompt(history)
 
                 # Получаем ответ
                 assistant_response_text = await send_to_openrouter_llm(system_prompt or "", messages)
 
                 # Списываем кредиты у владельца
                 try:
-                    await deduct_credits_for_interaction(db=db, owner_user=owner_user, input_text=trigger_text, output_text=assistant_response_text)
+                    await deduct_credits_for_interaction(db=db, owner_user=owner_user, input_text="", output_text=assistant_response_text)
                 except Exception as e_ded:
                     logger.warning(f"credits deduction failed for proactive send: {e_ded}")
 
@@ -4425,9 +4422,8 @@ async def proactive_chat_select_received(update: Update, context: ContextTypes.D
                 except Exception as e_send:
                     logger.error(f"failed to send proactive message: {e_send}")
 
-                # Сохраняем в контекст ИИ
+                # Сохраняем в контекст ИИ: только ответ ассистента (инициатива без явного пользовательского сообщения)
                 try:
-                    add_message_to_context(db, link.id, "user", trigger_text)
                     add_message_to_context(db, link.id, "assistant", assistant_response_text)
                 except Exception as e_ctx:
                     logger.warning(f"failed to store proactive context: {e_ctx}")
