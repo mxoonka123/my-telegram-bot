@@ -4,6 +4,7 @@ import random
 import httpx
 import re
 from telegram.constants import ChatAction, ParseMode
+from telegram import Bot
 from telegram.ext import Application, ContextTypes
 from telegram.error import TelegramError, BadRequest, Forbidden # Added Forbidden
 from typing import List, Dict, Any, Optional, Union, Tuple
@@ -14,11 +15,12 @@ from sqlalchemy import func, select, update as sql_update
 
 from db import (
     get_all_active_chat_bot_instances, SessionLocal, User, ChatBotInstance, BotInstance,
-    get_db, PersonaConfig
+    get_db, PersonaConfig, get_context_for_chat_bot, add_message_to_context
 )
 from persona import Persona
 from utils import postprocess_response, extract_gif_links, escape_markdown_v2
 from config import FREE_PERSONA_LIMIT, PAID_PERSONA_LIMIT, FREE_USER_MONTHLY_MESSAGE_LIMIT # <-- ИСПРАВЛЕННЫЙ ИМПОРТ
+from handlers import send_to_openrouter_llm, deduct_credits_for_interaction
 
 logger = logging.getLogger(__name__)
 
@@ -81,14 +83,45 @@ async def proactive_messaging_task(application: Application) -> None:
                             continue
 
                         chat_id = inst.chat_id
-                        # Отправляем короткое ненавязчивое сообщение-пинг (строго русский, нижний регистр)
-                        text = "как дела?"  # placeholder, можно позже сделать умнее на основе контекста
+
+                        # Генерируем осмысленный стартовый месседж через LLM, учитывая историю
                         try:
-                            await application.bot.send_message(chat_id=chat_id, text=text, parse_mode=None, disable_notification=True)
-                        except (BadRequest, Forbidden) as te:
-                            logger.warning(f"proactive message send failed for chat {chat_id}: {te}")
-                        except TelegramError as te:
-                            logger.warning(f"telegram error while proactive send to {chat_id}: {te}")
+                            persona_obj = Persona(persona, chat_bot_instance_db_obj=inst)
+                            history = get_context_for_chat_bot(db, inst.id)
+                            system_prompt, messages = persona_obj.format_conversation_starter_prompt(history)
+
+                            assistant_response_text = await send_to_openrouter_llm(system_prompt or "", messages)
+                            if not assistant_response_text:
+                                continue
+
+                            # Списание кредитов у владельца персоны
+                            try:
+                                owner_user = persona.owner  # type: ignore
+                                if owner_user:
+                                    await deduct_credits_for_interaction(db=db, owner_user=owner_user, input_text="", output_text=assistant_response_text)
+                            except Exception as e_ded:
+                                logger.warning(f"credits deduction failed in proactive task: {e_ded}")
+
+                            # Отправка сообщения в чат ИМЕННО привязанным ботом
+                            try:
+                                bot_token = getattr(getattr(inst, 'bot_instance_ref', None), 'bot_token', None)
+                                if not bot_token:
+                                    raise ValueError("нет токена привязанного бота для этого чата")
+                                target_bot_for_send = Bot(token=bot_token)
+                                await target_bot_for_send.initialize()
+                                await target_bot_for_send.send_message(chat_id=chat_id, text=assistant_response_text, parse_mode=None, disable_notification=True)
+                            except (BadRequest, Forbidden) as te:
+                                logger.warning(f"proactive message send failed for chat {chat_id}: {te}")
+                            except TelegramError as te:
+                                logger.warning(f"telegram error while proactive send to {chat_id}: {te}")
+
+                            # Сохраняем в историю только ответ ассистента
+                            try:
+                                add_message_to_context(db, inst.id, "assistant", assistant_response_text)
+                            except Exception as e_ctx:
+                                logger.warning(f"failed to store proactive context in task: {e_ctx}")
+                        except Exception as gen_e:
+                            logger.warning(f"failed to generate proactive starter via LLM for chat {chat_id}: {gen_e}")
                     except Exception as per_inst_e:
                         logger.exception(f"error in proactive loop per instance: {per_inst_e}")
 
