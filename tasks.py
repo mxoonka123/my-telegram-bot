@@ -90,7 +90,8 @@ async def proactive_messaging_task(application: Application) -> None:
                             history = get_context_for_chat_bot(db, inst.id)
                             system_prompt, messages = persona_obj.format_conversation_starter_prompt(history)
 
-                            assistant_response_text = await send_to_openrouter_llm(system_prompt or "", messages)
+                            # Повышаем температуру для большей креативности
+                            assistant_response_text = await send_to_openrouter_llm(system_prompt or "", messages, temperature=1.0)
                             if not assistant_response_text:
                                 continue
 

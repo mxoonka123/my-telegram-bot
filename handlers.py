@@ -927,7 +927,7 @@ openrouter_client = AsyncOpenAI(
     },
 )
 
-async def send_to_openrouter_llm(system_prompt: str, messages: List[Dict[str, str]], image_data: Optional[bytes] = None) -> str:
+async def send_to_openrouter_llm(system_prompt: str, messages: List[Dict[str, str]], image_data: Optional[bytes] = None, temperature: float = 0.8) -> str:
     """Отправляет запрос в OpenRouter API (OpenAI-совместимый) и возвращает текст ответа."""
     if not config.OPENROUTER_API_KEY:
         logger.error("OPENROUTER_API_KEY не установлен.")
@@ -958,10 +958,11 @@ async def send_to_openrouter_llm(system_prompt: str, messages: List[Dict[str, st
             openai_messages.append({"role": role, "content": content})
 
     try:
+        logger.info(f"sending request to openrouter with temperature={temperature}")
         chat_completion = await openrouter_client.chat.completions.create(
             model=config.OPENROUTER_MODEL_NAME,
             messages=openai_messages,
-            temperature=0.8,
+            temperature=temperature,
             top_p=0.95,
             response_format={"type": "json_object"},
         )
@@ -4395,8 +4396,8 @@ async def proactive_chat_select_received(update: Update, context: ContextTypes.D
                 history = get_context_for_chat_bot(db, link.id)
                 system_prompt, messages = persona_obj.format_conversation_starter_prompt(history)
 
-                # Получаем ответ
-                assistant_response_text = await send_to_openrouter_llm(system_prompt or "", messages)
+                # Получаем ответ (повышенная креативность для старта беседы)
+                assistant_response_text = await send_to_openrouter_llm(system_prompt or "", messages, temperature=1.0)
 
                 # Списываем кредиты у владельца
                 try:
