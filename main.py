@@ -451,6 +451,7 @@ async def main():
             handlers.EDIT_MEDIA_REACTION: [CallbackQueryHandler(handlers.edit_media_reaction_received, pattern='^set_media_react_|^back_to_wizard_menu$')],
             handlers.EDIT_MAX_MESSAGES: [CallbackQueryHandler(handlers.edit_max_messages_received, pattern='^set_max_msgs_'), CallbackQueryHandler(handlers.edit_wizard_menu_handler, pattern='^back_to_wizard_menu$')],
             handlers.EDIT_PROACTIVE_RATE: [CallbackQueryHandler(handlers.edit_proactive_rate_received, pattern='^set_proactive_|^back_to_wizard_menu$')],
+            handlers.PROACTIVE_CHAT_SELECT: [CallbackQueryHandler(handlers.proactive_chat_select_received, pattern='^(proactive_pick_chat_\d+|back_to_wizard_menu)$')],
             # Character Setup Wizard states
             handlers.CHAR_WIZ_BIO: [
                 MessageHandler(handlers.filters.TEXT & ~handlers.filters.COMMAND, handlers.char_wiz_bio_received),

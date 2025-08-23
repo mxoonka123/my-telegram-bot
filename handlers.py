@@ -796,8 +796,9 @@ EDIT_GROUP_REPLY, EDIT_MEDIA_REACTION,
 DELETE_PERSONA_CONFIRM,
 EDIT_MAX_MESSAGES,
 EDIT_PROACTIVE_RATE,
+PROACTIVE_CHAT_SELECT,
 # EDIT_MESSAGE_VOLUME removed
-) = range(10) # Total 10 states now
+) = range(11) # Total 11 states now
 
 # Character Setup Wizard States
 (
@@ -4168,6 +4169,7 @@ async def edit_wizard_menu_handler(update: Update, context: ContextTypes.DEFAULT
     if data == "edit_wizard_group_reply": return await edit_group_reply_prompt(update, context)
     if data == "edit_wizard_media_reaction": return await edit_media_reaction_prompt(update, context)
     if data == "edit_wizard_proactive_rate": return await edit_proactive_rate_prompt(update, context)
+    if data == "edit_wizard_proactive_send": return await proactive_chat_select_prompt(update, context)
     
     # Переход в подменю настройки макс. сообщений
     if data == "edit_wizard_max_msgs":
@@ -4266,6 +4268,136 @@ async def edit_proactive_rate_prompt(update: Update, context: ContextTypes.DEFAU
     ]
     await _send_prompt(update, context, prompt_text, InlineKeyboardMarkup(keyboard))
     return EDIT_PROACTIVE_RATE
+
+# --- Proactive manual send: pick chat and send ---
+async def proactive_chat_select_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Показывает список чатов, где активна эта личность, чтобы отправить проактивное сообщение по кнопке."""
+    query = update.callback_query
+    if not query:
+        return ConversationHandler.END
+    persona_id = context.user_data.get('edit_persona_id')
+    user_id = query.from_user.id if query.from_user else None
+    if not persona_id or not user_id:
+        try: await query.answer("сессия потеряна", show_alert=True)
+        except Exception: pass
+        return ConversationHandler.END
+
+    try:
+        from sqlalchemy.orm import selectinload
+        with get_db() as db:
+            persona = db.query(DBPersonaConfig).options(selectinload(DBPersonaConfig.owner), selectinload(DBPersonaConfig.bot_instance)).filter(
+                DBPersonaConfig.id == persona_id,
+                DBPersonaConfig.owner.has(User.telegram_id == user_id)
+            ).first()
+            if not persona:
+                try: await query.answer("личность не найдена", show_alert=True)
+                except Exception: pass
+                return ConversationHandler.END
+
+            bot_inst = db.query(DBBotInstance).filter(DBBotInstance.persona_config_id == persona.id).first()
+            if not bot_inst:
+                await _send_prompt(update, context, escape_markdown_v2("бот для этой личности не привязан"), InlineKeyboardMarkup([[InlineKeyboardButton("назад", callback_data="back_to_wizard_menu")]]))
+                return PROACTIVE_CHAT_SELECT
+
+            links = db.query(DBChatBotInstance).filter(
+                DBChatBotInstance.bot_instance_id == bot_inst.id,
+                DBChatBotInstance.active == True
+            ).all()
+
+        if not links:
+            await _send_prompt(update, context, escape_markdown_v2("нет чатов для отправки"), InlineKeyboardMarkup([[InlineKeyboardButton("назад", callback_data="back_to_wizard_menu")]]))
+            return PROACTIVE_CHAT_SELECT
+
+        # Формируем клавиатуру: по кнопке на чат
+        keyboard: List[List[InlineKeyboardButton]] = []
+        for link in links:
+            title = f"чат {link.chat_id}"
+            keyboard.append([InlineKeyboardButton(title, callback_data=f"proactive_pick_chat_{link.id}")])
+        keyboard.append([InlineKeyboardButton("назад", callback_data="back_to_wizard_menu")])
+        await _send_prompt(update, context, escape_markdown_v2("выберите чат:"), InlineKeyboardMarkup(keyboard))
+        return PROACTIVE_CHAT_SELECT
+    except Exception as e:
+        logger.error(f"proactive_chat_select_prompt error: {e}", exc_info=True)
+        try: await query.answer("ошибка при загрузке списка чатов", show_alert=True)
+        except Exception: pass
+        return ConversationHandler.END
+
+async def proactive_chat_select_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    if not query or not query.data:
+        return PROACTIVE_CHAT_SELECT
+    await query.answer()
+    persona_id = context.user_data.get('edit_persona_id')
+    data = query.data
+    if data == "back_to_wizard_menu":
+        return await _handle_back_to_wizard_menu(update, context, persona_id)
+
+    if data.startswith("proactive_pick_chat_"):
+        try:
+            link_id = int(data.replace("proactive_pick_chat_", ""))
+        except Exception:
+            return PROACTIVE_CHAT_SELECT
+
+        try:
+            with get_db() as db:
+                # Проверяем владение и связь
+                link: Optional[DBChatBotInstance] = db.query(DBChatBotInstance).filter(DBChatBotInstance.id == link_id).first()
+                if not link:
+                    await query.edit_message_text("чат не найден")
+                    return ConversationHandler.END
+                bot_inst = db.query(DBBotInstance).filter(DBBotInstance.id == link.bot_instance_id).first()
+                persona = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
+                if not bot_inst or not persona or bot_inst.persona_config_id != persona.id:
+                    await query.edit_message_text("нет доступа к чату")
+                    return ConversationHandler.END
+
+                # Собираем персону и контекст
+                persona_obj = Persona(persona, chat_bot_instance_db_obj=link)
+                owner_user = persona.owner  # type: ignore
+                chat_id = link.chat_id
+
+                # Готовим системный промпт и сообщения
+                system_prompt = persona_obj.format_system_prompt(user_id=owner_user.telegram_id if owner_user else 0, username=getattr(owner_user, 'username', 'user') or 'user', chat_type=None)
+                history = get_context_for_chat_bot(db, link.id)
+                # Стартовый триггер (короткий)
+                trigger_text = "предложи коротко начать разговор"
+                messages = history + [{"role": "user", "content": trigger_text}]
+
+                # Получаем ответ
+                assistant_response_text = await send_to_openrouter_llm(system_prompt or "", messages)
+
+                # Списываем кредиты у владельца
+                try:
+                    await deduct_credits_for_interaction(db=db, owner_user=owner_user, input_text=trigger_text)
+                except Exception as e_ded:
+                    logger.warning(f"credits deduction failed for proactive send: {e_ded}")
+
+                # Отправляем в чат
+                try:
+                    await process_and_send_response(update, context, chat_id, persona_obj, assistant_response_text, db, reply_to_message_id=None)
+                except Exception as e_send:
+                    logger.error(f"failed to send proactive message: {e_send}")
+
+                # Сохраняем в контекст ИИ
+                try:
+                    add_message_to_context(db, link.id, "user", trigger_text)
+                    add_message_to_context(db, link.id, "assistant", assistant_response_text)
+                except Exception as e_ctx:
+                    logger.warning(f"failed to store proactive context: {e_ctx}")
+
+                # Возврат в меню
+                with get_db() as db2:
+                    persona_ref = db2.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
+                    if persona_ref:
+                        return await _show_edit_wizard_menu(update, context, persona_ref)
+                return ConversationHandler.END
+        except Exception as e:
+            logger.error(f"proactive_chat_select_received error: {e}", exc_info=True)
+            try: await query.edit_message_text("ошибка при отправке сообщения")
+            except Exception: pass
+            return ConversationHandler.END
+
+    return PROACTIVE_CHAT_SELECT
 
 async def edit_proactive_rate_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
@@ -5006,6 +5138,7 @@ async def _show_edit_wizard_menu(update: Update, context: ContextTypes.DEFAULT_T
             [InlineKeyboardButton(f"реакция на медиа ({media_react_map.get(media_react, '?')})", callback_data="edit_wizard_media_reaction")],
             [InlineKeyboardButton(f"макс. сообщ. ({display_for_max_msgs_button})", callback_data="edit_wizard_max_msgs")],
             [InlineKeyboardButton(f"проактивные сообщения ({proactive_map.get(proactive_rate, '?')})", callback_data="edit_wizard_proactive_rate")],
+            [InlineKeyboardButton("напиши что-нибудь", callback_data="edit_wizard_proactive_send")],
             # [InlineKeyboardButton(f"настроения{star if not is_premium else ''}", callback_data="edit_wizard_moods")], # <-- ЗАКОММЕНТИРОВАНО
             [InlineKeyboardButton("очистить память", callback_data="edit_wizard_clear_context")],
             [InlineKeyboardButton("завершить", callback_data="finish_edit")]
