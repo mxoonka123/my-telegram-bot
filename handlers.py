@@ -4308,10 +4308,45 @@ async def proactive_chat_select_prompt(update: Update, context: ContextTypes.DEF
             await _send_prompt(update, context, escape_markdown_v2("нет чатов для отправки"), InlineKeyboardMarkup([[InlineKeyboardButton("назад", callback_data="back_to_wizard_menu")]]))
             return PROACTIVE_CHAT_SELECT
 
-        # Формируем клавиатуру: по кнопке на чат
+        # Формируем клавиатуру: по кнопке на чат (пытаемся получить название чата)
         keyboard: List[List[InlineKeyboardButton]] = []
+        # Попробуем использовать привязанного бота, если есть токен
+        target_bot = None
+        try:
+            if bot_inst and bot_inst.bot_token:
+                target_bot = Bot(token=bot_inst.bot_token)
+                await target_bot.initialize()
+        except Exception as e_bot_init:
+            logger.warning(f"Failed to init target bot for chat titles: {e_bot_init}")
+
         for link in links:
+            chat_id_int = int(link.chat_id)
             title = f"чат {link.chat_id}"
+            chat_info = None
+            # 1) Сначала через привязанного бота
+            if target_bot:
+                try:
+                    chat_info = await target_bot.get_chat(chat_id_int)
+                except Exception:
+                    chat_info = None
+            # 2) Фолбэк через текущего (основного) бота
+            if not chat_info:
+                try:
+                    chat_info = await context.bot.get_chat(chat_id_int)
+                except Exception as e_get:
+                    logger.warning(f"proactive_chat_select_prompt: could not get chat title for {chat_id_int}: {e_get}")
+                    chat_info = None
+
+            if chat_info:
+                try:
+                    if str(getattr(chat_info, 'type', '')) == 'private':
+                        first_name = getattr(chat_info, 'first_name', None) or 'пользователь'
+                        title = f"личный чат ({first_name})"
+                    else:
+                        title = getattr(chat_info, 'title', None) or f"группа ({link.chat_id})"
+                except Exception:
+                    pass
+
             keyboard.append([InlineKeyboardButton(title, callback_data=f"proactive_pick_chat_{link.id}")])
         keyboard.append([InlineKeyboardButton("назад", callback_data="back_to_wizard_menu")])
         await _send_prompt(update, context, escape_markdown_v2("выберите чат:"), InlineKeyboardMarkup(keyboard))
@@ -4368,13 +4403,25 @@ async def proactive_chat_select_received(update: Update, context: ContextTypes.D
 
                 # Списываем кредиты у владельца
                 try:
-                    await deduct_credits_for_interaction(db=db, owner_user=owner_user, input_text=trigger_text)
+                    await deduct_credits_for_interaction(db=db, owner_user=owner_user, input_text=trigger_text, output_text=assistant_response_text)
                 except Exception as e_ded:
                     logger.warning(f"credits deduction failed for proactive send: {e_ded}")
 
-                # Отправляем в чат
+                # Отправляем в чат ИМЕННО тем ботом, который привязан к чату
                 try:
-                    await process_and_send_response(update, context, chat_id, persona_obj, assistant_response_text, db, reply_to_message_id=None)
+                    # Инициализируем нужного бота
+                    if not bot_inst or not bot_inst.bot_token:
+                        raise ValueError("нет токена бота для отправки")
+                    target_bot_for_send = Bot(token=bot_inst.bot_token)
+                    await target_bot_for_send.initialize()
+
+                    # Временно подменяем context.bot на нужного бота
+                    original_bot = context.bot
+                    try:
+                        context.bot = target_bot_for_send
+                        await process_and_send_response(update, context, chat_id, persona_obj, assistant_response_text, db, reply_to_message_id=None)
+                    finally:
+                        context.bot = original_bot
                 except Exception as e_send:
                     logger.error(f"failed to send proactive message: {e_send}")
 
