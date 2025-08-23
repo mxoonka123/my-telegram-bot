@@ -4415,13 +4415,13 @@ async def proactive_chat_select_received(update: Update, context: ContextTypes.D
                     target_bot_for_send = Bot(token=bot_inst.bot_token)
                     await target_bot_for_send.initialize()
 
-                    # Временно подменяем context.bot на нужного бота
-                    original_bot = context.bot
-                    try:
-                        context.bot = target_bot_for_send
-                        await process_and_send_response(update, context, chat_id, persona_obj, assistant_response_text, db, reply_to_message_id=None)
-                    finally:
-                        context.bot = original_bot
+                    # Легковесный контекст, содержащий только bot
+                    class _BotOnlyContext:
+                        def __init__(self, bot):
+                            self.bot = bot
+
+                    temp_ctx = _BotOnlyContext(target_bot_for_send)
+                    await process_and_send_response(update, temp_ctx, chat_id, persona_obj, assistant_response_text, db, reply_to_message_id=None)
                 except Exception as e_send:
                     logger.error(f"failed to send proactive message: {e_send}")
 
