@@ -450,6 +450,7 @@ async def main():
             handlers.EDIT_GROUP_REPLY: [CallbackQueryHandler(handlers.edit_group_reply_received, pattern='^set_group_reply_|^back_to_wizard_menu$')],
             handlers.EDIT_MEDIA_REACTION: [CallbackQueryHandler(handlers.edit_media_reaction_received, pattern='^set_media_react_|^back_to_wizard_menu$')],
             handlers.EDIT_MAX_MESSAGES: [CallbackQueryHandler(handlers.edit_max_messages_received, pattern='^set_max_msgs_'), CallbackQueryHandler(handlers.edit_wizard_menu_handler, pattern='^back_to_wizard_menu$')],
+            handlers.EDIT_PROACTIVE_RATE: [CallbackQueryHandler(handlers.edit_proactive_rate_received, pattern='^set_proactive_|^back_to_wizard_menu$')],
             # Character Setup Wizard states
             handlers.CHAR_WIZ_BIO: [
                 MessageHandler(handlers.filters.TEXT & ~handlers.filters.COMMAND, handlers.char_wiz_bio_received),
@@ -691,6 +692,9 @@ async def main():
 
         web_server_task = None
 
+        # Общая фон. задача проактивных сообщений
+        proactive_task = None
+
         if run_mode == 'webhook':
             # Запускаем только веб-сервер для приема вебхуков; polling не запускаем
             port = int(os.environ.get("PORT", 8080))
@@ -701,6 +705,11 @@ async def main():
 
             # Запускаем PTB (без polling), чтобы работали контексты/очереди
             await application.start()
+            # Старт фоновой задачи проактивных сообщений
+            try:
+                proactive_task = asyncio.create_task(tasks.proactive_messaging_task(application))
+            except Exception as e:
+                logger.error(f"failed to start proactive_messaging_task: {e}")
 
             web_server_task = asyncio.create_task(serve(asgi_app, hypercorn_config))
             logger.info(f"Web server running on port {port} (webhook mode). Waiting for shutdown signal...")
@@ -716,6 +725,14 @@ async def main():
                 except asyncio.CancelledError:
                     pass
 
+            # Останавливаем фоновую задачу
+            if proactive_task:
+                proactive_task.cancel()
+                try:
+                    await proactive_task
+                except asyncio.CancelledError:
+                    pass
+
             await application.stop()
             await application.shutdown()
 
@@ -723,12 +740,26 @@ async def main():
             # Polling mode: запускаем только polling без веб-сервера
             await application.start()
             logger.info("Starting polling (no web server)...")
+            # Старт фоновой задачи проактивных сообщений
+            proactive_task = None
+            try:
+                proactive_task = asyncio.create_task(tasks.proactive_messaging_task(application))
+            except Exception as e:
+                logger.error(f"failed to start proactive_messaging_task: {e}")
+
             await application.updater.start_polling()
 
             # Ждем сигнал остановки
             await stop_event.wait()
 
             logger.info("Shutdown signal received. Stopping polling and application...")
+            # Останавливаем фоновую задачу
+            if proactive_task:
+                proactive_task.cancel()
+                try:
+                    await proactive_task
+                except asyncio.CancelledError:
+                    pass
             await application.updater.stop()
             await application.stop()
             await application.shutdown()

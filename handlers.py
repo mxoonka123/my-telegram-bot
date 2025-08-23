@@ -795,8 +795,9 @@ EDIT_GROUP_REPLY, EDIT_MEDIA_REACTION,
 # Delete Persona Conversation State
 DELETE_PERSONA_CONFIRM,
 EDIT_MAX_MESSAGES,
+EDIT_PROACTIVE_RATE,
 # EDIT_MESSAGE_VOLUME removed
-) = range(9) # Total 9 states now
+) = range(10) # Total 10 states now
 
 # Character Setup Wizard States
 (
@@ -4166,6 +4167,7 @@ async def edit_wizard_menu_handler(update: Update, context: ContextTypes.DEFAULT
     if data == "edit_wizard_verbosity": return await edit_verbosity_prompt(update, context)
     if data == "edit_wizard_group_reply": return await edit_group_reply_prompt(update, context)
     if data == "edit_wizard_media_reaction": return await edit_media_reaction_prompt(update, context)
+    if data == "edit_wizard_proactive_rate": return await edit_proactive_rate_prompt(update, context)
     
     # Переход в подменю настройки макс. сообщений
     if data == "edit_wizard_max_msgs":
@@ -4237,6 +4239,64 @@ async def edit_wizard_menu_handler(update: Update, context: ContextTypes.DEFAULT
     with get_db() as db_session:
         persona = db_session.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
         return await _show_edit_wizard_menu(update, context, persona) if persona else ConversationHandler.END
+
+# --- Edit Proactive Messaging Rate ---
+async def edit_proactive_rate_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Подменю выбора частоты проактивных сообщений."""
+    query = update.callback_query
+    if not query:
+        return ConversationHandler.END
+    persona_id = context.user_data.get('edit_persona_id')
+    if not persona_id:
+        await query.answer("сессия потеряна", show_alert=True)
+        return ConversationHandler.END
+    current_value = "sometimes"
+    with get_db() as db:
+        persona = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
+        if persona and getattr(persona, 'proactive_messaging_rate', None):
+            current_value = persona.proactive_messaging_rate
+    display_map = {"never": "никогда", "rarely": "редко", "sometimes": "иногда", "often": "часто"}
+    prompt_text = escape_markdown_v2(f"частота проактивных сообщений (тек.: {display_map.get(current_value, 'иногда')}):")
+    keyboard = [
+        [InlineKeyboardButton("никогда", callback_data="set_proactive_never")],
+        [InlineKeyboardButton("редко", callback_data="set_proactive_rarely")],
+        [InlineKeyboardButton("иногда", callback_data="set_proactive_sometimes")],
+        [InlineKeyboardButton("часто", callback_data="set_proactive_often")],
+        [InlineKeyboardButton("назад", callback_data="back_to_wizard_menu")],
+    ]
+    await _send_prompt(update, context, prompt_text, InlineKeyboardMarkup(keyboard))
+    return EDIT_PROACTIVE_RATE
+
+async def edit_proactive_rate_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    if not query or not query.data:
+        return EDIT_PROACTIVE_RATE
+    await query.answer()
+    data = query.data
+    persona_id = context.user_data.get('edit_persona_id')
+    if data == "back_to_wizard_menu":
+        return await _handle_back_to_wizard_menu(update, context, persona_id)
+    if data.startswith("set_proactive_"):
+        new_value = data.replace("set_proactive_", "")
+        if new_value not in {"never", "rarely", "sometimes", "often"}:
+            return EDIT_PROACTIVE_RATE
+        try:
+            with get_db() as db:
+                persona = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).with_for_update().first()
+                if persona:
+                    persona.proactive_messaging_rate = new_value
+                    db.commit()
+                    logger.info(f"Set proactive_messaging_rate to {new_value} for persona {persona_id}")
+                    return await _handle_back_to_wizard_menu(update, context, persona_id)
+        except Exception as e:
+            logger.error(f"Error setting proactive_messaging_rate for {persona_id}: {e}")
+            await query.edit_message_text("ошибка при сохранении частоты проактивных сообщений", parse_mode=None)
+            with get_db() as db:
+                persona = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
+                if persona:
+                    return await _show_edit_wizard_menu(update, context, persona)
+            return ConversationHandler.END
+    return EDIT_PROACTIVE_RATE
 
 # --- Helper to send prompt and store message ID ---
 async def _send_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, reply_markup: InlineKeyboardMarkup) -> None:
@@ -4921,11 +4981,13 @@ async def _show_edit_wizard_menu(update: Update, context: ContextTypes.DEFAULT_T
         verbosity = persona_config.verbosity_level or "medium"
         group_reply = persona_config.group_reply_preference or "mentioned_or_contextual"
         media_react = persona_config.media_reaction or "text_only"
+        proactive_rate = getattr(persona_config, 'proactive_messaging_rate', None) or "sometimes"
         
         style_map = {"neutral": "нейтральный", "friendly": "дружелюбный", "sarcastic": "саркастичный", "formal": "формальный", "brief": "краткий"}
         verbosity_map = {"concise": "лаконичный", "medium": "средний", "talkative": "разговорчивый"}
         group_reply_map = {"always": "всегда", "mentioned_only": "по @", "mentioned_or_contextual": "по @ / контексту", "never": "никогда"}
         media_react_map = {"all": "текст+gif", "text_only": "только текст", "none": "никак", "photo_only": "только фото", "voice_only": "только голос"}
+        proactive_map = {"never": "никогда", "rarely": "редко", "sometimes": "иногда", "often": "часто"}
         
         current_max_msgs_setting = persona_config.max_response_messages
         display_for_max_msgs_button = "стандартно"
@@ -4943,6 +5005,7 @@ async def _show_edit_wizard_menu(update: Update, context: ContextTypes.DEFAULT_T
             [InlineKeyboardButton(f"ответы в группе ({group_reply_map.get(group_reply, '?')})", callback_data="edit_wizard_group_reply")],
             [InlineKeyboardButton(f"реакция на медиа ({media_react_map.get(media_react, '?')})", callback_data="edit_wizard_media_reaction")],
             [InlineKeyboardButton(f"макс. сообщ. ({display_for_max_msgs_button})", callback_data="edit_wizard_max_msgs")],
+            [InlineKeyboardButton(f"проактивные сообщения ({proactive_map.get(proactive_rate, '?')})", callback_data="edit_wizard_proactive_rate")],
             # [InlineKeyboardButton(f"настроения{star if not is_premium else ''}", callback_data="edit_wizard_moods")], # <-- ЗАКОММЕНТИРОВАНО
             [InlineKeyboardButton("очистить память", callback_data="edit_wizard_clear_context")],
             [InlineKeyboardButton("завершить", callback_data="finish_edit")]

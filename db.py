@@ -210,6 +210,8 @@ class PersonaConfig(Base):
     verbosity_level = Column(Text, default="medium", nullable=False)
     group_reply_preference = Column(Text, default="mentioned_or_contextual", nullable=False)
     media_reaction = Column(Text, default="text_only", nullable=False)
+    # Частота проактивных сообщений: never | rarely | sometimes | often
+    proactive_messaging_rate = Column(Text, default="sometimes", nullable=False)
 
     mood_prompts_json = Column(Text, default=lambda: json.dumps(DEFAULT_MOOD_PROMPTS, ensure_ascii=False, sort_keys=True))
     mood_prompt_active = Column(Boolean, default=True, nullable=False)
@@ -570,6 +572,7 @@ def create_persona_config(db: Session, owner_id: int, name: str, description: st
             verbosity_level="medium",
             group_reply_preference="mentioned_or_contextual",
             media_reaction="text_only",
+            proactive_messaging_rate="sometimes",
             mood_prompts_json=default_moods,
             max_response_messages=3,
             system_prompt_template=DEFAULT_SYSTEM_PROMPT_TEMPLATE,
