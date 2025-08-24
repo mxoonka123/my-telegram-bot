@@ -327,6 +327,7 @@ class Persona:
             "based on the summary of the last few messages. do not repeat questions or topics from the summary. "
             "come up with something new and engaging.\n\n"
             f"recent message summary:\n{history_summary}\n\n"
+            "CRITICAL INSTRUCTION: Your response MUST be in the same language as the messages in the provided history summary. If the history is empty, you can start the conversation in Russian.\n\n"
             "your response must be a valid json array of one or two strings. do not greet the user."
         )
 
