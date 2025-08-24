@@ -121,7 +121,6 @@ CREDIT_COSTS = {
 
 # Коэффициент для разных моделей (по умолчанию 1.0 для текущей модели Gemini)
 MODEL_PRICE_MULTIPLIERS = {
-    GEMINI_MODEL_NAME_FOR_API: float(os.getenv("CREDIT_MODEL_MULTIPLIER", "1.0")),
     OPENROUTER_MODEL_NAME: float(os.getenv("CREDIT_MODEL_MULTIPLIER", "1.0")),
 }
 

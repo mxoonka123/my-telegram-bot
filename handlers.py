@@ -22,7 +22,6 @@ logger = logging.getLogger(__name__)
 
 # Константы для UI
 CHECK_MARK = "✅ "  # Unicode Check Mark Symbol
-PREMIUM_STAR = "⭐"  # Звездочка для премиум-функций
 
 # Импорты для работы с Vosk
 try:
@@ -82,8 +81,6 @@ from config import (
     YOOKASSA_SECRET_KEY,
     PAID_PERSONA_LIMIT,
     FREE_PERSONA_LIMIT,
-    PREMIUM_USER_MONTHLY_MESSAGE_LIMIT,
-    FREE_USER_MONTHLY_MESSAGE_LIMIT,
     MAX_CONTEXT_MESSAGES_SENT_TO_LLM,
     CREDIT_PACKAGES
 )
@@ -93,7 +90,7 @@ from db import (
     get_context_for_chat_bot, add_message_to_context,
     set_mood_for_chat_bot, get_mood_for_chat_bot, get_or_create_user,
     create_persona_config, get_personas_by_owner, get_persona_by_name_and_owner,
-    get_persona_by_id_and_owner, activate_subscription,
+    get_persona_by_id_and_owner,
     create_bot_instance, link_bot_instance_to_chat, delete_persona_config,
     get_all_active_chat_bot_instances,
     get_persona_and_context_with_owner,
@@ -624,164 +621,7 @@ async def transcribe_audio_with_vosk(audio_data: bytes, original_mime_type: str)
             os.remove(temp_wav_filename)
 
 # --- Helper Functions ---
-
-async def check_channel_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    """Checks if the user is subscribed to the required channel.
-    This check is skipped for any bot that is not the main bot.
-    """
-    # --- skip for attached (non-main) bots ---
-    try:
-        main_bot_id = context.bot_data.get('main_bot_id')
-        current_bot_id = getattr(context.bot, 'id', None)
-        if main_bot_id and current_bot_id and current_bot_id != main_bot_id:
-            logger.debug(f"subscription check skipped for attached bot id={current_bot_id} (main={main_bot_id})")
-            return True
-    except Exception as e:
-        logger.error(f"error detecting main/attached bot in subscription check: {e}. continuing with normal check")
-    if not config.CHANNEL_ID:
-        logger.warning("CHANNEL_ID not set in config. Skipping subscription check.")
-        return True # Skip check if no channel is configured
-
-    user_id = None
-    # Determine user ID from update or callback query
-    eff_user = getattr(update, 'effective_user', None)
-    cb_user = getattr(getattr(update, 'callback_query', None), 'from_user', None)
-
-    if eff_user:
-        user_id = eff_user.id
-    elif cb_user:
-        user_id = cb_user.id
-        logger.debug(f"Using user_id {user_id} from callback_query.")
-    else:
-        logger.warning("check_channel_subscription called without valid user information.")
-        return False # Cannot check without user ID
-
-    # Admin always passes
-    if is_admin(user_id):
-        return True
-
-    logger.debug(f"Checking subscription status for user {user_id} in channel {config.CHANNEL_ID}")
-    try:
-        member = await context.bot.get_chat_member(chat_id=config.CHANNEL_ID, user_id=user_id, read_timeout=10)
-        allowed_statuses = [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]
-        logger.debug(f"User {user_id} status in {config.CHANNEL_ID}: {member.status}")
-        if member.status in allowed_statuses:
-            logger.debug(f"User {user_id} IS subscribed to {config.CHANNEL_ID} (status: {member.status})")
-            return True
-        else:
-            logger.info(f"User {user_id} is NOT subscribed to {config.CHANNEL_ID} (status: {member.status})")
-            return False
-    except TimedOut:
-        logger.warning(f"Timeout checking subscription for user {user_id} in channel {config.CHANNEL_ID}. Denying access.")
-        # Try to inform the user about the timeout
-        target_message = getattr(update, 'effective_message', None) or getattr(getattr(update, 'callback_query', None), 'message', None)
-        if target_message:
-            try:
-                await target_message.reply_text(
-                    escape_markdown_v2("⏳ не удалось проверить подписку на канал (таймаут). попробуйте еще раз позже."),
-                    parse_mode=ParseMode.MARKDOWN_V2
-                )
-            except Exception as send_err:
-                logger.error(f"Failed to send 'Timeout' error message: {send_err}")
-        return False
-    except Forbidden as e:
-        logger.error(f"Forbidden when checking subscription via current bot: {e}. Trying main bot fallback...")
-        # Fallback to main bot
-        try:
-            from telegram import Bot as _TGBot
-            main_token = getattr(config, 'TELEGRAM_TOKEN', None)
-            if main_token:
-                main_bot = _TGBot(token=main_token)
-                member = await main_bot.get_chat_member(chat_id=config.CHANNEL_ID, user_id=user_id, read_timeout=10)
-                allowed_statuses = [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]
-                if member.status in allowed_statuses:
-                    return True
-                else:
-                    return False
-        except Exception as fb_err:
-            logger.error(f"Main bot fallback failed (Forbidden path): {fb_err}")
-        return False
-    except BadRequest as e:
-        error_message = str(e).lower()
-        logger.error(f"BadRequest checking subscription for user {user_id} in channel {config.CHANNEL_ID}: {e}")
-        # Try fallback via main bot for cases like 'member list is inaccessible'
-        try:
-            from telegram import Bot as _TGBot
-            main_token = getattr(config, 'TELEGRAM_TOKEN', None)
-            if main_token:
-                main_bot = _TGBot(token=main_token)
-                member = await main_bot.get_chat_member(chat_id=config.CHANNEL_ID, user_id=user_id, read_timeout=10)
-                allowed_statuses = [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]
-                if member.status in allowed_statuses:
-                    return True
-                else:
-                    return False
-        except Exception as fb_err:
-            logger.error(f"Main bot fallback failed (BadRequest path): {fb_err}")
-        # Inform the user succinctly
-        target_message = getattr(update, 'effective_message', None) or getattr(getattr(update, 'callback_query', None), 'message', None)
-        if target_message:
-            try:
-                await target_message.reply_text(
-                    escape_markdown_v2("❗ для использования бота необходимо подписаться на канал @" + str(config.CHANNEL_ID).lstrip('@')),
-                    parse_mode=ParseMode.MARKDOWN_V2,
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("перейти к каналу", url=f"https://t.me/{str(config.CHANNEL_ID).lstrip('@')}")]])
-                )
-            except Exception as send_err:
-                logger.error(f"Failed to send 'subscribe required' message: {send_err}")
-        return False
-    except TelegramError as e:
-        logger.error(f"Telegram error checking subscription for user {user_id} in channel {config.CHANNEL_ID}: {e}")
-        target_message = getattr(update, 'effective_message', None) or getattr(getattr(update, 'callback_query', None), 'message', None)
-        if target_message:
-            try: await target_message.reply_text(escape_markdown_v2("❌ произошла ошибка telegram при проверке подписки. попробуйте позже."), parse_mode=ParseMode.MARKDOWN_V2)
-            except Exception as send_err: logger.error(f"Failed to send 'TelegramError' message: {send_err}")
-        return False
-    except Exception as e:
-        logger.error(f"Unexpected error checking subscription for user {user_id} in channel {config.CHANNEL_ID}: {e}", exc_info=True)
-        return False
-
-async def send_subscription_required_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Sends a message asking the user to subscribe to the channel."""
-    target_message = getattr(update, 'effective_message', None) or getattr(getattr(update, 'callback_query', None), 'message', None)
-
-    if not target_message:
-        logger.warning("Cannot send subscription required message: no target message found.")
-        return
-
-    channel_username = None
-    if isinstance(config.CHANNEL_ID, str) and config.CHANNEL_ID.startswith('@'):
-        channel_username = config.CHANNEL_ID.lstrip('@')
-
-    error_msg_raw = "❌ произошла ошибка при получении ссылки на канал."
-    subscribe_text_raw = "❗ для использования бота необходимо подписаться на наш канал."
-    button_text = "➡️ перейти к каналу"
-    keyboard = None
-
-    if channel_username:
-        subscribe_text_raw = f"❗ для использования бота необходимо подписаться на канал @{channel_username}."
-        keyboard = [[InlineKeyboardButton(button_text, url=f"https://t.me/{channel_username}")]]
-    elif isinstance(config.CHANNEL_ID, int):
-        subscribe_text_raw = "❗ для использования бота необходимо подписаться на наш основной канал. пожалуйста, найдите канал в поиске или через описание бота."
-    else:
-        logger.error(f"Invalid CHANNEL_ID format: {config.CHANNEL_ID}. Cannot generate subscription message correctly.")
-        subscribe_text_raw = error_msg_raw
-
-    reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
-    escaped_text = escape_markdown_v2(subscribe_text_raw)
-    try:
-        await target_message.reply_text(escaped_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
-        if update.callback_query:
-            try: await update.callback_query.answer()
-            except: pass
-    except BadRequest as e:
-        logger.error(f"Failed sending subscription required message (BadRequest): {e} - Text Raw: '{subscribe_text_raw}' Escaped: '{escaped_text[:100]}...'")
-        try:
-            await target_message.reply_text(subscribe_text_raw, reply_markup=reply_markup, parse_mode=None)
-        except Exception as fallback_e:
-            logger.error(f"Failed sending plain subscription required message: {fallback_e}")
-    except Exception as e:
-        logger.error(f"Failed to send subscription required message: {e}")
+## (subscription-related helpers removed; no longer needed in credit model)
 
 def is_admin(user_id: int) -> bool:
     """Checks if the user ID belongs to an admin."""
@@ -1342,70 +1182,16 @@ async def process_and_send_response(update: Update, context: ContextTypes.DEFAUL
         return context_response_prepared
 
 async def send_limit_exceeded_message(update: Update, context: ContextTypes.DEFAULT_TYPE, user: User):
-    """Sends the 'limit exceeded' message with a subscribe prompt."""
+    """Подписочная модель удалена. Сообщаем про недостаток кредитов."""
     try:
-        limit_raw = str(user.message_limit)
-        price_raw = f"{config.SUBSCRIPTION_PRICE_RUB:.0f}"
-        currency_raw = config.SUBSCRIPTION_CURRENCY
-        paid_limit_raw = str(config.PREMIUM_USER_MONTHLY_MESSAGE_LIMIT)
-        paid_persona_raw = str(config.PAID_PERSONA_LIMIT)
-
-        text_raw = (
-            f"упс! 😕 месячный лимит сообщений ({limit_raw}) достигнут.\n\n"
-            f"✨ хочешь большего? ✨\n"
-            f"подписка за {price_raw} {currency_raw}/мес дает:\n"
-            f"✅ до {paid_limit_raw} сообщений в месяц\n"
-            f"✅ до {paid_persona_raw} личностей\n"
-            f"✅ полная настройка поведения и настроений\n\n"
-            f"👇 жми /subscribe или кнопку ниже!"
-        )
-        text_to_send = escape_markdown_v2(text_raw)
-
-        keyboard = [[InlineKeyboardButton("🚀 получить подписку!", callback_data="subscribe_info")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-
-        target_chat_id = None
-        try:
-            target_chat_id = update.effective_chat.id if update.effective_chat else user.telegram_id
-            if not target_chat_id:
-                raise ValueError(f"No valid chat ID found for user {user.telegram_id}")
-
-            logger.debug(f"Attempting to send limit message to chat {target_chat_id}")
-            
-            try:
-                logger.debug(f"Attempting to send limit message (MD) to {target_chat_id}")
-                bot = context.bot
-                await bot.send_message(
-                    chat_id=target_chat_id,
-                    text=text_to_send,
-                    reply_markup=reply_markup,
-                    parse_mode=ParseMode.MARKDOWN_V2
-                )
-                logger.info(f"Successfully sent limit message (MD) to {target_chat_id}")
-            except BadRequest as md_e:
-                logger.error(f"Markdown send failed: {md_e}")
-                logger.debug(f"Text (MD): {text_to_send[:100]}...")
-                
-                try:
-                    logger.debug(f"Attempting to send limit message (Plain) to {target_chat_id}")
-                    await context.bot.send_message(
-                        target_chat_id,
-                        text=text_raw,
-                        reply_markup=reply_markup,
-                        parse_mode=None
-                    )
-                    logger.info(f"Successfully sent limit message (Plain) to {target_chat_id}")
-                except Exception as plain_e:
-                    logger.error(f"Plain text send failed: {plain_e}")
-                    logger.debug(f"Text (Plain): {text_raw[:100]}...")
-            except Exception as send_e:
-                logger.error(f"Unexpected error during message send: {send_e}")
-        except ValueError as ve:
-            logger.error(f"Value error: {ve}")
-        except Exception as outer_e:
-            logger.error(f"Failed to send limit exceeded message to user {user.telegram_id}: {outer_e}")
+        target_chat_id = update.effective_chat.id if update.effective_chat else getattr(user, 'telegram_id', None)
+        if not target_chat_id:
+            logger.error("send_limit_exceeded_message: no target chat id")
+            return
+        text_raw = "Недостаточно кредитов для выполнения запроса. Пополните баланс через /buy_credits."
+        await context.bot.send_message(chat_id=target_chat_id, text=text_raw, parse_mode=None)
     except Exception as e:
-        logger.error(f"Critical error in send_limit_exceeded_message: {e}")
+        logger.error(f"send_limit_exceeded_message error: {e}")
 
 # --- Message Handlers ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1447,10 +1233,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         limit_state_changed = False
         context_user_msg_added = False
 
-        if not await check_channel_subscription(update, context):
-            logger.info(f"handle_message: User {user_id} failed channel subscription check.")
-            await send_subscription_required_message(update, context)
-            return
+        # Подписка больше не проверяется; работаем только по кредитной модели
 
         db_session = None
         try:
@@ -1515,70 +1298,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                             db_session.rollback()
                     return
 
-                limit_checks_passed = True
-                now_utc = datetime.now(timezone.utc)
-                current_month_start = now_utc.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-
-                if owner_user.message_count_reset_at is None or owner_user.message_count_reset_at < current_month_start:
-                    logger.info(f"Resetting monthly message count for user {owner_user.id} (TG: {owner_user.telegram_id}). Old count: {owner_user.monthly_message_count}, old reset_at: {owner_user.message_count_reset_at}. New reset_at: {current_month_start}")
-                    owner_user.monthly_message_count = 0
-                    owner_user.message_count_reset_at = current_month_start
-                    db_session.add(owner_user) 
-                    limit_state_changed = True
-
-                if owner_user.is_active_subscriber or owner_user.telegram_id == config.ADMIN_USER_ID:
-                    try:
-                        message_tokens = count_openai_compatible_tokens(message_text, config.GEMINI_MODEL_NAME_FOR_API)
-                        if message_tokens > config.PREMIUM_USER_MESSAGE_TOKEN_LIMIT:
-                            logger.info(f"Premium user/Admin {owner_user.id} (TG: {owner_user.telegram_id}) exceeded token limit. Tokens: {message_tokens}, Limit: {config.PREMIUM_USER_MESSAGE_TOKEN_LIMIT}")
-                            await update.message.reply_text(
-                                f"❌ Ваше сообщение слишком длинное ({message_tokens} токенов). "
-                                f"Лимит на одно сообщение: {config.PREMIUM_USER_MESSAGE_TOKEN_LIMIT} токенов.",
-                                parse_mode=None
-                            )
-                            limit_checks_passed = False
-                    except Exception as e_token_count_legacy:
-                        logger.error(f"Error counting tokens (legacy block for premium/admin) for user message (user {owner_user.id}): {e_token_count_legacy}", exc_info=True)
-                        await update.message.reply_text("Не удалось проверить длину вашего сообщения из-за внутренней ошибки. Попробуйте еще раз.", parse_mode=None)
-                        limit_checks_passed = False
-                    
-                    if limit_checks_passed:
-                        if owner_user.monthly_message_count >= config.PREMIUM_USER_MONTHLY_MESSAGE_LIMIT:
-                            logger.info(f"Premium user/Admin {owner_user.id} (TG: {owner_user.telegram_id}) exceeded monthly message limit. Count: {owner_user.monthly_message_count}, Limit: {config.PREMIUM_USER_MONTHLY_MESSAGE_LIMIT}")
-                            next_reset_month = current_month_start.month % 12 + 1
-                            next_reset_year = current_month_start.year + (1 if current_month_start.month == 12 else 0)
-                            next_reset_date_obj = datetime(next_reset_year, next_reset_month, 1, tzinfo=timezone.utc)
-                            months_ru = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"]
-                            next_reset_date_str = f"{next_reset_date_obj.day} {months_ru[next_reset_date_obj.month - 1]} {next_reset_date_obj.year} г."
-                            await update.message.reply_text(
-                                f"😔 Вы исчерпали свой месячный лимит сообщений ({config.PREMIUM_USER_MONTHLY_MESSAGE_LIMIT}).\n"
-                                f"Новый лимит будет доступен {next_reset_date_str}."
-                            )
-                            limit_checks_passed = False
-                else:
-                    if owner_user.monthly_message_count >= config.FREE_USER_MONTHLY_MESSAGE_LIMIT:
-                        logger.info(f"Free user {owner_user.id} (TG: {owner_user.telegram_id}) exceeded monthly message limit. Count: {owner_user.monthly_message_count}, Limit: {config.FREE_USER_MONTHLY_MESSAGE_LIMIT}")
-                        next_reset_month = current_month_start.month % 12 + 1
-                        next_reset_year = current_month_start.year + (1 if current_month_start.month == 12 else 0)
-                        next_reset_date_obj = datetime(next_reset_year, next_reset_month, 1, tzinfo=timezone.utc)
-                        months_ru = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"]
-                        next_reset_date_str = f"{next_reset_date_obj.day} {months_ru[next_reset_date_obj.month - 1]} {next_reset_date_obj.year} г."
-                        await update.message.reply_text(
-                            f"😔 Вы исчерпали свой месячный лимит сообщений ({config.FREE_USER_MONTHLY_MESSAGE_LIMIT}).\n"
-                            f"Для увеличения лимита вы можете перейти на премиум-подписку (/subscribe).\n"
-                            f"Новый лимит будет доступен {next_reset_date_str}."
-                        )
-                        limit_checks_passed = False
-
-                if not limit_checks_passed:
-                    if limit_state_changed:
-                        try:
-                            db_session.commit()
-                            logger.info(f"Committed monthly count reset for user {owner_user.id} before exiting due to limit exceeded.")
-                        except Exception as e_commit_limit_exit:
-                            logger.error(f"Error committing monthly count reset for user {owner_user.id} on limit exit: {e_commit_limit_exit}", exc_info=True)
-                            db_session.rollback()
-                    return
+                # Убраны месячные лимиты и подписки: обработка продолжается по кредитной модели
 
                 current_user_message_content = f"{username}: {message_text}"
                 current_user_message_dict = {"role": "user", "content": current_user_message_content}
@@ -1751,9 +1471,9 @@ async def deduct_credits_for_interaction(
 ) -> None:
     """Рассчитывает и списывает кредиты за одно взаимодействие (текст/фото/голос)."""
     try:
-        from config import CREDIT_COSTS, MODEL_PRICE_MULTIPLIERS, GEMINI_MODEL_NAME_FOR_API, LOW_BALANCE_WARNING_THRESHOLD
+        from config import CREDIT_COSTS, MODEL_PRICE_MULTIPLIERS, OPENROUTER_MODEL_NAME, LOW_BALANCE_WARNING_THRESHOLD
 
-        mult = MODEL_PRICE_MULTIPLIERS.get(GEMINI_MODEL_NAME_FOR_API, 1.0)
+        mult = MODEL_PRICE_MULTIPLIERS.get(OPENROUTER_MODEL_NAME, 1.0)
         total_cost = 0.0
 
         # 1) Базовая стоимость медиа
@@ -1765,11 +1485,11 @@ async def deduct_credits_for_interaction(
 
         # 2) Стоимость токенов
         try:
-            input_tokens = count_openai_compatible_tokens(input_text or "", GEMINI_MODEL_NAME_FOR_API)
+            input_tokens = count_openai_compatible_tokens(input_text or "", OPENROUTER_MODEL_NAME)
         except Exception:
             input_tokens = 0
         try:
-            output_tokens = count_openai_compatible_tokens(output_text or "", GEMINI_MODEL_NAME_FOR_API)
+            output_tokens = count_openai_compatible_tokens(output_text or "", OPENROUTER_MODEL_NAME)
         except Exception:
             output_tokens = 0
 
@@ -1822,9 +1542,7 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
     message_id = update.message.message_id
     logger.info(f"Received {media_type} message from user {user_id} ({username}) in chat {chat_id_str} (MsgID: {message_id})")
 
-    if not await check_channel_subscription(update, context):
-        await send_subscription_required_message(update, context)
-        return
+    # Подписка больше не проверяется; работаем только по кредитной модели
 
     with get_db() as db:
         try:
@@ -1977,19 +1695,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id_str = str(update.effective_chat.id)
     logger.info(f"CMD /start < User {user_id} ({username}) in Chat {chat_id_str}")
 
-    logger.debug(f"/start: Checking channel subscription for user {user_id}...")
-    if not await check_channel_subscription(update, context):
-        await send_subscription_required_message(update, context)
-        return
+    # Подписка больше не проверяется; работаем только по кредитной модели
 
     await context.bot.send_chat_action(chat_id=chat_id_str, action=ChatAction.TYPING)
     reply_text_final = ""
     reply_markup = ReplyKeyboardRemove()
     reply_parse_mode = ParseMode.MARKDOWN_V2
-    status_raw = ""
-    expires_raw = ""
     persona_limit_raw = ""
-    message_limit_raw = ""
     fallback_text_raw = "Привет! Произошла ошибка отображения стартового сообщения. Используй /help или /menu."
 
     try:
@@ -2012,22 +1724,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             if not db.is_modified(user):
                 user = db.query(User).options(selectinload(User.persona_configs)).filter(User.id == user.id).one()
 
-            now = datetime.now(timezone.utc)
-            status_raw = "⭐ Premium" if user.is_active_subscriber else "🆓 Free"
-            expires_raw = ""
-            if user.is_active_subscriber and user.subscription_expires_at:
-                subscription_expires_dt_for_comparison = user.subscription_expires_at
-                if subscription_expires_dt_for_comparison.tzinfo is None:
-                    subscription_expires_dt_for_comparison = subscription_expires_dt_for_comparison.replace(tzinfo=timezone.utc)
-
-                if subscription_expires_dt_for_comparison > now + timedelta(days=365*10):
-                    expires_raw = "(бессрочно)"
-                else:
-                    expires_raw = f"до {user.subscription_expires_at.strftime('%d.%m.%Y')}"
-
             persona_count = len(user.persona_configs) if user.persona_configs else 0
             persona_limit_raw = f"{persona_count}/{user.persona_limit}"
-            message_limit_raw = f"{user.monthly_message_count}/{user.message_limit}"
 
             start_text_md = (
                 f"привет! я бот для создания ai-собеседников (@{escape_markdown_v2(context.bot.username)}).\n\n"
@@ -2095,10 +1793,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     chat_id_str = str(message_or_query.message.chat.id if is_callback else message_or_query.chat.id)
     logger.info(f"CMD /help or Callback 'show_help' < User {user_id} in Chat {chat_id_str}")
 
-    if not is_callback:
-        if not await check_channel_subscription(update, context):
-            await send_subscription_required_message(update, context)
-            return
+    # Подписка больше не проверяется; работаем только по кредитной модели
 
     help_text_plain = (
         "как работает бот\n\n"
@@ -2794,7 +2489,7 @@ async def create_persona(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     usage_text = "формат: /createpersona <имя> [описание]\n\nсовет: подробное описание напрямую влияет на характер и поведение личности."
     error_name_len = escape_markdown_v2("❌ имя личности: 2\-50 символов.")
     error_desc_len = escape_markdown_v2("❌ описание: до 2500 символов.")
-    error_limit_reached_fmt_raw = "упс! 😕 достигнут лимит личностей ({current_count}/{limit}) для статуса {status_text}\. чтобы создавать больше, используй /subscribe"
+    error_limit_reached_fmt_raw = "упс! 😕 достигнут лимит личностей ({current_count}/{limit}). удалите ненужные или отредактируйте существующие."
     error_name_exists_fmt_raw = "❌ личность с именем '{persona_name}' уже есть\. выбери другое\."
     success_create_fmt_raw = "✅ личность '{name}' создана\!\nID: `{id}`\nописание: {description}\n\nтеперь можно настроить поведение через `/editpersona {id}` или привязать бота в `/mypersonas`"
     error_db = escape_markdown_v2("❌ ошибка базы данных при создании личности.")
@@ -2826,7 +2521,7 @@ async def create_persona(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 current_count = len(user.persona_configs)
                 limit = user.persona_limit
                 logger.warning(f"User {user_id} cannot create persona, limit reached ({current_count}/{limit}).")
-                status_text_raw = "⭐ Premium" if user.is_active_subscriber else "🆓 Free"
+                status_text_raw = ""
                 final_limit_msg = error_limit_reached_fmt_raw.format(
                     current_count=escape_markdown_v2(str(current_count)),
                     limit=escape_markdown_v2(str(limit)),
@@ -3427,7 +3122,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     needs_subscription_check = True
     # Callbacks that DON'T require subscription check
     no_check_callbacks = (
-        "view_tos", "subscribe_info", "dummy_", "confirm_pay", "subscribe_pay",
+        "view_tos", "dummy_", "confirm_pay",
         "show_help", "show_menu", "show_profile", "show_mypersonas", "show_settings",
         "show_tos"
     )
@@ -3444,12 +3139,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     # --- Route non-conversation callbacks ---
     if data.startswith("set_mood_"):
         await mood(update, context)
-    elif data == "subscribe_info":
-        await query.answer()
-        await subscribe(update, context, from_callback=True)
-    elif data == "subscribe_pay":
-        await query.answer("Создаю ссылку на оплату...")
-        await generate_payment_link(update, context)
+    
     elif data == "view_tos":
         await query.answer()
         await view_tos(update, context)
@@ -4769,18 +4459,14 @@ async def edit_max_messages_prompt(update: Update, context: ContextTypes.DEFAULT
             elif config_value == 6: current_value_str = "many"
             # else: current_value_str остается "normal" для неожиданных значений
 
-        # Получаем владельца персоны и проверяем подписку
+        # Подписочная модель удалена; все опции доступны
         current_owner = db.query(User).filter(User.id == persona_config.owner_id).first()
-        is_premium_user = current_owner.is_active_subscriber if current_owner else False
-
-    # Определяем, какие опции доступны только по премиум-подписке
-    premium_options = ["many", "random"]
     
     display_map = {
         "few": "поменьше",
         "normal": "стандартно",
-        "many": f"побольше{PREMIUM_STAR if not is_premium_user else ''}",
-        "random": f"случайно{PREMIUM_STAR if not is_premium_user else ''}"
+        "many": "побольше",
+        "random": "случайно"
     }
     current_display = display_map.get(current_value_str, "стандартно")
 
@@ -4833,8 +4519,7 @@ async def edit_max_messages_received(update: Update, context: ContextTypes.DEFAU
         new_value_str = data.replace("set_max_msgs_", "")
         user_id = query.from_user.id # ID пользователя для проверки подписки
         
-        # Определяем премиум-опции
-        premium_options = ["many", "random"]
+        # Subscription model removed: all options allowed
         
         numeric_value = -1 # Маркер ошибки
         if new_value_str == "few": numeric_value = 1
@@ -4849,17 +4534,6 @@ async def edit_max_messages_received(update: Update, context: ContextTypes.DEFAU
 
         try:
             with get_db() as db:
-                # Проверяем наличие премиум-подписки у пользователя
-                user = db.query(User).filter(User.telegram_id == user_id).first()
-                is_premium_user = user.is_active_subscriber if user else False
-
-                # Если выбрана премиум-опция, но у пользователя нет подписки
-                if new_value_str in premium_options and not is_premium_user:
-                    await query.answer(f"{PREMIUM_STAR} Эта опция доступна только по подписке.", show_alert=True)
-                    # Возвращаемся к выбору без сохранения изменений
-                    await edit_max_messages_prompt(update, context)
-                    return EDIT_MAX_MESSAGES
-                
                 persona = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
                 if persona:
                     persona.max_response_messages = numeric_value
@@ -5023,23 +4697,16 @@ async def edit_media_reaction_prompt(update: Update, context: ContextTypes.DEFAU
             return ConversationHandler.END
         
         current_owner = db.query(User).filter(User.id == current_config.owner_id).first()
-        is_premium_user = current_owner.is_active_subscriber if current_owner else False
         current = current_config.media_reaction or "text_only"
        
-    # --- НОВАЯ ЛОГИКА ОТОБРАЖЕНИЯ ---
-    # Проверяем, может ли бесплатный пользователь выбрать опцию "на всё"
-    can_free_user_select_all = not is_premium_user and (current_owner.monthly_photo_count < current_owner.photo_limit)
-
     media_react_map = {
         "text_only": "только текст",
         "none": "никак не реагировать",
-        # Премиум опции
-        "text_and_all_media": f"на всё (текст, фото, голос){PREMIUM_STAR if not is_premium_user and not can_free_user_select_all else ''}",
-        "all_media_no_text": f"только медиа (фото, голос){PREMIUM_STAR if not is_premium_user else ''}",
-        "photo_only": f"только фото{PREMIUM_STAR if not is_premium_user else ''}",
-        "voice_only": f"только голос{PREMIUM_STAR if not is_premium_user else ''}",
+        "text_and_all_media": "на всё (текст, фото, голос)",
+        "all_media_no_text": "только медиа (фото, голос)",
+        "photo_only": "только фото",
+        "voice_only": "только голос",
     }
-    # --- КОНЕЦ НОВОЙ ЛОГИКИ ---
 
     if current == "all": current = "text_and_all_media"
     
@@ -5087,24 +4754,6 @@ async def edit_media_reaction_received(update: Update, context: ContextTypes.DEF
         
         try:
             with get_db() as db:
-                user = db.query(User).filter(User.telegram_id == user_id).first()
-                is_premium_user = user.is_active_subscriber if user else False
-
-                # --- НОВАЯ ЛОГИКА ПРОВЕРКИ ---
-                is_premium_option = new_value in ["text_and_all_media", "all_media_no_text", "photo_only", "voice_only"]
-                if is_premium_option and not is_premium_user:
-                    # Особая проверка для опции "на всё" для бесплатных пользователей
-                    if new_value == "text_and_all_media":
-                        if user.monthly_photo_count >= user.photo_limit:
-                            await query.answer(f"❗ Ваш лимит на фото ({user.photo_limit}) исчерпан.", show_alert=True)
-                            await edit_media_reaction_prompt(update, context) # Обновляем меню
-                            return EDIT_MEDIA_REACTION
-                    else: # Для всех остальных премиум-опций
-                        await query.answer(f"{PREMIUM_STAR} Эта опция доступна только по подписке.", show_alert=True)
-                        await edit_media_reaction_prompt(update, context) # Обновляем меню
-                        return EDIT_MEDIA_REACTION
-                # --- КОНЕЦ НОВОЙ ЛОГИКИ ---
-
                 persona = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).with_for_update().first()
                 if persona:
                     persona.media_reaction = new_value
@@ -5151,7 +4800,7 @@ async def _show_edit_wizard_menu(update: Update, context: ContextTypes.DEFAULT_T
         persona_id = persona_config.id
         user_id = update.effective_user.id
         owner = persona_config.owner
-        is_premium = owner.is_active_subscriber or is_admin(user_id) if owner else False
+        is_premium = is_admin(user_id) if owner else False
         star = " ⭐"
         style = persona_config.communication_style or "neutral"
         verbosity = persona_config.verbosity_level or "medium"

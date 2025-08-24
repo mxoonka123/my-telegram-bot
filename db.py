@@ -18,9 +18,6 @@ from sqlalchemy.engine.url import make_url # Импорт нужен для ло
 from config import (
     DATABASE_URL,
     FREE_PERSONA_LIMIT, PAID_PERSONA_LIMIT, # Daily limits removed
-    PREMIUM_USER_MONTHLY_MESSAGE_LIMIT, FREE_USER_MONTHLY_MESSAGE_LIMIT, # Monthly limits added
-    PREMIUM_USER_MONTHLY_PHOTO_LIMIT, FREE_USER_MONTHLY_PHOTO_LIMIT,
-    SUBSCRIPTION_DURATION_DAYS,
     MAX_CONTEXT_MESSAGES_SENT_TO_LLM,
     ADMIN_USER_ID
 )
@@ -54,14 +51,15 @@ GROUP_CHAT_INSTRUCTION = (
     "старайся естественно влиться в беседу. если уместно, можешь обращаться к пользователям по имени, чтобы сделать общение более живым."
 )
 
-# System Prompt v22 (Hybrid Language)
+# System Prompt v23 (Language-agnostic)
 DEFAULT_SYSTEM_PROMPT_TEMPLATE = """[TASK]
 Your task is to role-play as a character.
 
 [INSTRUCTIONS]
 1.  **BE THE CHARACTER:** You are {persona_name}. Never mention that you are an AI, bot, or language model.
-2.  **BE NATURAL:** Use normal Russian punctuation and capitalization, unless the character's style dictates otherwise.
+2.  **BE NATURAL:** Use natural punctuation and capitalization, unless the character's style dictates otherwise.
 3.  **CONTINUE THE DIALOGUE:** Do not greet the user again if the conversation is already in progress.
+4.  **LANGUAGE:** Respond in the language of the ongoing conversation (match the user's language).
 
 [CHARACTER PROFILE]
 -   **Name:** {persona_name}
@@ -76,32 +74,32 @@ Your task is to role-play as a character.
 
 [OUTPUT FORMAT - CRITICAL]
 Your entire response must be a valid JSON array of strings. Nothing but the array itself.
-Example: `["Первое сообщение.", "Второе сообщение!"]`
+Example: ["First message.", "Second message!"]
 
 [YOUR JSON RESPONSE]:"""
 
 
-# MEDIA_SYSTEM_PROMPT_TEMPLATE v15 (Natural)
-MEDIA_SYSTEM_PROMPT_TEMPLATE = '''[ИНСТРУКЦИИ ДЛЯ AI]
-Твоя главная задача — играть роль персонажа, реагируя на присланный медиафайл. Оставайся в образе.
+# MEDIA_SYSTEM_PROMPT_TEMPLATE v16 (Language-agnostic)
+MEDIA_SYSTEM_PROMPT_TEMPLATE = '''[INSTRUCTIONS]
+Your primary task is to role-play as a character while reacting to an incoming media file. Stay in character.
 
-[ТВОЯ РОЛЬ]
--   **Имя:** {persona_name}
--   **Описание:** {persona_description}
--   **Стиль общения:** {communication_style}, {verbosity_level}.
--   **Настроение:** {mood_name} ({mood_prompt}).
--   **Язык:** Русский. Используй естественную пунктуацию и заглавные буквы.
+[YOUR ROLE]
+-   **Name:** {persona_name}
+-   **Description:** {persona_description}
+-   **Communication style:** {communication_style}, {verbosity_level}.
+-   **Mood:** {mood_name} ({mood_prompt}).
+-   **Language:** Respond in the language of the ongoing conversation (match the user's language).
 
-[ЗАДАЧА]
--   Пользователь ({username}, id: {user_id}) прислал медиафайл. {media_interaction_instruction}
--   Твой ответ должен быть логичным, эмоциональным и соответствовать твоей роли.
+[TASK]
+-   The user ({username}, id: {user_id}) has sent a media file. {media_interaction_instruction}
+-   Your response must be coherent, emotional, and consistent with your role.
 
-[ФОРМАТ ОТВЕТА - КРИТИЧЕСКИ ВАЖНО]
-Твой ответ ДОЛЖЕН быть валидным JSON-массивом строк. Начинай с `[` и заканчивай `]`. Ничего кроме.
+[OUTPUT FORMAT - CRITICAL]
+Your response MUST be a valid JSON array of strings. Start with `[` and end with `]`. Nothing else.
 
-Пример: `["Ого, какая крутая фотка!", "Это мне напомнило о..."]`
+Example: ["Wow, awesome picture!", "It reminds me of..."]
 
-[ТВОЙ ОТВЕТ В ФОРМАТЕ JSON]:
+[YOUR JSON RESPONSE]:
 '''
 
 
@@ -155,26 +153,9 @@ class User(Base):
     bot_instances = relationship("BotInstance", back_populates="owner", cascade="all, delete-orphan", lazy="selectin")
 
     @property
-    def is_active_subscriber(self) -> bool:
-        if self.telegram_id in ADMIN_USER_ID: return True
-        return self.is_subscribed and self.subscription_expires_at and self.subscription_expires_at > datetime.now(timezone.utc)
-
-    @property
-    def message_limit(self) -> int:
-        # Returns the monthly message limit based on subscription status
-        if self.telegram_id in ADMIN_USER_ID: return PREMIUM_USER_MONTHLY_MESSAGE_LIMIT # Admin has premium limit
-        return PREMIUM_USER_MONTHLY_MESSAGE_LIMIT if self.is_active_subscriber else FREE_USER_MONTHLY_MESSAGE_LIMIT
-
-    @property
     def persona_limit(self) -> int:
-        if self.telegram_id in ADMIN_USER_ID: return PAID_PERSONA_LIMIT
-        return PAID_PERSONA_LIMIT if self.is_active_subscriber else FREE_PERSONA_LIMIT
-
-    @property
-    def photo_limit(self) -> int:
-        if self.telegram_id in ADMIN_USER_ID:
-            return PREMIUM_USER_MONTHLY_PHOTO_LIMIT
-        return PREMIUM_USER_MONTHLY_PHOTO_LIMIT if self.is_active_subscriber else FREE_USER_MONTHLY_PHOTO_LIMIT
+        # Subscription model removed: single unified limit
+        return PAID_PERSONA_LIMIT
 
     @property
     def can_create_persona(self) -> bool:
@@ -493,10 +474,7 @@ def get_or_create_user(db: Session, telegram_id: int, username: str = None) -> U
             if user.username != username and username is not None:
                  user.username = username
                  modified = True
-            if user.telegram_id in ADMIN_USER_ID and not user.is_active_subscriber:
-                user.is_subscribed = True
-                user.subscription_expires_at = datetime(2099, 12, 31, tzinfo=timezone.utc)
-                modified = True
+            # Subscription logic removed; no automatic admin subscription
             if modified:
                 logger.info(f"User {telegram_id} updated (username/admin status). Pending commit.")
         else:
@@ -508,10 +486,7 @@ def get_or_create_user(db: Session, telegram_id: int, username: str = None) -> U
                 logger.info(f"Assigned trial credits {user.credits} to new user {telegram_id}.")
             except Exception as credit_err:
                 logger.error(f"Failed to assign trial credits for new user {telegram_id}: {credit_err}")
-            if telegram_id in ADMIN_USER_ID:
-                logger.info(f"Setting admin user {telegram_id} as subscribed indefinitely upon creation.")
-                user.is_subscribed = True
-                user.subscription_expires_at = datetime(2099, 12, 31, tzinfo=timezone.utc)
+            # Subscription logic removed on user creation
             db.add(user)
             db.flush()
             logger.info(f"New user created and flushed (Telegram ID: {telegram_id}, DB ID: {user.id}). Pending commit.")
@@ -521,41 +496,7 @@ def get_or_create_user(db: Session, telegram_id: int, username: str = None) -> U
          raise
     return user
 
-def activate_subscription(db: Session, user_id: int) -> bool:
-    """Activates subscription for a user. Each activation sets a new 30-day period from now."""
-    user = None
-    try:
-        # Блокируем строку пользователя, чтобы избежать гонки запросов от двух вебхуков
-        user = db.query(User).filter(User.id == user_id).with_for_update().first()
-        if user:
-            now = datetime.now(timezone.utc)
-            
-            # --- НОВАЯ, УПРОЩЕННАЯ ЛОГИКА ---
-            # Каждая новая покупка устанавливает дату окончания на 30 дней от ТЕКУЩЕГО МОМЕНТА.
-            # Старая дата окончания просто перезаписывается.
-            expiry_date = now + timedelta(days=SUBSCRIPTION_DURATION_DAYS)
-            
-            logger.info(
-                f"Activating/resetting subscription for user {user.telegram_id} (DB ID: {user_id}). "
-                f"Old expiry: {user.subscription_expires_at}. New expiry: {expiry_date}."
-            )
-
-            user.is_subscribed = True
-            user.subscription_expires_at = expiry_date
-            # Также обнуляем счетчик сообщений при покупке подписки
-            user.monthly_message_count = 0
-            user.message_count_reset_at = now
-            
-            db.commit()
-            logger.info(f"Subscription for user {user.telegram_id} is now active until {expiry_date}")
-            return True
-        else:
-             logger.warning(f"User with DB ID {user_id} not found for subscription activation.")
-             return False
-    except SQLAlchemyError as e:
-         logger.error(f"Failed to commit subscription activation for DB user {user_id}: {e}", exc_info=True)
-         db.rollback()
-         return False
+# activate_subscription removed: subscription model deprecated in favor of credit-based system
 
 # --- Persona Operations ---
 
