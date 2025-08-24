@@ -1908,10 +1908,7 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     chat_id_str = str(message_or_query.message.chat.id if is_callback else message_or_query.chat.id)
     logger.info(f"CMD /menu or Callback 'show_menu' < User {user_id} in Chat {chat_id_str}")
 
-    if not is_callback:
-        if not await check_channel_subscription(update, context):
-            await send_subscription_required_message(update, context)
-            return
+    # проверка подписки на канал отключена
 
     menu_text_raw = "панель управления\n\nвыберите действие:"
     menu_text_escaped = escape_markdown_v2(menu_text_raw)
@@ -2410,9 +2407,7 @@ async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     username = update.effective_user.username or f"id_{user_id}"
     logger.info(f"CMD /reset or /clear < User {user_id} ({username}) in Chat {chat_id_str}")
 
-    if not await check_channel_subscription(update, context):
-        await send_subscription_required_message(update, context)
-        return
+    # проверка подписки на канал отключена
 
     # Сообщения для пользователя (простой текст)
     msg_no_persona_raw = "🎭 в этом чате нет активной личности, память которой можно было бы очистить."
@@ -2599,9 +2594,6 @@ async def my_personas(update: Union[Update, CallbackQuery], context: ContextType
             logger.warning(f"Could not answer query in my_personas: {e_ans}")
     else:
         logger.info(f"CMD /mypersonas < User {user_id} ({username}) in Chat {chat_id_str}")
-        if not await check_channel_subscription(update, context):
-            await send_subscription_required_message(update, context)
-            return
     
     if not is_callback:
         await context.bot.send_chat_action(chat_id=chat_id_str, action=ChatAction.TYPING)
@@ -3118,23 +3110,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     # Log only callbacks handled by this general handler
     logger.info(f"GENERAL CALLBACK < User {user_id} ({username}) in Chat {chat_id_str} data: {data}")
 
-    # --- Subscription Check --- 
-    needs_subscription_check = True
-    # Callbacks that DON'T require subscription check
-    no_check_callbacks = (
-        "view_tos", "dummy_", "confirm_pay",
-        "show_help", "show_menu", "show_profile", "show_mypersonas", "show_settings",
-        "show_tos"
-    )
-    if data.startswith(no_check_callbacks):
-        needs_subscription_check = False
-
-    if needs_subscription_check:
-        if not await check_channel_subscription(update, context):
-            await send_subscription_required_message(update, context)
-            try: await query.answer(text="❗ Подпишитесь на канал!", show_alert=True)
-            except: pass
-            return
+    # проверка подписки на канал отключена
 
     # --- Route non-conversation callbacks ---
     if data.startswith("set_mood_"):
@@ -3690,10 +3666,7 @@ async def _start_edit_convo(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     context.user_data['edit_persona_id'] = persona_id
     context.user_data['_user_id_for_logging'] = user_id # <--- Устанавливаем для СЛЕДУЮЩЕГО вызова _clean_previous_edit_session
 
-    if not is_callback:
-        if not await check_channel_subscription(update, context):
-            await send_subscription_required_message(update, context)
-            return ConversationHandler.END
+    # проверка подписки на канал отключена
 
     await context.bot.send_chat_action(chat_id=chat_id_for_new_menu, action=ChatAction.TYPING)
 
@@ -5524,10 +5497,7 @@ async def _start_delete_convo(update: Update, context: ContextTypes.DEFAULT_TYPE
     context.user_data['delete_persona_id'] = persona_id
     context.user_data['_user_id_for_logging'] = user_id
 
-    if not is_callback: # This check is for /deletepersona <id> command
-        if not await check_channel_subscription(update, context):
-            await send_subscription_required_message(update, context)
-            return ConversationHandler.END
+    # проверка подписки на канал отключена
 
     try:
         await context.bot.send_chat_action(chat_id=chat_id_for_action, action=ChatAction.TYPING)
