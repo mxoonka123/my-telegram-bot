@@ -135,10 +135,10 @@ NEW_USER_TRIAL_CREDITS = float(os.getenv("NEW_USER_TRIAL_CREDITS", "10.0"))
 # Пакеты кредитов для покупки (id -> {credits, price_rub, title})
 # Значения по умолчанию можно переопределять через окружение в будущем
 CREDIT_PACKAGES = {
-    "starter": {"credits": 50.0, "price_rub": 199.0, "title": "Starter 50"},
-    "basic":   {"credits": 150.0, "price_rub": 499.0, "title": "Basic 150"},
-    "pro":     {"credits": 400.0, "price_rub": 999.0, "title": "Pro 400"},
-    "ultra":   {"credits": 1200.0, "price_rub": 2399.0, "title": "Ultra 1200"},
+    "starter": {"credits": 50.0, "price_rub": 249.0, "title": "starter 50"},
+    "basic":   {"credits": 150.0, "price_rub": 699.0, "title": "basic 150"},
+    "pro":     {"credits": 400.0, "price_rub": 1499.0, "title": "pro 400"},
+    "ultra":   {"credits": 1200.0, "price_rub": 3499.0, "title": "ultra 1200"},
 }
 
 # --- Low Balance Warning ---
