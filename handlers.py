@@ -1966,9 +1966,8 @@ async def mood(update: Update, context: ContextTypes.DEFAULT_TYPE, db: Optional[
     logger.info(f"CMD /mood or Mood Action < User {user_id} ({username}) in Chat {chat_id_str}")
 
     if not is_callback:
-        if not await check_channel_subscription(update, context):
-            await send_subscription_required_message(update, context)
-            return
+        # проверка подписки удалена
+        pass
 
     close_db_later = False
     db_session = db
@@ -2475,9 +2474,7 @@ async def create_persona(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     chat_id_str = str(update.effective_chat.id)
     logger.info(f"CMD /createpersona < User {user_id} ({username}) with args: {context.args}")
 
-    if not await check_channel_subscription(update, context):
-        await send_subscription_required_message(update, context)
-        return
+    # проверка подписки удалена
 
     await context.bot.send_chat_action(chat_id=chat_id_str, action=ChatAction.TYPING)
 
@@ -2933,9 +2930,8 @@ async def add_bot_to_chat(update: Update, context: ContextTypes.DEFAULT_TYPE, pe
     local_persona_id = persona_id
 
     if not is_callback:
-        if not await check_channel_subscription(update, context):
-            await send_subscription_required_message(update, context)
-            return
+        # проверка подписки удалена
+        pass
 
     usage_text = escape_markdown_v2("формат: `/addbot <id персоны>`\nили используй кнопку '➕ В чат' из `/mypersonas`")
     error_invalid_id_callback = escape_markdown_v2("❌ ошибка: неверный ID личности.")
@@ -3206,9 +3202,8 @@ async def profile(update: Union[Update, CallbackQuery], context: ContextTypes.DE
     logger.info(f"CMD /profile or Callback 'show_profile' < User {user_id} ({username})")
 
     if not is_callback:
-        if not await check_channel_subscription(update, context):
-            await send_subscription_required_message(update, context)
-            return
+        # проверка подписки удалена
+        pass
 
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
 
@@ -5762,9 +5757,7 @@ async def mute_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     logger.info(f"CMD /mutebot < User {user_id} in Chat {chat_id_str}")
 
-    if not await check_channel_subscription(update, context):
-        await send_subscription_required_message(update, context)
-        return
+    # проверка подписки удалена
 
     error_no_persona = escape_markdown_v2("🎭 в этом чате нет активной личности.")
     error_not_owner = escape_markdown_v2("❌ только владелец личности может ее заглушить.")
@@ -5822,9 +5815,7 @@ async def unmute_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     user_id = update.effective_user.id
     logger.info(f"CMD /unmutebot < User {user_id} in Chat {chat_id_str}")
 
-    if not await check_channel_subscription(update, context):
-        await send_subscription_required_message(update, context)
-        return
+    # проверка подписки удалена
 
     error_no_persona = escape_markdown_v2("🎭 в этом чате нет активной личности, которую можно размьютить.")
     error_not_owner = escape_markdown_v2("❌ только владелец личности может снять заглушку.")
