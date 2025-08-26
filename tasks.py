@@ -18,7 +18,7 @@ from db import (
     get_db, PersonaConfig, get_context_for_chat_bot, add_message_to_context
 )
 from persona import Persona
-from utils import postprocess_response, extract_gif_links, escape_markdown_v2
+from utils import postprocess_response, extract_gif_links, escape_markdown_v2, format_visual_text
 from config import FREE_PERSONA_LIMIT, PAID_PERSONA_LIMIT, FREE_USER_MONTHLY_MESSAGE_LIMIT # <-- ИСПРАВЛЕННЫЙ ИМПОРТ
 from handlers import send_to_openrouter_llm, deduct_credits_for_interaction
 
@@ -110,7 +110,9 @@ async def proactive_messaging_task(application: Application) -> None:
                                     raise ValueError("нет токена привязанного бота для этого чата")
                                 target_bot_for_send = Bot(token=bot_token)
                                 await target_bot_for_send.initialize()
-                                await target_bot_for_send.send_message(chat_id=chat_id, text=assistant_response_text, parse_mode=None, disable_notification=True)
+                                # нормализуем визуальный текст (строчные буквы, без эмодзи)
+                                visual_text = format_visual_text(assistant_response_text)
+                                await target_bot_for_send.send_message(chat_id=chat_id, text=visual_text, parse_mode=None, disable_notification=True)
                             except (BadRequest, Forbidden) as te:
                                 logger.warning(f"proactive message send failed for chat {chat_id}: {te}")
                             except TelegramError as te:

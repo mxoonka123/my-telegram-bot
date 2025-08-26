@@ -14,6 +14,38 @@ import tiktoken # Token counting (OpenAI-compatible encodings)
 
 logger = logging.getLogger(__name__)
 
+# --- НОРМАЛИЗАЦИЯ ВИЗУАЛЬНОГО ТЕКСТА ---
+_EMOJI_PATTERN = re.compile(
+    "[\U0001F300-\U0001F6FF\U0001F900-\U0001F9FF\U0001FA70-\U0001FAFF\u2600-\u26FF\u2700-\u27BF]",
+    flags=re.UNICODE,
+)
+
+def remove_emojis(text: str) -> str:
+    """Удаляет эмодзи и родственные символы (включая вариационные селекторы и ZWJ)."""
+    if not text:
+        return ""
+    # Удаляем базовые эмодзи
+    no_emoji = _EMOJI_PATTERN.sub("", text)
+    # Удаляем Variation Selector-16 и Zero Width Joiner, Skin tones и пр.
+    no_emoji = re.sub("[\uFE0F\u200D\U0001F3FB-\U0001F3FF]", "", no_emoji)
+    return no_emoji
+
+def format_visual_text(text: Optional[str]) -> str:
+    """Приводит любой пользовательский/выводимый текст к требованиям интерфейса: строчные буквы, без эмодзи."""
+    if text is None:
+        return ""
+    try:
+        s = str(text)
+    except Exception:
+        s = ""
+    # Удаляем эмодзи до лоеркейса (чтобы не влияли на .lower())
+    s = remove_emojis(s)
+    # Приводим к нижнему регистру
+    s = s.lower()
+    # Нормализуем множественные пробелы
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
 def count_openai_compatible_tokens(text_content: str, model_identifier: str = config.GEMINI_MODEL_NAME_FOR_API) -> int:
     """
     Counts the number of tokens in the text_content using tiktoken,
@@ -103,7 +135,9 @@ async def send_safe_message(reply_target, text: str, reply_markup=None, disable_
         logger.error("send_safe_message: reply_target has no reply_text()")
         return
     try:
-        escaped = escape_markdown_v2(text)
+        # Применяем обязательные требования интерфейса
+        prepared = format_visual_text(text)
+        escaped = escape_markdown_v2(prepared)
         await reply_target.reply_text(
             escaped,
             parse_mode='MarkdownV2',
@@ -114,7 +148,7 @@ async def send_safe_message(reply_target, text: str, reply_markup=None, disable_
         logger.warning(f"send_safe_message: MarkdownV2 failed, fallback to plain. Err: {e}")
         try:
             await reply_target.reply_text(
-                text,
+                format_visual_text(text),
                 parse_mode=None,
                 reply_markup=reply_markup,
                 disable_web_page_preview=disable_web_page_preview

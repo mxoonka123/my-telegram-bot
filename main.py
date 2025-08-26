@@ -25,7 +25,7 @@ import db
 import handlers
 import tasks
 import config
-from utils import escape_markdown_v2
+from utils import escape_markdown_v2, format_visual_text
 
 # --- Импорты библиотек ---
 from telegram.ext import (
@@ -350,14 +350,15 @@ def handle_yookassa_webhook():
                                 pkg_title = config.CREDIT_PACKAGES[pkg_id].get('title')
                         except Exception:
                             pkg_title = None
-                        credited_part = f"Зачислено {credits_to_add:.0f} кредитов" if credits_to_add else "Оплата успешно проведена"
+                        credited_part = f"зачислено {credits_to_add:.0f} кредитов" if credits_to_add else "оплата успешно проведена"
                         pkg_part = f" ({pkg_title})" if pkg_title else ""
                         success_text_raw = (
-                            f"✅ {credited_part}{pkg_part}.\n"
-                            f"Текущий баланс: {user.credits:.2f} кредитов.\n\n"
-                            f"Спасибо за поддержку! 🎉"
+                            f"{credited_part}{pkg_part}.\n"
+                            f"текущий баланс: {user.credits:.2f} кредитов.\n\n"
+                            f"спасибо за поддержку"
                         )
-                        success_text_escaped = escape_markdown_v2(success_text_raw)
+                        prepared = format_visual_text(success_text_raw)
+                        success_text_escaped = escape_markdown_v2(prepared)
                         asyncio.run_coroutine_threadsafe(
                             application_instance.bot.send_message(
                                 chat_id=telegram_user_id,
