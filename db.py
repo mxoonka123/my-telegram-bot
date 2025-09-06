@@ -894,13 +894,14 @@ def add_message_to_context(db: Session, chat_bot_instance_id: int, role: str, co
         max_order = result.max_order or 0
 
         if current_count >= MAX_CONTEXT_MESSAGES_STORED:
-             limit_offset_query = db.query(ChatContext.message_order)\
-                                     .filter(ChatContext.chat_bot_instance_id == chat_bot_instance_id)\
-                                     .order_by(ChatContext.message_order.desc())\
-                                     .limit(1)\
-                                     .offset(MAX_CONTEXT_MESSAGES_STORED - 1)
+             # --- SQLAlchemy 2.0 style: use select + execute(Result) ---
+             stmt = select(ChatContext.message_order)\
+                 .where(ChatContext.chat_bot_instance_id == chat_bot_instance_id)\
+                 .order_by(ChatContext.message_order.desc())\
+                 .limit(1)\
+                 .offset(MAX_CONTEXT_MESSAGES_STORED - 1)
 
-             threshold_order_result = limit_offset_query.scalar_one_or_none()
+             threshold_order_result = db.execute(stmt).scalar_one_or_none()
 
              if threshold_order_result is not None:
                  threshold_order = threshold_order_result
