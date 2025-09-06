@@ -804,7 +804,6 @@ async def send_to_openrouter_llm(system_prompt: str, messages: List[Dict[str, st
             messages=openai_messages,
             temperature=temperature,
             top_p=0.95,
-            response_format={"type": "json_object"},
         )
         response_text = chat_completion.choices[0].message.content
         if not response_text:
