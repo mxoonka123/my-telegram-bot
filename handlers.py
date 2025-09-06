@@ -1176,6 +1176,40 @@ async def process_and_send_response(update: Update, context: ContextTypes.DEFAUL
     except Exception as e_main_process:
         logger.error(f"process_and_send_response [JSON]: CRITICAL UNEXPECTED ERROR in main block: {e_main_process}", exc_info=True)
     finally:
+        # --- СИНХРОНИЗАЦИЯ КОНТЕКСТА МЕЖДУ БОТАМИ В ОДНОМ ЧАТЕ ---
+        # Если ответ ассистента был успешно сохранен в контексте текущего бота,
+        # добавим это же сообщение в контекст всех других активных ботов этого чата.
+        try:
+            if context_response_prepared and persona and getattr(persona, 'chat_instance', None):
+                try:
+                    chat_id_str_for_sync = str(chat_id)
+                except Exception:
+                    chat_id_str_for_sync = None
+                if chat_id_str_for_sync:
+                    cross_context_content = f"{persona.name}: {content_to_save_in_db}"
+                    other_instances = (
+                        db.query(DBChatBotInstance)
+                        .filter(
+                            DBChatBotInstance.chat_id == chat_id_str_for_sync,
+                            DBChatBotInstance.id != persona.chat_instance.id,
+                            DBChatBotInstance.active == True,
+                        )
+                        .all()
+                    )
+                    if other_instances:
+                        logger.info(
+                            f"process_and_send_response: cross-posting response from '{persona.name}' to {len(other_instances)} other bot(s) in chat {chat_id_str_for_sync}."
+                        )
+                        for other_inst in other_instances:
+                            try:
+                                add_message_to_context(db, other_inst.id, "user", cross_context_content)
+                            except Exception as e_cross:
+                                logger.error(
+                                    f"process_and_send_response: cross-context add failed for instance {other_inst.id}: {e_cross}"
+                                )
+        except Exception as e_sync:
+            logger.error(f"process_and_send_response: context sync failed: {e_sync}", exc_info=True)
+
         logger.info("process_and_send_response [JSON]: --- EXIT --- Returning context_prepared_status: " + str(context_response_prepared))
         return context_response_prepared
 
