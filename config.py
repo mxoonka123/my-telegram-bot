@@ -27,11 +27,13 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 # Gemini Settings (native Google API only)
 # Ключ загружается из переменной окружения GEMINI_API_KEY
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_API_BASE_URL = os.getenv(
-    "GEMINI_API_BASE_URL",
-    "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent",
+# Модель для нативного Gemini API (можно переопределить в окружении)
+GEMINI_MODEL_NAME_FOR_API = os.getenv("GEMINI_MODEL_NAME_FOR_API", "gemini-1.5-pro-latest")
+# Базовый URL теперь не содержит имя модели, оно будет подставляться при вызове
+GEMINI_API_BASE_URL_TEMPLATE = os.getenv(
+    "GEMINI_API_BASE_URL_TEMPLATE",
+    "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
 )
-GEMINI_MODEL_NAME_FOR_API = os.getenv("GEMINI_MODEL_NAME_FOR_API", "gemini-2.5-pro")
 
 if not GEMINI_API_KEY:
     logger.warning("WARNING: Переменная окружения GEMINI_API_KEY не установлена (нативный Gemini API).")
@@ -100,7 +102,7 @@ TELEGRAPH_ACCESS_TOKEN = os.getenv("TELEGRAPH_ACCESS_TOKEN", None) # Токен 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 OPENROUTER_API_BASE_URL = os.getenv("OPENROUTER_API_BASE_URL", "https://openrouter.ai/api/v1")
 # Модель по умолчанию (можно переопределить в окружении)
-OPENROUTER_MODEL_NAME = os.getenv("OPENROUTER_MODEL_NAME", "google/gemini-2.5-pro")
+OPENROUTER_MODEL_NAME = os.getenv("OPENROUTER_MODEL_NAME", "deepseek/deepseek-chat-v3.1:free")
 # Рекомендованные заголовки для OpenRouter (ссылка на проект)
 OPENROUTER_SITE_URL = os.getenv("RAILWAY_STATIC_URL", "https://t.me/NuNuAiChannel")
 

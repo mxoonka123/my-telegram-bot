@@ -3750,13 +3750,6 @@ async def edit_persona_button_callback(update: Update, context: ContextTypes.DEF
         persona_id = int(query.data.split('_')[-1])
         logger.info(f"Parsed persona_id: {persona_id} for user {user_id}")
         
-        if query.message: 
-            try:
-                await context.bot.delete_message(chat_id=query.message.chat.id, message_id=query.message.message_id)
-                logger.debug(f"Deleted message {query.message.message_id} that contained the 'Настроить' button.")
-            except Exception as e:
-                logger.warning(f"Could not delete message ({query.message.message_id}) with 'Настроить' button: {e}. Continuing...")
-        
         # _start_edit_convo очистит user_data и установит 'edit_persona_id'
         return await _start_edit_convo(update, context, persona_id)
         
@@ -5608,12 +5601,6 @@ async def delete_persona_button_callback(update: Update, context: ContextTypes.D
     try:
         persona_id = int(query.data.split('_')[-1]) 
         logger.info(f"Parsed persona_id for deletion: {persona_id} for user {user_id}")
-        if query.message:
-            try:
-                await context.bot.delete_message(chat_id=query.message.chat.id, message_id=query.message.message_id)
-                logger.debug(f"Deleted message {query.message.message_id} that contained the 'Удалить' button.")
-            except Exception as e:
-                logger.warning(f"Could not delete message ({query.message.message_id}) with 'Удалить' button: {e}. Continuing...")
         
         # _start_delete_convo очистит user_data и установит 'delete_persona_id'
         return await _start_delete_convo(update, context, persona_id)
