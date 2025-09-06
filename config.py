@@ -102,7 +102,7 @@ TELEGRAPH_ACCESS_TOKEN = os.getenv("TELEGRAPH_ACCESS_TOKEN", None) # Токен 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 OPENROUTER_API_BASE_URL = os.getenv("OPENROUTER_API_BASE_URL", "https://openrouter.ai/api/v1")
 # Модель по умолчанию (можно переопределить в окружении)
-OPENROUTER_MODEL_NAME = os.getenv("OPENROUTER_MODEL_NAME", "deepseek/deepseek-chat-v3.1:free")
+OPENROUTER_MODEL_NAME = os.getenv("OPENROUTER_MODEL_NAME", "qwen/qwen3-30b-a3b-thinking-2507")
 # Рекомендованные заголовки для OpenRouter (ссылка на проект)
 OPENROUTER_SITE_URL = os.getenv("RAILWAY_STATIC_URL", "https://t.me/NuNuAiChannel")
 
