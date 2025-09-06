@@ -1065,24 +1065,22 @@ async def process_and_send_response(update: Update, context: ContextTypes.DEFAUL
         chat_id_str = str(chat_id)
         # Зафиксируем локальный бот для всех последующих отправок,
         # чтобы избежать использования возможного подмененного Application.bot
-        local_bot = context.bot
+        # --- ИСПРАВЛЕНИЕ: создаём изолированный экземпляр бота по токену персоны ---
+        local_bot = None
         try:
-            current_bot_id_str = str(getattr(local_bot, 'id', ''))
-            current_bot_username = getattr(local_bot, 'username', None)
-        except Exception:
-            current_bot_id_str = None
-            current_bot_username = None
-
-        # Страховка: отправляем только если бот текущего контекста совпадает с ботом активной персоны
-        expected_bot_id_str = None
-        try:
+            bot_token = None
             if persona and getattr(persona, 'chat_instance', None) and getattr(persona.chat_instance, 'bot_instance_ref', None):
-                expected_bot_id_str = str(getattr(persona.chat_instance.bot_instance_ref, 'telegram_bot_id', ''))
-        except Exception:
-            expected_bot_id_str = None
-        logger.info(f"process_and_send_response [v3]: --- ENTER --- ChatID: {chat_id_str}, Persona: '{persona.config.name if persona and persona.config else 'unknown'}', bot_ctx_id={current_bot_id_str}, expected_bot_id={expected_bot_id_str}")
-        if expected_bot_id_str and current_bot_id_str and expected_bot_id_str != current_bot_id_str:
-            logger.warning(f"process_and_send_response: bot mismatch -> context_bot_id={current_bot_id_str}, expected={expected_bot_id_str}. Skipping send.")
+                bot_token = getattr(persona.chat_instance.bot_instance_ref, 'bot_token', None)
+            if not bot_token:
+                logger.error(f"process_and_send_response: CRITICAL - No bot_token found for persona {getattr(persona, 'id', 'unknown')} to send message.")
+                return context_response_prepared
+            local_bot = Bot(token=bot_token)
+            await local_bot.initialize()
+            logger.info(
+                f"process_and_send_response: using isolated bot @{getattr(local_bot, 'username', None)} (id={getattr(local_bot, 'id', None)}) for persona '{persona.config.name if persona and persona.config else 'unknown'}'"
+            )
+        except Exception as _iso_err:
+            logger.error(f"process_and_send_response: failed to init isolated bot: {_iso_err}", exc_info=True)
             return context_response_prepared
 
         processed_parts_for_sending = []
