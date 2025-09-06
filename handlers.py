@@ -1336,21 +1336,45 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 current_user_message_dict = {"role": "user", "content": current_user_message_content}
                 context_user_msg_added = False
                 
-                if persona.chat_instance:
-                    try:
-                        add_message_to_context(db_session, persona.chat_instance.id, "user", current_user_message_content)
-                        context_user_msg_added = True
-                        logger.debug(f"handle_message: User message for CBI {persona.chat_instance.id} prepared for context (pending commit).")
-                    except (SQLAlchemyError, Exception) as e_ctx:
-                        logger.error(f"handle_message: Error preparing user message context for CBI {persona.chat_instance.id}: {e_ctx}", exc_info=True)
-                        await update.message.reply_text(escape_markdown_v2("❌ ошибка при сохранении вашего сообщения."), parse_mode=ParseMode.MARKDOWN_V2)
-                        db_session.rollback()
-                        return
+                # --- Трансляция сообщения пользователя всем активным ботам этого чата ---
+                try:
+                    all_instances_in_chat = (
+                        db_session.query(DBChatBotInstance)
+                        .filter(
+                            DBChatBotInstance.chat_id == chat_id_str,
+                            DBChatBotInstance.active == True,
+                        )
+                        .all()
+                    )
+                except Exception as e_fetch_inst:
+                    logger.error(f"handle_message: failed to fetch active instances for chat {chat_id_str}: {e_fetch_inst}", exc_info=True)
+                    all_instances_in_chat = []
+
+                if all_instances_in_chat:
+                    broadcast_content = current_user_message_content
+                    logger.info(
+                        f"handle_message: broadcasting user message from '{username}' to {len(all_instances_in_chat)} instance(s) in chat {chat_id_str}."
+                    )
+                    for inst in all_instances_in_chat:
+                        try:
+                            add_message_to_context(db_session, inst.id, "user", broadcast_content)
+                            context_user_msg_added = True
+                        except Exception as e_broadcast:
+                            logger.error(
+                                f"handle_message: broadcast add_message_to_context failed for instance {inst.id}: {e_broadcast}",
+                                exc_info=True,
+                            )
                 else:
-                    logger.error("handle_message: Cannot add user message context, persona.chat_instance is None unexpectedly.")
-                    await update.message.reply_text(escape_markdown_v2("❌ системная ошибка: не удалось связать сообщение с личностью."), parse_mode=ParseMode.MARKDOWN_V2)
-                    db_session.rollback()
-                    return
+                    # Fallback: если по какой-то причине нет инстансов — пробуем сохранить хотя бы в текущую персону
+                    if persona.chat_instance:
+                        try:
+                            add_message_to_context(db_session, persona.chat_instance.id, "user", current_user_message_content)
+                            context_user_msg_added = True
+                        except Exception as e_ctx_single:
+                            logger.error(
+                                f"handle_message: fallback add_message_to_context failed for CBI {persona.chat_instance.id}: {e_ctx_single}",
+                                exc_info=True,
+                            )
 
                 if persona.chat_instance.is_muted:
                     logger.info(f"handle_message: Persona '{persona.name}' is muted in chat {chat_id_str}. Saving context and exiting.")
