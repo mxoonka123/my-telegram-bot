@@ -1430,7 +1430,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     logger.debug("handle_message: Proceeding to generate AI response.")
                     llm_call_succeeded = False
                     
-                    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+                    # Отправка индикации набора текста с самовосстановлением
+                    try:
+                        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+                    except Forbidden:
+                        logger.warning(
+                            f"Forbidden on send_chat_action for bot {getattr(context.bot, 'id', None)} in chat {chat_id_str}. Auto-unlinking."
+                        )
+                        try:
+                            cbi = getattr(persona, 'chat_instance', None)
+                            if cbi and getattr(cbi, 'bot_instance_id', None) is not None:
+                                unlink_bot_instance_from_chat(db_session, chat_id_str, cbi.bot_instance_id)
+                                db_session.commit()
+                        except Exception as _unlink_err:
+                            logger.error(f"Auto-unlink on Forbidden failed: {_unlink_err}", exc_info=True)
+                        return
+                    except TelegramError as e:
+                        logger.warning(f"Non-critical TelegramError on send_chat_action: {e}")
 
                     # Вызываем format_system_prompt БЕЗ текста сообщения, с учетом типа чата
                     system_prompt = persona.format_system_prompt(user_id, username, getattr(update.effective_chat, 'type', None))
@@ -2515,22 +2531,35 @@ async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 await send_safe_message(update.message, msg_no_instance_raw)
                 return
 
-            # Удаляем контекст
+            # Удаляем контекст и деактивируем связь бота с чатом
             chat_bot_instance_id = chat_bot_instance.id
-            logger.warning(f"User {user_id} clearing context for ChatBotInstance {chat_bot_instance_id} (Persona '{persona_name_raw}') in chat {chat_id_str}.")
+            bot_instance_id = chat_bot_instance.bot_instance_id
+            logger.warning(
+                f"User {user_id} is resetting and unlinking ChatBotInstance {chat_bot_instance_id} (Persona '{persona_name_raw}') in chat {chat_id_str}."
+            )
 
-            # Создаем SQL запрос на удаление
-                        # БЕЗОПАСНОЕ УДАЛЕНИЕ через SQLAlchemy ORM
+            # 1) Очистка контекста
             stmt = delete(ChatContext).where(ChatContext.chat_bot_instance_id == chat_bot_instance_id)
             result = db.execute(stmt)
             deleted_count = result.rowcount
-            db.commit()
 
-            logger.info(f"Deleted {deleted_count} context messages for instance {chat_bot_instance_id}.")
-            # Форматируем сообщение об успехе
-            final_success_msg_raw = msg_success_fmt_raw.format(persona_name=persona_name_raw, count=deleted_count)
+            # 2) Деактивация связи бота с чатом
+            ok = unlink_bot_instance_from_chat(db, chat_id_str, bot_instance_id)
 
-            await send_safe_message(update.message, final_success_msg_raw, reply_markup=ReplyKeyboardRemove())
+            if ok:
+                db.commit()
+                logger.info(
+                    f"Deleted {deleted_count} context messages and unlinked ChatBotInstance {chat_bot_instance_id} in chat {chat_id_str}."
+                )
+                final_success_msg_raw = (
+                    f"✅ Память личности '{persona_name_raw}' очищена и деактивирована в этом чате. "
+                    f"Чтобы снова активировать, используйте /addbot."
+                )
+                await send_safe_message(update.message, final_success_msg_raw, reply_markup=ReplyKeyboardRemove())
+            else:
+                db.rollback()
+                logger.error(f"/reset: Failed to unlink ChatBotInstance {chat_bot_instance_id} in chat {chat_id_str}.")
+                await send_safe_message(update.message, msg_db_error_raw)
 
         except SQLAlchemyError as e:
             logger.error(f"Database error during /reset for chat {chat_id_str}: {e}", exc_info=True)
