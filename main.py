@@ -76,35 +76,26 @@ application_loop: asyncio.AbstractEventLoop | None = None
 bot_swap_lock = threading.RLock()
 
 async def process_telegram_update(update_data, token: str, bot_username_for_log: str) -> None:
-    """Асинхронная функция для полной обработки одного Telegram-апдейта.
-    Выполняет безопасную подмену application_instance.bot на временный инициализированный Bot,
-    обрабатывает апдейт и гарантированно восстанавливает исходного бота.
+    """Асинхронная функция для обработки одного Telegram-апдейта без подмены глобального бота.
+    Создаёт корректный Update с привязанным к нему Bot и передаёт его в PTB.
     """
-    global application_instance, bot_swap_lock
+    global application_instance
     if not application_instance:
         return
 
-    user_bot = Bot(token=token)
-    original_bot = application_instance.bot
     try:
-        # КЛЮЧЕВОЕ: получаем getMe/username, чтобы CommandHandler мог корректно парсить команды вида /cmd@username
+        # Создаём экземпляр бота ТОЛЬКО для этого апдейта и инициализируем его
+        user_bot = Bot(token=token)
         await user_bot.initialize()
+        # Формируем Update, связанный с нужным ботом
         update = Update.de_json(update_data, user_bot)
-
-        # Подмена бота в защищенной секции
-        with bot_swap_lock:
-            application_instance.bot = user_bot
-
+        # Передаём апдейт в PTB — он будет использовать update.bot
         await application_instance.process_update(update)
-
     except Exception as e:
         flask_logger.error(f"error processing telegram webhook for @{bot_username_for_log}: {e}", exc_info=True)
     finally:
-        # Восстановление исходного бота. Не выключаем временный user_bot сразу,
-        # чтобы не ломать отложенные send_message ("HTTPXRequest is not initialized").
-        with bot_swap_lock:
-            application_instance.bot = original_bot
-        # Пропускаем await user_bot.shutdown(); ресурсы будут собраны GC/реюзнуты.
+        # Ничего не восстанавливаем — глобальное состояние не меняли
+        pass
 
 @flask_app.route('/telegram/<string:token>', methods=['POST'])
 def handle_telegram_webhook(token: str):

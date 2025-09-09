@@ -208,7 +208,7 @@ async def on_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         chat_id_str = str(chat.id)
         new_status = (cmu.new_chat_member and cmu.new_chat_member.status) or None
         old_status = (cmu.old_chat_member and cmu.old_chat_member.status) or None
-        bot_id_str = str(context.bot.id) if getattr(context, 'bot', None) and getattr(context.bot, 'id', None) else None
+        bot_id_str = str(update.bot.id) if getattr(update, 'bot', None) and getattr(update.bot, 'id', None) else None
 
         logger.info(f"my_chat_member in chat {chat_id_str}: {old_status} -> {new_status} for bot {bot_id_str}")
 
@@ -273,7 +273,7 @@ async def botsettings_menu_show(update: Update, context: ContextTypes.DEFAULT_TY
         if q:
             await q.edit_message_text("не удалось определить выбранного бота. запустите /botsettings заново.")
         else:
-            await context.bot.send_message(chat_id, "не удалось определить выбранного бота. запустите /botsettings заново.")
+            await update.bot.send_message(chat_id, "не удалось определить выбранного бота. запустите /botsettings заново.")
         return ConversationHandler.END
     with get_db() as db:
         bi = db.query(DBBotInstance).filter(DBBotInstance.id == bot_id).first()
@@ -281,7 +281,7 @@ async def botsettings_menu_show(update: Update, context: ContextTypes.DEFAULT_TY
             if q:
                 await q.edit_message_text("бот не найден.")
             else:
-                await context.bot.send_message(chat_id, "бот не найден.")
+                await update.bot.send_message(chat_id, "бот не найден.")
             return ConversationHandler.END
         title = bi.telegram_username or bi.name or f"bot #{bi.id}"
         access = bi.access_level or 'owner_only'
@@ -333,7 +333,7 @@ async def botsettings_menu_show(update: Update, context: ContextTypes.DEFAULT_TY
                 else:
                     raise
         else:
-            await context.bot.send_message(chat_id, text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=None)
+            await update.bot.send_message(chat_id, text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=None)
     return BOTSET_MENU
 
 async def botsettings_set_access(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1237,8 +1237,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             text_raw = update.message.text or ''
             is_command = any((e.type == 'bot_command') for e in entities) or text_raw.startswith('/')
             main_bot_id = context.bot_data.get('main_bot_id')
-            if is_command and main_bot_id and str(context.bot.id) != str(main_bot_id):
-                logger.info(f"handle_message: Skip command on attached bot (current={context.bot.id}, main={main_bot_id}).")
+            if is_command and main_bot_id and str(update.bot.id) != str(main_bot_id):
+                logger.info(f"handle_message: Skip command on attached bot (current={update.bot.id}, main={main_bot_id}).")
                 return
         except Exception as e_cmd_chk:
             logger.error(f"handle_message: error checking command on attached bot: {e_cmd_chk}")
@@ -1271,7 +1271,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 logger.debug("handle_message: DB session acquired.")
 
                 # Передаем id текущего телеграм-бота, чтобы выбрать верную персону, привязанную к этому боту
-                current_bot_id_str = str(context.bot.id) if getattr(context, 'bot', None) and getattr(context.bot, 'id', None) else None
+                current_bot_id_str = str(update.bot.id) if getattr(update, 'bot', None) and getattr(update.bot, 'id', None) else None
                 logger.debug(f"handle_message: selecting persona for chat {chat_id_str} with current_bot_id={current_bot_id_str}")
                 persona_context_owner_tuple = get_persona_and_context_with_owner(chat_id_str, db_session, current_bot_id_str)
                 if not persona_context_owner_tuple:
@@ -1394,7 +1394,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
                     persona_name_lower = persona.name.lower()
                     is_mentioned = f"@{bot_username}".lower() in message_text.lower()
-                    is_reply_to_bot = update.message.reply_to_message and update.message.reply_to_message.from_user.id == context.bot.id
+                    is_reply_to_bot = update.message.reply_to_message and update.message.reply_to_message.from_user.id == update.bot.id
                     contains_persona_name = bool(re.search(rf'(?i)\b{re.escape(persona_name_lower)}\b', message_text))
 
                     logger.debug(f"handle_message: Group chat check. Pref: '{reply_pref}', Mentioned: {is_mentioned}, ReplyToBot: {is_reply_to_bot}, ContainsName: {contains_persona_name}")
@@ -1425,7 +1425,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     logger.debug("handle_message: Proceeding to generate AI response.")
                     llm_call_succeeded = False
                     
-                    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+                    await update.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
 
                     # Вызываем format_system_prompt БЕЗ текста сообщения, с учетом типа чата
                     system_prompt = persona.format_system_prompt(user_id, username, getattr(update.effective_chat, 'type', None))
@@ -1450,7 +1450,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                         context_response_prepared = await process_and_send_response(
                             update,
                             context,
-                            context.bot,
+                            update.bot,
                             chat_id_str,
                             persona,
                             assistant_response_text,
@@ -1625,7 +1625,7 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
                     photo_sizes = update.message.photo
                     if photo_sizes:
                         photo_file = photo_sizes[-1]
-                        file = await context.bot.get_file(photo_file.file_id)
+                        file = await update.bot.get_file(photo_file.file_id)
                         image_data_io = await file.download_as_bytearray()
                         image_data = bytes(image_data_io)
                         logger.info(f"Downloaded image: {len(image_data)} bytes")
@@ -1640,9 +1640,9 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
             elif media_type == "voice":
                 system_prompt = persona.format_voice_prompt(user_id=user_id, username=username, chat_id=chat_id_str)
                 if update.message.voice:
-                    await context.bot.send_chat_action(chat_id=chat_id_str, action=ChatAction.TYPING)
+                    await update.bot.send_chat_action(chat_id=chat_id_str, action=ChatAction.TYPING)
                     try:
-                        voice_file = await context.bot.get_file(update.message.voice.file_id)
+                        voice_file = await update.bot.get_file(update.message.voice.file_id)
                         voice_bytes = await voice_file.download_as_bytearray()
                         audio_data = bytes(voice_bytes)
                         transcribed_text = None
@@ -1722,7 +1722,7 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
             )
 
             await process_and_send_response(
-                update, context, context.bot, chat_id_str, persona, ai_response_text, db, reply_to_message_id=message_id
+                update, context, update.bot, chat_id_str, persona, ai_response_text, db, reply_to_message_id=message_id
             )
 
             db.commit()
