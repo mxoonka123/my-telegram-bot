@@ -767,7 +767,13 @@ openrouter_client = AsyncOpenAI(
     },
 )
 
-async def send_to_openrouter_llm(system_prompt: str, messages: List[Dict[str, str]], image_data: Optional[bytes] = None, temperature: float = 0.8) -> str:
+async def send_to_openrouter_llm(
+    system_prompt: str,
+    messages: List[Dict[str, str]],
+    image_data: Optional[bytes] = None,
+    temperature: Optional[float] = None,
+    top_p: Optional[float] = None,
+) -> str:
     """Отправляет запрос в OpenRouter API (OpenAI-совместимый) и возвращает текст ответа."""
     if not config.OPENROUTER_API_KEY:
         logger.error("OPENROUTER_API_KEY не установлен.")
@@ -798,13 +804,19 @@ async def send_to_openrouter_llm(system_prompt: str, messages: List[Dict[str, st
             openai_messages.append({"role": role, "content": content})
 
     try:
-        logger.info(f"sending request to openrouter with temperature={temperature}")
-        chat_completion = await openrouter_client.chat.completions.create(
-            model=config.OPENROUTER_MODEL_NAME,
-            messages=openai_messages,
-            temperature=temperature,
-            top_p=0.95,
-        )
+        # Готовим параметры запроса и передаём temperature/top_p только если они заданы
+        request_params: Dict[str, Any] = {
+            "model": config.OPENROUTER_MODEL_NAME,
+            "messages": openai_messages,
+        }
+        if temperature is not None:
+            request_params["temperature"] = temperature
+        if top_p is not None:
+            request_params["top_p"] = top_p
+
+        log_params = {k: v for k, v in request_params.items() if k != "messages"}
+        logger.info(f"sending request to openrouter with params: {log_params}")
+        chat_completion = await openrouter_client.chat.completions.create(**request_params)
         response_text = chat_completion.choices[0].message.content
         if not response_text:
             finish_reason = getattr(chat_completion.choices[0], 'finish_reason', 'unknown')
@@ -854,7 +866,7 @@ def extract_json_from_markdown(text: str) -> str:
 # Максимальная длина входящего сообщения от пользователя в символах
 MAX_USER_MESSAGE_LENGTH_CHARS = 600
 
-async def process_and_send_response(update: Update, context: ContextTypes.DEFAULT_TYPE, chat_id: Union[str, int], persona: Persona, full_bot_response_text: str, db: Session, reply_to_message_id: int, is_first_message: bool = False) -> bool:
+async def process_and_send_response(update: Update, context: ContextTypes.DEFAULT_TYPE, bot: Bot, chat_id: Union[str, int], persona: Persona, full_bot_response_text: str, db: Session, reply_to_message_id: int, is_first_message: bool = False) -> bool:
     """Processes the raw text from AI, splits it into messages, and sends them to the chat."""
     logger.info(f"process_and_send_response [v3]: --- ENTER --- ChatID: {chat_id}, Persona: '{persona.name}'")
     if not full_bot_response_text or not full_bot_response_text.strip():
@@ -1062,25 +1074,11 @@ async def process_and_send_response(update: Update, context: ContextTypes.DEFAUL
     try:
         first_message_sent = False
         chat_id_str = str(chat_id)
-        # Зафиксируем локальный бот для всех последующих отправок,
-        # чтобы избежать использования возможного подмененного Application.bot
-        # --- ИСПРАВЛЕНИЕ: создаём изолированный экземпляр бота по токену персоны ---
-        local_bot = None
-        try:
-            bot_token = None
-            if persona and getattr(persona, 'chat_instance', None) and getattr(persona.chat_instance, 'bot_instance_ref', None):
-                bot_token = getattr(persona.chat_instance.bot_instance_ref, 'bot_token', None)
-            if not bot_token:
-                logger.error(f"process_and_send_response: CRITICAL - No bot_token found for persona {getattr(persona, 'id', 'unknown')} to send message.")
-                return context_response_prepared
-            local_bot = Bot(token=bot_token)
-            await local_bot.initialize()
-            logger.info(
-                f"process_and_send_response: using isolated bot @{getattr(local_bot, 'username', None)} (id={getattr(local_bot, 'id', None)}) for persona '{persona.config.name if persona and persona.config else 'unknown'}'"
-            )
-        except Exception as _iso_err:
-            logger.error(f"process_and_send_response: failed to init isolated bot: {_iso_err}", exc_info=True)
-            return context_response_prepared
+        # Используем переданный экземпляр бота (он уже соответствует текущему апдейту)
+        local_bot = bot
+        logger.info(
+            f"process_and_send_response: using passed bot @{getattr(local_bot, 'username', None)} (id={getattr(local_bot, 'id', None)}) for persona '{persona.config.name if persona and persona.config else 'unknown'}'"
+        )
 
         processed_parts_for_sending = []
         if text_parts_to_send:
@@ -1439,7 +1437,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     # Контекст для ИИ - это история + новое сообщение
                     context_for_ai = initial_context_from_db + [{"role": "user", "content": f"{username}: {message_text}"}]
                     # Отправляем системный промпт и контекст вместе в OpenRouter
-                    assistant_response_text = await send_to_openrouter_llm(system_prompt, context_for_ai)
+                    assistant_response_text = await send_to_openrouter_llm(
+                        system_prompt,
+                        context_for_ai,
+                        temperature=getattr(getattr(persona, 'config', None), 'temperature', None),
+                        top_p=getattr(getattr(persona, 'config', None), 'top_p', None),
+                    )
 
                     context_response_prepared = False
                     if assistant_response_text and not assistant_response_text.startswith("❌"):
@@ -1447,6 +1450,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                         context_response_prepared = await process_and_send_response(
                             update,
                             context,
+                            context.bot,
                             chat_id_str,
                             persona,
                             assistant_response_text,
@@ -1697,7 +1701,13 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
             add_message_to_context(db, persona.chat_instance.id, "user", user_message_content)
             
             # audio_data не передаем, модель принимает текст + картинку
-            ai_response_text = await send_to_openrouter_llm(system_prompt, context_for_ai, image_data=image_data)
+            ai_response_text = await send_to_openrouter_llm(
+                system_prompt,
+                context_for_ai,
+                image_data=image_data,
+                temperature=getattr(getattr(persona, 'config', None), 'temperature', None),
+                top_p=getattr(getattr(persona, 'config', None), 'top_p', None),
+            )
             logger.debug(f"Received response from AI for {media_type}: {ai_response_text[:100]}...")
 
             # --- новое списание кредитов ---
@@ -1712,7 +1722,7 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
             )
 
             await process_and_send_response(
-                update, context, chat_id_str, persona, ai_response_text, db, reply_to_message_id=message_id
+                update, context, context.bot, chat_id_str, persona, ai_response_text, db, reply_to_message_id=message_id
             )
 
             db.commit()

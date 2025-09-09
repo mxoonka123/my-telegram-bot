@@ -102,7 +102,7 @@ TELEGRAPH_ACCESS_TOKEN = os.getenv("TELEGRAPH_ACCESS_TOKEN", None) # Токен 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 OPENROUTER_API_BASE_URL = os.getenv("OPENROUTER_API_BASE_URL", "https://openrouter.ai/api/v1")
 # Модель по умолчанию (можно переопределить в окружении)
-OPENROUTER_MODEL_NAME = os.getenv("OPENROUTER_MODEL_NAME", "qwen/qwen3-30b-a3b-thinking-2507")
+OPENROUTER_MODEL_NAME = os.getenv("OPENROUTER_MODEL_NAME", "openrouter/sonoma-sky-alpha")
 # Рекомендованные заголовки для OpenRouter (ссылка на проект)
 OPENROUTER_SITE_URL = os.getenv("RAILWAY_STATIC_URL", "https://t.me/NuNuAiChannel")
 
@@ -122,8 +122,13 @@ CREDIT_COSTS = {
 }
 
 # Коэффициент для разных моделей (по умолчанию 1.0 для текущей модели Gemini)
+# ВАЖНО: можно задавать множитель на модель через переменную окружения вида
+# CREDIT_MULTIPLIER_<MODEL_NAME>, где слеш заменяется на подчеркивание и всё в UPPERCASE.
+# Пример: для "openrouter/sonoma-sky-alpha" используйте CREDIT_MULTIPLIER_OPENROUTER_SONOMA_SKY_ALPHA
 MODEL_PRICE_MULTIPLIERS = {
-    OPENROUTER_MODEL_NAME: float(os.getenv("CREDIT_MODEL_MULTIPLIER", "1.0")),
+    OPENROUTER_MODEL_NAME: float(
+        os.getenv(f"CREDIT_MULTIPLIER_{OPENROUTER_MODEL_NAME.replace('/', '_').upper()}", "1.0")
+    ),
 }
 
 # Минимальный буфер выходных токенов для предварительной проверки баланса

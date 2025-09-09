@@ -55,6 +55,9 @@ async def proactive_messaging_task(application: Application) -> None:
         "often": 0.35,
     }
 
+    # Кэш для объектов Bot, чтобы не создавать их каждый раз
+    bot_cache: Dict[str, Bot] = {}
+
     while True:
         try:
             # лёгкий джиттер, чтобы не биться в ровную сетку
@@ -108,8 +111,14 @@ async def proactive_messaging_task(application: Application) -> None:
                                 bot_token = getattr(getattr(inst, 'bot_instance_ref', None), 'bot_token', None)
                                 if not bot_token:
                                     raise ValueError("нет токена привязанного бота для этого чата")
-                                target_bot_for_send = Bot(token=bot_token)
-                                await target_bot_for_send.initialize()
+
+                                # Используем кэш ботов
+                                target_bot_for_send = bot_cache.get(bot_token)
+                                if not target_bot_for_send:
+                                    target_bot_for_send = Bot(token=bot_token)
+                                    await target_bot_for_send.initialize()
+                                    bot_cache[bot_token] = target_bot_for_send
+
                                 # нормализуем визуальный текст (строчные буквы, без эмодзи)
                                 visual_text = format_visual_text(assistant_response_text)
                                 await target_bot_for_send.send_message(chat_id=chat_id, text=visual_text, parse_mode=None, disable_notification=True)
