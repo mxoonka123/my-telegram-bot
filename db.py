@@ -51,7 +51,7 @@ GROUP_CHAT_INSTRUCTION = (
     "старайся естественно влиться в беседу. если уместно, можешь обращаться к пользователям по имени, чтобы сделать общение более живым."
 )
 
-# System Prompt v23 (Language-agnostic)
+# System Prompt v24 (Language-agnostic, enforced splitting)
 DEFAULT_SYSTEM_PROMPT_TEMPLATE = """[TASK]
 Your task is to role-play as a character.
 
@@ -72,14 +72,20 @@ Your task is to role-play as a character.
 - Current time is {current_time_info}.
 - Use the dialogue history for context.
 
+[RESPONSE RULES - FOLLOW STRICTLY]
+1.  **SPLIT YOUR THOUGHTS:** If your response contains multiple sentences, ideas, or actions, you MUST put each one into a separate string in the JSON array.
+2.  **SHORT MESSAGES:** Keep each string in the array relatively short to simulate a natural chat flow.
+3.  **JSON ONLY:** Your entire output must be ONLY the JSON array.
+
 [OUTPUT FORMAT - CRITICAL]
-Your entire response must be a valid JSON array of strings. Nothing but the array itself.
-Example: ["First message.", "Second message!"]
+Your response MUST be a valid JSON array of strings.
+Example for a multi-part response: ["I'm doing great, thanks for asking!", "How have you been?"]
+Example for a single short response: ["Okay."]
 
 [YOUR JSON RESPONSE]:"""
 
 
-# MEDIA_SYSTEM_PROMPT_TEMPLATE v16 (Language-agnostic)
+# MEDIA_SYSTEM_PROMPT_TEMPLATE v17 (Language-agnostic, enforced splitting)
 MEDIA_SYSTEM_PROMPT_TEMPLATE = '''[INSTRUCTIONS]
 Your primary task is to role-play as a character while reacting to an incoming media file. Stay in character.
 
@@ -94,10 +100,14 @@ Your primary task is to role-play as a character while reacting to an incoming m
 -   The user ({username}, id: {user_id}) has sent a media file. {media_interaction_instruction}
 -   Your response must be coherent, emotional, and consistent with your role.
 
-[OUTPUT FORMAT - CRITICAL]
-Your response MUST be a valid JSON array of strings. Start with `[` and end with `]`. Nothing else.
+[RESPONSE RULES - FOLLOW STRICTLY]
+1.  **SPLIT YOUR THOUGHTS:** If your reaction has multiple parts (e.g., observation and then emotion), you MUST put each part into a separate string in the JSON array.
+2.  **SHORT MESSAGES:** Keep each string in the array short and conversational.
+3.  **JSON ONLY:** Your entire output must be ONLY a valid JSON array.
 
-Example: ["Wow, awesome picture!", "It reminds me of..."]
+[OUTPUT FORMAT - CRITICAL]
+Your response MUST be a valid JSON array of strings.
+Example: ["wow, what a cool photo!", "it reminds me of something..."]
 
 [YOUR JSON RESPONSE]:
 '''
