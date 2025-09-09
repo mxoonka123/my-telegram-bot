@@ -1271,7 +1271,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 logger.debug("handle_message: DB session acquired.")
 
                 # Передаем id текущего телеграм-бота, чтобы выбрать верную персону, привязанную к этому боту
-                current_bot_id_str = str(context.bot.id) if getattr(context, 'bot', None) and getattr(context.bot, 'id', None) else None
+                # ВАЖНО: используем update.get_bot(), чтобы получить именно того бота, для которого пришёл апдейт
+                try:
+                    current_bot = update.get_bot()
+                except Exception:
+                    current_bot = None
+                current_bot_id_str = str(getattr(current_bot, 'id', None)) if current_bot else None
                 logger.debug(f"handle_message: selecting persona for chat {chat_id_str} with current_bot_id={current_bot_id_str}")
                 persona_context_owner_tuple = get_persona_and_context_with_owner(chat_id_str, db_session, current_bot_id_str)
                 if not persona_context_owner_tuple:
@@ -1605,7 +1610,12 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
 
     with get_db() as db:
         try:
-            current_bot_id_str = str(context.bot.id) if getattr(context, 'bot', None) and getattr(context.bot, 'id', None) else None
+            # ВАЖНО: используем update.get_bot(), чтобы получить именно того бота, для которого пришёл апдейт
+            try:
+                current_bot = update.get_bot()
+            except Exception:
+                current_bot = None
+            current_bot_id_str = str(getattr(current_bot, 'id', None)) if current_bot else None
             logger.debug(f"handle_media: selecting persona for chat {chat_id_str} with current_bot_id={current_bot_id_str}")
             persona_context_owner_tuple = get_persona_and_context_with_owner(chat_id_str, db, current_bot_id_str)
             if not persona_context_owner_tuple:
