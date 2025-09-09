@@ -990,92 +990,63 @@ def get_persona_and_context_with_owner(chat_id: str, db: Session, current_telegr
     """Returns a tuple of (Persona, ChatBotInstance, User) for the bot in the given chat.
 
     Selection logic:
-    1) If current_telegram_bot_id is provided, try to find a ChatBotInstance for THIS telegram bot in the chat.
-       Prefer an active link; if none active, take any link for this bot (most recent by created_at).
-    2) Fallback to the single active ChatBotInstance for the chat (legacy behavior).
+    Finds the active ChatBotInstance for THIS specific telegram bot in the chat.
+    No fallback to other bots is performed to prevent incorrect persona selection.
     """
     # Импортируем Persona внутри функции для предотвращения циклического импорта
     from persona import Persona
-    
+
+    if not current_telegram_bot_id:
+        logger.debug("get_persona_and_context_with_owner: current_telegram_bot_id is required but was not provided. Cannot select a persona.")
+        return None
+
     try:
-        chat_bot_instance: Optional[ChatBotInstance] = None
-
-        # 1) Попытка найти связь именно для текущего телеграм-бота
-        if current_telegram_bot_id:
-            logger.debug(f"get_persona_and_context_with_owner: prefer current bot id={current_telegram_bot_id} for chat {chat_id}")
-            try:
-                # Активная ссылка для данного бота
-                chat_bot_instance = db.query(ChatBotInstance)\
-                    .join(ChatBotInstance.bot_instance_ref)\
-                    .filter(
-                        ChatBotInstance.chat_id == chat_id,
-                        BotInstance.telegram_bot_id == str(current_telegram_bot_id),
-                        ChatBotInstance.active == True,
-                    ).options(
-                        joinedload(ChatBotInstance.bot_instance_ref).joinedload(BotInstance.persona_config),
-                        joinedload(ChatBotInstance.bot_instance_ref).joinedload(BotInstance.owner)
-                    ).first()
-
-                if not chat_bot_instance:
-                    # Любая (необязательно активная) ссылка для этого бота, возьмём самую свежую
-                    chat_bot_instance = db.query(ChatBotInstance)\
-                        .join(ChatBotInstance.bot_instance_ref)\
-                        .filter(
-                            ChatBotInstance.chat_id == chat_id,
-                            BotInstance.telegram_bot_id == str(current_telegram_bot_id),
-                        ).options(
-                            joinedload(ChatBotInstance.bot_instance_ref).joinedload(BotInstance.persona_config),
-                            joinedload(ChatBotInstance.bot_instance_ref).joinedload(BotInstance.owner)
-                        ).order_by(ChatBotInstance.active.desc(), ChatBotInstance.created_at.desc())\
-                        .first()
-
-                if chat_bot_instance:
-                    logger.info(
-                        f"get_persona_and_context_with_owner: selected per-bot ChatBotInstance id={chat_bot_instance.id} "
-                        f"(active={chat_bot_instance.active}) for chat={chat_id} and tg_bot_id={current_telegram_bot_id}"
-                    )
-            except Exception as per_bot_err:
-                logger.error(f"get_persona_and_context_with_owner: error selecting per-bot instance: {per_bot_err}", exc_info=True)
-
-        # 2) Фолбэк к единственной активной ссылке в чате
-        # ВАЖНО: если передан current_telegram_bot_id, но специфичная связь для этого бота не найдена,
-        # мы НЕ делаем фолбэк на любую активную связь, чтобы избежать "перетекания" состояния (например, mute)
-        # между ботами. В таком случае возвращаем None, а вызывающий код решает, как отвечать (обычно никак).
-        if not chat_bot_instance and not current_telegram_bot_id:
-            chat_bot_instance = db.query(ChatBotInstance).filter(
+        # Активная и самая свежая связь ТОЛЬКО для указанного бота в данном чате
+        chat_bot_instance = (
+            db.query(ChatBotInstance)
+            .join(ChatBotInstance.bot_instance_ref)
+            .filter(
                 ChatBotInstance.chat_id == chat_id,
-                ChatBotInstance.active == True
-            ).options(
-                joinedload(ChatBotInstance.bot_instance_ref).joinedload(BotInstance.persona_config),
-                joinedload(ChatBotInstance.bot_instance_ref).joinedload(BotInstance.owner)
-            ).first()
-            if chat_bot_instance:
-                logger.info(
-                    f"get_persona_and_context_with_owner: fallback selected active ChatBotInstance id={chat_bot_instance.id} for chat={chat_id}"
-                )
-        elif not chat_bot_instance and current_telegram_bot_id:
+                BotInstance.telegram_bot_id == str(current_telegram_bot_id),
+                ChatBotInstance.active == True,
+            )
+            .options(
+                joinedload(ChatBotInstance.bot_instance_ref)
+                .joinedload(BotInstance.persona_config)
+                .joinedload(PersonaConfig.owner),
+                joinedload(ChatBotInstance.bot_instance_ref).joinedload(BotInstance.owner),
+            )
+            .order_by(ChatBotInstance.created_at.desc())
+            .first()
+        )
+
+        if not chat_bot_instance:
             logger.debug(
-                f"get_persona_and_context_with_owner: no per-bot link for tg_bot_id={current_telegram_bot_id} in chat={chat_id}; returning None (no fallback)"
+                f"get_persona_and_context_with_owner: no active ChatBotInstance found for chat={chat_id} and tg_bot_id={current_telegram_bot_id}"
             )
             return None
 
-        if not chat_bot_instance or not chat_bot_instance.bot_instance_ref:
-            logger.debug(f"get_persona_and_context_with_owner: no ChatBotInstance found for chat={chat_id}")
-            return None
-        
+        logger.info(
+            f"get_persona_and_context_with_owner: selected ChatBotInstance id={chat_bot_instance.id} for chat={chat_id} and tg_bot_id={current_telegram_bot_id}"
+        )
+
         bot_instance = chat_bot_instance.bot_instance_ref
+        if not bot_instance:
+            logger.warning(f"ChatBotInstance {chat_bot_instance.id} has no associated BotInstance.")
+            return None
+
         persona_config = bot_instance.persona_config
         owner = bot_instance.owner
-        
+
         if not persona_config or not owner:
             logger.warning(
                 f"get_persona_and_context_with_owner: incomplete relation for ChatBotInstance id={chat_bot_instance.id} (persona or owner is None)"
             )
             return None
-        
+
         # Создаем экземпляр Persona с загруженными данными из БД
         persona = Persona(persona_config, chat_bot_instance)
-        
+
         return (persona, chat_bot_instance, owner)
     except Exception as e:
         logger.error(f"Error in get_persona_and_context_with_owner for chat {chat_id}: {e}", exc_info=True)
