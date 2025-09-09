@@ -1231,14 +1231,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             logger.debug("handle_message: Exiting - No message or text/caption.")
             return
 
+        # Получаем корректного бота для этого апдейта (важно для multi-bot окружения)
+        try:
+            current_bot = update.get_bot()
+        except Exception:
+            current_bot = None
+
         # --- Block commands on attached (non-main) bots ---
         try:
             entities = update.message.entities or []
             text_raw = update.message.text or ''
             is_command = any((e.type == 'bot_command') for e in entities) or text_raw.startswith('/')
             main_bot_id = context.bot_data.get('main_bot_id')
-            if is_command and main_bot_id and str(context.bot.id) != str(main_bot_id):
-                logger.info(f"handle_message: Skip command on attached bot (current={context.bot.id}, main={main_bot_id}).")
+            if is_command and main_bot_id and current_bot and str(current_bot.id) != str(main_bot_id):
+                logger.info(f"handle_message: Skip command on attached bot (current={current_bot.id}, main={main_bot_id}).")
                 return
         except Exception as e_cmd_chk:
             logger.error(f"handle_message: error checking command on attached bot: {e_cmd_chk}")
