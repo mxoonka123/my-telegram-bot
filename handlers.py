@@ -977,17 +977,10 @@ async def process_and_send_response(update: Update, context: ContextTypes.DEFAUL
                 ["окей, проехали", "давай о чем-нибудь другом поговорим"]
             ])
         else:
-            # --- УЛУЧШЕННЫЙ FALLBACK V6: Гарантированное извлечение ---
-            logger.warning("JSON parse failed. Applying final fallback extractor on raw response.")
-            extracted_texts = re.findall(r'\"(.*?)\"', raw_llm_response)
-            cleaned_parts = [t.strip() for t in extracted_texts if t and t.strip()]
-
-            if cleaned_parts:
-                logger.info(f"Final fallback extractor got {len(cleaned_parts)} parts. Preview: '{cleaned_parts[0][:50]}...'")
-                text_parts_to_send = cleaned_parts
-            else:
-                logger.warning("Final fallback found no quoted text. Treating raw response as plain text.")
-                text_parts_to_send = [ln.strip() for ln in raw_llm_response.strip().split('\n') if ln.strip()]
+            # --- УЛУЧШЕННЫЙ FALLBACK V7: Чистый текст ---
+            logger.warning("JSON parse failed. Applying final text extractor.")
+            # Считаем, что модель прислала обычный текст, возможно с мусором. Просто делим по строкам.
+            text_parts_to_send = [ln.strip() for ln in raw_llm_response.strip().split('\n') if ln.strip()]
 
     context_response_prepared = False
     if persona.chat_instance:
@@ -1009,6 +1002,27 @@ async def process_and_send_response(update: Update, context: ContextTypes.DEFAUL
     if not gif_links_to_send and (not text_parts_to_send or not any(text_parts_to_send)):
         logger.warning("process_and_send_response [JSON]: No GIFs and no text parts after processing. Nothing to send.")
         return context_response_prepared
+
+
+    # --- ФИНАЛЬНАЯ ОЧИСТКА ПЕРЕД ОТПРАВКОЙ (V2) ---
+    # Гарантируем отсутствие внешних скобок/кавычек в сообщениях, независимо от пути обработки выше.
+    final_cleaned_parts: List[str] = []
+    if text_parts_to_send:
+        for part in text_parts_to_send:
+            cleaned_part = part.strip()
+            # Снимаем внешние кавычки
+            if len(cleaned_part) >= 2 and cleaned_part.startswith('"') and cleaned_part.endswith('"'):
+                cleaned_part = cleaned_part[1:-1].strip()
+            # Снимаем внешние квадратные скобки
+            if len(cleaned_part) >= 2 and cleaned_part.startswith('[') and cleaned_part.endswith(']'):
+                cleaned_part = cleaned_part[1:-1].strip()
+            # Ещё раз снимем возможные кавычки после скобок
+            if len(cleaned_part) >= 2 and cleaned_part.startswith('"') and cleaned_part.endswith('"'):
+                cleaned_part = cleaned_part[1:-1].strip()
+            if cleaned_part:
+                final_cleaned_parts.append(cleaned_part)
+    text_parts_to_send = final_cleaned_parts
+    # --- КОНЕЦ БЛОКА ОЧИСТКИ ---
 
 
     # --- СТРАХОВКА ОТ ПОВТОРНЫХ ПРИВЕТСТВИЙ ---
