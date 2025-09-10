@@ -1436,25 +1436,55 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     elif reply_pref == "mentioned_or_contextual":
                         should_ai_respond = is_mentioned or is_reply_to_bot or contains_persona_name
                         if not should_ai_respond:
-                            logger.info("handle_message: No direct trigger in group (contextual pref, LLM check disabled). Not responding.")
+                            # --- КОНТЕКСТУАЛЬНАЯ ПРОВЕРКА ЧЕРЕЗ LLM ---
+                            logger.info("handle_message: No direct mention. Performing contextual LLM check...")
+                            try:
+                                ctx_prompt = persona.format_should_respond_prompt(
+                                    message_text=message_text,
+                                    bot_username=bot_username,
+                                    history=initial_context_from_db
+                                )
+                            except Exception as fmt_err:
+                                logger.error(f"Failed to format contextual should_respond prompt: {fmt_err}", exc_info=True)
+                                ctx_prompt = None
+
+                            if ctx_prompt:
+                                try:
+                                    key_for_check = get_next_api_key(db_session, service='gemini')
+                                    if key_for_check and getattr(key_for_check, 'api_key', None):
+                                        llm_decision = await send_to_google_gemini(
+                                            api_key=key_for_check.api_key,
+                                            system_prompt="You decide if the bot should respond based on relevance. Answer only with 'Да' or 'Нет'.",
+                                            messages=[{"role": "user", "content": ctx_prompt}]
+                                        )
+                                        ans = str(llm_decision or "").strip().lower()
+                                        if "да" in ans:
+                                            should_ai_respond = True
+                                            logger.info(f"LLM contextual check PASSED (answer: {ans}).")
+                                        else:
+                                            logger.info(f"LLM contextual check FAILED (answer: {ans}).")
+                                    else:
+                                        logger.warning("No API key available for contextual check; defaulting to NOT respond.")
+                                except Exception as llm_err:
+                                    logger.error(f"Contextual LLM check failed: {llm_err}", exc_info=True)
+                                    # по ошибке проверки — оставляем решение 'не отвечать'
+                            else:
+                                logger.warning("Contextual prompt not generated; skipping LLM check.")
 
                     if not should_ai_respond:
-                        logger.info(f"handle_message: Decision - Not responding in group chat '{update.effective_chat.title}'.")
-                        if limit_state_changed or context_user_msg_added:
-                            try:
-                                db_session.commit()
-                                logger.debug("handle_message: Committed DB changes (limits/user context) before exiting group logic (no response).")
-                            except Exception as commit_err:
-                                logger.error(f"handle_message: Commit failed when exiting group logic (no response): {commit_err}", exc_info=True)
-                                db_session.rollback()
+                        logger.info(f"handle_message: Final decision - NOT responding in group '{getattr(update.effective_chat, 'title', '')}'. Rolling back context changes for this bot.")
+                        try:
+                            db_session.rollback()  # Не сохраняем контекст, если не отвечаем
+                        except Exception as rb_err:
+                            logger.warning(f"Rollback after non-response failed: {rb_err}")
                         return
 
                 if should_ai_respond:
                     try:
-                        db_session.commit()
-                        logger.debug("handle_message: Committed DB changes (limits/user context) before exiting group logic (no response).")
+                        db_session.commit()  # сохраняем пользовательское сообщение в контекст только при ответе
+                        logger.debug("handle_message: User message committed prior to AI call (group decision=respond).")
                     except Exception as commit_err:
-                        logger.error(f"handle_message: Commit failed when exiting group logic (no response): {commit_err}", exc_info=True)
+                        logger.error(f"handle_message: Commit failed before AI call (group decision=respond): {commit_err}", exc_info=True)
 
                     # Вызываем format_system_prompt БЕЗ текста сообщения, с учетом типа чата
                     system_prompt = persona.format_system_prompt(user_id, username, getattr(update.effective_chat, 'type', None))
