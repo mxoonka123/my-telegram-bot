@@ -989,30 +989,18 @@ async def process_and_send_response(update: Update, context: ContextTypes.DEFAUL
                 ["даже не знаю, что на это ответить..."],
                 ["окей, проехали", "давай о чем-нибудь другом поговорим"]
             ])
-            # Сохраняем в БД все равно сырой ответ для анализа, но пользователю отправляем "безопасный"
         else:
-            # --- УЛУЧШЕННЫЙ FALLBACK V5: Более надежная очистка ---
-            logger.warning("JSON parse failed. Applying robust fallback cleaning on raw response.")
-            # Склеиваем разорванные массивы, если модель прислала их построчно
-            repaired_str = raw_llm_response.replace("][", ",")
-            # Уберем явные GIF-ссылки, если они попали в сырой ответ
-            for gif in extract_gif_links(repaired_str) or []:
-                repaired_str = repaired_str.replace(gif, "")
-            # Извлекаем все подстроки в кавычках
-            found_strings = re.findall(r'"(.*?)"', repaired_str)
-            cleaned_parts = [s.strip() for s in found_strings if s and s.strip()]
+            # --- УЛУЧШЕННЫЙ FALLBACK V6: Гарантированное извлечение ---
+            logger.warning("JSON parse failed. Applying final fallback extractor on raw response.")
+            extracted_texts = re.findall(r'\"(.*?)\"', raw_llm_response)
+            cleaned_parts = [t.strip() for t in extracted_texts if t and t.strip()]
 
             if cleaned_parts:
-                logger.info(f"Fallback cleaner extracted {len(cleaned_parts)} parts. Preview: '{cleaned_parts[0][:50]}...'")
+                logger.info(f"Final fallback extractor got {len(cleaned_parts)} parts. Preview: '{cleaned_parts[0][:50]}...'")
                 text_parts_to_send = cleaned_parts
             else:
-                # В крайнем случае — делим по строкам и чистим кавычки/скобки по минимуму
-                lines = [ln.strip() for ln in raw_llm_response.strip().split('\n') if ln.strip()]
-                minimally_cleaned = []
-                for ln in lines:
-                    ln = re.sub(r'^\[\s*"?(.*?)"?\s*\]$', r'\1', ln)
-                    minimally_cleaned.append(ln)
-                text_parts_to_send = [p for p in minimally_cleaned if p]
+                logger.warning("Final fallback found no quoted text. Treating raw response as plain text.")
+                text_parts_to_send = [ln.strip() for ln in raw_llm_response.strip().split('\n') if ln.strip()]
 
     context_response_prepared = False
     if persona.chat_instance:
