@@ -97,19 +97,7 @@ TELEGRAPH_AUTHOR_NAME = os.getenv("TELEGRAPH_AUTHOR_NAME", "NuNuAiBot") # Имя
 TELEGRAPH_AUTHOR_URL = os.getenv("TELEGRAPH_AUTHOR_URL", "https://t.me/NuNuAiChannel") # Ссылка на автора для страниц Telegra.ph
 TELEGRAPH_ACCESS_TOKEN = os.getenv("TELEGRAPH_ACCESS_TOKEN", None) # Токен для Telegra.ph
 
-# --- OpenRouter Settings ---
-# Ключ загружается из переменной окружения OPENROUTER_API_KEY
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
-OPENROUTER_API_BASE_URL = os.getenv("OPENROUTER_API_BASE_URL", "https://openrouter.ai/api/v1")
-# Модель по умолчанию (можно переопределить в окружении)
-OPENROUTER_MODEL_NAME = os.getenv("OPENROUTER_MODEL_NAME", "openrouter/sonoma-sky-alpha")
-# Рекомендованные заголовки для OpenRouter (ссылка на проект)
-OPENROUTER_SITE_URL = os.getenv("RAILWAY_STATIC_URL", "https://t.me/NuNuAiChannel")
-
-if not OPENROUTER_API_KEY:
-    logger.warning("WARNING: Переменная окружения OPENROUTER_API_KEY не установлена.")
-else:
-    logger.info(f"INFO: OPENROUTER_API_KEY успешно загружен. Модель: {OPENROUTER_MODEL_NAME}")
+# --- OpenRouter Settings REMOVED: проект перешёл на нативный Google Gemini API ---
 
   # --- Цены кредитной системы (базовые, можно менять без деплоя через env) ---
   # Стоимость указывается в кредитах за 1k токенов или за единицу медиа.
@@ -123,11 +111,14 @@ CREDIT_COSTS = {
 
 # Коэффициент для разных моделей (по умолчанию 1.0 для текущей модели Gemini)
 # ВАЖНО: можно задавать множитель на модель через переменную окружения вида
-# CREDIT_MULTIPLIER_<MODEL_NAME>, где слеш заменяется на подчеркивание и всё в UPPERCASE.
-# Пример: для "openrouter/sonoma-sky-alpha" используйте CREDIT_MULTIPLIER_OPENROUTER_SONOMA_SKY_ALPHA
+# CREDIT_MULTIPLIER_<MODEL_NAME>, где дефисы и точки заменяются на подчёркивания и всё в UPPERCASE.
+# Пример: для "gemini-2.5-pro" используйте CREDIT_MULTIPLIER_GEMINI_2_5_PRO
 MODEL_PRICE_MULTIPLIERS = {
-    OPENROUTER_MODEL_NAME: float(
-        os.getenv(f"CREDIT_MULTIPLIER_{OPENROUTER_MODEL_NAME.replace('/', '_').upper()}", "1.0")
+    GEMINI_MODEL_NAME_FOR_API: float(
+        os.getenv(
+            f"CREDIT_MULTIPLIER_{GEMINI_MODEL_NAME_FOR_API.replace('-', '_').replace('.', '_').upper()}",
+            "1.0",
+        )
     ),
 }
 

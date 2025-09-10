@@ -20,7 +20,7 @@ from db import (
 from persona import Persona
 from utils import postprocess_response, extract_gif_links, escape_markdown_v2, format_visual_text
 from config import FREE_PERSONA_LIMIT, PAID_PERSONA_LIMIT, FREE_USER_MONTHLY_MESSAGE_LIMIT # <-- ИСПРАВЛЕННЫЙ ИМПОРТ
-from handlers import send_to_openrouter_llm, deduct_credits_for_interaction
+from handlers import send_to_google_gemini, deduct_credits_for_interaction
 
 logger = logging.getLogger(__name__)
 
@@ -93,8 +93,8 @@ async def proactive_messaging_task(application: Application) -> None:
                             history = get_context_for_chat_bot(db, inst.id)
                             system_prompt, messages = persona_obj.format_conversation_starter_prompt(history)
 
-                            # Повышаем температуру для большей креативности
-                            assistant_response_text = await send_to_openrouter_llm(system_prompt or "", messages, temperature=1.0)
+                            # Получаем ответ через Google Gemini (температуру задаём в промпте/персоне при необходимости)
+                            assistant_response_text = await send_to_google_gemini(system_prompt or "", messages)
                             if not assistant_response_text:
                                 continue
 

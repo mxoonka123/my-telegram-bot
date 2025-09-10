@@ -69,7 +69,6 @@ from yookassa import Configuration as YookassaConfig, Payment
 from yookassa.domain.models.currency import Currency
 from yookassa.domain.request.payment_request_builder import PaymentRequestBuilder
 from yookassa.domain.models.receipt import Receipt, ReceiptItem
-from openai import AsyncOpenAI, APIStatusError, APIConnectionError
 
 # --- ИСПРАВЛЕНИЕ: Добавлены импорты из config.py для устранения NameError ---
 import config
@@ -825,87 +824,6 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 # --- Core Logic Helpers ---
-
-# OpenRouter Async Client (initialized once)
-openrouter_client = AsyncOpenAI(
-    base_url=config.OPENROUTER_API_BASE_URL,
-    api_key=config.OPENROUTER_API_KEY,
-    default_headers={
-        "HTTP-Referer": config.OPENROUTER_SITE_URL,
-        "X-Title": "NuNuAiBot",
-    },
-)
-
-async def send_to_openrouter_llm(
-    system_prompt: str,
-    messages: List[Dict[str, str]],
-    image_data: Optional[bytes] = None,
-    temperature: Optional[float] = None,
-    top_p: Optional[float] = None,
-) -> str:
-    """Отправляет запрос в OpenRouter API (OpenAI-совместимый) и возвращает текст ответа."""
-    if not config.OPENROUTER_API_KEY:
-        logger.error("OPENROUTER_API_KEY не установлен.")
-        return "[ошибка: ключ api для openrouter не настроен.]"
-
-    # Формируем список сообщений в формате OpenAI
-    openai_messages: List[Dict[str, Any]] = [{"role": "system", "content": system_prompt.strip()}]
-
-    for idx, msg in enumerate(messages):
-        role = msg.get("role", "user")
-        content = msg.get("content", "")
-        is_last_user_message = (idx == len(messages) - 1 and role == "user")
-
-        if is_last_user_message and image_data:
-            try:
-                base64_image = base64.b64encode(image_data).decode("utf-8")
-                openai_messages.append({
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": content},
-                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}},
-                    ],
-                })
-            except Exception as img_e:
-                logger.warning(f"send_to_openrouter_llm: не удалось прикрепить изображение: {img_e}")
-                openai_messages.append({"role": role, "content": content})
-        else:
-            openai_messages.append({"role": role, "content": content})
-
-    try:
-        # Готовим параметры запроса и передаём temperature/top_p только если они заданы
-        request_params: Dict[str, Any] = {
-            "model": config.OPENROUTER_MODEL_NAME,
-            "messages": openai_messages,
-        }
-        if temperature is not None:
-            request_params["temperature"] = temperature
-        if top_p is not None:
-            request_params["top_p"] = top_p
-
-        log_params = {k: v for k, v in request_params.items() if k != "messages"}
-        logger.info(f"sending request to openrouter with params: {log_params}")
-        chat_completion = await openrouter_client.chat.completions.create(**request_params)
-        response_text = chat_completion.choices[0].message.content
-        if not response_text:
-            finish_reason = getattr(chat_completion.choices[0], 'finish_reason', 'unknown')
-            logger.warning(f"OpenRouter: пустой ответ. Finish reason: {finish_reason}")
-            return f"[ai вернул пустой ответ. причина: {finish_reason}]"
-        return response_text.strip()
-    except APIStatusError as e:
-        try:
-            detail = e.response.json().get('error', {}).get('message', '') if e.response else ''
-        except Exception:
-            detail = ''
-        logger.error(f"OpenRouter API error (status={getattr(e, 'status_code', 'NA')}): {detail or e}")
-        return f"[ошибка openrouter api {getattr(e, 'status_code', 'NA')}: {detail or 'нет деталей'}]"
-    except APIConnectionError as e:
-        logger.error(f"OpenRouter network error: {e}")
-        return "[сетевая ошибка при обращении к openrouter api. попробуйте позже.]"
-    except Exception as e:
-        logger.error(f"Unexpected error in send_to_openrouter_llm: {e}", exc_info=True)
-        return "[неизвестная ошибка при обращении к openrouter api.]"
-    # (удалено) send_to_google_gemini(): устаревшая реализация Gemini API. Все звонки переведены на OpenRouter.
 def extract_json_from_markdown(text: str) -> str:
     """
     Extracts a JSON string from a markdown code block (e.g., ```json...```).
@@ -1509,21 +1427,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
                     # Контекст для ИИ - это история + новое сообщение
                     context_for_ai = initial_context_from_db + [{"role": "user", "content": f"{username}: {message_text}"}]
-                    # --- Логика выбора AI-провайдера ---
+                    # --- Вызов AI-провайдера (только Google Gemini) ---
                     assistant_response_text = await send_to_google_gemini(
                         system_prompt,
                         context_for_ai
                     )
-
-                    if assistant_response_text is None or str(assistant_response_text).startswith("[ошибка google api"):
-                        if assistant_response_text:
-                            logger.warning(f"Google Gemini API call failed: {assistant_response_text}. Falling back to OpenRouter.")
-                        assistant_response_text = await send_to_openrouter_llm(
-                            system_prompt,
-                            context_for_ai,
-                            temperature=getattr(getattr(persona, 'config', None), 'temperature', None),
-                            top_p=getattr(getattr(persona, 'config', None), 'top_p', None),
-                        )
+                    if assistant_response_text is None:
+                        assistant_response_text = "[ошибка: ключ GEMINI_API_KEY не установлен]"
+                        logger.error("Cannot call AI: GEMINI_API_KEY is not configured.")
 
                     context_response_prepared = False
                     if assistant_response_text and not assistant_response_text.startswith("❌"):
@@ -1611,9 +1522,9 @@ async def deduct_credits_for_interaction(
 ) -> None:
     """Рассчитывает и списывает кредиты за одно взаимодействие (текст/фото/голос)."""
     try:
-        from config import CREDIT_COSTS, MODEL_PRICE_MULTIPLIERS, OPENROUTER_MODEL_NAME, LOW_BALANCE_WARNING_THRESHOLD
+        from config import CREDIT_COSTS, MODEL_PRICE_MULTIPLIERS, GEMINI_MODEL_NAME_FOR_API, LOW_BALANCE_WARNING_THRESHOLD
 
-        mult = MODEL_PRICE_MULTIPLIERS.get(OPENROUTER_MODEL_NAME, 1.0)
+        mult = MODEL_PRICE_MULTIPLIERS.get(GEMINI_MODEL_NAME_FOR_API, 1.0)
         total_cost = 0.0
 
         # 1) Базовая стоимость медиа
@@ -1625,11 +1536,11 @@ async def deduct_credits_for_interaction(
 
         # 2) Стоимость токенов
         try:
-            input_tokens = count_openai_compatible_tokens(input_text or "", OPENROUTER_MODEL_NAME)
+            input_tokens = count_openai_compatible_tokens(input_text or "", GEMINI_MODEL_NAME_FOR_API)
         except Exception:
             input_tokens = 0
         try:
-            output_tokens = count_openai_compatible_tokens(output_text or "", OPENROUTER_MODEL_NAME)
+            output_tokens = count_openai_compatible_tokens(output_text or "", GEMINI_MODEL_NAME_FOR_API)
         except Exception:
             output_tokens = 0
 
@@ -1788,23 +1699,15 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
 
             add_message_to_context(db, persona.chat_instance.id, "user", user_message_content)
             
-            # --- Логика выбора AI-провайдера для медиа ---
+            # --- Вызов AI-провайдера для медиа (только Google Gemini) ---
             ai_response_text = await send_to_google_gemini(
                 system_prompt,
                 context_for_ai,
                 image_data=image_data
             )
-
-            if ai_response_text is None or str(ai_response_text).startswith("[ошибка google api"):
-                if ai_response_text:
-                    logger.warning(f"Google Gemini API (media) failed: {ai_response_text}. Falling back to OpenRouter.")
-                ai_response_text = await send_to_openrouter_llm(
-                    system_prompt,
-                    context_for_ai,
-                    image_data=image_data,
-                    temperature=getattr(getattr(persona, 'config', None), 'temperature', None),
-                    top_p=getattr(getattr(persona, 'config', None), 'top_p', None),
-                )
+            if ai_response_text is None:
+                ai_response_text = "[ошибка: ключ GEMINI_API_KEY не установлен]"
+                logger.error("Cannot call AI for media: GEMINI_API_KEY is not configured.")
             logger.debug(f"Received response from AI for {media_type}: {ai_response_text[:100]}...")
 
             # --- новое списание кредитов ---
@@ -4223,9 +4126,9 @@ async def proactive_chat_select_received(update: Update, context: ContextTypes.D
                 history = get_context_for_chat_bot(db, link.id)
                 system_prompt, messages = persona_obj.format_conversation_starter_prompt(history)
 
-                # Получаем ответ (повышенная креативность для старта беседы)
-                assistant_response_text = await send_to_openrouter_llm(system_prompt or "", messages, temperature=1.0)
-
+                # Получаем ответ (через Google Gemini)
+                assistant_response_text = await send_to_google_gemini(system_prompt or "", messages)
+                
                 # Списываем кредиты у владельца
                 try:
                     await deduct_credits_for_interaction(db=db, owner_user=owner_user, input_text="", output_text=assistant_response_text)

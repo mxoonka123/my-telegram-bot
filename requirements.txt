@@ -22,6 +22,5 @@ asgiref>=3.7.2
 vosk==0.3.45
 ffmpeg-python==0.2.0
 cffi>=1.0
-openai>=1.0.0,<2.0.0
 tiktoken>=0.5.0
 alembic>=1.13.1
