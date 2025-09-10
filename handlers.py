@@ -111,6 +111,75 @@ from utils import (
     send_safe_message,
 )
 
+# --- Google Gemini Native API Client ---
+async def send_to_google_gemini(
+    system_prompt: str,
+    messages: List[Dict[str, str]],
+    image_data: Optional[bytes] = None,
+) -> Optional[str]:
+    """Отправляет запрос в нативный Google Gemini API и возвращает текст ответа.
+    Возвращает None, если ключ не задан, чтобы сработал fallback.
+    Возвращает строку, начинающуюся с "[ошибка google api ...]" при ошибке, чтобы вызвать fallback.
+    """
+    if not config.GEMINI_API_KEY:
+        logger.debug("GEMINI_API_KEY not set, skipping native Google API call.")
+        return None
+
+    model_name = config.GEMINI_MODEL_NAME_FOR_API
+    api_url = config.GEMINI_API_BASE_URL_TEMPLATE.format(model=model_name)
+    headers = {
+        "Content-Type": "application/json",
+        "x-goog-api-key": config.GEMINI_API_KEY,
+    }
+
+    contents: List[Dict[str, Any]] = []
+    system_prompt_applied = False
+    for msg in messages:
+        role = "user" if msg.get("role") != "assistant" else "model"
+        text = msg.get("content", "")
+        if role == "user" and not system_prompt_applied:
+            text = f"{system_prompt}\n\n[ДИАЛОГ]\n{text}"
+            system_prompt_applied = True
+        content_item: Dict[str, Any] = {"role": role, "parts": [{"text": text}]}
+        contents.append(content_item)
+
+    if image_data and contents:
+        last_content = contents[-1]
+        if last_content.get("role") == "user":
+            base64_image = base64.b64encode(image_data).decode("utf-8")
+            last_content["parts"].append({
+                "inline_data": {
+                    "mime_type": "image/jpeg",
+                    "data": base64_image
+                }
+            })
+
+    payload = {"contents": contents}
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(api_url, headers=headers, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+            text_response = data["candidates"][0]["content"]["parts"][0]["text"]
+            return str(text_response).strip()
+    except httpx.HTTPStatusError as e:
+        try:
+            error_body = e.response.json()
+        except Exception:
+            error_body = {"error": {"message": e.response.text if e.response is not None else str(e)}}
+        error_message = error_body.get("error", {}).get("message", "Unknown error")
+        logger.error(f"Google Gemini API error (status={getattr(e.response, 'status_code', 'n/a')}): {error_message}")
+        if "model" in error_message and "not found" in error_message:
+            logger.warning(f"Model '{model_name}' not found via Google API. Will use fallback.")
+        return f"[ошибка google api {getattr(e.response, 'status_code', 'n/a')}: {error_message}]"
+    except (KeyError, IndexError) as e:
+        logger.error(f"Google Gemini API returned unexpected response structure: {str(e)}")
+        return "[ошибка google api: неверный формат ответа]"
+    except Exception as e:
+        logger.error(f"Unexpected error in send_to_google_gemini: {e}", exc_info=True)
+        return "[неизвестная ошибка при обращении к google api]"
+
 # --- Constants ---
 BOTSET_SELECT, BOTSET_MENU, BOTSET_WHITELIST_ADD, BOTSET_WHITELIST_REMOVE = range(4)
 
@@ -1440,13 +1509,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
                     # Контекст для ИИ - это история + новое сообщение
                     context_for_ai = initial_context_from_db + [{"role": "user", "content": f"{username}: {message_text}"}]
-                    # Отправляем системный промпт и контекст вместе в OpenRouter
-                    assistant_response_text = await send_to_openrouter_llm(
+                    # --- Логика выбора AI-провайдера ---
+                    assistant_response_text = await send_to_google_gemini(
                         system_prompt,
-                        context_for_ai,
-                        temperature=getattr(getattr(persona, 'config', None), 'temperature', None),
-                        top_p=getattr(getattr(persona, 'config', None), 'top_p', None),
+                        context_for_ai
                     )
+
+                    if assistant_response_text is None or str(assistant_response_text).startswith("[ошибка google api"):
+                        if assistant_response_text:
+                            logger.warning(f"Google Gemini API call failed: {assistant_response_text}. Falling back to OpenRouter.")
+                        assistant_response_text = await send_to_openrouter_llm(
+                            system_prompt,
+                            context_for_ai,
+                            temperature=getattr(getattr(persona, 'config', None), 'temperature', None),
+                            top_p=getattr(getattr(persona, 'config', None), 'top_p', None),
+                        )
 
                     context_response_prepared = False
                     if assistant_response_text and not assistant_response_text.startswith("❌"):
@@ -1711,14 +1788,23 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
 
             add_message_to_context(db, persona.chat_instance.id, "user", user_message_content)
             
-            # audio_data не передаем, модель принимает текст + картинку
-            ai_response_text = await send_to_openrouter_llm(
+            # --- Логика выбора AI-провайдера для медиа ---
+            ai_response_text = await send_to_google_gemini(
                 system_prompt,
                 context_for_ai,
-                image_data=image_data,
-                temperature=getattr(getattr(persona, 'config', None), 'temperature', None),
-                top_p=getattr(getattr(persona, 'config', None), 'top_p', None),
+                image_data=image_data
             )
+
+            if ai_response_text is None or str(ai_response_text).startswith("[ошибка google api"):
+                if ai_response_text:
+                    logger.warning(f"Google Gemini API (media) failed: {ai_response_text}. Falling back to OpenRouter.")
+                ai_response_text = await send_to_openrouter_llm(
+                    system_prompt,
+                    context_for_ai,
+                    image_data=image_data,
+                    temperature=getattr(getattr(persona, 'config', None), 'temperature', None),
+                    top_p=getattr(getattr(persona, 'config', None), 'top_p', None),
+                )
             logger.debug(f"Received response from AI for {media_type}: {ai_response_text[:100]}...")
 
             # --- новое списание кредитов ---

@@ -28,7 +28,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 # Ключ загружается из переменной окружения GEMINI_API_KEY
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 # Модель для нативного Gemini API (можно переопределить в окружении)
-GEMINI_MODEL_NAME_FOR_API = os.getenv("GEMINI_MODEL_NAME_FOR_API", "gemini-1.5-pro-latest")
+GEMINI_MODEL_NAME_FOR_API = os.getenv("GEMINI_MODEL_NAME_FOR_API", "gemini-2.5-pro")
 # Базовый URL теперь не содержит имя модели, оно будет подставляться при вызове
 GEMINI_API_BASE_URL_TEMPLATE = os.getenv(
     "GEMINI_API_BASE_URL_TEMPLATE",
