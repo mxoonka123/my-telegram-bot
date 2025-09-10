@@ -341,7 +341,7 @@ class Persona:
             return None
 
         # Получаем шаблон из объекта конфига PersonaConfig
-        template = self.should_respond_prompt_template
+        template = self.config.should_respond_prompt_template
         if not template:
             logger.warning(f"should_respond_prompt_template is empty for persona {self.id}. Cannot generate contextual check prompt. Using default.")
             template = DEFAULT_SHOULD_RESPOND_TEMPLATE # Используем дефолтный из db.py как fallback
