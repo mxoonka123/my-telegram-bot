@@ -161,8 +161,31 @@ async def send_to_google_gemini(
             resp = await client.post(api_url, headers=headers, json=payload)
             resp.raise_for_status()
             data = resp.json()
-            text_response = data["candidates"][0]["content"]["parts"][0]["text"]
-            return str(text_response).strip()
+
+            # --- Безопасный парсинг ответа Gemini ---
+            try:
+                if isinstance(data, dict) and data.get("candidates"):
+                    candidate = data["candidates"][0] or {}
+                    content = candidate.get("content") or {}
+                    parts = content.get("parts") or []
+                    if parts and isinstance(parts[0], dict):
+                        text_response = parts[0].get("text")
+                        if text_response:
+                            return str(text_response).strip()
+
+                # Если текст не найден, проверяем причину блокировки
+                if "promptFeedback" in data:
+                    feedback = data.get("promptFeedback", {}) or {}
+                    block_reason = feedback.get("blockReason", "UNKNOWN_REASON")
+                    logger.warning(f"Google API blocked prompt. Reason: {block_reason}. Full feedback: {feedback}")
+                    return f"[ошибка google api: запрос заблокирован (причина: {block_reason})]"
+
+                # Неожиданный, но валидный ответ без текста
+                logger.error(f"Google Gemini API returned a valid but empty/unexpected response: {data}")
+                return "[ошибка google api: получен пустой или неожиданный ответ от модели]"
+            except Exception as parse_err:
+                logger.error(f"Google Gemini API response parsing error: {parse_err}; raw: {data}")
+                return "[ошибка google api: неверный формат ответа]"
     except httpx.HTTPStatusError as e:
         try:
             error_body = e.response.json()
