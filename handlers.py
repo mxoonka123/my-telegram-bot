@@ -992,21 +992,28 @@ async def process_and_send_response(update: Update, context: ContextTypes.DEFAUL
             # Сохраняем в БД все равно сырой ответ для анализа, но пользователю отправляем "безопасный"
         else:
             # Если запрещенных фраз нет, продолжаем обычную обработку
-            text_for_fallback = json_string_candidate
+            # --- УЛУЧШЕННЫЙ FALLBACK V4: Ручная очистка от скобок по строкам ---
+            cleaned_parts: List[str] = []
+            raw_lines = raw_llm_response.strip().split('\n')
+            for line in raw_lines:
+                line = line.strip()
+                if not line:
+                    continue
+                # Удалим потенциальные GIF-ссылки из строки
+                for gif in extract_gif_links(line) or []:
+                    line = line.replace(gif, '')
+                # Извлечем текст из вида ["..."] если присутствует
+                m = re.search(r'\[\s*"(.*?)"\s*\]', line)
+                if m:
+                    cleaned_parts.append(m.group(1))
+                else:
+                    # Также попробуем снять кавычки вокруг одиночного значения
+                    line_unquoted = re.sub(r'^\"(.*)\"$', r'\1', line)
+                    cleaned_parts.append(line_unquoted)
 
-            gif_links = extract_gif_links(text_for_fallback)
-            if gif_links:
-                for gif in gif_links:
-                    text_for_fallback = text_for_fallback.replace(gif, '')
-
-            text_for_fallback = re.sub(r'^\s*\[\s*"(.*)"\s*\]\s*$', r'\1', text_for_fallback, flags=re.DOTALL)
-            text_for_fallback = text_for_fallback.replace('\\n', '\n').replace('\\"', '"')
-            text_for_fallback = text_for_fallback.strip()
-
-            if text_for_fallback:
-                logger.info(f"Fallback: processing cleaned text for user: '{text_for_fallback[:100]}...'")
-                max_messages = persona.config.max_response_messages if persona.config and persona.config.max_response_messages > 0 else 3
-                text_parts_to_send = postprocess_response(text_for_fallback, max_messages, "normal")
+            if cleaned_parts:
+                logger.info(f"Fallback: successfully cleaned {len(cleaned_parts)} parts from malformed JSON.")
+                text_parts_to_send = [p for p in (s.strip() for s in cleaned_parts) if p]
             else:
                 text_parts_to_send = []
 
