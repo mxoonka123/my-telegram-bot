@@ -321,6 +321,21 @@ class ChatContext(Base):
         content_preview = (self.content[:50] + '...') if len(self.content) > 50 else self.content
         return f"<ChatContext(id={self.id}, cbi_id={self.chat_bot_instance_id}, role='{self.role}', order={self.message_order}, content='{content_preview}')>"
 
+# --- NEW: API Key Management ---
+class ApiKey(Base):
+    __tablename__ = 'api_keys'
+    id = Column(Integer, primary_key=True)
+    service = Column(String, nullable=False, index=True, default='gemini')  # e.g., 'gemini'
+    api_key = Column(Text, nullable=False, unique=True)
+    is_active = Column(Boolean, default=True, nullable=False, index=True)
+    last_used_at = Column(DateTime(timezone=True), server_default=func.now())
+    requests_count = Column(Integer, default=0, nullable=False)
+    comment = Column(String, nullable=True)
+
+    def __repr__(self):
+        key_preview = self.api_key[:4] + '...' + self.api_key[-4:] if self.api_key and len(self.api_key) > 8 else 'invalid_key'
+        return f"<ApiKey(id={self.id}, service='{self.service}', key='{key_preview}', active={self.is_active})>"
+
 # --- Database Setup ---
 engine = None
 SessionLocal = None
@@ -579,6 +594,43 @@ def get_persona_by_id_and_owner(db: Session, owner_telegram_id: int, persona_id:
     except SQLAlchemyError as e:
         logger.error(f"DB error getting persona by ID {persona_id} for owner {owner_telegram_id}: {e}", exc_info=True)
         return None
+
+def get_all_active_chat_bot_instances(db: Session) -> List[ChatBotInstance]:
+    """Gets all active ChatBotInstances with relations for tasks."""
+    try:
+        return db.query(ChatBotInstance)\
+            .filter(ChatBotInstance.active == True)\
+            .options(
+                selectinload(ChatBotInstance.bot_instance_ref)
+                .selectinload(BotInstance.persona_config)
+                .selectinload(PersonaConfig.owner),
+                selectinload(ChatBotInstance.bot_instance_ref)
+                .selectinload(BotInstance.owner)
+            ).all()
+    except SQLAlchemyError as e:
+        logger.error(f"DB error getting all active instances: {e}", exc_info=True)
+        return []
+
+def get_next_api_key(db: Session, service: str = 'gemini') -> Optional[ApiKey]:
+    """
+    Возвращает следующий доступный API-ключ для указанного сервиса по принципу LRU.
+    Использует блокировку строки (FOR UPDATE), чтобы избежать гонок при одновременных запросах.
+    Коммит должен быть выполнен в вызывающем коде после использования ключа.
+    """
+    try:
+        key_obj = db.query(ApiKey).filter(
+            ApiKey.service == service,
+            ApiKey.is_active == True
+        ).order_by(ApiKey.last_used_at.asc()).with_for_update().first()
+
+        if key_obj:
+            key_obj.last_used_at = datetime.now(timezone.utc)
+            key_obj.requests_count = (key_obj.requests_count or 0) + 1
+            logger.info(f"API Key Rotation: selected key ID {key_obj.id} for service '{service}'.")
+            return key_obj
+    except SQLAlchemyError as e:
+        logger.error(f"Database error selecting next API key for '{service}': {e}", exc_info=True)
+    return None
 
 def delete_persona_config(db: Session, persona_id: int, owner_id: int) -> bool:
     """Deletes a PersonaConfig by its ID and owner's internal ID, and commits."""

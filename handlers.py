@@ -97,6 +97,7 @@ from db import (
     User, PersonaConfig as DBPersonaConfig, BotInstance as DBBotInstance,
     ChatBotInstance as DBChatBotInstance, ChatContext, func, get_db,
     DEFAULT_SYSTEM_PROMPT_TEMPLATE, DEFAULT_MOOD_PROMPTS,
+    get_next_api_key,
     set_bot_instance_token
 )
 from persona import Persona, CommunicationStyle, Verbosity
@@ -112,23 +113,23 @@ from utils import (
 
 # --- Google Gemini Native API Client ---
 async def send_to_google_gemini(
+    api_key: str,
     system_prompt: str,
     messages: List[Dict[str, str]],
     image_data: Optional[bytes] = None,
 ) -> Optional[str]:
     """Отправляет запрос в нативный Google Gemini API и возвращает текст ответа.
-    Возвращает None, если ключ не задан, чтобы сработал fallback.
-    Возвращает строку, начинающуюся с "[ошибка google api ...]" при ошибке, чтобы вызвать fallback.
+    Возвращает строку с ошибкой "[ошибка google api ...]" при ошибке.
     """
-    if not config.GEMINI_API_KEY:
-        logger.debug("GEMINI_API_KEY not set, skipping native Google API call.")
-        return None
+    if not api_key:
+        logger.error("send_to_google_gemini called without API key")
+        return "[ошибка: API-ключ не предоставлен]"
 
     model_name = config.GEMINI_MODEL_NAME_FOR_API
     api_url = config.GEMINI_API_BASE_URL_TEMPLATE.format(model=model_name)
     headers = {
         "Content-Type": "application/json",
-        "x-goog-api-key": config.GEMINI_API_KEY,
+        "x-goog-api-key": api_key,
     }
 
     contents: List[Dict[str, Any]] = []
@@ -1447,9 +1448,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     await asyncio.sleep(delay_sec)
 
                     # --- Вызов AI-провайдера (только Google Gemini) ---
+                    api_key_obj = get_next_api_key(db_session, service='gemini')
+                    if not api_key_obj:
+                        logger.error("No active Gemini API keys available in DB.")
+                        await update.message.reply_text("❌ Нет доступных API-ключей. Обратитесь к администратору.", parse_mode=None)
+                        db_session.rollback()
+                        return
                     assistant_response_text = await send_to_google_gemini(
-                        system_prompt,
-                        context_for_ai
+                        api_key=api_key_obj.api_key,
+                        system_prompt=system_prompt,
+                        messages=context_for_ai
                     )
                     # Повторная попытка при перегрузке (503)
                     if assistant_response_text and str(assistant_response_text).startswith("[ошибка google api") and ("503" in assistant_response_text or "overload" in assistant_response_text.lower()):
@@ -1457,7 +1465,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                             backoff = 1.0 * attempt + random.uniform(0.2, 0.8)
                             logger.warning(f"Google API overloaded. Retry {attempt}/2 after {backoff:.2f}s...")
                             await asyncio.sleep(backoff)
-                            assistant_response_text = await send_to_google_gemini(system_prompt, context_for_ai)
+                            assistant_response_text = await send_to_google_gemini(api_key=api_key_obj.api_key, system_prompt=system_prompt, messages=context_for_ai)
                             if not (assistant_response_text and str(assistant_response_text).startswith("[ошибка google api") and ("503" in assistant_response_text or "overload" in assistant_response_text.lower())):
                                 break
 
@@ -1734,9 +1742,16 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
             await asyncio.sleep(delay_sec)
 
             # --- Вызов AI-провайдера для медиа (только Google Gemini) ---
+            api_key_obj = get_next_api_key(db, service='gemini')
+            if not api_key_obj:
+                logger.error("No active Gemini API keys available in DB (media).")
+                await update.message.reply_text("❌ Нет доступных API-ключей для обработки медиа. Обратитесь к администратору.", parse_mode=None)
+                db.rollback()
+                return
             ai_response_text = await send_to_google_gemini(
-                system_prompt,
-                context_for_ai,
+                api_key=api_key_obj.api_key,
+                system_prompt=system_prompt,
+                messages=context_for_ai,
                 image_data=image_data
             )
             # Повторная попытка при перегрузке (503)
@@ -1745,7 +1760,7 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
                     backoff = 1.0 * attempt + random.uniform(0.2, 0.8)
                     logger.warning(f"Google API overloaded (media). Retry {attempt}/2 after {backoff:.2f}s...")
                     await asyncio.sleep(backoff)
-                    ai_response_text = await send_to_google_gemini(system_prompt, context_for_ai, image_data=image_data)
+                    ai_response_text = await send_to_google_gemini(api_key=api_key_obj.api_key, system_prompt=system_prompt, messages=context_for_ai, image_data=image_data)
                     if not (ai_response_text and str(ai_response_text).startswith("[ошибка google api") and ("503" in ai_response_text or "overload" in ai_response_text.lower())):
                         break
 
@@ -4174,13 +4189,17 @@ async def proactive_chat_select_received(update: Update, context: ContextTypes.D
                 delay_sec = random.uniform(0.8, 2.5)
                 logger.info(f"Polite delay before AI request (proactive): {delay_sec:.2f}s")
                 await asyncio.sleep(delay_sec)
-                assistant_response_text = await send_to_google_gemini(system_prompt or "", messages)
+                api_key_obj = get_next_api_key(db, service='gemini')
+                if not api_key_obj:
+                    logger.error("No active Gemini API keys available in DB (proactive). Skipping.")
+                    return
+                assistant_response_text = await send_to_google_gemini(api_key=api_key_obj.api_key, system_prompt=system_prompt or "", messages=messages)
                 if assistant_response_text and str(assistant_response_text).startswith("[ошибка google api") and ("503" in assistant_response_text or "overload" in assistant_response_text.lower()):
                     for attempt in range(1, 2):  # одна дополнительная попытка для проактивных
                         backoff = 1.0 * attempt + random.uniform(0.2, 0.8)
                         logger.warning(f"Google API overloaded (proactive). Retry {attempt}/1 after {backoff:.2f}s...")
                         await asyncio.sleep(backoff)
-                        assistant_response_text = await send_to_google_gemini(system_prompt or "", messages)
+                        assistant_response_text = await send_to_google_gemini(api_key=api_key_obj.api_key, system_prompt=system_prompt or "", messages=messages)
                         if not (assistant_response_text and str(assistant_response_text).startswith("[ошибка google api") and ("503" in assistant_response_text or "overload" in assistant_response_text.lower())):
                             break
                 

@@ -25,20 +25,14 @@ PREMIUM_USER_MESSAGE_TOKEN_LIMIT = 120
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 
 # Gemini Settings (native Google API only)
-# Ключ загружается из переменной окружения GEMINI_API_KEY
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+# API-ключи теперь хранятся в БД (таблица ApiKey) и выбираются динамически.
 # Модель для нативного Gemini API (можно переопределить в окружении)
-GEMINI_MODEL_NAME_FOR_API = os.getenv("GEMINI_MODEL_NAME_FOR_API", "gemini-2.5-pro")
+GEMINI_MODEL_NAME_FOR_API = os.getenv("GEMINI_MODEL_NAME_FOR_API", "gemini-2.5-flash")
 # Базовый URL теперь не содержит имя модели, оно будет подставляться при вызове
 GEMINI_API_BASE_URL_TEMPLATE = os.getenv(
     "GEMINI_API_BASE_URL_TEMPLATE",
     "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
 )
-
-if not GEMINI_API_KEY:
-    logger.warning("WARNING: Переменная окружения GEMINI_API_KEY не установлена (нативный Gemini API).")
-else:
-    logger.info("INFO: GEMINI_API_KEY успешно загружена для нативного Gemini API.")
 # Для отладки можно добавить print длины ключа, если нужно (не рекомендуем в прод)
 # print(f"DEBUG config.py: GEMINI_API_KEY length: {len(GEMINI_API_KEY) if GEMINI_API_KEY else 0}")
 DATABASE_URL = os.getenv("DATABASE_URL")
