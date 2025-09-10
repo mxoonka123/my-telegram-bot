@@ -1042,13 +1042,13 @@ async def process_and_send_response(update: Update, context: ContextTypes.DEFAUL
         if match:
             # Убираем приветствие и лишние пробелы
             cleaned_part = first_part[match.end():].lstrip()
-            if cleaned_part:
+            # Удаляем приветствие, только если после него есть содержимое и исходная фраза была длиннее
+            if cleaned_part and len(first_part) > len(match.group(0)) + 5:
                 logger.info(f"process_and_send_response [JSON]: Removed greeting. New start of part 1: '{cleaned_part[:50]}...'")
                 text_parts_to_send[0] = cleaned_part
             else:
-                # Если после удаления приветствия ничего не осталось, удаляем эту часть целиком
-                logger.warning(f"process_and_send_response [JSON]: Greeting removal left part 1 empty. Removing part.")
-                text_parts_to_send.pop(0)
+                # Не удаляем, если ответ целиком — короткое приветствие
+                logger.info("process_and_send_response [JSON]: Greeting is the whole message. Keeping it.")
 
     if persona and persona.config:
         max_messages_setting_value = persona.config.max_response_messages
@@ -1433,26 +1433,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                         return
 
                 if should_ai_respond:
-                    logger.debug("handle_message: Proceeding to generate AI response.")
-                    llm_call_succeeded = False
-                    
-                    # Отправка индикации набора текста с самовосстановлением
                     try:
-                        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
-                    except Forbidden:
-                        logger.warning(
-                            f"Forbidden on send_chat_action for bot {getattr(context.bot, 'id', None)} in chat {chat_id_str}. Auto-unlinking."
-                        )
-                        try:
-                            cbi = getattr(persona, 'chat_instance', None)
-                            if cbi and getattr(cbi, 'bot_instance_id', None) is not None:
-                                unlink_bot_instance_from_chat(db_session, chat_id_str, cbi.bot_instance_id)
-                                db_session.commit()
-                        except Exception as _unlink_err:
-                            logger.error(f"Auto-unlink on Forbidden failed: {_unlink_err}", exc_info=True)
-                        return
-                    except TelegramError as e:
-                        logger.warning(f"Non-critical TelegramError on send_chat_action: {e}")
+                        db_session.commit()
+                        logger.debug("handle_message: Committed DB changes (limits/user context) before exiting group logic (no response).")
+                    except Exception as commit_err:
+                        logger.error(f"handle_message: Commit failed when exiting group logic (no response): {commit_err}", exc_info=True)
 
                     # Вызываем format_system_prompt БЕЗ текста сообщения, с учетом типа чата
                     system_prompt = persona.format_system_prompt(user_id, username, getattr(update.effective_chat, 'type', None))
@@ -1657,7 +1642,7 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
                     photo_sizes = update.message.photo
                     if photo_sizes:
                         photo_file = photo_sizes[-1]
-                        file = await context.bot.get_file(photo_file.file_id)
+                        file = await current_bot.get_file(photo_file.file_id)
                         image_data_io = await file.download_as_bytearray()
                         image_data = bytes(image_data_io)
                         logger.info(f"Downloaded image: {len(image_data)} bytes")
@@ -1672,9 +1657,11 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
             elif media_type == "voice":
                 system_prompt = persona.format_voice_prompt(user_id=user_id, username=username, chat_id=chat_id_str)
                 if update.message.voice:
-                    await context.bot.send_chat_action(chat_id=chat_id_str, action=ChatAction.TYPING)
+                    # Используем бота из текущего апдейта
+                    await current_bot.send_chat_action(chat_id=chat_id_str, action=ChatAction.TYPING)
                     try:
-                        voice_file = await context.bot.get_file(update.message.voice.file_id)
+                        # Скачиваем файл тем же ботом
+                        voice_file = await current_bot.get_file(update.message.voice.file_id)
                         voice_bytes = await voice_file.download_as_bytearray()
                         audio_data = bytes(voice_bytes)
                         transcribed_text = None
