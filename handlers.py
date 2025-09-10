@@ -1441,11 +1441,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
                     # Контекст для ИИ - это история + новое сообщение
                     context_for_ai = initial_context_from_db + [{"role": "user", "content": f"{username}: {message_text}"}]
+                    # --- Вежливая задержка перед запросом к AI ---
+                    delay_sec = random.uniform(0.8, 2.5)
+                    logger.info(f"Polite delay before AI request (text): {delay_sec:.2f}s")
+                    await asyncio.sleep(delay_sec)
+
                     # --- Вызов AI-провайдера (только Google Gemini) ---
                     assistant_response_text = await send_to_google_gemini(
                         system_prompt,
                         context_for_ai
                     )
+                    # Повторная попытка при перегрузке (503)
+                    if assistant_response_text and str(assistant_response_text).startswith("[ошибка google api") and ("503" in assistant_response_text or "overload" in assistant_response_text.lower()):
+                        for attempt in range(1, 3):  # до двух повторов
+                            backoff = 1.0 * attempt + random.uniform(0.2, 0.8)
+                            logger.warning(f"Google API overloaded. Retry {attempt}/2 after {backoff:.2f}s...")
+                            await asyncio.sleep(backoff)
+                            assistant_response_text = await send_to_google_gemini(system_prompt, context_for_ai)
+                            if not (assistant_response_text and str(assistant_response_text).startswith("[ошибка google api") and ("503" in assistant_response_text or "overload" in assistant_response_text.lower())):
+                                break
+
                     if assistant_response_text is None:
                         assistant_response_text = "[ошибка: ключ GEMINI_API_KEY не установлен]"
                         logger.error("Cannot call AI: GEMINI_API_KEY is not configured.")
@@ -1713,12 +1728,27 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
 
             add_message_to_context(db, persona.chat_instance.id, "user", user_message_content)
             
+            # --- Вежливая задержка перед запросом к AI (медиа) ---
+            delay_sec = random.uniform(0.8, 2.5)
+            logger.info(f"Polite delay before AI request (media): {delay_sec:.2f}s")
+            await asyncio.sleep(delay_sec)
+
             # --- Вызов AI-провайдера для медиа (только Google Gemini) ---
             ai_response_text = await send_to_google_gemini(
                 system_prompt,
                 context_for_ai,
                 image_data=image_data
             )
+            # Повторная попытка при перегрузке (503)
+            if ai_response_text and str(ai_response_text).startswith("[ошибка google api") and ("503" in ai_response_text or "overload" in ai_response_text.lower()):
+                for attempt in range(1, 3):
+                    backoff = 1.0 * attempt + random.uniform(0.2, 0.8)
+                    logger.warning(f"Google API overloaded (media). Retry {attempt}/2 after {backoff:.2f}s...")
+                    await asyncio.sleep(backoff)
+                    ai_response_text = await send_to_google_gemini(system_prompt, context_for_ai, image_data=image_data)
+                    if not (ai_response_text and str(ai_response_text).startswith("[ошибка google api") and ("503" in ai_response_text or "overload" in ai_response_text.lower())):
+                        break
+
             if ai_response_text is None:
                 ai_response_text = "[ошибка: ключ GEMINI_API_KEY не установлен]"
                 logger.error("Cannot call AI for media: GEMINI_API_KEY is not configured.")
@@ -4140,8 +4170,19 @@ async def proactive_chat_select_received(update: Update, context: ContextTypes.D
                 history = get_context_for_chat_bot(db, link.id)
                 system_prompt, messages = persona_obj.format_conversation_starter_prompt(history)
 
-                # Получаем ответ (через Google Gemini)
+                # Вежливая задержка и ответ (через Google Gemini)
+                delay_sec = random.uniform(0.8, 2.5)
+                logger.info(f"Polite delay before AI request (proactive): {delay_sec:.2f}s")
+                await asyncio.sleep(delay_sec)
                 assistant_response_text = await send_to_google_gemini(system_prompt or "", messages)
+                if assistant_response_text and str(assistant_response_text).startswith("[ошибка google api") and ("503" in assistant_response_text or "overload" in assistant_response_text.lower()):
+                    for attempt in range(1, 2):  # одна дополнительная попытка для проактивных
+                        backoff = 1.0 * attempt + random.uniform(0.2, 0.8)
+                        logger.warning(f"Google API overloaded (proactive). Retry {attempt}/1 after {backoff:.2f}s...")
+                        await asyncio.sleep(backoff)
+                        assistant_response_text = await send_to_google_gemini(system_prompt or "", messages)
+                        if not (assistant_response_text and str(assistant_response_text).startswith("[ошибка google api") and ("503" in assistant_response_text or "overload" in assistant_response_text.lower())):
+                            break
                 
                 # Списываем кредиты у владельца
                 try:
