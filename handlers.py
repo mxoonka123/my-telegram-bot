@@ -1511,7 +1511,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                         db_session.commit()
                     except Exception as e_commit:
                         logger.warning(f"handle_message: commit before AI call failed: {e_commit}")
-                    # В этот момент контекст сохранён, ключ отмечен как использованный, сессия освобождена
+                    # В этот момент контекст сохранён, ключ отмечен как использованный.
+                    # ЯВНО закрываем сессию перед долгим IO, чтобы исключить idle-in-transaction
+                    try:
+                        db_session.close()
+                        logger.debug("handle_message: DB session explicitly closed before AI call.")
+                    except Exception as close_err:
+                        logger.warning(f"handle_message: failed to close DB session before AI: {close_err}")
 
                     # --- Вежливая задержка перед запросом к AI ---
                     delay_sec = random.uniform(0.2, 0.7)
@@ -1838,6 +1844,12 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
                 db.commit()
             except Exception as e_commit_media:
                 logger.warning(f"handle_media: commit before AI call failed: {e_commit_media}")
+            # Закрываем сессию ПЕРЕД длительным вызовом AI
+            try:
+                db.close()
+                logger.debug("handle_media: DB session explicitly closed before AI call.")
+            except Exception as close_err_m:
+                logger.warning(f"handle_media: failed to close DB session before AI: {close_err_m}")
 
             # --- Вежливая задержка перед запросом к AI (медиа) ---
             delay_sec = random.uniform(0.2, 0.7)
