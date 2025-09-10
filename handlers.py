@@ -1442,8 +1442,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
                     # Контекст для ИИ - это история + новое сообщение
                     context_for_ai = initial_context_from_db + [{"role": "user", "content": f"{username}: {message_text}"}]
+                    # --- Закрываем транзакцию/сессию перед долгим IO (AI) ---
+                    persona_id_cache = persona.id
+                    chat_instance_id_cache = persona.chat_instance.id if persona.chat_instance else None
+                    owner_user_id_cache = owner_user.id
+                    try:
+                        db_session.commit()
+                    except Exception as e_commit:
+                        logger.warning(f"handle_message: commit before AI call failed: {e_commit}")
+                    # В этот момент контекст сохранён, ключ отмечен как использованный, сессия освобождена
+
                     # --- Вежливая задержка перед запросом к AI ---
-                    delay_sec = random.uniform(0.8, 2.5)
+                    delay_sec = random.uniform(0.2, 0.7)
                     logger.info(f"Polite delay before AI request (text): {delay_sec:.2f}s")
                     await asyncio.sleep(delay_sec)
 
@@ -1476,17 +1486,38 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     context_response_prepared = False
                     if assistant_response_text and not assistant_response_text.startswith("❌"):
                         llm_call_succeeded = True
-                        context_response_prepared = await process_and_send_response(
-                            update,
-                            context,
-                            current_bot,
-                            chat_id_str,
-                            persona,
-                            assistant_response_text,
-                            db_session,
-                            reply_to_message_id=message_id,
-                            is_first_message=(len(initial_context_from_db) == 0)
-                        )
+                        # Открываем новую короткую сессию для сохранения ответа и списания кредитов
+                        with get_db() as db_after_ai:
+                            try:
+                                # Перезагружаем объекты в новой сессии
+                                persona_refreshed = db_after_ai.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id_cache).first()
+                                owner_user_refreshed = db_after_ai.query(User).filter(User.id == owner_user_id_cache).first()
+                                if not persona_refreshed or not owner_user_refreshed:
+                                    logger.warning("handle_message: persona or owner_user disappeared before saving response.")
+                                else:
+                                    context_response_prepared = await process_and_send_response(
+                                        update,
+                                        context,
+                                        current_bot,
+                                        chat_id_str,
+                                        persona_refreshed,
+                                        assistant_response_text,
+                                        db_after_ai,
+                                        reply_to_message_id=message_id,
+                                        is_first_message=(len(initial_context_from_db) == 0)
+                                    )
+                                    if context_response_prepared:
+                                        await deduct_credits_for_interaction(
+                                            db=db_after_ai,
+                                            owner_user=owner_user_refreshed,
+                                            input_text=message_text,
+                                            output_text=assistant_response_text or "",
+                                            media_type=None,
+                                            main_bot=context.application.bot
+                                        )
+                                    db_after_ai.commit()
+                            except Exception as e_after:
+                                logger.error(f"handle_message: error during Phase 2 DB save: {e_after}", exc_info=True)
                     else:
                         logger.warning(f"handle_message: Received empty or error response from send_to_gemini for chat {chat_id_str}.")
                         try: 
@@ -1737,7 +1768,7 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
             add_message_to_context(db, persona.chat_instance.id, "user", user_message_content)
             
             # --- Вежливая задержка перед запросом к AI (медиа) ---
-            delay_sec = random.uniform(0.8, 2.5)
+            delay_sec = random.uniform(0.2, 0.7)
             logger.info(f"Polite delay before AI request (media): {delay_sec:.2f}s")
             await asyncio.sleep(delay_sec)
 
