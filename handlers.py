@@ -1477,7 +1477,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                         context_response_prepared = await process_and_send_response(
                             update,
                             context,
-                            context.bot,
+                            current_bot,
                             chat_id_str,
                             persona,
                             assistant_response_text,
@@ -1753,8 +1753,9 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
                 main_bot=context.application.bot
             )
 
+            # Use the current bot associated with this update, not the main application bot
             await process_and_send_response(
-                update, context, context.bot, chat_id_str, persona, ai_response_text, db, reply_to_message_id=message_id
+                update, context, current_bot, chat_id_str, persona, ai_response_text, db, reply_to_message_id=message_id
             )
 
             db.commit()
@@ -4331,76 +4332,33 @@ async def edit_name_received(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 # --- Edit Description ---
 async def edit_description_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Отображает форму редактирования описания без использования Markdown разметки."""
+    """Отображает форму редактирования описания, отправляя сообщение как простой текст."""
     persona_id = context.user_data.get('edit_persona_id')
+    query = update.callback_query
+    
     with get_db() as db:
         current_desc = db.query(DBPersonaConfig.description).filter(DBPersonaConfig.id == persona_id).scalar() or "(пусто)"
     
-    # Подготавливаем предпросмотр текущего описания
     current_desc_preview = (current_desc[:100] + '...') if len(current_desc) > 100 else current_desc
-    
-    # Создаем простой текст без специальных символов
     prompt_text = f"введите новое описание (макс. 2500 символов).\n\nтекущее (начало):\n{current_desc_preview}"
-    
-    # Создаем клавиатуру с кнопкой назад
     keyboard = [[InlineKeyboardButton("назад", callback_data="back_to_wizard_menu")]]
     
-    # Используем query.message для редактирования текущего сообщения
-    query = update.callback_query
-    chat_id = query.message.chat.id if query and query.message else update.effective_chat.id
-    
-    # Сохраняем ID чата в контексте для последующей обработки callback
-    context.user_data['edit_chat_id'] = chat_id
-    new_message = None
-    
     try:
-        # Отправляем сообщение БЕЗ использования Markdown (parse_mode=None)
-        if query and query.message:
-            try:
-                # Пробуем редактировать существующее сообщение
-                new_message = await query.edit_message_text(
-                    text=prompt_text,
-                    reply_markup=InlineKeyboardMarkup(keyboard),
-                    parse_mode=None  # Важно: без разметки!
-                )
-            except BadRequest as e:
-                logger.warning(f"Failed to edit message for edit_description_prompt: {e}")
-                # Если не удалось отредактировать, отправляем новое
-                new_message = await context.bot.send_message(
-                    chat_id=chat_id,
-                    text=prompt_text,
-                    reply_markup=InlineKeyboardMarkup(keyboard),
-                    parse_mode=None  # Важно: без разметки!
-                )
-        else:
-            # Если нет сообщения для редактирования, отправляем новое
-            new_message = await context.bot.send_message(
-                chat_id=chat_id,
-                text=prompt_text,
-                reply_markup=InlineKeyboardMarkup(keyboard),
-                parse_mode=None  # Важно: без разметки!
-            )
-            
-        # Сохраняем ID сообщения в контексте для последующего удаления 
-        if new_message:
-            context.user_data['last_prompt_message_id'] = new_message.message_id
-            context.user_data['edit_message_id'] = new_message.message_id
-    
-    except Exception as e:
-        logger.error(f"Error in edit_description_prompt: {e}", exc_info=True)
+        # Всегда отправляем новое сообщение без Markdown
+        sent_message = await query.message.reply_text(
+            text=prompt_text,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode=None
+        )
+        context.user_data['last_prompt_message_id'] = sent_message.message_id
+        # Пытаемся удалить старое сообщение с меню
         try:
-            # Запасной вариант с максимально простым сообщением
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text="введите новое описание (максимум 2500 символов)",
-                reply_markup=InlineKeyboardMarkup(keyboard),
-                parse_mode=None
-            )
-        except Exception as fallback_e:
-            logger.error(f"Failed even with fallback message: {fallback_e}")
-    
-    # Регистрируем обработчик для кнопки "Назад"
-    # Текущий ConversationHandler должен автоматически обрабатывать callback-запросы
+            await query.message.delete()
+        except Exception:
+            pass
+    except Exception as e:
+        logger.error(f"Error sending description prompt: {e}", exc_info=True)
+
     return EDIT_DESCRIPTION
 
 async def edit_description_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -5793,34 +5751,39 @@ async def delete_persona_confirmed(update: Update, context: ContextTypes.DEFAULT
         logger.error(f"Unexpected error during delete_persona_confirmed for {persona_id_from_state}: {e}", exc_info=True)
         deleted_ok = False
 
-    # --- ИЗМЕНЕНИЕ: Отправка нового сообщения вместо редактирования ---
-    message_to_send = ""
+    # Сформируем финальный текст
     if deleted_ok:
-        message_to_send = escape_markdown_v2(success_deleted_fmt_raw.format(name=persona_name_deleted))
-        logger.info(f"Preparing success message for deletion of persona {persona_id_from_state}")
+        final_message_text = success_deleted_fmt_raw.format(name=persona_name_deleted)
+        logger.info(f"Successfully deleted persona {persona_id_from_state}")
     else:
-        message_to_send = error_delete_failed # Уже экранировано
-        logger.warning(f"Preparing failure message for deletion of persona {persona_id_from_state}")
+        final_message_text = "❌ не удалось удалить личность."
+        logger.warning(f"Failed to delete persona {persona_id_from_state}")
 
+    # Пробуем отредактировать исходное сообщение (лучший UX)
     try:
-        # Отправляем новое сообщение
-        await context.bot.send_message(chat_id, message_to_send, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
-        logger.info(f"Sent final deletion status message to chat {chat_id}.")
-        # Пытаемся удалить старое сообщение с кнопками подтверждения
+        await query.edit_message_text(
+            text=escape_markdown_v2(final_message_text),
+            reply_markup=None,
+            parse_mode=ParseMode.MARKDOWN_V2
+        )
+    except Exception as e:
+        logger.warning(f"Could not edit confirmation message on delete: {e}. Sending new message instead.")
         try:
-            await query.message.delete()
-            logger.debug(f"Deleted original confirmation message {query.message.message_id}.")
-        except Exception as del_err:
-            logger.warning(f"Could not delete original confirmation message: {del_err}")
-    except Exception as send_err:
-        logger.error(f"Failed to send final deletion status message: {send_err}")
-        # Попытка отправить просто текстом
-        try:
-            plain_text = success_deleted_fmt_raw.format(name=persona_name_deleted) if deleted_ok else "❌ Не удалось удалить личность (ошибка базы данных)."
-            await context.bot.send_message(chat_id, plain_text, reply_markup=ReplyKeyboardRemove(), parse_mode=None)
-        except Exception as final_send_err:
-            logger.error(f"Failed to send fallback plain text deletion status: {final_send_err}")
-    # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+            await context.bot.send_message(
+                chat_id,
+                escape_markdown_v2(final_message_text),
+                reply_markup=ReplyKeyboardRemove(),
+                parse_mode=ParseMode.MARKDOWN_V2
+            )
+        except Exception as send_err:
+            logger.error(f"Failed to send final deletion status message: {send_err}")
+            # Последняя попытка — plain text без разметки
+            await context.bot.send_message(
+                chat_id,
+                final_message_text,
+                reply_markup=ReplyKeyboardRemove(),
+                parse_mode=None
+            )
 
     logger.debug("Clearing user_data and ending delete conversation.")
     context.user_data.clear()
