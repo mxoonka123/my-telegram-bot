@@ -1491,25 +1491,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                         # Открываем новую короткую сессию для сохранения ответа и списания кредитов
                         with get_db() as db_after_ai:
                             try:
-                                # Перезагружаем объекты в новой сессии
-                                persona_refreshed = db_after_ai.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id_cache).first()
+                                # Загружаем свежие объекты в новой сессии
                                 owner_user_refreshed = db_after_ai.query(User).filter(User.id == owner_user_id_cache).first()
-                                if not persona_refreshed or not owner_user_refreshed:
-                                    logger.warning("handle_message: persona or owner_user disappeared before saving response.")
+                                persona_tuple_fresh = get_persona_and_context_with_owner(chat_id_str, db_after_ai, str(getattr(current_bot, 'id', None)) if current_bot else None)
+                                if not persona_tuple_fresh or not owner_user_refreshed:
+                                    logger.warning("handle_message: fresh persona or owner_user not found in Phase 2.")
                                 else:
-                                    # Создаём Persona-объект из PersonaConfig для корректной работы
-                                    try:
-                                        persona_obj_final = Persona(persona_refreshed, chat_bot_instance_db_obj=persona_refreshed.chat_instance)
-                                    except Exception as p_err:
-                                        logger.error(f"Failed to construct Persona object for saving response: {p_err}", exc_info=True)
-                                        persona_obj_final = None
-
+                                    persona_fresh, _, _ = persona_tuple_fresh
                                     context_response_prepared = await process_and_send_response(
                                         update,
                                         context,
                                         current_bot,
                                         chat_id_str,
-                                        persona_obj_final or persona,  # fallback на старый объект, если создание не удалось
+                                        persona_fresh,
                                         assistant_response_text,
                                         db_after_ai,
                                         reply_to_message_id=message_id,
@@ -1822,17 +1816,12 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
             # --- Фаза 2: сохраняем ответ и списываем кредиты в НОВОЙ короткой сессии ---
             try:
                 with get_db() as db_after_ai:
-                    persona_refreshed = db_after_ai.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id_cache).first()
                     owner_user_refreshed = db_after_ai.query(User).filter(User.id == owner_user_id_cache).first() if owner_user_id_cache else None
-                    if not persona_refreshed:
-                        logger.warning("handle_media: persona disappeared before saving response.")
+                    persona_tuple_fresh = get_persona_and_context_with_owner(chat_id_str, db_after_ai, str(getattr(current_bot, 'id', None)) if current_bot else None)
+                    if not persona_tuple_fresh:
+                        logger.warning("handle_media: fresh persona not found before saving response.")
                     else:
-                        # Сконструируем Persona для корректной работы process_and_send_response
-                        try:
-                            persona_obj_final = Persona(persona_refreshed, chat_bot_instance_db_obj=persona_refreshed.chat_instance)
-                        except Exception as p_err_m:
-                            logger.error(f"Failed to construct Persona object for media: {p_err_m}", exc_info=True)
-                            persona_obj_final = None
+                        persona_fresh, _, _ = persona_tuple_fresh
 
                         # Сохраняем ответ и списываем кредиты
                         context_saved = await process_and_send_response(
@@ -1840,7 +1829,7 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
                             context,
                             current_bot,
                             chat_id_str,
-                            persona_obj_final or persona,
+                            persona_fresh,
                             ai_response_text,
                             db_after_ai,
                             reply_to_message_id=message_id,
@@ -1856,7 +1845,7 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
                                 media_duration_sec=getattr(update.message.voice, 'duration', None) if media_type == 'voice' else None,
                                 main_bot=context.application.bot
                             )
-                        db_after_ai.commit()
+                    db_after_ai.commit()
             except Exception as e_media_after:
                 logger.error(f"handle_media: error during Phase 2 DB save: {e_media_after}", exc_info=True)
 
