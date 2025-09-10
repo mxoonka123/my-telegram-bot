@@ -991,31 +991,28 @@ async def process_and_send_response(update: Update, context: ContextTypes.DEFAUL
             ])
             # Сохраняем в БД все равно сырой ответ для анализа, но пользователю отправляем "безопасный"
         else:
-            # Если запрещенных фраз нет, продолжаем обычную обработку
-            # --- УЛУЧШЕННЫЙ FALLBACK V4: Ручная очистка от скобок по строкам ---
-            cleaned_parts: List[str] = []
-            raw_lines = raw_llm_response.strip().split('\n')
-            for line in raw_lines:
-                line = line.strip()
-                if not line:
-                    continue
-                # Удалим потенциальные GIF-ссылки из строки
-                for gif in extract_gif_links(line) or []:
-                    line = line.replace(gif, '')
-                # Извлечем текст из вида ["..."] если присутствует
-                m = re.search(r'\[\s*"(.*?)"\s*\]', line)
-                if m:
-                    cleaned_parts.append(m.group(1))
-                else:
-                    # Также попробуем снять кавычки вокруг одиночного значения
-                    line_unquoted = re.sub(r'^\"(.*)\"$', r'\1', line)
-                    cleaned_parts.append(line_unquoted)
+            # --- УЛУЧШЕННЫЙ FALLBACK V5: Более надежная очистка ---
+            logger.warning("JSON parse failed. Applying robust fallback cleaning on raw response.")
+            # Склеиваем разорванные массивы, если модель прислала их построчно
+            repaired_str = raw_llm_response.replace("][", ",")
+            # Уберем явные GIF-ссылки, если они попали в сырой ответ
+            for gif in extract_gif_links(repaired_str) or []:
+                repaired_str = repaired_str.replace(gif, "")
+            # Извлекаем все подстроки в кавычках
+            found_strings = re.findall(r'"(.*?)"', repaired_str)
+            cleaned_parts = [s.strip() for s in found_strings if s and s.strip()]
 
             if cleaned_parts:
-                logger.info(f"Fallback: successfully cleaned {len(cleaned_parts)} parts from malformed JSON.")
-                text_parts_to_send = [p for p in (s.strip() for s in cleaned_parts) if p]
+                logger.info(f"Fallback cleaner extracted {len(cleaned_parts)} parts. Preview: '{cleaned_parts[0][:50]}...'")
+                text_parts_to_send = cleaned_parts
             else:
-                text_parts_to_send = []
+                # В крайнем случае — делим по строкам и чистим кавычки/скобки по минимуму
+                lines = [ln.strip() for ln in raw_llm_response.strip().split('\n') if ln.strip()]
+                minimally_cleaned = []
+                for ln in lines:
+                    ln = re.sub(r'^\[\s*"?(.*?)"?\s*\]$', r'\1', ln)
+                    minimally_cleaned.append(ln)
+                text_parts_to_send = [p for p in minimally_cleaned if p]
 
     context_response_prepared = False
     if persona.chat_instance:
