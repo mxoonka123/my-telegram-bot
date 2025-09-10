@@ -1442,6 +1442,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
                     # Контекст для ИИ - это история + новое сообщение
                     context_for_ai = initial_context_from_db + [{"role": "user", "content": f"{username}: {message_text}"}]
+                    # --- Получаем API-ключ ДО коммита, чтобы зафиксировать last_used/requests_count ---
+                    api_key_obj = get_next_api_key(db_session, service='gemini')
+                    if not api_key_obj:
+                        logger.error("No active Gemini API keys available in DB.")
+                        await update.message.reply_text("❌ Нет доступных API-ключей. Обратитесь к администратору.", parse_mode=None)
+                        db_session.rollback()
+                        return
+                    api_key_str = api_key_obj.api_key
                     # --- Закрываем транзакцию/сессию перед долгим IO (AI) ---
                     persona_id_cache = persona.id
                     chat_instance_id_cache = persona.chat_instance.id if persona.chat_instance else None
@@ -1458,14 +1466,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     await asyncio.sleep(delay_sec)
 
                     # --- Вызов AI-провайдера (только Google Gemini) ---
-                    api_key_obj = get_next_api_key(db_session, service='gemini')
-                    if not api_key_obj:
-                        logger.error("No active Gemini API keys available in DB.")
-                        await update.message.reply_text("❌ Нет доступных API-ключей. Обратитесь к администратору.", parse_mode=None)
-                        db_session.rollback()
-                        return
                     assistant_response_text = await send_to_google_gemini(
-                        api_key=api_key_obj.api_key,
+                        api_key=api_key_str,
                         system_prompt=system_prompt,
                         messages=context_for_ai
                     )
@@ -1475,7 +1477,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                             backoff = 1.0 * attempt + random.uniform(0.2, 0.8)
                             logger.warning(f"Google API overloaded. Retry {attempt}/2 after {backoff:.2f}s...")
                             await asyncio.sleep(backoff)
-                            assistant_response_text = await send_to_google_gemini(api_key=api_key_obj.api_key, system_prompt=system_prompt, messages=context_for_ai)
+                            assistant_response_text = await send_to_google_gemini(api_key=api_key_str, system_prompt=system_prompt, messages=context_for_ai)
                             if not (assistant_response_text and str(assistant_response_text).startswith("[ошибка google api") and ("503" in assistant_response_text or "overload" in assistant_response_text.lower())):
                                 break
 
@@ -1495,12 +1497,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                                 if not persona_refreshed or not owner_user_refreshed:
                                     logger.warning("handle_message: persona or owner_user disappeared before saving response.")
                                 else:
+                                    # Создаём Persona-объект из PersonaConfig для корректной работы
+                                    try:
+                                        persona_obj_final = Persona(persona_refreshed, chat_bot_instance_db_obj=persona_refreshed.chat_instance)
+                                    except Exception as p_err:
+                                        logger.error(f"Failed to construct Persona object for saving response: {p_err}", exc_info=True)
+                                        persona_obj_final = None
+
                                     context_response_prepared = await process_and_send_response(
                                         update,
                                         context,
                                         current_bot,
                                         chat_id_str,
-                                        persona_refreshed,
+                                        persona_obj_final or persona,  # fallback на старый объект, если создание не удалось
                                         assistant_response_text,
                                         db_after_ai,
                                         reply_to_message_id=message_id,
@@ -1762,25 +1771,35 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
 
             history_with_timestamps = get_context_for_chat_bot(db, persona.chat_instance.id)
             context_for_ai = _process_history_for_time_gaps(history_with_timestamps)
-            
             context_for_ai.append({"role": "user", "content": user_message_content})
 
             add_message_to_context(db, persona.chat_instance.id, "user", user_message_content)
-            
-            # --- Вежливая задержка перед запросом к AI (медиа) ---
-            delay_sec = random.uniform(0.2, 0.7)
-            logger.info(f"Polite delay before AI request (media): {delay_sec:.2f}s")
-            await asyncio.sleep(delay_sec)
 
-            # --- Вызов AI-провайдера для медиа (только Google Gemini) ---
+            # --- Получаем API-ключ ДО коммита, чтобы зафиксировать last_used/requests_count ---
             api_key_obj = get_next_api_key(db, service='gemini')
             if not api_key_obj:
                 logger.error("No active Gemini API keys available in DB (media).")
                 await update.message.reply_text("❌ Нет доступных API-ключей для обработки медиа. Обратитесь к администратору.", parse_mode=None)
                 db.rollback()
                 return
+            api_key_str = api_key_obj.api_key
+
+            # Закрываем транзакцию перед долгим IO
+            persona_id_cache = persona.id
+            owner_user_id_cache = owner_user.id if owner_user else None
+            try:
+                db.commit()
+            except Exception as e_commit_media:
+                logger.warning(f"handle_media: commit before AI call failed: {e_commit_media}")
+
+            # --- Вежливая задержка перед запросом к AI (медиа) ---
+            delay_sec = random.uniform(0.2, 0.7)
+            logger.info(f"Polite delay before AI request (media): {delay_sec:.2f}s")
+            await asyncio.sleep(delay_sec)
+
+            # --- Вызов AI-провайдера для медиа (только Google Gemini) ---
             ai_response_text = await send_to_google_gemini(
-                api_key=api_key_obj.api_key,
+                api_key=api_key_str,
                 system_prompt=system_prompt,
                 messages=context_for_ai,
                 image_data=image_data
@@ -1800,24 +1819,50 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
                 logger.error("Cannot call AI for media: GEMINI_API_KEY is not configured.")
             logger.debug(f"Received response from AI for {media_type}: {ai_response_text[:100]}...")
 
-            # --- новое списание кредитов ---
-            await deduct_credits_for_interaction(
-                db=db,
-                owner_user=owner_user,
-                input_text=user_message_content,
-                output_text=ai_response_text or "",
-                media_type=media_type,
-                media_duration_sec=getattr(update.message.voice, 'duration', None) if media_type == 'voice' else None,
-                main_bot=context.application.bot
-            )
+            # --- Фаза 2: сохраняем ответ и списываем кредиты в НОВОЙ короткой сессии ---
+            try:
+                with get_db() as db_after_ai:
+                    persona_refreshed = db_after_ai.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id_cache).first()
+                    owner_user_refreshed = db_after_ai.query(User).filter(User.id == owner_user_id_cache).first() if owner_user_id_cache else None
+                    if not persona_refreshed:
+                        logger.warning("handle_media: persona disappeared before saving response.")
+                    else:
+                        # Сконструируем Persona для корректной работы process_and_send_response
+                        try:
+                            persona_obj_final = Persona(persona_refreshed, chat_bot_instance_db_obj=persona_refreshed.chat_instance)
+                        except Exception as p_err_m:
+                            logger.error(f"Failed to construct Persona object for media: {p_err_m}", exc_info=True)
+                            persona_obj_final = None
+
+                        # Сохраняем ответ и списываем кредиты
+                        context_saved = await process_and_send_response(
+                            update,
+                            context,
+                            current_bot,
+                            chat_id_str,
+                            persona_obj_final or persona,
+                            ai_response_text,
+                            db_after_ai,
+                            reply_to_message_id=message_id,
+                            is_first_message=(len(history_with_timestamps) == 0)
+                        )
+                        if context_saved and owner_user_refreshed:
+                            await deduct_credits_for_interaction(
+                                db=db_after_ai,
+                                owner_user=owner_user_refreshed,
+                                input_text="",
+                                output_text=ai_response_text or "",
+                                media_type=media_type,
+                                media_duration_sec=getattr(update.message.voice, 'duration', None) if media_type == 'voice' else None,
+                                main_bot=context.application.bot
+                            )
+                        db_after_ai.commit()
+            except Exception as e_media_after:
+                logger.error(f"handle_media: error during Phase 2 DB save: {e_media_after}", exc_info=True)
 
             # Use the current bot associated with this update, not the main application bot
-            await process_and_send_response(
-                update, context, current_bot, chat_id_str, persona, ai_response_text, db, reply_to_message_id=message_id
-            )
-
-            db.commit()
-            logger.debug(f"Committed DB changes for handle_media chat {chat_id_str}.")
+            # (Сохранение и списание выполнены внутри новой короткой сессии db_after_ai)
+            logger.debug(f"handle_media: Phase 2 finished for chat {chat_id_str}.")
 
         except SQLAlchemyError as e:
             logger.error(f"Database error during handle_media ({media_type}): {e}", exc_info=True)
