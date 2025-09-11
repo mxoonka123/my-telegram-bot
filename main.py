@@ -421,6 +421,13 @@ async def main():
     builder.pool_timeout(20.0).connect_timeout(20.0).read_timeout(30.0).write_timeout(30.0)
     builder.connection_pool_size(50)
     
+    # Включаем параллельную обработку апдейтов (PTB создаёт независимые задачи на апдейты)
+    try:
+        builder.concurrent_updates(True)
+        logger.info("PTB: concurrent updates enabled")
+    except Exception as cu_err:
+        logger.warning(f"PTB: failed to enable concurrent updates: {cu_err}")
+
     # Собираем приложение
     application = builder.build()
     application_instance = application # Сохраняем для вебхука

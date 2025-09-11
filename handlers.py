@@ -1129,7 +1129,7 @@ async def process_and_send_response(update: Update, context: ContextTypes.DEFAUL
                     )
                     first_message_sent = True
                     logger.info(f"process_and_send_response [JSON]: Successfully sent GIF {i+1}.")
-                    await asyncio.sleep(random.uniform(0.5, 1.2))
+                    await asyncio.sleep(random.uniform(0.3, 0.8))
                 except Exception as e_gif:
                     logger.error(f"process_and_send_response [JSON]: Error sending GIF {gif_url_send}: {e_gif}", exc_info=True)
 
@@ -1148,7 +1148,7 @@ async def process_and_send_response(update: Update, context: ContextTypes.DEFAUL
                         logger.warning(f"Failed to send chat action: {e}")
 
                 try:
-                    await asyncio.sleep(random.uniform(0.8, 2.0))
+                    await asyncio.sleep(random.uniform(0.3, 0.8))
                 except Exception as e:
                     logger.warning(f"Failed to sleep: {e}")
 
@@ -1530,10 +1530,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     except Exception as close_err:
                         logger.warning(f"handle_message: failed to close DB session before AI: {close_err}")
 
-                    # --- Вежливая задержка перед запросом к AI ---
-                    delay_sec = random.uniform(0.2, 0.7)
-                    logger.info(f"Polite delay before AI request (text): {delay_sec:.2f}s")
-                    await asyncio.sleep(delay_sec)
+                    # --- Убираем вежливую задержку перед запросом к AI для ускорения ответа ---
+                    # delay_sec = random.uniform(0.2, 0.7)
+                    # logger.info(f"Polite delay before AI request (text): {delay_sec:.2f}s")
+                    # await asyncio.sleep(delay_sec)
 
                     # --- Вызов AI-провайдера (только Google Gemini) ---
                     assistant_response_text = await send_to_google_gemini(
@@ -1863,10 +1863,10 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
             except Exception as close_err_m:
                 logger.warning(f"handle_media: failed to close DB session before AI: {close_err_m}")
 
-            # --- Вежливая задержка перед запросом к AI (медиа) ---
-            delay_sec = random.uniform(0.2, 0.7)
-            logger.info(f"Polite delay before AI request (media): {delay_sec:.2f}s")
-            await asyncio.sleep(delay_sec)
+            # --- Убираем вежливую задержку перед запросом к AI (медиа) для ускорения ответа ---
+            # delay_sec = random.uniform(0.2, 0.7)
+            # logger.info(f"Polite delay before AI request (media): {delay_sec:.2f}s")
+            # await asyncio.sleep(delay_sec)
 
             # --- Вызов AI-провайдера для медиа (только Google Gemini) ---
             ai_response_text = await send_to_google_gemini(
