@@ -1569,9 +1569,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                                         is_first_message=(len(initial_context_from_db) == 0)
                                     )
                                     if context_response_prepared:
+                                        # ВАЖНО: присоединяем пользователя к текущей сессии, чтобы избежать DetachedInstanceError
+                                        try:
+                                            attached_owner = db_after_ai.merge(owner_user_refreshed) if owner_user_refreshed is not None else None
+                                        except Exception as merge_err:
+                                            logger.error(f"Failed to merge owner_user into session: {merge_err}")
+                                            attached_owner = owner_user_refreshed
                                         await deduct_credits_for_interaction(
                                             db=db_after_ai,
-                                            owner_user=owner_user_refreshed,
+                                            owner_user=attached_owner,
                                             input_text=message_text,
                                             output_text=assistant_response_text or "",
                                             media_type=None,
@@ -1901,9 +1907,15 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
                             is_first_message=(len(history_with_timestamps) == 0)
                         )
                         if context_saved and owner_user_refreshed:
+                            # ВАЖНО: присоединяем пользователя к текущей сессии, чтобы избежать DetachedInstanceError
+                            try:
+                                attached_owner_media = db_after_ai.merge(owner_user_refreshed)
+                            except Exception as merge_err_m:
+                                logger.error(f"Failed to merge owner_user (media) into session: {merge_err_m}")
+                                attached_owner_media = owner_user_refreshed
                             await deduct_credits_for_interaction(
                                 db=db_after_ai,
-                                owner_user=owner_user_refreshed,
+                                owner_user=attached_owner_media,
                                 input_text="",
                                 output_text=ai_response_text or "",
                                 media_type=media_type,
