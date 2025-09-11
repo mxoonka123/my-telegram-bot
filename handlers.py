@@ -1436,7 +1436,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     elif reply_pref == "mentioned_or_contextual":
                         should_ai_respond = is_mentioned or is_reply_to_bot or contains_persona_name
                         if not should_ai_respond:
-                            # --- КОНТЕКСТУАЛЬНАЯ ПРОВЕРКА ЧЕРЕЗ LLM ---
+                            # --- КОНТЕКСТУАЛЬНАЯ ПРОВЕРКА ЧЕРЕЗ LLM (ИЗОЛИРОВАНО) ---
                             logger.info("handle_message: No direct mention. Performing contextual LLM check...")
                             try:
                                 ctx_prompt = persona.format_should_respond_prompt(
@@ -1448,28 +1448,39 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                                 logger.error(f"Failed to format contextual should_respond prompt: {fmt_err}", exc_info=True)
                                 ctx_prompt = None
 
+                            api_key_for_check = None
                             if ctx_prompt:
+                                # 1) Получаем ключ в ОТДЕЛЬНОЙ короткой сессии и фиксируем его использование
                                 try:
-                                    key_for_check = get_next_api_key(db_session, service='gemini')
-                                    if key_for_check and getattr(key_for_check, 'api_key', None):
-                                        llm_decision = await send_to_google_gemini(
-                                            api_key=key_for_check.api_key,
-                                            system_prompt="You decide if the bot should respond based on relevance. Answer only with 'Да' or 'Нет'.",
-                                            messages=[{"role": "user", "content": ctx_prompt}]
-                                        )
-                                        ans = str(llm_decision or "").strip().lower()
-                                        if "да" in ans:
-                                            should_ai_respond = True
-                                            logger.info(f"LLM contextual check PASSED (answer: {ans}).")
-                                        else:
-                                            logger.info(f"LLM contextual check FAILED (answer: {ans}).")
+                                    with get_db() as _db_check:
+                                        key_obj_check = get_next_api_key(_db_check, service='gemini')
+                                        if key_obj_check and getattr(key_obj_check, 'api_key', None):
+                                            api_key_for_check = key_obj_check.api_key
+                                        _db_check.commit()
+                                except Exception as key_err:
+                                    logger.error(f"Contextual check: failed to fetch API key: {key_err}", exc_info=True)
+
+                            # 2) Долгий вызов LLM выполняем ВНЕ активной транзакции основной сессии
+                            if api_key_for_check and ctx_prompt:
+                                try:
+                                    llm_decision = await send_to_google_gemini(
+                                        api_key=api_key_for_check,
+                                        system_prompt="You decide if the bot should respond based on relevance. Answer only with 'Да' or 'Нет'.",
+                                        messages=[{"role": "user", "content": ctx_prompt}]
+                                    )
+                                    ans = str(llm_decision or "").strip().lower()
+                                    if "да" in ans:
+                                        should_ai_respond = True
+                                        logger.info(f"LLM contextual check PASSED (answer: {ans}).")
                                     else:
-                                        logger.warning("No API key available for contextual check; defaulting to NOT respond.")
+                                        logger.info(f"LLM contextual check FAILED (answer: {ans}).")
                                 except Exception as llm_err:
                                     logger.error(f"Contextual LLM check failed: {llm_err}", exc_info=True)
                                     # по ошибке проверки — оставляем решение 'не отвечать'
-                            else:
+                            elif ctx_prompt is None:
                                 logger.warning("Contextual prompt not generated; skipping LLM check.")
+                            else:
+                                logger.warning("No API key available for contextual check; skipping LLM check.")
 
                     if not should_ai_respond:
                         logger.info(f"handle_message: Final decision - NOT responding in group '{getattr(update.effective_chat, 'title', '')}'. Rolling back context changes for this bot.")
