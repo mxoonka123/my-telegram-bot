@@ -1593,16 +1593,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                             await update.message.reply_text(final_err_msg, parse_mode=None)
                         except Exception as e_send_empty: logger.error(f"Failed to send empty/error response message: {e_send_empty}")
 
-                    if llm_call_succeeded:
-                        # --- unified credit deduction (text) ---
-                        await deduct_credits_for_interaction(
-                            db=db_session,
-                            owner_user=owner_user,
-                            input_text=message_text,
-                            output_text=assistant_response_text or "",
-                            media_type=None,
-                            main_bot=context.application.bot
-                        )
+                    # Списание кредитов уже выполнено в Phase 2 внутри новой короткой сессии
+                    # (после успешной подготовки и отправки ответа: context_response_prepared == True).
+                    # Во избежание DetachedInstanceError и двойного списания ПОВТОРНО не списываем здесь.
+                    # Если в редком случае понадобится списание без сохранения контекста, 
+                    # следует открыть новую сессию и выполнить merge, однако по текущей логике это не требуется.
 
                     if limit_state_changed or context_user_msg_added or context_response_prepared:
                         try:
