@@ -391,7 +391,11 @@ def initialize_database():
             connect_args = engine_args.get('connect_args', {})
             connect_args['prepare_threshold'] = None  # Отключение prepared statements
             connect_args['options'] = "-c statement_timeout=60000 -c idle_in_transaction_session_timeout=60000"
-            connect_args['connect_timeout'] = 30  # Добавляем таймаут подключения в 30 секунд
+            # Используем настраиваемый таймаут подключения (секунды) из config.py
+            try:
+                connect_args['connect_timeout'] = int(getattr(config, 'DB_CONNECT_TIMEOUT', 60))
+            except Exception:
+                connect_args['connect_timeout'] = 60
             engine_args['connect_args'] = connect_args
             
             logger.info("PostgreSQL: Disabled prepared statements and set timeouts to prevent transaction issues")
