@@ -2,7 +2,9 @@ from __future__ import annotations
 import os
 import sys
 from logging.config import fileConfig
-from sqlalchemy import engine_from_config, pool
+import logging
+import time
+from sqlalchemy import engine_from_config, pool, create_engine
 from alembic import context
 
 # Добавляем корень проекта в sys.path, чтобы импортировать db.py и config.py
@@ -58,22 +60,47 @@ def run_migrations_online() -> None:
 
     Создаётся Engine и соединение.
     """
-    connectable = engine_from_config(
-        alembic_config.get_section(alembic_config.config_ini_section),
-        prefix="sqlalchemy.",
-        poolclass=pool.NullPool,
-    )
+    logger = logging.getLogger("alembic.env")
+    # Строим engine вручную, чтобы передать connect_args как в приложении
+    engine_kwargs = {
+        "poolclass": pool.NullPool,
+    }
+    connect_args = {}
+    if DATABASE_URL and DATABASE_URL.startswith("postgresql+psycopg://"):
+        # Параметры для psycopg3 — те же, что и в db.initialize_database()
+        connect_args["prepare_threshold"] = None  # отключаем prepared statements
+        connect_args["options"] = "-c statement_timeout=60000 -c idle_in_transaction_session_timeout=60000"
+        connect_args["connect_timeout"] = 30
+        engine_kwargs["connect_args"] = connect_args
 
-    with connectable.connect() as connection:
-        context.configure(
-            connection=connection,
-            target_metadata=target_metadata,
-            compare_type=True,
-            compare_server_default=True,
-        )
+    connectable = create_engine(DATABASE_URL, **engine_kwargs)
 
-        with context.begin_transaction():
-            context.run_migrations()
+    # Пытаемся подключиться с ретраями (например, если БД ещё не готова)
+    max_attempts = 5
+    delay = 2.0
+    last_err = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            with connectable.connect() as connection:
+                context.configure(
+                    connection=connection,
+                    target_metadata=target_metadata,
+                    compare_type=True,
+                    compare_server_default=True,
+                )
+                with context.begin_transaction():
+                    context.run_migrations()
+                last_err = None
+                break
+        except Exception as e:
+            last_err = e
+            logger.warning(f"Alembic: DB connect attempt {attempt}/{max_attempts} failed: {e}")
+            if attempt < max_attempts:
+                time.sleep(delay)
+                delay = min(delay * 2, 15.0)  # экспоненциальная задержка до 15с
+            else:
+                logger.error("Alembic: all reconnection attempts failed.")
+                raise
 
 
 if context.is_offline_mode():
