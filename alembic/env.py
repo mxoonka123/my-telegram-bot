@@ -70,7 +70,11 @@ def run_migrations_online() -> None:
         # Параметры для psycopg3 — те же, что и в db.initialize_database()
         connect_args["prepare_threshold"] = None  # отключаем prepared statements
         connect_args["options"] = "-c statement_timeout=60000 -c idle_in_transaction_session_timeout=60000"
-        connect_args["connect_timeout"] = 30
+        # Используем общий конфиг приложения: DB_CONNECT_TIMEOUT (секунды)
+        try:
+            connect_args["connect_timeout"] = int(getattr(app_config, "DB_CONNECT_TIMEOUT", 60))
+        except Exception:
+            connect_args["connect_timeout"] = 60
         engine_kwargs["connect_args"] = connect_args
 
     connectable = create_engine(DATABASE_URL, **engine_kwargs)
