@@ -180,6 +180,8 @@ async def send_to_google_gemini(
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(api_url, headers=headers, json=payload)
+            # Принудительно используем UTF-8 для корректной кириллицы даже при неверных заголовках сервера
+            resp.encoding = "utf-8"
             resp.raise_for_status()
             data = resp.json()
 
