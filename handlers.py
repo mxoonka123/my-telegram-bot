@@ -969,6 +969,18 @@ async def send_to_openrouter(
         "temperature": 1.0,
         "top_p": 0.95,
         "max_tokens": 4096,
+        # Требуем строгий JSON-массив строк на уровне API
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "string_list_response",
+                "strict": True,
+                "schema": {
+                    "type": "array",
+                    "items": {"type": "string"}
+                }
+            }
+        },
     }
 
     try:
