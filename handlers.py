@@ -215,7 +215,17 @@ async def send_to_google_gemini(
                     logger.warning(f"Model returned JSON but not a list: {type(parsed)}. Wrapping as single item.")
                     return [str(text_content)]
             except json.JSONDecodeError:
-                logger.warning("Model returned non-JSON text when JSON was requested. Using single item fallback.")
+                # Fallback №1: модель могла вернуть элементы без внешних скобок — попробуем обернуть и распарсить заново
+                logger.warning(f"Model returned non-JSON text when JSON was requested. Attempting bracket fix. Preview: {text_content[:200]}")
+                try:
+                    fixed_json_string = f"[{text_content}]"
+                    reparsed = json.loads(fixed_json_string)
+                    if isinstance(reparsed, list):
+                        logger.info("Successfully re-parsed response after adding brackets.")
+                        return [str(it) for it in reparsed]
+                except json.JSONDecodeError:
+                    logger.error(f"Failed to re-parse after bracket fix. Sending as single message. Preview: {text_content[:200]}")
+                # Fallback №2: отдать как одно сообщение
                 return [str(text_content)]
     except httpx.HTTPStatusError as e:
         try:
