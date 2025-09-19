@@ -1340,17 +1340,33 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 should_ai_respond = True
                 if update.effective_chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
                     reply_pref = persona.group_reply_preference
-                    bot_username = context.bot_data.get('bot_username')
-                    if not bot_username:
-                        logger.error("handle_message: bot_username not found in context.bot_data for group check!")
-                        bot_username = "YourBotUsername"
+                    # Берём username и id ИМЕННО привязанного к чату бота
+                    bot_instance = getattr(persona, 'chat_instance', None) and getattr(persona.chat_instance, 'bot_instance_ref', None)
+                    bot_username = (bot_instance.telegram_username if bot_instance else None) or "YourBotUsername"
+                    try:
+                        bot_telegram_id = int(bot_instance.telegram_bot_id) if (bot_instance and bot_instance.telegram_bot_id) else None
+                    except Exception:
+                        bot_telegram_id = None
+
+                    if not bot_instance or not bot_telegram_id:
+                        logger.error(f"handle_message: Could not get bot username or id for group check! PersonaID: {getattr(persona, 'id', 'unknown')}")
 
                     persona_name_lower = persona.name.lower()
-                    is_mentioned = f"@{bot_username}".lower() in message_text.lower()
-                    is_reply_to_bot = update.message.reply_to_message and update.message.reply_to_message.from_user.id == context.bot.id
+                    # 1) Явное упоминание @username
+                    is_mentioned = (f"@{bot_username}".lower() in message_text.lower()) if bot_username else False
+                    # 2) Ответ на сообщение бота (reply)
+                    is_reply_to_bot = (
+                        bool(getattr(update, 'message', None) and getattr(update.message, 'reply_to_message', None)) and
+                        getattr(update.message.reply_to_message, 'from_user', None) is not None and
+                        (getattr(update.message.reply_to_message.from_user, 'id', None) == bot_telegram_id)
+                    )
+                    # 3) Упоминание по имени персоны
                     contains_persona_name = bool(re.search(rf'(?i)\b{re.escape(persona_name_lower)}\b', message_text))
 
-                    logger.debug(f"handle_message: Group chat check. Pref: '{reply_pref}', Mentioned: {is_mentioned}, ReplyToBot: {is_reply_to_bot}, ContainsName: {contains_persona_name}")
+                    logger.debug(
+                        f"handle_message: Group chat check. Pref: '{reply_pref}', Mentioned: {is_mentioned}, "
+                        f"ReplyToBot: {is_reply_to_bot}, ContainsName: {contains_persona_name}, BotID_checked: {bot_telegram_id}"
+                    )
 
                     if reply_pref == "never":
                         should_ai_respond = False
