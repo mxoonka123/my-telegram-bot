@@ -215,18 +215,28 @@ async def send_to_google_gemini(
                     logger.warning(f"Model returned JSON but not a list: {type(parsed)}. Wrapping as single item.")
                     return [str(text_content)]
             except json.JSONDecodeError:
-                # Fallback №1: модель могла вернуть элементы без внешних скобок — попробуем обернуть и распарсить заново
-                logger.warning(f"Model returned non-JSON text when JSON was requested. Attempting bracket fix. Preview: {text_content[:200]}")
+                # Fallback: извлекаем все подстроки в двойных кавычках как элементы списка
+                import re
+                logger.warning(f"Failed to parse JSON. Falling back to regex extraction. Preview: {text_content[:200]}")
                 try:
-                    fixed_json_string = f"[{text_content}]"
-                    reparsed = json.loads(fixed_json_string)
-                    if isinstance(reparsed, list):
-                        logger.info("Successfully re-parsed response after adding brackets.")
-                        return [str(it) for it in reparsed]
-                except json.JSONDecodeError:
-                    logger.error(f"Failed to re-parse after bracket fix. Sending as single message. Preview: {text_content[:200]}")
-                # Fallback №2: отдать как одно сообщение
-                return [str(text_content)]
+                    extracted_parts = re.findall(r'"([^"\\]*(?:\\.[^"\\]*)*)"', text_content)
+                    # Рас-экранируем последовательности вида \" и \\ внутри извлечённых строк
+                    cleaned_parts = []
+                    for part in extracted_parts:
+                        try:
+                            cleaned_parts.append(bytes(part, 'utf-8').decode('unicode_escape'))
+                        except Exception:
+                            cleaned_parts.append(part)
+                    final_parts = [p.strip() for p in cleaned_parts if p and p.strip()]
+                    if final_parts:
+                        logger.info(f"Successfully extracted {len(final_parts)} parts via regex fallback.")
+                        return final_parts
+                    else:
+                        logger.error(f"Regex fallback found no quoted strings. Treating as single message. Preview: {text_content[:200]}")
+                        return [str(text_content)]
+                except Exception as regex_err:
+                    logger.error(f"Regex fallback failed with error: {regex_err}. Treating as single message.")
+                    return [str(text_content)]
     except httpx.HTTPStatusError as e:
         try:
             error_body = e.response.json()
