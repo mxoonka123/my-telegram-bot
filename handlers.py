@@ -182,8 +182,8 @@ async def send_to_google_gemini(
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(api_url, headers=headers, json=payload)
             resp.raise_for_status()
-            # Разбираем ответ как UTF-8 JSON из «сырых» байтов, исключая авто-детекцию кодировки
-            data = json.loads(resp.content)
+            # Используем встроенный парсер httpx, который корректно учитывает заголовки и кодировку
+            data = resp.json()
 
             # Проверка блокировки промпта
             if isinstance(data, dict) and "promptFeedback" in data and isinstance(data.get("promptFeedback"), dict):
@@ -222,13 +222,11 @@ async def send_to_google_gemini(
                 logger.warning(f"Failed to parse JSON. Falling back to regex extraction. Preview: {text_content[:200]}")
                 try:
                     extracted_parts = re.findall(r'"([^"\\]*(?:\\.[^"\\]*)*)"', text_content)
-                    # Рас-экранируем последовательности вида \" и \\ внутри извлечённых строк
-                    cleaned_parts = []
-                    for part in extracted_parts:
-                        try:
-                            cleaned_parts.append(bytes(part, 'utf-8').decode('unicode_escape'))
-                        except Exception:
-                            cleaned_parts.append(part)
+                    # Безопасно убираем экранирование только для стандартных последовательностей, не трогая кириллицу
+                    cleaned_parts = [
+                        part.replace('\\"', '"').replace('\\\\', '\\')
+                        for part in extracted_parts
+                    ]
                     final_parts = [p.strip() for p in cleaned_parts if p and p.strip()]
                     if final_parts:
                         logger.info(f"Successfully extracted {len(final_parts)} parts via regex fallback.")

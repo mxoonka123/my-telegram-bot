@@ -654,34 +654,10 @@ def delete_persona_config(db: Session, persona_id: int, owner_id: int) -> bool:
             persona_name = persona.name
             logger.info(f"Found PersonaConfig {persona_id} ('{persona_name}'). Proceeding with deletion.")
 
-            # --- НАЧАЛО: Ручное удаление ChatContext ---
-            chat_bot_instance_ids_to_clear = []
-            # persona.bot_instance: one-to-one связь, может быть None
-            if persona.bot_instance:
-                bot_instance = persona.bot_instance
-                if bot_instance.chat_links:
-                    chat_bot_instance_ids_to_clear.extend([link.id for link in bot_instance.chat_links])
+            # Ручное удаление ChatContext не требуется: каскадные правила SQLAlchemy удалят связанные записи
+            # PersonaConfig -> BotInstance -> ChatBotInstance -> ChatContext (cascade="all, delete-orphan").
 
-            if chat_bot_instance_ids_to_clear:
-                logger.info(f"Manually deleting ChatContext records for ChatBotInstance IDs: {chat_bot_instance_ids_to_clear}")
-                try:
-                    # Создаем SQL запрос на удаление контекста
-                    stmt = delete(ChatContext).where(ChatContext.chat_bot_instance_id.in_(chat_bot_instance_ids_to_clear))
-                    result = db.execute(stmt)
-                    deleted_ctx_count = result.rowcount
-                    logger.info(f"Manually deleted {deleted_ctx_count} ChatContext records.")
-                    # НЕ делаем commit здесь, все будет в одном коммите в конце
-                except SQLAlchemyError as ctx_del_err:
-                    logger.error(f"SQLAlchemyError during manual ChatContext deletion for persona {persona_id}: {ctx_del_err}", exc_info=True)
-                    logger.debug("Rolling back transaction due to ChatContext deletion error.")
-                    db.rollback()
-                    return False # Ошибка при удалении контекста
-            else:
-                logger.info(f"No related ChatContext records found to delete for persona {persona_id}.")
-            # --- КОНЕЦ: Ручное удаление ChatContext ---
-
-            # Теперь удаляем саму персону (каскад сработает для BotInstance и ChatBotInstance)
-            logger.debug(f"Calling db.delete() for persona {persona_id}. Attempting commit...")
+            logger.debug(f"Calling db.delete() for persona {persona_id}. Cascade will handle related entities. Attempting commit...")
             db.delete(persona)
             db.commit()
             logger.info(f"Successfully committed deletion of PersonaConfig {persona_id} (Name: '{persona_name}')")
