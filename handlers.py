@@ -1464,7 +1464,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                         logger.error("Cannot call AI: GEMINI_API_KEY is not configured.")
 
                     context_response_prepared = False
-                    if assistant_response_text and not assistant_response_text.startswith("❌"):
+                    # Новая логика: успешный ответ — это список строк; строка — это ошибка/заглушка
+                    if isinstance(assistant_response_text, list):
                         llm_call_succeeded = True
                         # Открываем новую короткую сессию для сохранения ответа и списания кредитов
                         with get_db() as db_after_ai:
@@ -1482,7 +1483,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                                         current_bot,
                                         chat_id_str,
                                         persona_fresh,
-                                        assistant_response_text,
+                                        assistant_response_text,  # список строк
                                         db_after_ai,
                                         reply_to_message_id=message_id,
                                         is_first_message=(len(initial_context_from_db) == 0)
@@ -1498,7 +1499,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                                             db=db_after_ai,
                                             owner_user=attached_owner,
                                             input_text=message_text,
-                                            output_text=assistant_response_text or "",
+                                            output_text="\n".join(assistant_response_text),
                                             media_type=None,
                                             main_bot=context.application.bot
                                         )
@@ -1507,10 +1508,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                                 logger.error(f"handle_message: error during Phase 2 DB save: {e_after}", exc_info=True)
                     else:
                         logger.warning(f"handle_message: Received empty or error response from send_to_gemini for chat {chat_id_str}.")
-                        try: 
+                        try:
                             final_err_msg = assistant_response_text if assistant_response_text else "модель не дала содержательного ответа. попробуйте переформулировать запрос."
                             await update.message.reply_text(final_err_msg, parse_mode=None)
-                        except Exception as e_send_empty: logger.error(f"Failed to send empty/error response message: {e_send_empty}")
+                        except Exception as e_send_empty:
+                            logger.error(f"Failed to send empty/error response message: {e_send_empty}")
 
                     # Списание кредитов уже выполнено в Phase 2 внутри новой короткой сессии
                     # (после успешной подготовки и отправки ответа: context_response_prepared == True).
