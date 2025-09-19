@@ -1022,16 +1022,26 @@ async def get_llm_response(
     llm_response: Union[List[str], str] = "[ошибка: модель не была выбрана]"
 
     try:
+        # Привязываем потенциально отсоединённого пользователя к сессии
+        attached_owner = db_session.merge(owner_user) if owner_user is not None else None
+
         # Есть кредиты — используем OpenRouter
-        if owner_user and float(getattr(owner_user, "credits", 0.0) or 0.0) > 0.0:
+        if attached_owner and float(getattr(attached_owner, "credits", 0.0) or 0.0) > 0.0:
             model_to_use = config.OPENROUTER_MODEL_NAME
             api_key_to_use = config.OPENROUTER_API_KEY
-            logger.info(f"get_llm_response: user {getattr(owner_user, 'id', 'N/A')} has credits; using OpenRouter model '{model_to_use}'.")
+            logger.info(
+                f"get_llm_response: user {getattr(attached_owner, 'id', 'N/A')} has credits; using OpenRouter model '{model_to_use}'."
+            )
             if not api_key_to_use:
                 return "[ошибка: ключ OPENROUTER_API_KEY не настроен]", model_to_use, None
             if image_data is not None:
                 return "[ошибка: текущая конфигурация OpenRouter не поддерживает изображения]", model_to_use, None
-            llm_response = await send_to_openrouter(api_key=api_key_to_use, system_prompt=system_prompt, messages=context_for_ai, model_name=model_to_use)
+            llm_response = await send_to_openrouter(
+                api_key=api_key_to_use,
+                system_prompt=system_prompt,
+                messages=context_for_ai,
+                model_name=model_to_use,
+            )
         else:
             # Нет кредитов — используем Gemini
             model_to_use = config.GEMINI_MODEL_NAME_FOR_API
@@ -1040,7 +1050,12 @@ async def get_llm_response(
                 return "[ошибка: нет доступных API-ключей Gemini]", model_to_use, None
             api_key_to_use = api_key_obj.api_key
             logger.info(f"get_llm_response: using Gemini model '{model_to_use}'.")
-            llm_response = await send_to_google_gemini(api_key=api_key_to_use, system_prompt=system_prompt, messages=context_for_ai, image_data=image_data)
+            llm_response = await send_to_google_gemini(
+                api_key=api_key_to_use,
+                system_prompt=system_prompt,
+                messages=context_for_ai,
+                image_data=image_data,
+            )
     except Exception as e:
         logger.error(f"get_llm_response failed: {e}", exc_info=True)
         return f"[ошибка выбора модели: {e}]", model_to_use or "", None
@@ -1535,6 +1550,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                                         system_prompt="You decide if the bot should respond based on relevance. Answer only with 'Да' or 'Нет'.",
                                         messages=[{"role": "user", "content": ctx_prompt}]
                                     )
+                                    # Повторная попытка при перегрузке модели Gemini
+                                    if isinstance(llm_decision, str) and ("503" in llm_decision or "overload" in llm_decision.lower()):
+                                        logger.warning("Contextual LLM check: Gemini overloaded (503). Retrying once...")
+                                        await asyncio.sleep(1.5)
+                                        llm_decision = await send_to_google_gemini(
+                                            api_key=api_key_for_check,
+                                            system_prompt="You decide if the bot should respond based on relevance. Answer only with 'Да' or 'Нет'.",
+                                            messages=[{"role": "user", "content": ctx_prompt}]
+                                        )
                                     if isinstance(llm_decision, list) and llm_decision:
                                         ans = str(llm_decision[0]).strip().lower()
                                     else:
