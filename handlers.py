@@ -131,30 +131,51 @@ async def send_to_google_gemini(
         "Content-Type": "application/json",
         "x-goog-api-key": api_key,
     }
+    # --- Build request for Gemini: use system_instruction and cleaned contents ---
+    generation_config: Dict[str, Any] = {
+        "temperature": 1.0,
+        "topP": 0.95,
+        "topK": 64,
+        "maxOutputTokens": 8192,
+        "responseMimeType": "text/plain",
+    }
 
-    contents: List[Dict[str, Any]] = []
-    system_prompt_applied = False
+    formatted_messages: List[Dict[str, Any]] = []
     for msg in messages:
-        role = "user" if msg.get("role") != "assistant" else "model"
+        # Skip legacy system entries in history; pass system via system_instruction
+        if msg.get("role") == "system":
+            continue
+        role = "model" if msg.get("role") == "assistant" else "user"
         text = msg.get("content", "")
-        if role == "user" and not system_prompt_applied:
-            text = f"{system_prompt}\n\n[ДИАЛОГ]\n{text}"
-            system_prompt_applied = True
-        content_item: Dict[str, Any] = {"role": role, "parts": [{"text": text}]}
-        contents.append(content_item)
+        try:
+            # Strip optional "username: " prefix which model doesn't need
+            import re as _re
+            text = _re.sub(r"^\w+:\s", "", text)
+        except Exception:
+            pass
+        formatted_messages.append({"role": role, "parts": [{"text": text}]})
 
-    if image_data and contents:
-        last_content = contents[-1]
-        if last_content.get("role") == "user":
+    # Ensure conversation doesn't start with model role
+    if formatted_messages and formatted_messages[0].get("role") == "model":
+        formatted_messages.insert(0, {"role": "user", "parts": [{"text": "(начало диалога)"}]})
+
+    # Attach image to the last user message, if any
+    if image_data and formatted_messages:
+        last = formatted_messages[-1]
+        if last.get("role") == "user":
             base64_image = base64.b64encode(image_data).decode("utf-8")
-            last_content["parts"].append({
+            last["parts"].append({
                 "inline_data": {
                     "mime_type": "image/jpeg",
                     "data": base64_image
                 }
             })
 
-    payload = {"contents": contents}
+    payload = {
+        "contents": formatted_messages,
+        "system_instruction": {"parts": [{"text": system_prompt or ""}]},
+        "generationConfig": generation_config,
+    }
 
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
