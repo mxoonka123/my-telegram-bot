@@ -1,8 +1,11 @@
 FROM python:3.11-slim
 
-# Гарантируем немедленный вывод логов
-ENV PYTHONUNBUFFERED=1
-ENV PYTHONDONTWRITEBYTECODE=1
+# Гарантируем немедленный вывод логов и корректную работу с UTF-8
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUTF8=1 \
+    LANG=en_US.UTF-8 \
+    LC_ALL=en_US.UTF-8
 
 # Установка зависимостей системы
 RUN apt-get update && apt-get install -y \
