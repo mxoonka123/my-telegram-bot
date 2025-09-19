@@ -93,7 +93,13 @@ TELEGRAPH_AUTHOR_NAME = os.getenv("TELEGRAPH_AUTHOR_NAME", "NuNuAiBot") # Имя
 TELEGRAPH_AUTHOR_URL = os.getenv("TELEGRAPH_AUTHOR_URL", "https://t.me/NuNuAiChannel") # Ссылка на автора для страниц Telegra.ph
 TELEGRAPH_ACCESS_TOKEN = os.getenv("TELEGRAPH_ACCESS_TOKEN", None) # Токен для Telegra.ph
 
-# --- OpenRouter Settings REMOVED: проект перешёл на нативный Google Gemini API ---
+# --- OpenRouter Settings ---
+# API key for OpenRouter (set via environment variable)
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
+# OpenRouter Chat Completions endpoint (OpenAI compatible)
+OPENROUTER_API_BASE_URL = os.getenv("OPENROUTER_API_BASE_URL", "https://openrouter.ai/api/v1/chat/completions")
+# Default model for paid users via OpenRouter
+OPENROUTER_MODEL_NAME = os.getenv("OPENROUTER_MODEL_NAME", "deepseek/deepseek-chat-v3.1")
 
   # --- Цены кредитной системы (базовые, можно менять без деплоя через env) ---
   # Стоимость указывается в кредитах за 1k токенов или за единицу медиа.
@@ -113,6 +119,13 @@ MODEL_PRICE_MULTIPLIERS = {
     GEMINI_MODEL_NAME_FOR_API: float(
         os.getenv(
             f"CREDIT_MULTIPLIER_{GEMINI_MODEL_NAME_FOR_API.replace('-', '_').replace('.', '_').upper()}",
+            "1.0",
+        )
+    ),
+    # Multiplier for OpenRouter model (name normalized for env var)
+    OPENROUTER_MODEL_NAME: float(
+        os.getenv(
+            f"CREDIT_MULTIPLIER_{OPENROUTER_MODEL_NAME.replace('/', '_').replace('-', '_').replace('.', '_').upper()}",
             "1.0",
         )
     ),

@@ -375,11 +375,20 @@ async def on_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             gone_statuses = {"left", "kicked", "restricted"}
 
             if new_status and new_status.lower() in present_statuses:
-                link = link_bot_instance_to_chat(db, bot_instance.id, chat_id_str)
-                if link:
-                    logger.info(f"on_my_chat_member: linked bot_instance {bot_instance.id} to chat {chat_id_str}")
+                inviter_id = getattr(cmu.from_user, 'id', None)
+                owner_telegram_id = getattr(getattr(bot_instance, 'owner', None), 'telegram_id', None)
+                if inviter_id and owner_telegram_id and str(inviter_id) == str(owner_telegram_id):
+                    link = link_bot_instance_to_chat(db, bot_instance.id, chat_id_str)
+                    if link:
+                        logger.info(f"on_my_chat_member: Owner {inviter_id} added bot. Linked bot_instance {bot_instance.id} to chat {chat_id_str}")
+                    else:
+                        logger.warning(f"on_my_chat_member: failed to link bot_instance {bot_instance.id} to chat {chat_id_str}")
                 else:
-                    logger.warning(f"on_my_chat_member: failed to link bot_instance {bot_instance.id} to chat {chat_id_str}")
+                    logger.warning(f"on_my_chat_member: non-owner inviter={inviter_id} tried to add bot_instance {bot_instance.id} to chat {chat_id_str}. Leaving chat.")
+                    try:
+                        await context.bot.leave_chat(chat.id)
+                    except Exception as leave_err:
+                        logger.error(f"on_my_chat_member: failed to leave chat {chat_id_str}: {leave_err}")
             elif new_status and new_status.lower() in gone_statuses:
                 ok = unlink_bot_instance_from_chat(db, chat_id_str, bot_instance.id)
                 if ok:
@@ -927,6 +936,116 @@ def extract_json_from_markdown(text: str) -> str:
 # Максимальная длина входящего сообщения от пользователя в символах
 MAX_USER_MESSAGE_LENGTH_CHARS = 600
 
+async def send_to_openrouter(
+    api_key: str,
+    system_prompt: str,
+    messages: List[Dict[str, str]],
+    model_name: str,
+) -> Union[List[str], str]:
+    """Отправляет запрос в OpenRouter (OpenAI-совместимый API) и возвращает список строк или строку-ошибку."""
+    if not api_key:
+        logger.error("send_to_openrouter called without API key")
+        return "[ошибка: API-ключ OpenRouter не предоставлен]"
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    # Формируем сообщения под OpenAI-совместимый формат
+    formatted_messages: List[Dict[str, str]] = []
+    if system_prompt:
+        formatted_messages.append({"role": "system", "content": system_prompt})
+    for msg in messages:
+        if msg.get("role") == "system":
+            continue
+        role = "assistant" if msg.get("role") == "model" else msg.get("role", "user")
+        content = msg.get("content", "")
+        formatted_messages.append({"role": role, "content": content})
+
+    payload = {
+        "model": model_name,
+        "messages": formatted_messages,
+        "temperature": 1.0,
+        "top_p": 0.95,
+        "max_tokens": 4096,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=45.0) as client:
+            resp = await client.post(config.OPENROUTER_API_BASE_URL, headers=headers, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+
+            text_content = (
+                (data.get("choices", [{}])[0] or {})
+                .get("message", {})
+                .get("content")
+            )
+
+            if not text_content:
+                logger.error(f"OpenRouter API returned a valid but empty response: {data}")
+                return "[ошибка openrouter: получен пустой ответ от модели]"
+
+            try:
+                parsed = json.loads(text_content)
+                if isinstance(parsed, list):
+                    return [str(item) for item in parsed]
+                else:
+                    logger.warning(f"OpenRouter returned JSON but not a list: {type(parsed)}. Wrapping as single item.")
+                    return [str(text_content)]
+            except json.JSONDecodeError:
+                logger.info("OpenRouter content is plain text; returning as single message.")
+                return [text_content]
+    except httpx.HTTPStatusError as e:
+        status = getattr(e.response, "status_code", None)
+        error_message = e.response.text if getattr(e, "response", None) else str(e)
+        logger.error(f"API error calling OpenRouter (status={status}): {error_message}")
+        return f"[ошибка openrouter {status}: {error_message[:120]}]"
+    except Exception as e:
+        logger.error(f"Unexpected error in send_to_openrouter: {e}", exc_info=True)
+        return "[неизвестная ошибка при обращении к OpenRouter API]"
+
+async def get_llm_response(
+    db_session: Session,
+    owner_user: User,
+    system_prompt: str,
+    context_for_ai: List[Dict[str, str]],
+    image_data: Optional[bytes] = None,
+) -> Tuple[Union[List[str], str], str, Optional[str]]:
+    """
+    Централизованный выбор LLM: OpenRouter для платных пользователей, Gemini для бесплатных.
+    Возвращает (ответ, имя_модели, использованный_api_ключ или None).
+    """
+    model_to_use: str = ""
+    api_key_to_use: Optional[str] = None
+    llm_response: Union[List[str], str] = "[ошибка: модель не была выбрана]"
+
+    try:
+        # Есть кредиты — используем OpenRouter
+        if owner_user and float(getattr(owner_user, "credits", 0.0) or 0.0) > 0.0:
+            model_to_use = config.OPENROUTER_MODEL_NAME
+            api_key_to_use = config.OPENROUTER_API_KEY
+            logger.info(f"get_llm_response: user {getattr(owner_user, 'id', 'N/A')} has credits; using OpenRouter model '{model_to_use}'.")
+            if not api_key_to_use:
+                return "[ошибка: ключ OPENROUTER_API_KEY не настроен]", model_to_use, None
+            if image_data is not None:
+                return "[ошибка: текущая конфигурация OpenRouter не поддерживает изображения]", model_to_use, None
+            llm_response = await send_to_openrouter(api_key=api_key_to_use, system_prompt=system_prompt, messages=context_for_ai, model_name=model_to_use)
+        else:
+            # Нет кредитов — используем Gemini
+            model_to_use = config.GEMINI_MODEL_NAME_FOR_API
+            api_key_obj = get_next_api_key(db_session, service='gemini')
+            if not api_key_obj or not api_key_obj.api_key:
+                return "[ошибка: нет доступных API-ключей Gemini]", model_to_use, None
+            api_key_to_use = api_key_obj.api_key
+            logger.info(f"get_llm_response: using Gemini model '{model_to_use}'.")
+            llm_response = await send_to_google_gemini(api_key=api_key_to_use, system_prompt=system_prompt, messages=context_for_ai, image_data=image_data)
+    except Exception as e:
+        logger.error(f"get_llm_response failed: {e}", exc_info=True)
+        return f"[ошибка выбора модели: {e}]", model_to_use or "", None
+
+    return llm_response, model_to_use, api_key_to_use
 async def process_and_send_response(update: Update, context: ContextTypes.DEFAULT_TYPE, bot: Bot, chat_id: Union[str, int], persona: Persona, llm_response: Union[List[str], str], db: Session, reply_to_message_id: int, is_first_message: bool = False) -> bool:
     """Processes the response from AI (list of strings or error string) and sends messages to the chat."""
     logger.info(f"process_and_send_response [v4]: --- ENTER --- ChatID: {chat_id}, Persona: '{persona.name}'")
@@ -1457,54 +1576,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
                     # Контекст для ИИ - это история + новое сообщение
                     context_for_ai = initial_context_from_db + [{"role": "user", "content": f"{username}: {message_text}"}]
-                    # --- Получаем API-ключ ДО коммита, чтобы зафиксировать last_used/requests_count ---
-                    api_key_obj = get_next_api_key(db_session, service='gemini')
-                    if not api_key_obj:
-                        logger.error("No active Gemini API keys available in DB.")
-                        await update.message.reply_text("❌ Нет доступных API-ключей. Обратитесь к администратору.", parse_mode=None)
-                        db_session.rollback()
-                        return
-                    api_key_str = api_key_obj.api_key
                     # --- Закрываем транзакцию/сессию перед долгим IO (AI) ---
-                    persona_id_cache = persona.id
-                    chat_instance_id_cache = persona.chat_instance.id if persona.chat_instance else None
                     owner_user_id_cache = owner_user.id
                     try:
                         db_session.commit()
-                    except Exception as e_commit:
-                        logger.warning(f"handle_message: commit before AI call failed: {e_commit}")
-                    # В этот момент контекст сохранён, ключ отмечен как использованный.
-                    # ЯВНО закрываем сессию перед долгим IO, чтобы исключить idle-in-transaction
-                    try:
                         db_session.close()
-                        logger.debug("handle_message: DB session explicitly closed before AI call.")
-                    except Exception as close_err:
-                        logger.warning(f"handle_message: failed to close DB session before AI: {close_err}")
+                        logger.debug("handle_message: DB session committed and closed before AI call.")
+                    except Exception as e_commit:
+                        logger.warning(f"handle_message: commit/close before AI call failed: {e_commit}")
 
-                    # --- Убираем вежливую задержку перед запросом к AI для ускорения ответа ---
-                    # delay_sec = random.uniform(0.2, 0.7)
-                    # logger.info(f"Polite delay before AI request (text): {delay_sec:.2f}s")
-                    # await asyncio.sleep(delay_sec)
-
-                    # --- Вызов AI-провайдера (только Google Gemini) ---
-                    assistant_response_text = await send_to_google_gemini(
-                        api_key=api_key_str,
-                        system_prompt=system_prompt,
-                        messages=context_for_ai
-                    )
-                    # Повторная попытка при перегрузке (503)
-                    if isinstance(assistant_response_text, str) and assistant_response_text.startswith("[ошибка google api") and ("503" in assistant_response_text or "overload" in assistant_response_text.lower()):
-                        for attempt in range(1, 3):  # до двух повторов
-                            backoff = 1.0 * attempt + random.uniform(0.2, 0.8)
-                            logger.warning(f"Google API overloaded. Retry {attempt}/2 after {backoff:.2f}s...")
-                            await asyncio.sleep(backoff)
-                            assistant_response_text = await send_to_google_gemini(api_key=api_key_str, system_prompt=system_prompt, messages=context_for_ai)
-                            if not (isinstance(assistant_response_text, str) and assistant_response_text.startswith("[ошибка google api") and ("503" in assistant_response_text or "overload" in assistant_response_text.lower())):
-                                break
-
-                    if assistant_response_text is None:
-                        assistant_response_text = "[ошибка: ключ GEMINI_API_KEY не установлен]"
-                        logger.error("Cannot call AI: GEMINI_API_KEY is not configured.")
+                    # --- Вызов LLM через централизованную функцию (OpenRouter/Gemini) ---
+                    assistant_response_text: Union[List[str], str]
+                    model_used: str
+                    with get_db() as llm_db:
+                        assistant_response_text, model_used, _ = await get_llm_response(
+                            db_session=llm_db,
+                            owner_user=owner_user,
+                            system_prompt=system_prompt,
+                            context_for_ai=context_for_ai,
+                        )
 
                     context_response_prepared = False
                     # Новая логика: успешный ответ — это список строк; строка — это ошибка/заглушка
@@ -1543,6 +1633,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                                             owner_user=attached_owner,
                                             input_text=message_text,
                                             output_text="\n".join(assistant_response_text),
+                                            model_name=model_used,
                                             media_type=None,
                                             main_bot=context.application.bot
                                         )
@@ -1611,6 +1702,7 @@ async def deduct_credits_for_interaction(
     owner_user: User,
     input_text: str,
     output_text: str,
+    model_name: str,
     media_type: Optional[str] = None,
     media_duration_sec: Optional[int] = None,
     main_bot=None,
@@ -1619,7 +1711,9 @@ async def deduct_credits_for_interaction(
     try:
         from config import CREDIT_COSTS, MODEL_PRICE_MULTIPLIERS, GEMINI_MODEL_NAME_FOR_API, LOW_BALANCE_WARNING_THRESHOLD
 
-        mult = MODEL_PRICE_MULTIPLIERS.get(GEMINI_MODEL_NAME_FOR_API, 1.0)
+        # Используем множитель именно той модели, которая была задействована
+        effective_model = model_name or GEMINI_MODEL_NAME_FOR_API
+        mult = MODEL_PRICE_MULTIPLIERS.get(effective_model, 1.0)
         total_cost = 0.0
 
         # 1) Базовая стоимость медиа
@@ -1631,11 +1725,11 @@ async def deduct_credits_for_interaction(
 
         # 2) Стоимость токенов
         try:
-            input_tokens = count_openai_compatible_tokens(input_text or "", GEMINI_MODEL_NAME_FOR_API)
+            input_tokens = count_openai_compatible_tokens(input_text or "", effective_model)
         except Exception:
             input_tokens = 0
         try:
-            output_tokens = count_openai_compatible_tokens(output_text or "", GEMINI_MODEL_NAME_FOR_API)
+            output_tokens = count_openai_compatible_tokens(output_text or "", effective_model)
         except Exception:
             output_tokens = 0
 
@@ -1821,21 +1915,33 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
             # logger.info(f"Polite delay before AI request (media): {delay_sec:.2f}s")
             # await asyncio.sleep(delay_sec)
 
-            # --- Вызов AI-провайдера для медиа (только Google Gemini) ---
-            ai_response_text = await send_to_google_gemini(
-                api_key=api_key_str,
-                system_prompt=system_prompt,
-                messages=context_for_ai,
-                image_data=image_data
-            )
-            # Повторная попытка при перегрузке (503)
-            if isinstance(ai_response_text, str) and ai_response_text.startswith("[ошибка google api") and ("503" in ai_response_text or "overload" in ai_response_text.lower()):
+            # --- Вызов AI через централизованную функцию (модель выбирается автоматически) ---
+            with get_db() as llm_db:
+                ai_response_text, model_used, api_key_used = await get_llm_response(
+                    db_session=llm_db,
+                    owner_user=owner_user,
+                    system_prompt=system_prompt,
+                    context_for_ai=context_for_ai,
+                    image_data=image_data
+                )
+            # Повторная попытка при перегрузке (503) только для Gemini
+            if (
+                isinstance(ai_response_text, str)
+                and ai_response_text.startswith("[ошибка google api")
+                and ("503" in ai_response_text or "overload" in ai_response_text.lower())
+                and model_used == config.GEMINI_MODEL_NAME_FOR_API
+                and api_key_used
+            ):
                 for attempt in range(1, 3):
                     backoff = 1.0 * attempt + random.uniform(0.2, 0.8)
                     logger.warning(f"Google API overloaded (media). Retry {attempt}/2 after {backoff:.2f}s...")
                     await asyncio.sleep(backoff)
-                    ai_response_text = await send_to_google_gemini(api_key=api_key_obj.api_key, system_prompt=system_prompt, messages=context_for_ai, image_data=image_data)
-                    if not (isinstance(ai_response_text, str) and ai_response_text.startswith("[ошибка google api") and ("503" in ai_response_text or "overload" in ai_response_text.lower())):
+                    ai_response_text = await send_to_google_gemini(api_key=api_key_used, system_prompt=system_prompt, messages=context_for_ai, image_data=image_data)
+                    if not (
+                        isinstance(ai_response_text, str)
+                        and ai_response_text.startswith("[ошибка google api")
+                        and ("503" in ai_response_text or "overload" in ai_response_text.lower())
+                    ):
                         break
 
             if ai_response_text is None:
@@ -1877,6 +1983,7 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
                                 owner_user=attached_owner_media,
                                 input_text="",
                                 output_text=_out_text,
+                                model_name=model_used,
                                 media_type=media_type,
                                 media_duration_sec=getattr(update.message.voice, 'duration', None) if media_type == 'voice' else None,
                                 main_bot=context.application.bot
@@ -4299,7 +4406,10 @@ async def proactive_chat_select_received(update: Update, context: ContextTypes.D
                 
                 # Списываем кредиты у владельца
                 try:
-                    await deduct_credits_for_interaction(db=db, owner_user=owner_user, input_text="", output_text=assistant_response_text)
+                    # Для проактивных сообщений используем бесплатную модель Gemini
+                    from config import GEMINI_MODEL_NAME_FOR_API
+                    out_text = "\n".join(assistant_response_text) if isinstance(assistant_response_text, list) else (assistant_response_text or "")
+                    await deduct_credits_for_interaction(db=db, owner_user=owner_user, input_text="", output_text=out_text, model_name=GEMINI_MODEL_NAME_FOR_API)
                 except Exception as e_ded:
                     logger.warning(f"credits deduction failed for proactive send: {e_ded}")
 

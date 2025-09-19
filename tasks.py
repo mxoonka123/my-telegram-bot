@@ -105,9 +105,17 @@ async def proactive_messaging_task(application: Application) -> None:
 
                             # Списание кредитов у владельца персоны
                             try:
+                                from config import GEMINI_MODEL_NAME_FOR_API
                                 owner_user = persona.owner  # type: ignore
                                 if owner_user:
-                                    await deduct_credits_for_interaction(db=db, owner_user=owner_user, input_text="", output_text=assistant_response_text)
+                                    out_text = "\n".join(assistant_response_text) if isinstance(assistant_response_text, list) else (assistant_response_text or "")
+                                    await deduct_credits_for_interaction(
+                                        db=db,
+                                        owner_user=owner_user,
+                                        input_text="",
+                                        output_text=out_text,
+                                        model_name=GEMINI_MODEL_NAME_FOR_API,
+                                    )
                             except Exception as e_ded:
                                 logger.warning(f"credits deduction failed in proactive task: {e_ded}")
 
