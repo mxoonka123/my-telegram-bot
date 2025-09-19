@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import json
 import logging
 logging.basicConfig(level=logging.INFO) # Базовая конфигурация для этой проверки
