@@ -995,7 +995,15 @@ async def send_to_openrouter(
                     logger.warning(f"OpenRouter returned JSON but not a list: {type(parsed)}. Wrapping as single item.")
                     return [str(text_content)]
             except json.JSONDecodeError:
-                logger.info("OpenRouter content is plain text; returning as single message.")
+                # Если ответ не JSON, делим на предложения для более естественного чата
+                logger.warning(f"Response from OpenRouter is not a valid JSON. Splitting by sentences. Preview: {text_content[:200]}")
+                try:
+                    sentences = re.findall(r'[^.!?…]+[.!?…]*', text_content, re.UNICODE)
+                    cleaned = [s.strip() for s in sentences if s and s.strip()]
+                    if cleaned:
+                        return cleaned
+                except Exception as _split_err:
+                    logger.debug(f"Sentence split fallback failed: {_split_err}")
                 return [text_content]
     except httpx.HTTPStatusError as e:
         status = getattr(e.response, "status_code", None)
