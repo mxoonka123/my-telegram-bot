@@ -1015,8 +1015,15 @@ async def process_and_send_response(update: Update, context: ContextTypes.DEFAUL
         elif max_messages_setting_value == 6:
             target_message_count = 6
         elif max_messages_setting_value == 0:
-            if is_json_parsed and len(text_parts_to_send) > 5:
-                target_message_count = 5
+            # "Случайный" режим: если частей много, выбираем случайно разумный предел,
+            # если частей мало — отправляем все.
+            if len(text_parts_to_send) > 5:
+                try:
+                    target_message_count = random.randint(2, 5)
+                except Exception:
+                    target_message_count = 5
+            else:
+                target_message_count = len(text_parts_to_send)
         else:
             logger.warning(f"Неожиданное значение max_response_messages: {max_messages_setting_value}. Используется стандартное (3).")
             target_message_count = 3
