@@ -1146,8 +1146,11 @@ async def send_to_openrouter(
         "messages": openrouter_messages,
         "stream": False,
     }
+    # Temperature: если явно не задано — используем немного творческий режим по умолчанию
     if temperature is not None:
         payload["temperature"] = float(temperature)
+    else:
+        payload["temperature"] = 0.9
     if max_tokens is not None:
         payload["max_tokens"] = int(max_tokens)
     try:
