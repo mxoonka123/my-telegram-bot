@@ -219,10 +219,24 @@ async def send_to_google_gemini(
                                     "parts": [{"text": part_text}],
                                 })
                         if image_data is not None:
+                            # Поддержка двух форматов: bytes и dict({base64,mime})
+                            try:
+                                if isinstance(image_data, (bytes, bytearray)):
+                                    b64 = base64.b64encode(image_data).decode("ascii")
+                                    mime = "image/jpeg"
+                                elif isinstance(image_data, dict):
+                                    b64 = image_data.get("base64")
+                                    mime = image_data.get("mime") or "image/jpeg"
+                                else:
+                                    b64 = None
+                                    mime = "image/jpeg"
+                            except Exception:
+                                b64 = None
+                                mime = "image/jpeg"
                             img_part = {
                                 "inlineData": {
-                                    "data": image_data.get("base64"),
-                                    "mimeType": image_data.get("mime") or "image/jpeg",
+                                    "data": b64,
+                                    "mimeType": mime,
                                 }
                             }
                             safe_payload["contents"].append({
@@ -234,6 +248,14 @@ async def send_to_google_gemini(
                             "topP": 0.95,
                             "maxOutputTokens": 2048,
                         }
+                        # Попробуем ослабить safety-трешхолды только для ретрая, чтобы избежать фолс-позитивов на безобидных фото
+                        safe_payload["safetySettings"] = [
+                            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+                            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+                            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+                            {"category": "HARM_CATEGORY_SEXUAL", "threshold": "BLOCK_NONE"},
+                            {"category": "HARM_CATEGORY_VIOLENCE", "threshold": "BLOCK_NONE"},
+                        ]
                         # Повторный запрос
                         resp2 = await client.post(api_url, headers=headers, json=safe_payload)
                         resp2.raise_for_status()
