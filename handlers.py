@@ -198,64 +198,49 @@ async def send_to_google_gemini(
                             "Если описание изображения может нарушать политику или содержать запрещённый контент,"
                             " не описывай детали. Дай нейтральный, доброжелательный и безопасный ответ в той же"
                             " языковой форме, без упоминания личных признаков людей и без оценочных суждений."
-                            " Ответ должен оставаться в формате JSON-объекта: {\"response\":[...]}"
+                            " Ответ должен оставаться в формате JSON-массива строк: [\"...\", \"...\"]"
                         )
                         safe_system_prompt = (system_prompt or "") + safe_suffix
-                        # Пересобираем payload
-                        safe_payload = {
-                            "contents": [],
-                        }
-                        if safe_system_prompt:
-                            safe_payload["contents"].append({
-                                "role": "user",
-                                "parts": [{"text": safe_system_prompt}],
-                            })
+                        # --- ИСПРАВЛЕНИЕ: формируем payload в том же формате, что и основной запрос ---
+                        safe_formatted_messages: List[Dict[str, Any]] = []
                         for msg in messages or []:
-                            role = "user" if msg.get("role") != "assistant" else "model"
-                            part_text = str(msg.get("content", ""))
-                            if part_text:
-                                safe_payload["contents"].append({
-                                    "role": role,
-                                    "parts": [{"text": part_text}],
+                            if msg.get("role") == "system":
+                                continue
+                            role = "model" if msg.get("role") == "assistant" else "user"
+                            text = msg.get("content", "")
+                            safe_formatted_messages.append({"role": role, "parts": [{"text": text}]})
+
+                        if safe_formatted_messages and safe_formatted_messages[0].get("role") == "model":
+                            safe_formatted_messages.insert(0, {"role": "user", "parts": [{"text": "(начало диалога)"}]})
+
+                        if image_data and safe_formatted_messages:
+                            last_msg = safe_formatted_messages[-1]
+                            if last_msg.get("role") == "user":
+                                base64_image_retry = base64.b64encode(image_data).decode("utf-8")
+                                last_msg["parts"].append({
+                                    "inline_data": {
+                                        "mime_type": "image/jpeg",
+                                        "data": base64_image_retry
+                                    }
                                 })
-                        if image_data is not None:
-                            # Поддержка двух форматов: bytes и dict({base64,mime})
-                            try:
-                                if isinstance(image_data, (bytes, bytearray)):
-                                    b64 = base64.b64encode(image_data).decode("ascii")
-                                    mime = "image/jpeg"
-                                elif isinstance(image_data, dict):
-                                    b64 = image_data.get("base64")
-                                    mime = image_data.get("mime") or "image/jpeg"
-                                else:
-                                    b64 = None
-                                    mime = "image/jpeg"
-                            except Exception:
-                                b64 = None
-                                mime = "image/jpeg"
-                            img_part = {
-                                "inlineData": {
-                                    "data": b64,
-                                    "mimeType": mime,
-                                }
-                            }
-                            safe_payload["contents"].append({
-                                "role": "user",
-                                "parts": [img_part],
-                            })
-                        safe_payload["generationConfig"] = {
-                            "temperature": 0.9,
-                            "topP": 0.95,
-                            "maxOutputTokens": 2048,
+
+                        safe_payload = {
+                            "contents": safe_formatted_messages,
+                            "system_instruction": {"parts": [{"text": safe_system_prompt}]},
+                            "generationConfig": {
+                                "temperature": 0.9,
+                                "topP": 0.95,
+                                "maxOutputTokens": 2048,
+                            },
+                            # Ослабленные пороги безопасности только для ретрая
+                            "safetySettings": [
+                                {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+                                {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+                                {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+                                {"category": "HARM_CATEGORY_SEXUAL", "threshold": "BLOCK_NONE"},
+                                {"category": "HARM_CATEGORY_VIOLENCE", "threshold": "BLOCK_NONE"},
+                            ],
                         }
-                        # Попробуем ослабить safety-трешхолды только для ретрая, чтобы избежать фолс-позитивов на безобидных фото
-                        safe_payload["safetySettings"] = [
-                            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
-                            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-                            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-                            {"category": "HARM_CATEGORY_SEXUAL", "threshold": "BLOCK_NONE"},
-                            {"category": "HARM_CATEGORY_VIOLENCE", "threshold": "BLOCK_NONE"},
-                        ]
                         # Повторный запрос
                         resp2 = await client.post(api_url, headers=headers, json=safe_payload)
                         resp2.raise_for_status()
@@ -2311,10 +2296,18 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
                         else:
                             logger.warning("Vosk model is not available, skipping transcription.")
                         
-                        if transcribed_text:
+                        if transcribed_text and str(transcribed_text).strip():
                             user_message_content = f"{username}: {transcribed_text}"
+                            logger.info(f"Текст голосового сообщения: '{str(transcribed_text).strip()[:120]}'")
                         else:
-                            user_message_content = f"{username}: [получено голосовое сообщение, расшифровка не удалась]"
+                            logger.warning(f"Распознавание голоса для чата {chat_id_str} вернуло пустой результат.")
+                            await update.message.reply_text("не расслышала, можешь повторить, пожалуйста?", parse_mode=None)
+                            # Откатываем любые незакоммиченные изменения и прекращаем обработку
+                            try:
+                                db.rollback()
+                            except Exception:
+                                pass
+                            return
                     except Exception as e_voice:
                         logger.error(f"handle_media: Error processing voice message for chat {chat_id_str}: {e_voice}", exc_info=True)
                         user_message_content = f"{username}: [ошибка обработки голосового сообщения]"
