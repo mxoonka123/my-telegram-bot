@@ -191,7 +191,68 @@ async def send_to_google_gemini(
                 block_reason = feedback.get("blockReason", "UNKNOWN_REASON")
                 if block_reason and block_reason != "BLOCK_REASON_UNSPECIFIED":
                     logger.warning(f"Google API blocked prompt. Reason: {block_reason}. Full feedback: {feedback}")
-                    return f"[ошибка google api: запрос заблокирован (причина: {block_reason})]"
+                    # Попробуем единожды переспросить модель с безопасным промптом
+                    try:
+                        safe_suffix = (
+                            "\n\n[SAFETY OVERRIDE]\n"
+                            "Если описание изображения может нарушать политику или содержать запрещённый контент,"
+                            " не описывай детали. Дай нейтральный, доброжелательный и безопасный ответ в той же"
+                            " языковой форме, без упоминания личных признаков людей и без оценочных суждений."
+                            " Ответ должен оставаться в формате JSON-объекта: {\"response\":[...]}"
+                        )
+                        safe_system_prompt = (system_prompt or "") + safe_suffix
+                        # Пересобираем payload
+                        safe_payload = {
+                            "contents": [],
+                        }
+                        if safe_system_prompt:
+                            safe_payload["contents"].append({
+                                "role": "user",
+                                "parts": [{"text": safe_system_prompt}],
+                            })
+                        for msg in messages or []:
+                            role = "user" if msg.get("role") != "assistant" else "model"
+                            part_text = str(msg.get("content", ""))
+                            if part_text:
+                                safe_payload["contents"].append({
+                                    "role": role,
+                                    "parts": [{"text": part_text}],
+                                })
+                        if image_data is not None:
+                            img_part = {
+                                "inlineData": {
+                                    "data": image_data.get("base64"),
+                                    "mimeType": image_data.get("mime") or "image/jpeg",
+                                }
+                            }
+                            safe_payload["contents"].append({
+                                "role": "user",
+                                "parts": [img_part],
+                            })
+                        safe_payload["generationConfig"] = {
+                            "temperature": 0.9,
+                            "topP": 0.95,
+                            "maxOutputTokens": 2048,
+                        }
+                        # Повторный запрос
+                        resp2 = await client.post(api_url, headers=headers, json=safe_payload)
+                        resp2.raise_for_status()
+                        data2 = resp2.json()
+                        # Если снова блок — выдаём мягкий ответ
+                        if isinstance(data2, dict) and isinstance(data2.get("promptFeedback"), dict):
+                            br2 = data2.get("promptFeedback", {}).get("blockReason")
+                            if br2 and br2 != "BLOCK_REASON_UNSPECIFIED":
+                                logger.warning(f"Google API blocked prompt even after safe retry. Reason: {br2}")
+                                return [
+                                    "я не могу обсуждать это фото в деталях, но я с тобой — давай поговорим о чем-то безопасном",
+                                ]
+                        # иначе продолжаем обычный парсинг ниже, переопределив входные данные
+                        data = data2
+                    except Exception as _safe_retry_err:
+                        logger.warning(f"Safe retry after block failed: {_safe_retry_err}")
+                        return [
+                            "я не могу обсуждать это фото в деталях, но я с тобой — давай поговорим о чем-то безопасном",
+                        ]
 
             # Извлекаем первый текстовый ответ
             try:

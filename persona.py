@@ -27,7 +27,15 @@ DEFAULT_MEDIA_SYSTEM_PROMPT_TEMPLATE = """[СИСТЕМНОЕ СООБЩЕНИЕ
 
 Твоё текущее настроение: {mood_name}. {mood_prompt}
 
-ВАЖНО: всегда форматируй свой ответ как JSON-массив, где каждое отдельное сообщение - это строка в массиве. Например: ["Привет!","Как дела?","Я так рад тебя видеть!"]. НЕ используй backticks или ```json."""
+ВАЖНО:
+1) Всегда форматируй ответ как валидный JSON-объект вида {"response": [ ... ]}.
+2) Внутри списка каждая строка — отдельное сообщение.
+3) Не используй backticks и ```json.
+4) Соблюдай безопасный тон: если описание изображения может нарушать политику, не описывай потенциально запрещённые детали, дай нейтральную безопасную реакцию.
+
+Пример корректного ответа:
+{{"response": ["о, интересное фото", "расскажи, что тут происходит", "выглядишь бодро"]}}
+"""
 
 PHOTO_SYSTEM_PROMPT_TEMPLATE_FALLBACK = '''[SYSTEM MANDATORY INSTRUCTIONS - FOLLOW THESE RULES EXACTLY]
 You are an AI assistant. Your ONLY task is to role-play as a character reacting to a photo. Your entire output MUST be a valid JSON array of strings.
