@@ -1285,7 +1285,8 @@ async def get_llm_response(
         attached_owner = db_session.merge(owner_user) if owner_user is not None else None
 
         # Есть кредиты — используем OpenRouter, КРОМЕ голосовых: для voice лучше сразу нативный Gemini (устраняем 'ext')
-        if attached_owner and float(getattr(attached_owner, "credits", 0.0) or 0.0) > 0.0 and (media_type != "voice"):
+        # Есть кредиты — используем OpenRouter для всех типов медиа.
+        if attached_owner and float(getattr(attached_owner, "credits", 0.0) or 0.0) > 0.0:
             if image_data is not None:
                 # Для изображений у платных пользователей — OpenRouter с отдельной моделью
                 model_to_use = _normalize_openrouter_model_id(getattr(config, 'OPENROUTER_IMAGE_MODEL_NAME', None) or config.OPENROUTER_MODEL_NAME)
@@ -2359,14 +2360,6 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
 
             add_message_to_context(db, persona.chat_instance.id, "user", user_message_content)
 
-            # --- Получаем API-ключ ДО коммита, чтобы зафиксировать last_used/requests_count ---
-            api_key_obj = get_next_api_key(db, service='gemini')
-            if not api_key_obj:
-                logger.error("No active Gemini API keys available in DB (media).")
-                await update.message.reply_text("❌ Нет доступных API-ключей для обработки медиа. Обратитесь к администратору.", parse_mode=None)
-                db.rollback()
-                return
-            api_key_str = api_key_obj.api_key
 
             # Закрываем транзакцию перед долгим IO
             persona_id_cache = persona.id
@@ -2451,16 +2444,28 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
                                 attached_owner_media = owner_user_refreshed
                             # Нормализуем текст для тарификации
                             _out_text = "\n".join(ai_response_text) if isinstance(ai_response_text, list) else (ai_response_text or "")
-                            await deduct_credits_for_interaction(
-                                db=db_after_ai,
-                                owner_user=attached_owner_media,
-                                input_text="",
-                                output_text=_out_text,
-                                model_name=model_used,
-                                media_type=media_type,
-                                media_duration_sec=getattr(update.message.voice, 'duration', None) if media_type == 'voice' else None,
-                                main_bot=context.application.bot
-                            )
+                            # Проверяем, не был ли ответ заблокирован API
+                            if 'PROHIBITED_CONTENT' in _out_text or 'SAFETY' in _out_text:
+                                logger.warning(f"Skipping credit deduction for user {owner_user_refreshed.id} due to API content block.")
+                                # Опционально: уведомить пользователя о проблеме
+                                try:
+                                    await update.message.reply_text(
+                                        "не могу это обсуждать. возможно, тема нарушает политику безопасности. кредиты не списаны.",
+                                        parse_mode=None
+                                    )
+                                except Exception as notify_err:
+                                    logger.error(f"Failed to notify user about content block: {notify_err}")
+                            else:
+                                await deduct_credits_for_interaction(
+                                    db=db_after_ai,
+                                    owner_user=attached_owner_media,
+                                    input_text="",
+                                    output_text=_out_text,
+                                    model_name=model_used,
+                                    media_type=media_type,
+                                    media_duration_sec=getattr(update.message.voice, 'duration', None) if media_type == 'voice' else None,
+                                    main_bot=context.application.bot
+                                )
                     db_after_ai.commit()
             except Exception as e_media_after:
                 logger.error(f"handle_media: error during Phase 2 DB save: {e_media_after}", exc_info=True)
