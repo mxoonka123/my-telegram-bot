@@ -79,6 +79,17 @@ from utils import get_time_info
 
 logger = logging.getLogger(__name__)
 
+def _sanitize_prompt_text(text: str) -> str:
+    """Removes characters that could corrupt the prompt structure.
+    Заменяем квадратные и фигурные скобки на пробелы, чтобы не ломать шаблоны.
+    """
+    try:
+        if not text:
+            return ""
+        return re.sub(r"[\[\]\{\}]", " ", str(text))
+    except Exception:
+        return str(text) if text is not None else ""
+
 class CommunicationStyle(str, Enum):
     NEUTRAL = "neutral"
     FRIENDLY = "friendly"
@@ -279,7 +290,8 @@ class Persona:
         else:
             # предпочтительно использовать закешированный базовый шаблон из БД, иначе дефолтный
             template = self.system_prompt_template_base or self._get_system_template()
-        mood_instruction = self.get_mood_prompt_snippet()
+        safe_description = _sanitize_prompt_text(self.description)
+        mood_instruction = _sanitize_prompt_text(self.get_mood_prompt_snippet())
         mood_name = self.current_mood
 
         style_map = {"neutral": "Нейтральный", "friendly": "Дружелюбный", "sarcastic": "Саркастичный", "formal": "Формальный", "brief": "Краткий"}
@@ -294,7 +306,7 @@ class Persona:
             # Словарь с плейсхолдерами для шаблона V18. Добавлена информация о времени.
             placeholders = {
                 'persona_name': self.name,
-                'persona_description': self.description,
+                'persona_description': safe_description,
                 'communication_style': style_text,
                 'verbosity_level': verbosity_text,
                 'mood_name': mood_name,
@@ -488,15 +500,17 @@ class Persona:
         # Получаем данные о настроении ПРАВИЛЬНЫМ СПОСОБОМ
         mood_name = self.current_mood
         mood_prompt = self.get_mood_prompt_snippet()
+        safe_desc = _sanitize_prompt_text(self.description)
+        safe_mood = _sanitize_prompt_text(mood_prompt)
         
         template_vars = {
             'persona_name': self.name,
-            'persona_description': self.description,
+            'persona_description': safe_desc,
             'communication_style': style_text,
             'verbosity_level': verbosity_text,
             'media_interaction_instruction': media_instruction,
             'mood_name': mood_name,
-            'mood_prompt': mood_prompt,
+            'mood_prompt': safe_mood,
             'user_id': user_id,
             'username': username,
             'chat_id': chat_id,
