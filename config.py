@@ -98,8 +98,8 @@ TELEGRAPH_ACCESS_TOKEN = os.getenv("TELEGRAPH_ACCESS_TOKEN", None) # Токен 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 # OpenRouter Chat Completions endpoint (OpenAI compatible)
 OPENROUTER_API_BASE_URL = os.getenv("OPENROUTER_API_BASE_URL", "https://openrouter.ai/api/v1/chat/completions")
-# Default model for paid users via OpenRouter
-OPENROUTER_MODEL_NAME = os.getenv("OPENROUTER_MODEL_NAME", "google/gemini-2.5-flash")
+# Default model for paid users via OpenRouter (switched to Anthropic Claude 3 Haiku)
+OPENROUTER_MODEL_NAME = os.getenv("OPENROUTER_MODEL_NAME", "anthropic/claude-3-haiku")
 
   # --- Цены кредитной системы (базовые, можно менять без деплоя через env) ---
   # Стоимость указывается в кредитах за 1k токенов или за единицу медиа.
