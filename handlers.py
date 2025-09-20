@@ -232,22 +232,44 @@ async def send_to_google_gemini(
                 logger.warning(f"Model returned JSON but unexpected type: {type(parsed)}. Wrapping as single item.")
                 return [str(text_content)]
             except json.JSONDecodeError:
-                # Fallback: извлекаем все подстроки в двойных кавычках как элементы списка
+                # Fallback: сначала попробуем извлечь JSON из fenced-блока и найти массив response
                 import re
-                logger.warning(f"Failed to parse JSON. Falling back to regex extraction. Preview: {text_content[:200]}")
                 try:
-                    extracted_parts = re.findall(r'"([^"\\]*(?:\\.[^"\\]*)*)"', text_content)
-                    # Безопасно убираем экранирование только для стандартных последовательностей, не трогая кириллицу
+                    extracted_block = extract_json_from_markdown(text_content)
+                except Exception:
+                    extracted_block = text_content
+                logger.warning(f"Failed to parse JSON. Falling back to regex extraction. Preview: {extracted_block[:200]}")
+                # 1) Попробуем найти массив после ключа "response"
+                try:
+                    m = re.search(r'"response"\s*:\s*(\[.*?\])', extracted_block, re.DOTALL)
+                    if m:
+                        arr = json.loads(m.group(1))
+                        if isinstance(arr, list):
+                            return [str(it) for it in arr]
+                except Exception:
+                    pass
+                # 2) Если не вышло — извлечем только элементы массива в квадратных скобках
+                try:
+                    m2 = re.search(r'(\[\s*".*?"\s*(?:,\s*".*?"\s*)*\])', extracted_block, re.DOTALL)
+                    if m2:
+                        arr2 = json.loads(m2.group(1))
+                        if isinstance(arr2, list):
+                            return [str(it) for it in arr2]
+                except Exception:
+                    pass
+                # 3) Последний шанс: извлечь все строки в кавычках, исключая служебные ключи вроде "response"
+                try:
+                    extracted_parts = re.findall(r'"([^"\\]*(?:\\.[^"\\]*)*)"', extracted_block)
                     cleaned_parts = [
                         part.replace('\\"', '"').replace('\\\\', '\\')
                         for part in extracted_parts
                     ]
-                    final_parts = [p.strip() for p in cleaned_parts if p and p.strip()]
+                    final_parts = [p.strip() for p in cleaned_parts if p and p.strip() and p.strip().lower() != 'response']
                     if final_parts:
                         logger.info(f"Successfully extracted {len(final_parts)} parts via regex fallback.")
                         return final_parts
                     else:
-                        logger.error(f"Regex fallback found no quoted strings. Treating as single message. Preview: {text_content[:200]}")
+                        logger.error(f"Regex fallback found no quoted strings. Treating as single message. Preview: {extracted_block[:200]}")
                         return [str(text_content)]
                 except Exception as regex_err:
                     logger.error(f"Regex fallback failed with error: {regex_err}. Treating as single message.")
@@ -958,7 +980,7 @@ def _is_degenerate_text(text: str) -> bool:
     if not s:
         return True
     # Explicit junk tokens (ascii-only); DO NOT include Russian words like 'да', 'нет'
-    junk_set = {"ext", "ok", "yes", "no", "k", "x", "test"}
+    junk_set = {"ext", "ok", "yes", "no", "k", "x", "test", "response"}
     if s.lower() in junk_set:
         return True
     # If string is ascii-only and very short (<= 4-5), consider junk
@@ -1097,21 +1119,34 @@ async def get_llm_response(
 
         # Есть кредиты — используем OpenRouter
         if attached_owner and float(getattr(attached_owner, "credits", 0.0) or 0.0) > 0.0:
-            model_to_use = config.OPENROUTER_MODEL_NAME
-            api_key_to_use = config.OPENROUTER_API_KEY
-            logger.info(
-                f"get_llm_response: user {getattr(attached_owner, 'id', 'N/A')} has credits; using OpenRouter model '{model_to_use}'."
-            )
-            if not api_key_to_use:
-                return "[ошибка: ключ OPENROUTER_API_KEY не настроен]", model_to_use, None
             if image_data is not None:
-                return "[ошибка: текущая конфигурация OpenRouter не поддерживает изображения]", model_to_use, None
-            llm_response = await send_to_openrouter(
-                api_key=api_key_to_use,
-                system_prompt=system_prompt,
-                messages=context_for_ai,
-                model_name=model_to_use,
-            )
+                # Для изображений всегда используем нативный Gemini
+                model_to_use = config.GEMINI_MODEL_NAME_FOR_API
+                api_key_obj = get_next_api_key(db_session, service='gemini')
+                if not api_key_obj or not api_key_obj.api_key:
+                    return "[ошибка: нет доступных API-ключей Gemini]", model_to_use, None
+                api_key_to_use = api_key_obj.api_key
+                logger.info(f"get_llm_response: user {getattr(attached_owner, 'id', 'N/A')} has credits; routing IMAGE to Gemini model '{model_to_use}'.")
+                llm_response = await send_to_google_gemini(
+                    api_key=api_key_to_use,
+                    system_prompt=system_prompt,
+                    messages=context_for_ai,
+                    image_data=image_data,
+                )
+            else:
+                model_to_use = config.OPENROUTER_MODEL_NAME
+                api_key_to_use = config.OPENROUTER_API_KEY
+                logger.info(
+                    f"get_llm_response: user {getattr(attached_owner, 'id', 'N/A')} has credits; using OpenRouter model '{model_to_use}'."
+                )
+                if not api_key_to_use:
+                    return "[ошибка: ключ OPENROUTER_API_KEY не настроен]", model_to_use, None
+                llm_response = await send_to_openrouter(
+                    api_key=api_key_to_use,
+                    system_prompt=system_prompt,
+                    messages=context_for_ai,
+                    model_name=model_to_use,
+                )
             # Если OpenRouter вернул мусор вроде 'ext' — делаем автоматический фолбэк на Gemini
             try:
                 first_part = None

@@ -132,6 +132,14 @@ class Persona:
             self.should_respond_prompt_template = getattr(self.config, 'should_respond_prompt_template', None)
         except Exception:
             self.should_respond_prompt_template = None
+        try:
+            self.system_prompt_template_override = getattr(self.config, 'system_prompt_template_override', None)
+        except Exception:
+            self.system_prompt_template_override = None
+        try:
+            self.system_prompt_template_base = getattr(self.config, 'system_prompt_template', None) or DEFAULT_SYSTEM_PROMPT_TEMPLATE
+        except Exception:
+            self.system_prompt_template_base = DEFAULT_SYSTEM_PROMPT_TEMPLATE
 
         # Determine current mood safely
         self.current_mood = "нейтрально" # Default
@@ -233,12 +241,13 @@ class Persona:
             logger.debug(f"Persona {self.id} ({self.name}) configured NOT to react to TEXT with setting '{self.media_reaction}'. System prompt generation skipped.")
             return None
 
-        # сначала используем персональный шаблон из мастера, если задан
-        if getattr(self.config, 'system_prompt_template_override', None):
+        # сначала используем персональный шаблон из мастера, если задан (используем кеш, чтобы не триггерить lazy-load)
+        if self.system_prompt_template_override:
             logger.info(f"используется персональный системный промпт (мастер) для личности {self.id}")
-            template = self.config.system_prompt_template_override
+            template = self.system_prompt_template_override
         else:
-            template = self._get_system_template() # получаем стандартный шаблон
+            # предпочтительно использовать закешированный базовый шаблон из БД, иначе дефолтный
+            template = self.system_prompt_template_base or self._get_system_template()
         mood_instruction = self.get_mood_prompt_snippet()
         mood_name = self.current_mood
 
