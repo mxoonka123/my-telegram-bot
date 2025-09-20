@@ -178,6 +178,13 @@ class User(Base):
              logger.error(f"Error checking persona count for User {self.id}: {e}", exc_info=True)
              return False
 
+    def has_credits(self) -> bool:
+        """Checks if the user has a positive credit balance."""
+        try:
+            return self.credits > 0
+        except TypeError:
+            return False
+
     def __repr__(self):
         return f"<User(id={self.id}, telegram_id={self.telegram_id}, username='{self.username}')>"
 
