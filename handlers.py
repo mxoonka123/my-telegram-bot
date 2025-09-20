@@ -1187,42 +1187,6 @@ async def send_to_openrouter(
                 logger.warning(f"Could not parse OpenRouter JSON response: {e}. Raw text: {resp.text[:250]}")
                 return f"[ошибка openrouter: не удалось обработать ответ: {resp.text[:100]}]"
         else:
-            # Цепочка фолбэков ТОЛЬКО для случая фото и конкретной модели Gemini 2.0 -001
-            try:
-                text = resp.text or ""
-                is_model_issue = (
-                    (resp.status_code in (400, 404)) and (
-                        "not a valid model id" in text.lower() or
-                        "no endpoints found" in text.lower()
-                    )
-                )
-                if is_model_issue and isinstance(model_name, str) and model_name == "google/gemini-2.0-flash-001":
-                    fallback_chain = [
-                        "google/gemini-2.0-flash",
-                        "google/gemini-2.5-flash",
-                    ]
-                    for fb in fallback_chain:
-                        logger.warning(f"OpenRouter model '{model_name}' unavailable. Retrying with '{fb}'.")
-                        payload["model"] = fb
-                        payload["provider"] = {"order": [fb], "allow_fallbacks": False}
-                        async with httpx.AsyncClient(timeout=90.0) as client:
-                            resp2 = await client.post(config.OPENROUTER_API_BASE_URL, json=payload, headers=headers)
-                        if resp2.status_code == 200:
-                            try:
-                                data2 = resp2.json()
-                                content2 = data2.get('choices', [{}])[0].get('message', {}).get('content', '')
-                                if not content2 or _is_degenerate_text(content2):
-                                    logger.warning(f"OpenRouter returned empty/degenerate content on fallback: '{str(content2)[:100]}'")
-                                    err2 = data2.get('error', {}).get('message', str(content2))
-                                    return f"[ошибка openrouter: получен пустой или некорректный ответ: {err2}]"
-                                return parse_and_split_messages(content2)
-                            except (json.JSONDecodeError, IndexError) as e2:
-                                logger.warning(f"Could not parse OpenRouter JSON fallback response: {e2}. Raw text: {resp2.text[:250]}")
-                                return f"[ошибка openrouter: не удалось обработать ответ: {resp2.text[:100]}]"
-                        else:
-                            logger.warning(f"Fallback '{fb}' failed with {resp2.status_code}: {resp2.text[:180]}")
-            except Exception as _fb_err:
-                logger.error(f"OpenRouter fallback attempt failed: {_fb_err}")
             error_message = f"[ошибка openrouter api {resp.status_code}: {resp.text}]"
             logger.error(error_message)
             return error_message
@@ -1314,10 +1278,10 @@ async def get_llm_response(
             if not api_key_to_use:
                 return "[ошибка: ключ OPENROUTER_API_KEY не настроен]", "N/A", None
 
-            # Принудительно используем vision-модель для фото
+            # Для фото используем специальную модель из конфига, для текста — основную.
             if media_type == 'photo' and image_data:
-                model_to_use = "google/gemini-2.0-flash-001" 
-                logger.info(f"get_llm_response: user has credits, media is photo. Forcing model to '{model_to_use}'.")
+                model_to_use = config.OPENROUTER_IMAGE_MODEL_NAME
+                logger.info(f"get_llm_response: user has credits, media is photo. Using OpenRouter image model: '{model_to_use}'.")
             else:
                 model_to_use = config.OPENROUTER_MODEL_NAME
             

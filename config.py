@@ -43,14 +43,15 @@ GEMINI_FREE_IMAGE_MODEL = os.getenv("GEMINI_FREE_IMAGE_MODEL", "gemini-2.5-flash
 ENABLE_OUTPUT_SANITIZER = os.getenv("ENABLE_OUTPUT_SANITIZER", "false").lower() in ("1", "true", "yes", "y")
 
 # Отдельная модель OpenRouter для фотографий (если у пользователя есть кредиты)
+# Явно устанавливаем ту же модель, что и для текста, чтобы избежать ошибок с недоступными моделями по умолчанию.
+# При необходимости можно переопределить через переменную окружения OPENROUTER_IMAGE_MODEL_NAME.
 # По требованию используем единую модель для всего: x-ai/grok-4-fast:free
-OPENROUTER_IMAGE_MODEL_NAME = os.getenv("OPENROUTER_IMAGE_MODEL_NAME", OPENROUTER_MODEL_NAME)
+OPENROUTER_IMAGE_MODEL_NAME = os.getenv("OPENROUTER_IMAGE_MODEL_NAME", "x-ai/grok-4-fast:free")
 # Базовый URL теперь не содержит имя модели, оно будет подставляться при вызове
 GEMINI_API_BASE_URL_TEMPLATE = os.getenv(
     "GEMINI_API_BASE_URL_TEMPLATE",
     "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
 )
-# print(f"DEBUG config.py: GEMINI_API_KEY length: {len(GEMINI_API_KEY) if GEMINI_API_KEY else 0}")
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     logger.critical("CRITICAL: Переменная окружения DATABASE_URL не установлена!")

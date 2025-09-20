@@ -1000,22 +1000,6 @@ def set_mood_for_chat_bot(db: Session, chat_bot_instance_id: int, mood: str):
 
 # --- Bulk Operations / Tasks ---
 
-def get_all_active_chat_bot_instances(db: Session) -> List[ChatBotInstance]:
-    """Gets all active ChatBotInstances with relations for tasks."""
-    try:
-        return db.query(ChatBotInstance)\
-            .filter(ChatBotInstance.active == True)\
-            .options(
-                selectinload(ChatBotInstance.bot_instance_ref)
-                .selectinload(BotInstance.persona_config)
-                .selectinload(PersonaConfig.owner),
-                selectinload(ChatBotInstance.bot_instance_ref)
-                .selectinload(BotInstance.owner)
-            ).all()
-    except SQLAlchemyError as e:
-        logger.error(f"DB error getting all active instances: {e}", exc_info=True)
-        return []
-
 def get_persona_and_context_with_owner(chat_id: str, db: Session, current_telegram_bot_id: Optional[str] = None) -> Optional[Tuple["Persona", ChatBotInstance, User]]:
     """Returns a tuple of (Persona, ChatBotInstance, User) for the bot in the given chat.
 
