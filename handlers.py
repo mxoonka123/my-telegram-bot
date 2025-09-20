@@ -1140,13 +1140,18 @@ async def send_to_openrouter(
         last_user_message = next((m for m in reversed(messages) if m.get('role') == 'user'), None)
         text_content = last_user_message['content'] if last_user_message else "Опиши картинку кратко, затем задай 1-2 вопроса. Ответ в JSON."
         base64_image = base64.b64encode(image_data).decode('utf-8')
-        image_url = f"data:image/jpeg;base64,{base64_image}"
-        openrouter_messages.extend(m for m in messages if m != last_user_message)
+        image_url_data = f"data:image/jpeg;base64,{base64_image}"
+        # Пересобираем последнее пользовательское сообщение вместе с картинкой в универсальном формате
+        if last_user_message:
+            messages_without_last = [m for m in messages if m is not last_user_message]
+            openrouter_messages.extend(messages_without_last)
+        else:
+            openrouter_messages.extend(messages)
         openrouter_messages.append({
             "role": "user",
             "content": [
-                {"type": "input_image", "image_url": {"url": image_url}},
-                {"type": "input_text", "text": text_content},
+                {"type": "text", "text": text_content},
+                {"type": "image_url", "image_url": {"url": image_url_data}},
             ],
         })
     else:

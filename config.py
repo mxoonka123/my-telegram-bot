@@ -45,8 +45,8 @@ ENABLE_OUTPUT_SANITIZER = os.getenv("ENABLE_OUTPUT_SANITIZER", "false").lower() 
 # Отдельная модель OpenRouter для фотографий (если у пользователя есть кредиты)
 # Явно устанавливаем ту же модель, что и для текста, чтобы избежать ошибок с недоступными моделями по умолчанию.
 # При необходимости можно переопределить через переменную окружения OPENROUTER_IMAGE_MODEL_NAME.
-# По требованию используем единую модель для всего: x-ai/grok-4-fast:free
-OPENROUTER_IMAGE_MODEL_NAME = os.getenv("OPENROUTER_IMAGE_MODEL_NAME", "x-ai/grok-4-fast:free")
+# Используем Claude 3 Haiku для обработки изображений по умолчанию (можно переопределить через env).
+OPENROUTER_IMAGE_MODEL_NAME = os.getenv("OPENROUTER_IMAGE_MODEL_NAME", "anthropic/claude-3-haiku")
 # Базовый URL теперь не содержит имя модели, оно будет подставляться при вызове
 GEMINI_API_BASE_URL_TEMPLATE = os.getenv(
     "GEMINI_API_BASE_URL_TEMPLATE",
