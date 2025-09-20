@@ -84,6 +84,11 @@ class Persona:
              raise ValueError("persona_config_db_obj cannot be None")
         self.config = persona_config_db_obj
         self.chat_instance = chat_bot_instance_db_obj # Can be None if used outside chat context
+        # Безопасно кешируем chat_id, чтобы не триггерить lazy-load на отсоединённых инстансах
+        try:
+            self.chat_id_info = str(getattr(chat_bot_instance_db_obj, 'chat_id')) if chat_bot_instance_db_obj else "unknown_chat"
+        except Exception:
+            self.chat_id_info = "unknown_chat"
 
         self.id = self.config.id
         self.name = self.config.name or "Без имени"
@@ -151,8 +156,13 @@ class Persona:
 
         # Determine current mood safely
         self.current_mood = "нейтрально" # Default
-        if self.chat_instance and self.chat_instance.current_mood:
-            self.current_mood = self.chat_instance.current_mood
+        if self.chat_instance:
+            try:
+                if self.chat_instance.current_mood:
+                    self.current_mood = self.chat_instance.current_mood
+            except Exception:
+                # Если инстанс отсоединён — оставляем дефолт
+                pass
 
         # Validate current mood against loaded moods
         normalized_current_mood = self.current_mood.lower()
@@ -264,7 +274,7 @@ class Persona:
         style_text = style_map.get(self.communication_style, style_map["neutral"])
         verbosity_text = verbosity_map.get(self.verbosity_level, verbosity_map["medium"])
 
-        chat_id_info = str(self.chat_instance.chat_id) if self.chat_instance else "unknown_chat"
+        chat_id_info = self.chat_id_info
 
         # --- Блок try...except для форматирования ---
         try:

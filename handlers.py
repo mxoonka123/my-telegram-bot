@@ -1203,13 +1203,13 @@ async def get_llm_response(
         # Есть кредиты — используем OpenRouter
         if attached_owner and float(getattr(attached_owner, "credits", 0.0) or 0.0) > 0.0:
             if image_data is not None:
-                # Для изображений всегда используем нативный Gemini
-                model_to_use = config.GEMINI_MODEL_NAME_FOR_API
+                # Для изображений всегда используем нативный Gemini (бесплатная модель, если указана)
+                model_to_use = getattr(config, 'GEMINI_FREE_IMAGE_MODEL', None) or config.GEMINI_MODEL_NAME_FOR_API
                 api_key_obj = get_next_api_key(db_session, service='gemini')
                 if not api_key_obj or not api_key_obj.api_key:
                     return "[ошибка: нет доступных API-ключей Gemini]", model_to_use, None
                 api_key_to_use = api_key_obj.api_key
-                logger.info(f"get_llm_response: user {getattr(attached_owner, 'id', 'N/A')} has credits; routing IMAGE to Gemini model '{model_to_use}'.")
+                logger.info(f"get_llm_response: user {getattr(attached_owner, 'id', 'N/A')} has credits; routing IMAGE to Gemini (free) model '{model_to_use}'.")
                 llm_response = await send_to_google_gemini(
                     api_key=api_key_to_use,
                     system_prompt=system_prompt,
@@ -1993,16 +1993,24 @@ async def deduct_credits_for_interaction(
 ) -> None:
     """Рассчитывает и списывает кредиты за одно взаимодействие (текст/фото/голос)."""
     try:
-        from config import CREDIT_COSTS, MODEL_PRICE_MULTIPLIERS, GEMINI_MODEL_NAME_FOR_API, LOW_BALANCE_WARNING_THRESHOLD
-
+        from config import CREDIT_COSTS, MODEL_PRICE_MULTIPLIERS, GEMINI_MODEL_NAME_FOR_API, LOW_BALANCE_WARNING_THRESHOLD, FREE_IMAGE_RESPONSES
+    
         # Используем множитель именно той модели, которая была задействована
         effective_model = model_name or GEMINI_MODEL_NAME_FOR_API
         mult = MODEL_PRICE_MULTIPLIERS.get(effective_model, 1.0)
         total_cost = 0.0
+        # безопасное значение по умолчанию для флага бесплатных фото
+        try:
+            _free_images = bool(FREE_IMAGE_RESPONSES)
+        except Exception:
+            _free_images = False
 
         # 1) Базовая стоимость медиа
         if media_type == "photo":
-            total_cost += CREDIT_COSTS.get("image_per_item", 0.0)
+            if _free_images:
+                total_cost += 0.0
+            else:
+                total_cost += CREDIT_COSTS.get("image_per_item", 0.0)
         elif media_type == "voice":
             minutes = max(1.0, (media_duration_sec or 0) / 60.0)
             total_cost += CREDIT_COSTS.get("audio_per_minute", 0.0) * minutes
@@ -2024,7 +2032,11 @@ async def deduct_credits_for_interaction(
         total_cost += tokens_cost
 
         # 3) Применяем множитель модели
-        final_cost = round(total_cost * mult, 6)
+        # Фото могут быть полностью бесплатными
+        if media_type == "photo" and _free_images:
+            final_cost = 0.0
+        else:
+            final_cost = round(total_cost * mult, 6)
         prev_credits = float(getattr(owner_user, 'credits', 0.0) or 0.0)
 
         if prev_credits >= final_cost and final_cost > 0:
@@ -2051,7 +2063,10 @@ async def deduct_credits_for_interaction(
             except Exception as warn_e:
                 logger.error(f"не удалось отправить уведомление о низком балансе: {warn_e}")
         else:
-            logger.info(f"кредиты не списаны: пользователь {owner_user.id}, стоимость={final_cost}, баланс={prev_credits}")
+            if media_type == "photo" and final_cost == 0.0:
+                logger.info(f"кредиты не списаны (фото бесплатно): пользователь {owner_user.id}, баланс={prev_credits}")
+            else:
+                logger.info(f"кредиты не списаны: пользователь {owner_user.id}, стоимость={final_cost}, баланс={prev_credits}")
 
     except Exception as e:
         logger.error(f"ошибка при расчете/списании кредитов: {e}", exc_info=True)
