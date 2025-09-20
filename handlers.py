@@ -1122,6 +1122,8 @@ async def send_to_openrouter(
     messages: List[Dict[str, str]],
     model_name: str,
     image_data: Optional[bytes] = None,
+    temperature: Optional[float] = None,
+    max_tokens: Optional[int] = None,
 ) -> Union[List[str], str]:
     """Sends a request to the OpenRouter API and handles the response."""
     headers = {
@@ -1135,15 +1137,15 @@ async def send_to_openrouter(
         openrouter_messages.append({"role": "system", "content": system_prompt})
     if image_data:
         last_user_message = next((m for m in reversed(messages) if m.get('role') == 'user'), None)
-        text_content = last_user_message['content'] if last_user_message else "Describe the image."
+        text_content = last_user_message['content'] if last_user_message else "Опиши картинку кратко, затем задай 1-2 вопроса. Ответ в JSON."
         base64_image = base64.b64encode(image_data).decode('utf-8')
         image_url = f"data:image/jpeg;base64,{base64_image}"
         openrouter_messages.extend(m for m in messages if m != last_user_message)
         openrouter_messages.append({
             "role": "user",
             "content": [
-                {"type": "image_url", "image_url": {"url": image_url}},
-                {"type": "text", "text": text_content},
+                {"type": "input_image", "image_url": {"url": image_url}},
+                {"type": "input_text", "text": text_content},
             ],
         })
     else:
@@ -1152,7 +1154,17 @@ async def send_to_openrouter(
         "model": model_name,
         "messages": openrouter_messages,
         "stream": False,
+        "provider": {"order": [model_name], "allow_fallbacks": False},
     }
+    # Строже требуем JSON-ответ, если модель поддерживает этот флаг
+    try:
+        payload["response_format"] = {"type": "json_object"}
+    except Exception:
+        pass
+    if temperature is not None:
+        payload["temperature"] = float(temperature)
+    if max_tokens is not None:
+        payload["max_tokens"] = int(max_tokens)
     try:
         async with httpx.AsyncClient(timeout=90.0) as client:
             resp = await client.post(config.OPENROUTER_API_BASE_URL, json=payload, headers=headers)
@@ -1277,6 +1289,8 @@ async def get_llm_response(
                 messages=context_for_ai,
                 model_name=model_to_use,
                 image_data=image_data,
+                temperature=(0.3 if (media_type == 'photo' and image_data) else None),
+                max_tokens=(400 if (media_type == 'photo' and image_data) else None),
             )
 
         else:
