@@ -63,7 +63,7 @@ from telegram.ext import (
 )
 from sqlalchemy.orm import Session, joinedload, selectinload
 from sqlalchemy.orm.attributes import flag_modified
-from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError, ProgrammingError, OperationalError
 from sqlalchemy import func, delete
 
 from yookassa import Configuration as YookassaConfig, Payment
@@ -2073,12 +2073,62 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     else:
                         logger.debug("handle_message: No DB changes detected for final commit.")
 
-        except SQLAlchemyError as e:
-            logger.error(f"handle_message: SQLAlchemyError: {e}", exc_info=True)
+        except IntegrityError as e:
+            logger.error(f"handle_message: IntegrityError (нарушение уникальности): {e}", exc_info=True)
             if update.effective_message:
-                try: await update.effective_message.reply_text("❌ Ошибка базы данных. Попробуйте позже.", parse_mode=None)
-                except Exception: pass
-            if db_session: 
+                try:
+                    await update.effective_message.reply_text(
+                        "❌ Ошибка целостности данных. Возможно, вы пытаетесь создать дубликат.",
+                        parse_mode=None,
+                    )
+                except Exception:
+                    pass
+            if db_session:
+                try:
+                    db_session.rollback()
+                except Exception as rb_err:
+                    logger.error(f"handle_message: rollback after IntegrityError failed: {rb_err}")
+        except ProgrammingError as e:
+            logger.critical(f"handle_message: CRITICAL ProgrammingError (несоответствие схемы БД и кода?): {e}", exc_info=True)
+            if update.effective_message:
+                try:
+                    await update.effective_message.reply_text(
+                        "❌ Критическая ошибка конфигурации базы данных. Свяжитесь с администратором.",
+                        parse_mode=None,
+                    )
+                except Exception:
+                    pass
+            if db_session:
+                try:
+                    db_session.rollback()
+                except Exception as rb_err:
+                    logger.error(f"handle_message: rollback after ProgrammingError failed: {rb_err}")
+        except OperationalError as e:
+            logger.error(f"handle_message: OperationalError (проблема с подключением к БД?): {e}", exc_info=True)
+            if update.effective_message:
+                try:
+                    await update.effective_message.reply_text(
+                        "❌ Временно не удается подключиться к базе данных. Попробуйте позже.",
+                        parse_mode=None,
+                    )
+                except Exception:
+                    pass
+            if db_session:
+                try:
+                    db_session.rollback()
+                except Exception as rb_err:
+                    logger.error(f"handle_message: rollback after OperationalError failed: {rb_err}")
+        except SQLAlchemyError as e:
+            logger.error(f"handle_message: Unhandled SQLAlchemyError: {e}", exc_info=True)
+            if update.effective_message:
+                try:
+                    await update.effective_message.reply_text(
+                        "❌ Ошибка базы данных. Попробуйте позже.",
+                        parse_mode=None,
+                    )
+                except Exception:
+                    pass
+            if db_session:
                 try:
                     db_session.rollback()
                     db_session.close()

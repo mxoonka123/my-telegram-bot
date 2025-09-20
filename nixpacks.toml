@@ -11,3 +11,6 @@ cmds = [
   "unzip -q vosk-model-small-ru-0.22.zip -d model_vosk_ru",
   "rm vosk-model-small-ru-0.22.zip"
 ]
+
+[start]
+cmd = "./run.sh"

@@ -289,7 +289,8 @@ class Persona:
                 'username': username, # Keep username for context
                 'user_id': user_id,     # Keep user_id for context
                 'chat_id': chat_id_info, # Keep chat_id for context
-                'current_time_info': get_time_info() # <-- НОВОЕ
+                'current_time_info': get_time_info(), # <-- НОВОЕ
+                'chat_type': ("group" if chat_type in {"group", "supergroup"} else "private"),
             }
             # Безопасное форматирование: не падаем на неизвестных ключах (например, в JSON-примерах c фигурными скобками)
             class SafeDict(dict):
@@ -306,7 +307,7 @@ class Persona:
                 f"Ты {self.name}. {self.description}.",
                 f"Стиль: {style_text}. Разговорчивость: {verbosity_text}.",
                 f"Настроение: {mood_name} ({mood_instruction}).",
-                f"Формат ответа: JSON-объект с ключом 'response', значением является список строк. Пример: {{\"response\":[\"привет\",\"как дела?\"]}}.",
+                "Формат ответа: выведи ТОЛЬКО валидный JSON-массив строк (каждый элемент — отдельное сообщение). Пример: [\"привет\", \"как дела?\"].",
                 f"Ответь на последнее сообщение от {username} (id: {user_id}) в чате {chat_id_info}."
             ]
             formatted_prompt = " ".join(fallback_parts)
@@ -327,14 +328,13 @@ class Persona:
             logger.warning("Using fallback system prompt due to unexpected formatting error.")
         # --- Конец блока try...except ---
 
-        # Если чат групповой — добавим инструкцию для корректной адресации
+        # Собираем дополнительные инструкции
+        additional_instructions = [BASE_PROMPT_SUFFIX, INTERNET_INFO_PROMPT]
         if chat_type in {"group", "supergroup"}:
-            formatted_prompt = f"{formatted_prompt} {GROUP_CHAT_INSTRUCTION}".strip()
+            additional_instructions.append(GROUP_CHAT_INSTRUCTION)
 
-        # Если нужно добавить общие инструкции *после* форматирования шаблона
-        # formatted_prompt += " " + BASE_PROMPT_SUFFIX # Пример
-
-        return formatted_prompt.strip()
+        final_prompt = f"{formatted_prompt}\n\n[ADDITIONAL INSTRUCTIONS]\n" + "\n".join(additional_instructions)
+        return final_prompt.strip()
 
     def format_conversation_starter_prompt(self, history: List[Dict[str, str]]) -> Tuple[str, List[Dict[str, str]]]:
         """Формирует системный промпт для старта диалога с учетом последних сообщений.
