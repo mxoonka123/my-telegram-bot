@@ -969,9 +969,6 @@ async def send_to_openrouter(
         "temperature": 1.0,
         "top_p": 0.95,
         "max_tokens": 4096,
-        # Просим модель вернуть валидный JSON-объект (широко поддерживаемый режим).
-        # Строгость формата (массив строк) обеспечивается системным промптом.
-        "response_format": {"type": "json_object"},
     }
 
     try:
