@@ -208,14 +208,29 @@ async def send_to_google_gemini(
                 logger.error(f"Google Gemini API returned a valid but empty/unexpected response: {data}")
                 return "[ошибка google api: получен пустой или неожиданный ответ от модели]"
 
-            # Пытаемся распарсить текст как JSON-массив строк
+            # Пытаемся распарсить текст как JSON
             try:
                 parsed = json.loads(text_content)
                 if isinstance(parsed, list):
                     return [str(it) for it in parsed]
-                else:
+                if isinstance(parsed, dict):
+                    for key in ['response', 'answer', 'text', 'parts']:
+                        val = parsed.get(key)
+                        if isinstance(val, list):
+                            return [str(it) for it in val]
+                        if isinstance(val, str):
+                            # Если внутри строки лежит сериализованный JSON-массив
+                            try:
+                                inner = json.loads(val)
+                                if isinstance(inner, list):
+                                    return [str(it) for it in inner]
+                            except Exception:
+                                pass
                     logger.warning(f"Model returned JSON but not a list: {type(parsed)}. Wrapping as single item.")
                     return [str(text_content)]
+                # Иные типы
+                logger.warning(f"Model returned JSON but unexpected type: {type(parsed)}. Wrapping as single item.")
+                return [str(text_content)]
             except json.JSONDecodeError:
                 # Fallback: извлекаем все подстроки в двойных кавычках как элементы списка
                 import re
@@ -1269,6 +1284,7 @@ async def process_and_send_response(update: Update, context: ContextTypes.DEFAUL
         if text_parts_to_send:
             for text_part_candidate in text_parts_to_send:
                 stripped_candidate = text_part_candidate.strip()
+                # 1) Специальный случай: fenced ```json [ ... ]```
                 match = re.search(r"^```json\s*(\[.*?\])\s*```$", stripped_candidate, re.DOTALL)
                 if match:
                     inner_json_str = match.group(1)
@@ -1281,7 +1297,39 @@ async def process_and_send_response(update: Update, context: ContextTypes.DEFAUL
                     except (json.JSONDecodeError, TypeError):
                         processed_parts_for_sending.append(text_part_candidate)
                 else:
-                    processed_parts_for_sending.append(text_part_candidate)
+                    # 2) Попытка вытащить JSON из fenced-блока любого языка
+                    try:
+                        extracted = extract_json_from_markdown(stripped_candidate)
+                    except Exception:
+                        extracted = stripped_candidate
+                    # 3) Попытка распарсить как JSON (массив или объект с ключом response)
+                    parsed_ok = False
+                    try:
+                        maybe_json = json.loads(extracted)
+                        if isinstance(maybe_json, list):
+                            processed_parts_for_sending.extend(str(p) for p in maybe_json)
+                            parsed_ok = True
+                        elif isinstance(maybe_json, dict):
+                            resp = maybe_json.get('response')
+                            if isinstance(resp, list):
+                                processed_parts_for_sending.extend(str(p) for p in resp)
+                                parsed_ok = True
+                    except Exception:
+                        parsed_ok = False
+                    if not parsed_ok:
+                        # 4) Регэкспом попробуем вытащить JSON-массив после ключа response
+                        try:
+                            m = re.search(r'"response"\s*:\s*(\[.*?\])', extracted, re.DOTALL)
+                            if m:
+                                arr_str = m.group(1)
+                                arr = json.loads(arr_str)
+                                if isinstance(arr, list):
+                                    processed_parts_for_sending.extend(str(p) for p in arr)
+                                    parsed_ok = True
+                        except Exception:
+                            parsed_ok = False
+                    if not parsed_ok:
+                        processed_parts_for_sending.append(text_part_candidate)
             text_parts_to_send = processed_parts_for_sending
 
         chat_type = update.effective_chat.type if update and update.effective_chat else None
