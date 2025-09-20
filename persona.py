@@ -9,7 +9,8 @@ from enum import Enum
 
 # Убедимся, что импортируем нужные вещи
 from db import (
-    DEFAULT_MOOD_PROMPTS, BASE_PROMPT_SUFFIX, INTERNET_INFO_PROMPT, GROUP_CHAT_INSTRUCTION
+    DEFAULT_MOOD_PROMPTS, BASE_PROMPT_SUFFIX, INTERNET_INFO_PROMPT, GROUP_CHAT_INSTRUCTION,
+    DEFAULT_SHOULD_RESPOND_TEMPLATE,
 )
 # Шаблон DEFAULT_SYSTEM_PROMPT_TEMPLATE теперь берется из DB, но нужен для fallback
 from db import PersonaConfig, ChatBotInstance, User, DEFAULT_SYSTEM_PROMPT_TEMPLATE
@@ -125,6 +126,12 @@ class Persona:
              logger.warning(f"Moods JSON empty for persona {self.id}. Using default.")
              loaded_moods = DEFAULT_MOOD_PROMPTS.copy()
         self.mood_prompts = loaded_moods or DEFAULT_MOOD_PROMPTS.copy()
+
+        # Cache templates to avoid lazy-load on detached instances
+        try:
+            self.should_respond_prompt_template = getattr(self.config, 'should_respond_prompt_template', None)
+        except Exception:
+            self.should_respond_prompt_template = None
 
         # Determine current mood safely
         self.current_mood = "нейтрально" # Default
@@ -346,8 +353,8 @@ class Persona:
             logger.error("format_should_respond_prompt called for non-contextual preference.")
             return None
 
-        # Получаем шаблон из объекта конфига PersonaConfig
-        template = self.config.should_respond_prompt_template
+        # Получаем шаблон из кеша; избегаем обращения к self.config, если он отсоединён
+        template = getattr(self, 'should_respond_prompt_template', None)
         if not template:
             logger.warning(f"should_respond_prompt_template is empty for persona {self.id}. Cannot generate contextual check prompt. Using default.")
             template = DEFAULT_SHOULD_RESPOND_TEMPLATE # Используем дефолтный из db.py как fallback
