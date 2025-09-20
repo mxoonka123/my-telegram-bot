@@ -1248,68 +1248,39 @@ async def get_llm_response(
     Централизованный выбор LLM: OpenRouter для платных пользователей, Gemini для бесплатных.
     Возвращает (ответ, имя_модели, использованный_api_ключ или None).
     """
-    model_to_use: str = ""
-    api_key_to_use: Optional[str] = None
-    llm_response: Union[List[str], str] = "[ошибка: модель не была выбрана]"
+    attached_owner = db_session.merge(owner_user)
+    has_credits = attached_owner.has_credits()
+    llm_response: Union[List[str], str] = "[системная ошибка: ответ LLM не был получен]"
+    model_to_use = "unknown"
+    api_key_to_use = None
 
     try:
-        # Привязываем потенциально отсоединённого пользователя к сессии
-        attached_owner = db_session.merge(owner_user) if owner_user is not None else None
+        if has_credits:
+            api_key_to_use = config.OPENROUTER_API_KEY
+            if not api_key_to_use:
+                return "[ошибка: ключ OPENROUTER_API_KEY не настроен]", "N/A", None
 
-        # Есть кредиты — используем OpenRouter, КРОМЕ голосовых: для voice лучше сразу нативный Gemini (устраняем 'ext')
-        # Есть кредиты — используем OpenRouter для всех типов медиа.
-        if attached_owner and float(getattr(attached_owner, "credits", 0.0) or 0.0) > 0.0:
-            if image_data is not None:
-                # Для изображений у платных пользователей — OpenRouter с отдельной моделью
-                model_to_use = _normalize_openrouter_model_id(getattr(config, 'OPENROUTER_IMAGE_MODEL_NAME', None) or config.OPENROUTER_MODEL_NAME)
-                api_key_to_use = config.OPENROUTER_API_KEY
-                if not api_key_to_use:
-                    return "[ошибка: ключ OPENROUTER_API_KEY не настроен]", model_to_use, None
-                logger.info(
-                    f"get_llm_response: user {getattr(attached_owner, 'id', 'N/A')} has credits; routing IMAGE to OpenRouter model '{model_to_use}'."
-                )
-                llm_response = await send_to_openrouter(
-                    api_key=api_key_to_use,
-                    system_prompt=system_prompt,
-                    messages=context_for_ai,
-                    model_name=model_to_use,
-                    image_data=image_data,
-                )
-                # Если указана невалидная модель — пробуем единоразовый фолбэк на основной OPENROUTER_MODEL_NAME
-                if isinstance(llm_response, str) and "not a valid model ID" in llm_response:
-                    try:
-                        fallback_model = _normalize_openrouter_model_id(getattr(config, 'OPENROUTER_MODEL_NAME', model_to_use))
-                        if fallback_model != model_to_use:
-                            logger.warning(
-                                f"OpenRouter model '{model_to_use}' invalid. Retrying once with fallback model '{fallback_model}'."
-                            )
-                            llm_response = await send_to_openrouter(
-                                api_key=api_key_to_use,
-                                system_prompt=system_prompt,
-                                messages=context_for_ai,
-                                model_name=fallback_model,
-                                image_data=image_data,
-                            )
-                            model_to_use = fallback_model
-                    except Exception as _retry_err:
-                        logger.error(f"OpenRouter fallback retry failed: {_retry_err}")
+            # Принудительно используем vision-модель для фото
+            if media_type == 'photo' and image_data:
+                model_to_use = "google/gemini-2.0-flash-001" 
+                logger.info(f"get_llm_response: user has credits, media is photo. Forcing model to '{model_to_use}'.")
             else:
                 model_to_use = config.OPENROUTER_MODEL_NAME
-                api_key_to_use = config.OPENROUTER_API_KEY
-                logger.info(
-                    f"get_llm_response: user {getattr(attached_owner, 'id', 'N/A')} has credits; using OpenRouter model '{model_to_use}'."
-                )
-                if not api_key_to_use:
-                    return "[ошибка: ключ OPENROUTER_API_KEY не настроен]", model_to_use, None
-                llm_response = await send_to_openrouter(
-                    api_key=api_key_to_use,
-                    system_prompt=system_prompt,
-                    messages=context_for_ai,
-                    model_name=model_to_use,
-                )
+            
+            logger.info(
+                f"get_llm_response: user {getattr(attached_owner, 'id', 'N/A')} has credits; using OpenRouter model '{model_to_use}'."
+            )
+            
+            llm_response = await send_to_openrouter(
+                api_key=api_key_to_use,
+                system_prompt=system_prompt,
+                messages=context_for_ai,
+                model_name=model_to_use,
+                image_data=image_data,
+            )
+
         else:
             # Нет кредитов — используем Gemini
-            # Для бесплатных ИЛИ для голосовых (media_type == 'voice') используем нативный Gemini
             model_to_use = config.GEMINI_MODEL_NAME_FOR_API
             api_key_obj = get_next_api_key(db_session, service='gemini')
             if not api_key_obj or not api_key_obj.api_key:
@@ -1322,11 +1293,13 @@ async def get_llm_response(
                 messages=context_for_ai,
                 image_data=image_data,
             )
+
     except Exception as e:
-        logger.error(f"get_llm_response failed: {e}", exc_info=True)
-        return f"[ошибка выбора модели: {e}]", model_to_use or "", None
+        logger.error(f"[CRITICAL] get_llm_response failed: {e}", exc_info=True)
+        llm_response = f"[критическая ошибка в get_llm_response: {e}]"
 
     return llm_response, model_to_use, api_key_to_use
+
 async def process_and_send_response(update: Update, context: ContextTypes.DEFAULT_TYPE, bot: Bot, chat_id: Union[str, int], persona: Persona, llm_response: Union[List[str], str], db: Session, reply_to_message_id: int, is_first_message: bool = False) -> bool:
     """Processes the response from AI (list of strings or error string) and sends messages to the chat."""
     logger.info(f"process_and_send_response [v4]: --- ENTER --- ChatID: {chat_id}, Persona: '{persona.name}'")
