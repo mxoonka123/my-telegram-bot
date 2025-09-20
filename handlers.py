@@ -933,6 +933,33 @@ def extract_json_from_markdown(text: str) -> str:
     logger.debug(f"No fenced block detected. Returning plain text preview='{plain[:120]}' (orig len={len(text)})")
     return plain
 
+def _is_degenerate_text(text: str) -> bool:
+    """Heuristic check for useless model outputs like 'ext', 'ok', single meaningless ascii tokens.
+    Returns True if the text is likely garbage and should trigger a fallback/regeneration.
+    """
+    if text is None:
+        return True
+    s = str(text).strip().strip('"\'')
+    if not s:
+        return True
+    # Explicit junk tokens (ascii-only); DO NOT include Russian words like 'да', 'нет'
+    junk_set = {"ext", "ok", "yes", "no", "k", "x", "test"}
+    if s.lower() in junk_set:
+        return True
+    # If string is ascii-only and very short (<= 4-5), consider junk
+    try:
+        is_ascii_only = not re.search(r"[А-Яа-яЁё]", s)
+        if is_ascii_only and len(s) <= 5:
+            # exclude common punctuation-only
+            if re.fullmatch(r"[\W_]+", s):
+                return True
+            # single short ascii token like 'ok', 'yo', 'hi'
+            if re.fullmatch(r"[A-Za-z]{1,5}", s):
+                return True
+    except Exception:
+        pass
+    return False
+
 # Максимальная длина входящего сообщения от пользователя в символах
 MAX_USER_MESSAGE_LENGTH_CHARS = 600
 
@@ -1070,6 +1097,30 @@ async def get_llm_response(
                 messages=context_for_ai,
                 model_name=model_to_use,
             )
+            # Если OpenRouter вернул мусор вроде 'ext' — делаем автоматический фолбэк на Gemini
+            try:
+                first_part = None
+                if isinstance(llm_response, list) and llm_response:
+                    first_part = str(llm_response[0])
+                elif isinstance(llm_response, str):
+                    first_part = llm_response
+                if first_part is not None and _is_degenerate_text(first_part):
+                    logger.warning("get_llm_response: OpenRouter returned degenerate output; falling back to Gemini.")
+                    # Fallback to Gemini
+                    model_to_use = config.GEMINI_MODEL_NAME_FOR_API
+                    api_key_obj_fb = get_next_api_key(db_session, service='gemini')
+                    if api_key_obj_fb and api_key_obj_fb.api_key:
+                        api_key_to_use = api_key_obj_fb.api_key
+                        llm_response = await send_to_google_gemini(
+                            api_key=api_key_to_use,
+                            system_prompt=system_prompt,
+                            messages=context_for_ai,
+                            image_data=image_data,
+                        )
+                    else:
+                        logger.error("get_llm_response: no Gemini API key available for fallback.")
+            except Exception as _deg_err:
+                logger.warning(f"get_llm_response: degenerate output check failed: {_deg_err}")
         else:
             # Нет кредитов — используем Gemini
             model_to_use = config.GEMINI_MODEL_NAME_FOR_API
@@ -1166,6 +1217,16 @@ async def process_and_send_response(update: Update, context: ContextTypes.DEFAUL
             else:
                 # Не удаляем, если ответ целиком — короткое приветствие
                 logger.info("process_and_send_response [JSON]: Greeting is the whole message. Keeping it.")
+
+    # Фильтрация деградированных ответов (например, 'ext') до применения лимитов
+    try:
+        filtered_parts = [p for p in text_parts_to_send if not _is_degenerate_text(p)]
+        if not filtered_parts:
+            logger.warning("process_and_send_response: all parts considered degenerate (e.g., 'ext'). Suppressing send.")
+            return False
+        text_parts_to_send = filtered_parts
+    except Exception as _flt_err:
+        logger.warning(f"process_and_send_response: failed to filter degenerate parts: {_flt_err}")
 
     if persona and persona.config:
         max_messages_setting_value = persona.config.max_response_messages

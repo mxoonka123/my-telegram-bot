@@ -70,7 +70,7 @@ DEFAULT_SYSTEM_PROMPT_TEMPLATE = """You are a role-playing assistant. Act strict
 3. Output must be a valid JSON object with a single key "response" that contains a list of strings.
 
 **Correct output example:**
-{"response": ["привет!", "как дела?", "что нового?"]}
+{{"response": ["привет!", "как дела?", "что нового?"]}}
 
 Generate your JSON response now.
 """

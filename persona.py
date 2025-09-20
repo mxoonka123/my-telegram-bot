@@ -257,8 +257,11 @@ class Persona:
                 'chat_id': chat_id_info, # Keep chat_id for context
                 'current_time_info': get_time_info() # <-- НОВОЕ
             }
-            # Форматируем шаблон, используя словарь
-            formatted_prompt = template.format(**placeholders)
+            # Безопасное форматирование: не падаем на неизвестных ключах (например, в JSON-примерах c фигурными скобками)
+            class SafeDict(dict):
+                def __missing__(self, key):
+                    return '{' + key + '}'
+            formatted_prompt = template.format_map(SafeDict(placeholders))
             logger.debug(f"Formatting system prompt V18 with keys: {list(placeholders.keys())}")
 
         except KeyError as e:
@@ -269,6 +272,7 @@ class Persona:
                 f"Ты {self.name}. {self.description}.",
                 f"Стиль: {style_text}. Разговорчивость: {verbosity_text}.",
                 f"Настроение: {mood_name} ({mood_instruction}).",
+                f"Формат ответа: JSON-объект с ключом 'response', значением является список строк. Пример: {{\"response\":[\"привет\",\"как дела?\"]}}.",
                 f"Ответь на последнее сообщение от {username} (id: {user_id}) в чате {chat_id_info}."
             ]
             formatted_prompt = " ".join(fallback_parts)
@@ -282,6 +286,7 @@ class Persona:
                 f"Ты {self.name}. {self.description}.",
                 f"Стиль: {style_text}. Разговорчивость: {verbosity_text}.",
                 f"Настроение: {mood_name} ({mood_instruction}).",
+                f"Формат ответа: JSON-объект с ключом 'response', значением является список строк. Пример: {{\"response\":[\"привет\",\"как дела?\"]}}.",
                 f"Ответь на последнее сообщение от {username} (id: {user_id}) в чате {chat_id_info}."
             ]
             formatted_prompt = " ".join(fallback_parts)
