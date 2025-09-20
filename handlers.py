@@ -1083,6 +1083,21 @@ def _is_degenerate_text(text: str) -> bool:
 # Максимальная длина входящего сообщения от пользователя в символах
 MAX_USER_MESSAGE_LENGTH_CHARS = 600
 
+def _normalize_openrouter_model_id(model: str) -> str:
+    """Нормализует известные модели OpenRouter, чтобы избежать 400 'not a valid model ID'.
+    Пример: 'google/gemini-2.0-flash' -> 'google/gemini-2.0-flash-latest'
+    """
+    try:
+        m = (model or "").strip()
+        if m == "google/gemini-2.0-flash":
+            return "google/gemini-2.0-flash-latest"
+        if m == "google/gemini-2.5-flash":
+            # частая валидная форма у OpenRouter
+            return "google/gemini-2.5-flash-latest"
+        return m
+    except Exception:
+        return model
+
 async def send_to_openrouter(
     api_key: str,
     system_prompt: str,
@@ -1220,7 +1235,7 @@ async def get_llm_response(
         if attached_owner and float(getattr(attached_owner, "credits", 0.0) or 0.0) > 0.0:
             if image_data is not None:
                 # Для изображений у платных пользователей — OpenRouter с отдельной моделью
-                model_to_use = getattr(config, 'OPENROUTER_IMAGE_MODEL_NAME', None) or config.OPENROUTER_MODEL_NAME
+                model_to_use = _normalize_openrouter_model_id(getattr(config, 'OPENROUTER_IMAGE_MODEL_NAME', None) or config.OPENROUTER_MODEL_NAME)
                 api_key_to_use = config.OPENROUTER_API_KEY
                 if not api_key_to_use:
                     return "[ошибка: ключ OPENROUTER_API_KEY не настроен]", model_to_use, None
@@ -1234,6 +1249,24 @@ async def get_llm_response(
                     model_name=model_to_use,
                     image_data=image_data,
                 )
+                # Если указана невалидная модель — пробуем единоразовый фолбэк на основной OPENROUTER_MODEL_NAME
+                if isinstance(llm_response, str) and "not a valid model ID" in llm_response:
+                    try:
+                        fallback_model = _normalize_openrouter_model_id(getattr(config, 'OPENROUTER_MODEL_NAME', model_to_use))
+                        if fallback_model != model_to_use:
+                            logger.warning(
+                                f"OpenRouter model '{model_to_use}' invalid. Retrying once with fallback model '{fallback_model}'."
+                            )
+                            llm_response = await send_to_openrouter(
+                                api_key=api_key_to_use,
+                                system_prompt=system_prompt,
+                                messages=context_for_ai,
+                                model_name=fallback_model,
+                                image_data=image_data,
+                            )
+                            model_to_use = fallback_model
+                    except Exception as _retry_err:
+                        logger.error(f"OpenRouter fallback retry failed: {_retry_err}")
             else:
                 model_to_use = config.OPENROUTER_MODEL_NAME
                 api_key_to_use = config.OPENROUTER_API_KEY
