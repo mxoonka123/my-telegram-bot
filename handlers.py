@@ -1187,40 +1187,42 @@ async def send_to_openrouter(
                 logger.warning(f"Could not parse OpenRouter JSON response: {e}. Raw text: {resp.text[:250]}")
                 return f"[ошибка openrouter: не удалось обработать ответ: {resp.text[:100]}]"
         else:
-            # Точечный фолбэк: если у OpenRouter нет эндпоинта для строго заданного ID Gemini 2.0, пробуем *-latest
+            # Цепочка фолбэков ТОЛЬКО для случая фото и конкретной модели Gemini 2.0 -001
             try:
-                if (
-                    resp.status_code == 404
-                    and isinstance(model_name, str)
-                    and model_name == "google/gemini-2.0-flash-001"
-                    and "No endpoints found" in (resp.text or "")
-                ):
-                    fallback_model = "google/gemini-2.0-flash-latest"
-                    logger.warning(
-                        f"OpenRouter 404 for '{model_name}'. Retrying once with '{fallback_model}'."
+                text = resp.text or ""
+                is_model_issue = (
+                    (resp.status_code in (400, 404)) and (
+                        "not a valid model id" in text.lower() or
+                        "no endpoints found" in text.lower()
                     )
-                    payload["model"] = fallback_model
-                    payload["provider"] = {"order": [fallback_model], "allow_fallbacks": False}
-                    async with httpx.AsyncClient(timeout=90.0) as client:
-                        resp2 = await client.post(config.OPENROUTER_API_BASE_URL, json=payload, headers=headers)
-                    if resp2.status_code == 200:
-                        try:
-                            data2 = resp2.json()
-                            content2 = data2.get('choices', [{}])[0].get('message', {}).get('content', '')
-                            if not content2 or _is_degenerate_text(content2):
-                                logger.warning(f"OpenRouter returned empty/degenerate content on fallback: '{str(content2)[:100]}'")
-                                err2 = data2.get('error', {}).get('message', str(content2))
-                                return f"[ошибка openrouter: получен пустой или некорректный ответ: {err2}]"
-                            return parse_and_split_messages(content2)
-                        except (json.JSONDecodeError, IndexError) as e2:
-                            logger.warning(f"Could not parse OpenRouter JSON fallback response: {e2}. Raw text: {resp2.text[:250]}")
-                            return f"[ошибка openrouter: не удалось обработать ответ: {resp2.text[:100]}]"
-                    else:
-                        error_message = f"[ошибка openrouter api {resp2.status_code}: {resp2.text}]"
-                        logger.error(error_message)
-                        return error_message
+                )
+                if is_model_issue and isinstance(model_name, str) and model_name == "google/gemini-2.0-flash-001":
+                    fallback_chain = [
+                        "google/gemini-2.0-flash",
+                        "google/gemini-2.5-flash",
+                    ]
+                    for fb in fallback_chain:
+                        logger.warning(f"OpenRouter model '{model_name}' unavailable. Retrying with '{fb}'.")
+                        payload["model"] = fb
+                        payload["provider"] = {"order": [fb], "allow_fallbacks": False}
+                        async with httpx.AsyncClient(timeout=90.0) as client:
+                            resp2 = await client.post(config.OPENROUTER_API_BASE_URL, json=payload, headers=headers)
+                        if resp2.status_code == 200:
+                            try:
+                                data2 = resp2.json()
+                                content2 = data2.get('choices', [{}])[0].get('message', {}).get('content', '')
+                                if not content2 or _is_degenerate_text(content2):
+                                    logger.warning(f"OpenRouter returned empty/degenerate content on fallback: '{str(content2)[:100]}'")
+                                    err2 = data2.get('error', {}).get('message', str(content2))
+                                    return f"[ошибка openrouter: получен пустой или некорректный ответ: {err2}]"
+                                return parse_and_split_messages(content2)
+                            except (json.JSONDecodeError, IndexError) as e2:
+                                logger.warning(f"Could not parse OpenRouter JSON fallback response: {e2}. Raw text: {resp2.text[:250]}")
+                                return f"[ошибка openrouter: не удалось обработать ответ: {resp2.text[:100]}]"
+                        else:
+                            logger.warning(f"Fallback '{fb}' failed with {resp2.status_code}: {resp2.text[:180]}")
             except Exception as _fb_err:
-                logger.error(f"OpenRouter 404 fallback attempt failed: {_fb_err}")
+                logger.error(f"OpenRouter fallback attempt failed: {_fb_err}")
             error_message = f"[ошибка openrouter api {resp.status_code}: {resp.text}]"
             logger.error(error_message)
             return error_message
