@@ -1146,11 +1146,6 @@ async def send_to_openrouter(
         "messages": openrouter_messages,
         "stream": False,
     }
-    # Строже требуем JSON-ответ, если модель поддерживает этот флаг
-    try:
-        payload["response_format"] = {"type": "json_object"}
-    except Exception:
-        pass
     if temperature is not None:
         payload["temperature"] = float(temperature)
     if max_tokens is not None:
@@ -1196,61 +1191,20 @@ async def send_to_openrouter(
         return "[неизвестная ошибка при обращении к OpenRouter API]"
 
 def parse_and_split_messages(text_content: str) -> List[str]:
-    """Parses a JSON-like string from an LLM into a list of messages, with robust fallbacks."""
+    """Splits a plain text response from an LLM into a list of messages based on newlines."""
     if not text_content or not text_content.strip():
         return []
-    text_content = text_content.strip()
-    if text_content.startswith("```json"):
-        text_content = text_content[7:]
-    if text_content.startswith("```"):
-        text_content = text_content[3:]
-    if text_content.endswith("```"):
-        text_content = text_content[:-3]
-    text_content = text_content.strip()
-    try:
-        parsed_data = json.loads(text_content)
-        if isinstance(parsed_data, list):
-            return [str(item) for item in parsed_data if item]
-        elif isinstance(parsed_data, dict):
-            for v in parsed_data.values():
-                if isinstance(v, list) and all(isinstance(x, (str, int, float)) for x in v):
-                    return [str(x) for x in v]
-            ordered_keys = [
-                'response', 'final', 'answer', 'caption', 'description',
-                'observation', 'analysis', 'thought', 'emotion', 'comment',
-                'question', 'desire', 'summary', 'conclusion'
-            ]
-            parts: List[str] = []
-            for k in ordered_keys:
-                v = parsed_data.get(k)
-                if isinstance(v, (str, int, float)):
-                    s = str(v).strip()
-                    if s: parts.append(s)
-            for k, v in parsed_data.items():
-                if k not in ordered_keys and isinstance(v, (str, int, float)):
-                    s = str(v).strip()
-                    if s: parts.append(s)
-            return parts if parts else [text_content]
-        else:
-            return [str(parsed_data)]
-    except json.JSONDecodeError:
-        # Фоллбэк 1: пытаемся разделить по переносам строк
-        if '\n' in text_content:
-            lines = text_content.split('\n')
-            cleaned_lines = [line.strip() for line in lines if line.strip()]
-            if len(cleaned_lines) > 1:
-                logger.warning("JSON parse failed. Falling back to splitting by newlines.")
-                return cleaned_lines
 
-        # Фоллбэк 2: деление на предложения
-        try:
-            logger.warning("JSON parse and newline split failed. Falling back to sentence splitting.")
-            sentences = re.findall(r'[^.!?…]+[.!?…]*', text_content, re.UNICODE)
-            cleaned = [s.strip() for s in sentences if s and s.strip()]
-            return cleaned if cleaned else [text_content]
-        except Exception as _split_err:
-            logger.debug(f"Sentence split fallback failed: {_split_err}")
-            return [text_content]
+    cleaned_text = text_content.strip()
+    # Снимаем внешние тройные кавычки-код-блоки, если модель их добавила
+    if cleaned_text.startswith("```") and cleaned_text.endswith("```"):
+        cleaned_text = cleaned_text.strip().strip("`")
+    # Снимаем внешние одиночные кавычки, если есть
+    if len(cleaned_text) >= 2 and cleaned_text.startswith('"') and cleaned_text.endswith('"'):
+        cleaned_text = cleaned_text[1:-1]
+
+    parts = [part.strip() for part in cleaned_text.split('\n') if part.strip()]
+    return parts if parts else [cleaned_text]
 
 async def get_llm_response(
     db_session: Session,
