@@ -1076,22 +1076,6 @@ def _is_degenerate_text(text: str) -> bool:
 # Максимальная длина входящего сообщения от пользователя в символах
 MAX_USER_MESSAGE_LENGTH_CHARS = 600
 
-def _normalize_openrouter_model_id(model: Optional[str]) -> Optional[str]:
-    """Нормализует известные модели OpenRouter, чтобы избежать 400 'not a valid model ID'.
-    Пример: 'google/gemini-2.0-flash' -> 'google/gemini-2.0-flash-latest'
-    """
-    try:
-        m = (model or "").strip()
-        # Приводим нестандартные варианты к поддерживаемым OpenRouter ID (кроме строго заданных вами ID)
-        if m == "google/gemini-2.0-flash":
-            return "google/gemini-2.0-flash-latest"
-        if m == "google/gemini-2.5-flash":
-            # частая валидная форма у OpenRouter
-            return "google/gemini-2.5-flash-latest"
-        return m
-    except Exception:
-        return model
-
 def _sanitize_text_output(text: str, chat_type: Optional[str]) -> str:
     """Смягчает/фильтрует токсичную/NSFW лексику, особенно для групповых чатов."""
     try:
@@ -1156,16 +1140,11 @@ async def send_to_openrouter(
         })
     else:
         openrouter_messages.extend(messages)
-    # Нормализуем ID модели (например, *-001 -> *-latest) до отправки
-    normalized_model = _normalize_openrouter_model_id(model_name)
-    if normalized_model != model_name:
-        logger.info(f"Normalized OpenRouter model id: '{model_name}' -> '{normalized_model}'")
-
+    # Напрямую используем имя модели из конфига; позволяем OpenRouter маршрутизировать запрос автоматически
     payload = {
-        "model": normalized_model,
+        "model": model_name,
         "messages": openrouter_messages,
         "stream": False,
-        "provider": {"order": [normalized_model], "allow_fallbacks": False},
     }
     # Строже требуем JSON-ответ, если модель поддерживает этот флаг
     try:
@@ -1192,9 +1171,23 @@ async def send_to_openrouter(
                 logger.warning(f"Could not parse OpenRouter JSON response: {e}. Raw text: {resp.text[:250]}")
                 return f"[ошибка openrouter: не удалось обработать ответ: {resp.text[:100]}]"
         else:
-            error_message = f"[ошибка openrouter api {resp.status_code}: {resp.text}]"
-            logger.error(error_message)
-            return error_message
+            # Улучшенная обработка ошибок API
+            error_text = f"[ошибка openrouter api {resp.status_code}: {resp.text}]"
+            try:
+                error_data = resp.json()
+                msg = (error_data or {}).get("error", {}).get("message", resp.text)
+                error_text = f"[ошибка openrouter api {resp.status_code}: {msg}]"
+
+                # Частый кейс: отсутствие доступных эндпоинтов (например, закончились кредиты или недоступна модель)
+                if resp.status_code == 404 and isinstance(msg, str) and "no endpoints found" in msg.lower():
+                    logger.warning("OpenRouter 404 'No endpoints found' — вероятно, нет кредитов или неверный/недостаточный API-ключ для выбранной модели.")
+                    return "[ошибка доступа: модель недоступна. возможно, на балансе openrouter закончились кредиты или неверный api-ключ.]"
+            except Exception:
+                # Оставляем error_text как есть
+                pass
+
+            logger.error(error_text)
+            return error_text
     except httpx.RequestError as e:
         logger.error(f"HTTP request to OpenRouter failed: {e}")
         return f"[ошибка сети при обращении к OpenRouter: {e}]"
