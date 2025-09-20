@@ -37,6 +37,9 @@ FREE_IMAGE_RESPONSES = os.getenv("FREE_IMAGE_RESPONSES", "true").lower() in ("1"
 
 # Явно указываем бесплатную модель для изображений, если хотим отличать от текстовой
 GEMINI_FREE_IMAGE_MODEL = os.getenv("GEMINI_FREE_IMAGE_MODEL", "gemini-2.5-flash-lite")
+
+# Отдельная модель OpenRouter для фотографий (если у пользователя есть кредиты)
+OPENROUTER_IMAGE_MODEL_NAME = os.getenv("OPENROUTER_IMAGE_MODEL_NAME", "google/gemini-2.0-flash")
 # Базовый URL теперь не содержит имя модели, оно будет подставляться при вызове
 GEMINI_API_BASE_URL_TEMPLATE = os.getenv(
     "GEMINI_API_BASE_URL_TEMPLATE",

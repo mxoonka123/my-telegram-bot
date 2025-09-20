@@ -1088,6 +1088,7 @@ async def send_to_openrouter(
     system_prompt: str,
     messages: List[Dict[str, str]],
     model_name: str,
+    image_data: Optional[bytes] = None,
 ) -> Union[List[str], str]:
     """Отправляет запрос в OpenRouter (OpenAI-совместимый API) и возвращает список строк или строку-ошибку."""
     if not api_key:
@@ -1100,7 +1101,7 @@ async def send_to_openrouter(
     }
 
     # Формируем сообщения под OpenAI-совместимый формат
-    formatted_messages: List[Dict[str, str]] = []
+    formatted_messages: List[Dict[str, Any]] = []
     if system_prompt:
         formatted_messages.append({"role": "system", "content": system_prompt})
     for msg in messages:
@@ -1109,6 +1110,21 @@ async def send_to_openrouter(
         role = "assistant" if msg.get("role") == "model" else msg.get("role", "user")
         content = msg.get("content", "")
         formatted_messages.append({"role": role, "content": content})
+
+    # Если есть картинка — добавим отдельное сообщение с image_url (data URL)
+    if image_data is not None:
+        try:
+            b64 = base64.b64encode(image_data).decode("ascii") if isinstance(image_data, (bytes, bytearray)) else None
+            data_url = f"data:image/jpeg;base64,{b64}" if b64 else None
+        except Exception:
+            data_url = None
+        if data_url:
+            formatted_messages.append({
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": data_url}}
+                ]
+            })
 
     payload = {
         "model": model_name,
@@ -1203,17 +1219,19 @@ async def get_llm_response(
         # Есть кредиты — используем OpenRouter
         if attached_owner and float(getattr(attached_owner, "credits", 0.0) or 0.0) > 0.0:
             if image_data is not None:
-                # Для изображений всегда используем нативный Gemini (бесплатная модель, если указана)
-                model_to_use = getattr(config, 'GEMINI_FREE_IMAGE_MODEL', None) or config.GEMINI_MODEL_NAME_FOR_API
-                api_key_obj = get_next_api_key(db_session, service='gemini')
-                if not api_key_obj or not api_key_obj.api_key:
-                    return "[ошибка: нет доступных API-ключей Gemini]", model_to_use, None
-                api_key_to_use = api_key_obj.api_key
-                logger.info(f"get_llm_response: user {getattr(attached_owner, 'id', 'N/A')} has credits; routing IMAGE to Gemini (free) model '{model_to_use}'.")
-                llm_response = await send_to_google_gemini(
+                # Для изображений у платных пользователей — OpenRouter с отдельной моделью
+                model_to_use = getattr(config, 'OPENROUTER_IMAGE_MODEL_NAME', None) or config.OPENROUTER_MODEL_NAME
+                api_key_to_use = config.OPENROUTER_API_KEY
+                if not api_key_to_use:
+                    return "[ошибка: ключ OPENROUTER_API_KEY не настроен]", model_to_use, None
+                logger.info(
+                    f"get_llm_response: user {getattr(attached_owner, 'id', 'N/A')} has credits; routing IMAGE to OpenRouter model '{model_to_use}'."
+                )
+                llm_response = await send_to_openrouter(
                     api_key=api_key_to_use,
                     system_prompt=system_prompt,
                     messages=context_for_ai,
+                    model_name=model_to_use,
                     image_data=image_data,
                 )
             else:
