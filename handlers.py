@@ -266,14 +266,14 @@ async def send_to_google_gemini(
                             if br2 and br2 != "BLOCK_REASON_UNSPECIFIED":
                                 logger.warning(f"Google API blocked prompt even after safe retry. Reason: {br2}")
                                 return [
-                                    "я не могу обсуждать это фото в деталях, но я с тобой — давай поговорим о чем-то безопасном",
+                                    "я не могу обсуждать это в деталях, но я с тобой — давай поговорим о чем-то безопасном",
                                 ]
                         # иначе продолжаем обычный парсинг ниже, переопределив входные данные
                         data = data2
                     except Exception as _safe_retry_err:
                         logger.warning(f"Safe retry after block failed: {_safe_retry_err}")
                         return [
-                            "я не могу обсуждать это фото в деталях, но я с тобой — давай поговорим о чем-то безопасном",
+                            "я не могу обсуждать это в деталях, но я с тобой — давай поговорим о чем-то безопасном",
                         ]
 
             # Извлекаем первый текстовый ответ
