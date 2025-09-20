@@ -38,6 +38,10 @@ FREE_IMAGE_RESPONSES = os.getenv("FREE_IMAGE_RESPONSES", "true").lower() in ("1"
 # Явно указываем бесплатную модель для изображений, если хотим отличать от текстовой
 GEMINI_FREE_IMAGE_MODEL = os.getenv("GEMINI_FREE_IMAGE_MODEL", "gemini-2.5-flash-lite")
 
+# Фильтрация нецензурной/NSFW лексики на выходе (санитизация)
+# По просьбе пользователя — по умолчанию выключена
+ENABLE_OUTPUT_SANITIZER = os.getenv("ENABLE_OUTPUT_SANITIZER", "false").lower() in ("1", "true", "yes", "y")
+
 # Отдельная модель OpenRouter для фотографий (если у пользователя есть кредиты)
 # По требованию используем единую модель для всего: x-ai/grok-4-fast:free
 OPENROUTER_IMAGE_MODEL_NAME = os.getenv("OPENROUTER_IMAGE_MODEL_NAME", OPENROUTER_MODEL_NAME)

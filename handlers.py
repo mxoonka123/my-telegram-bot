@@ -1098,6 +1098,31 @@ def _normalize_openrouter_model_id(model: str) -> str:
     except Exception:
         return model
 
+def _sanitize_text_output(text: str, chat_type: Optional[str]) -> str:
+    """Смягчает/фильтрует токсичную/NSFW лексику, особенно для групповых чатов."""
+    try:
+        s = str(text)
+    except Exception:
+        return text
+    if not s:
+        return s
+    import re as _re
+    # Простая цензура для ругательств и сексуального контента
+    bad_map = {
+        r"\b(хуй|пизд|еб|ёб|выеб|вы*еб|ебат|ебал|уёб|уеб|бля)\w*": "[нецензурно]",
+        r"\b(выебать|трахать|секс|инцест)\b": "[запрещено]",
+    }
+    for pat, repl in bad_map.items():
+        try:
+            s = _re.sub(pat, repl, s, flags=_re.IGNORECASE)
+        except Exception:
+            continue
+    # Для групп делаем ещё мягче формулировки
+    if str(chat_type or '').lower() in {"group", "supergroup"}:
+        s = s.replace("[нецензурно]", "[неуместно]")
+        s = s.replace("[запрещено]", "[неуместно]")
+    return s
+
 async def send_to_openrouter(
     api_key: str,
     system_prompt: str,
@@ -1187,7 +1212,33 @@ async def send_to_openrouter(
                                 return [str(x) for x in v]
                     except Exception:
                         pass
-                    logger.warning(f"OpenRouter returned valid JSON but not a list/dict-with-list (type={type(parsed_data)}). Wrapping as single item.")
+                    # Ещё один фолбэк: у многих моделей (например, grok) приходит словарь со строковыми полями
+                    # Соберём реплики из строковых значений в разумном порядке
+                    ordered_keys = [
+                        'response', 'final', 'answer', 'caption', 'description',
+                        'observation', 'analysis', 'thought', 'emotion', 'comment',
+                        'question', 'desire', 'summary', 'conclusion'
+                    ]
+                    parts: List[str] = []
+                    # Сначала по известным ключам
+                    for k in ordered_keys:
+                        v = parsed_data.get(k)
+                        if isinstance(v, (str, int, float)):
+                            s = str(v).strip()
+                            if s:
+                                parts.append(s)
+                    # Затем добавим остальные строковые поля, которых не было в ordered_keys
+                    for k, v in parsed_data.items():
+                        if k in ordered_keys:
+                            continue
+                        if isinstance(v, (str, int, float)):
+                            s = str(v).strip()
+                            if s:
+                                parts.append(s)
+                    # Ограничим до 4-5 пунктов, чтобы не спамить
+                    if parts:
+                        return parts[:5]
+                    logger.warning(f"OpenRouter returned valid JSON but could not extract text parts from dict (keys={list(parsed_data.keys())}). Wrapping as single item.")
                 return [str(text_content)]
             except json.JSONDecodeError:
                 # Попытка извлечь JSON-массив строк из текста (если модель добавила лишний текст)
@@ -1530,23 +1581,33 @@ async def process_and_send_response(update: Update, context: ContextTypes.DEFAUL
             for i, part_raw_send in enumerate(text_parts_to_send):
                 if not part_raw_send:
                     continue
-                if len(part_raw_send) > TELEGRAM_MAX_LEN:
-                    logger.warning(f"process_and_send_response [JSON]: Fallback Part {i+1} exceeds max length ({len(part_raw_send)}). Truncating.")
-                    part_raw_send = part_raw_send[:TELEGRAM_MAX_LEN - 3] + "..."
+                # Санитизация текста перед отправкой (анти-NSFW/брань) — только если включена в конфиге
+                try:
+                    if getattr(config, 'ENABLE_OUTPUT_SANITIZER', False):
+                        chat_type_val = getattr(update.effective_chat, 'type', None)
+                        sanitized_part = _sanitize_text_output(part_raw_send, chat_type_val)
+                    else:
+                        sanitized_part = part_raw_send
+                except Exception:
+                    sanitized_part = part_raw_send
+
+                if not sanitized_part:
+                    logger.warning(f"process_and_send_response [JSON]: Part {i+1} sanitized to empty string. Skipping.")
+                    continue
+
+                if len(sanitized_part) > TELEGRAM_MAX_LEN:
+                    logger.warning(f"process_and_send_response [JSON]: Part {i+1} exceeds max length ({len(sanitized_part)}). Truncating.")
+                    sanitized_part = sanitized_part[:TELEGRAM_MAX_LEN - 3] + "..."
 
                 if chat_type in [ChatType.GROUP, ChatType.SUPERGROUP]:
                     try:
-                        asyncio.create_task(local_bot.send_chat_action(chat_id=chat_id_str, action=ChatAction.TYPING))
+                        # небольшой таймаут между сообщениями в группах, чтобы не ловить flood control
+                        await asyncio.sleep(0.35)
                     except Exception as e:
-                        logger.warning(f"Failed to send chat action: {e}")
-
-                try:
-                    await asyncio.sleep(random.uniform(0.3, 0.8))
-                except Exception as e:
-                    logger.warning(f"Failed to sleep: {e}")
+                        logger.warning(f"Failed to sleep: {e}")
 
                 current_reply_id_text = reply_to_message_id if not first_message_sent else None
-                escaped_part_send = escape_markdown_v2(part_raw_send)
+                escaped_part_send = escape_markdown_v2(sanitized_part)
                 message_sent_successfully = False
 
                 logger.info(f"process_and_send_response [JSON]: Attempting send part {i+1}/{len(text_parts_to_send)} (MDv2, ReplyTo: {current_reply_id_text}) to {chat_id_str}: '{escaped_part_send[:80]}...')")
@@ -1556,13 +1617,13 @@ async def process_and_send_response(update: Update, context: ContextTypes.DEFAUL
                         reply_to_message_id=current_reply_id_text, read_timeout=30, write_timeout=30
                     )
                     message_sent_successfully = True
-                except (BadRequest, TimedOut, Forbidden) as e_md_send:
-                    logger.error(f"process_and_send_response [JSON]: MDv2 send failed part {i+1}. Error: {e_md_send}. Retrying plain.")
+                except Exception as e_md_send:
+                    logger.warning(f"process_and_send_response [JSON]: Failed to send part {i+1} with MarkdownV2: {e_md_send}. Retrying plain text...")
                     try:
                         # Если причина — не найдено сообщение для ответа, пробуем без reply_to
                         retry_reply_to = None if isinstance(e_md_send, BadRequest) and 'replied not found' in str(e_md_send).lower() else current_reply_id_text
                         await local_bot.send_message(
-                            chat_id=chat_id_str, text=part_raw_send, parse_mode=None,
+                            chat_id=chat_id_str, text=sanitized_part, parse_mode=None,
                             reply_to_message_id=retry_reply_to, read_timeout=30, write_timeout=30
                         )
                         message_sent_successfully = True
