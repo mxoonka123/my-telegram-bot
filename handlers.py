@@ -1123,146 +1123,108 @@ async def send_to_openrouter(
     model_name: str,
     image_data: Optional[bytes] = None,
 ) -> Union[List[str], str]:
-    """Отправляет запрос в OpenRouter (OpenAI-совместимый API) и возвращает список строк или строку-ошибку."""
-    if not api_key:
-        logger.error("send_to_openrouter called without API key")
-        return "[ошибка: API-ключ OpenRouter не предоставлен]"
-
+    """Sends a request to the OpenRouter API and handles the response."""
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
+        "HTTP-Referer": "https://t.me/your_bot_username",
+        "X-Title": "NunuAi Telegram Bot",
     }
-
-    # Формируем сообщения под OpenAI-совместимый формат
-    formatted_messages: List[Dict[str, Any]] = []
+    openrouter_messages = []
     if system_prompt:
-        formatted_messages.append({"role": "system", "content": system_prompt})
-    for msg in messages:
-        if msg.get("role") == "system":
-            continue
-        role = "assistant" if msg.get("role") == "model" else msg.get("role", "user")
-        content = msg.get("content", "")
-        formatted_messages.append({"role": role, "content": content})
-
-    # Если есть картинка — добавим отдельное сообщение с image_url (data URL)
-    if image_data is not None:
-        try:
-            b64 = base64.b64encode(image_data).decode("ascii") if isinstance(image_data, (bytes, bytearray)) else None
-            data_url = f"data:image/jpeg;base64,{b64}" if b64 else None
-        except Exception:
-            data_url = None
-        if data_url:
-            formatted_messages.append({
-                "role": "user",
-                "content": [
-                    {"type": "image_url", "image_url": {"url": data_url}}
-                ]
-            })
-
+        openrouter_messages.append({"role": "system", "content": system_prompt})
+    if image_data:
+        last_user_message = next((m for m in reversed(messages) if m.get('role') == 'user'), None)
+        text_content = last_user_message['content'] if last_user_message else "Describe the image."
+        base64_image = base64.b64encode(image_data).decode('utf-8')
+        image_url = f"data:image/jpeg;base64,{base64_image}"
+        openrouter_messages.extend(m for m in messages if m != last_user_message)
+        openrouter_messages.append({
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": image_url}},
+                {"type": "text", "text": text_content},
+            ],
+        })
+    else:
+        openrouter_messages.extend(messages)
     payload = {
         "model": model_name,
-        "messages": formatted_messages,
-        "temperature": 1.0,
-        "top_p": 0.95,
-        "max_tokens": 4096,
-        # Принудительный JSON-режим для OpenAI-совместимого API
-        "response_format": {"type": "json_object"},
+        "messages": openrouter_messages,
+        "stream": False,
     }
-
     try:
-        async with httpx.AsyncClient(timeout=45.0) as client:
-            resp = await client.post(config.OPENROUTER_API_BASE_URL, headers=headers, json=payload)
-            resp.raise_for_status()
-            data = resp.json()
-
-            text_content = (
-                (data.get("choices", [{}])[0] or {})
-                .get("message", {})
-                .get("content")
-            )
-
-            if not text_content:
-                logger.error(f"OpenRouter API returned a valid but empty response: {data}")
-                return "[ошибка openrouter: получен пустой ответ от модели]"
-
-            # --- Улучшенный и устойчивый разбор ответа ---
+        async with httpx.AsyncClient(timeout=90.0) as client:
+            resp = await client.post(config.OPENROUTER_API_BASE_URL, json=payload, headers=headers)
+        if resp.status_code == 200:
             try:
-                parsed_data = json.loads(text_content)
-                # Идеальный случай: массив строк
-                if isinstance(parsed_data, list):
-                    return [str(item) for item in parsed_data]
-                # Частый случай для json_object режима: словарь с ключом-списком
-                if isinstance(parsed_data, dict):
-                    # Популярные ключи, где модели кладут массив реплик
-                    for key in ['response', 'answer', 'text', 'parts', 'messages', 'items', 'replies', 'thoughts', 'output', 'result']:
-                        val = parsed_data.get(key)
-                        if isinstance(val, list):
-                            return [str(item) for item in val]
-                    # Фолбэк: найдём первый список строк среди значений словаря
-                    try:
-                        for v in parsed_data.values():
-                            if isinstance(v, list) and all(isinstance(x, (str, int, float)) for x in v):
-                                return [str(x) for x in v]
-                    except Exception:
-                        pass
-                    # Ещё один фолбэк: у многих моделей (например, grok) приходит словарь со строковыми полями
-                    # Соберём реплики из строковых значений в разумном порядке
-                    ordered_keys = [
-                        'response', 'final', 'answer', 'caption', 'description',
-                        'observation', 'analysis', 'thought', 'emotion', 'comment',
-                        'question', 'desire', 'summary', 'conclusion'
-                    ]
-                    parts: List[str] = []
-                    # Сначала по известным ключам
-                    for k in ordered_keys:
-                        v = parsed_data.get(k)
-                        if isinstance(v, (str, int, float)):
-                            s = str(v).strip()
-                            if s:
-                                parts.append(s)
-                    # Затем добавим остальные строковые поля, которых не было в ordered_keys
-                    for k, v in parsed_data.items():
-                        if k in ordered_keys:
-                            continue
-                        if isinstance(v, (str, int, float)):
-                            s = str(v).strip()
-                            if s:
-                                parts.append(s)
-                    # Ограничим до 4-5 пунктов, чтобы не спамить
-                    if parts:
-                        return parts[:5]
-                    logger.warning(f"OpenRouter returned valid JSON but could not extract text parts from dict (keys={list(parsed_data.keys())}). Wrapping as single item.")
-                return [str(text_content)]
-            except json.JSONDecodeError:
-                # Попытка извлечь JSON-массив строк из текста (если модель добавила лишний текст)
-                logger.warning(f"Response from OpenRouter is not valid JSON. Falling back to regex extraction. Preview: {text_content[:200]}")
-                try:
-                    match = re.search(r'\[\s*\".*?\"\s*\]', text_content, re.DOTALL)
-                except re.error:
-                    match = None
-                if match:
-                    try:
-                        extracted_array = json.loads(match.group(0))
-                        if isinstance(extracted_array, list):
-                            return [str(item) for item in extracted_array]
-                    except json.JSONDecodeError:
-                        pass
-                # Последний фолбэк: деление на предложения
-                try:
-                    sentences = re.findall(r'[^.!?…]+[.!?…]*', text_content, re.UNICODE)
-                    cleaned = [s.strip() for s in sentences if s and s.strip()]
-                    return cleaned if cleaned else [text_content]
-                except Exception as _split_err:
-                    logger.debug(f"Sentence split fallback failed: {_split_err}")
-                    return [text_content]
-    except httpx.HTTPStatusError as e:
-        status = getattr(e.response, "status_code", None)
-        error_message = e.response.text if getattr(e, "response", None) else str(e)
-        logger.error(f"API error calling OpenRouter (status={status}): {error_message}")
-        return f"[ошибка openrouter {status}: {error_message[:120]}]"
+                data = resp.json()
+                content = data.get('choices', [{}])[0].get('message', {}).get('content', '')
+                if not content or _is_degenerate_text(content):
+                    logger.warning(f"OpenRouter returned empty or degenerate content: '{str(content)[:100]}'")
+                    error_details = data.get('error', {}).get('message', str(content))
+                    return f"[ошибка openrouter: получен пустой или некорректный ответ: {error_details}]"
+                return parse_and_split_messages(content)
+            except (json.JSONDecodeError, IndexError) as e:
+                logger.warning(f"Could not parse OpenRouter JSON response: {e}. Raw text: {resp.text[:250]}")
+                return f"[ошибка openrouter: не удалось обработать ответ: {resp.text[:100]}]"
+        else:
+            error_message = f"[ошибка openrouter api {resp.status_code}: {resp.text}]"
+            logger.error(error_message)
+            return error_message
+    except httpx.RequestError as e:
+        logger.error(f"HTTP request to OpenRouter failed: {e}")
+        return f"[ошибка сети при обращении к OpenRouter: {e}]"
     except Exception as e:
         logger.error(f"Unexpected error in send_to_openrouter: {e}", exc_info=True)
         return "[неизвестная ошибка при обращении к OpenRouter API]"
+
+def parse_and_split_messages(text_content: str) -> List[str]:
+    """Parses a JSON-like string from an LLM into a list of messages, with robust fallbacks."""
+    if not text_content or not text_content.strip():
+        return []
+    text_content = text_content.strip()
+    if text_content.startswith("```json"):
+        text_content = text_content[7:]
+    if text_content.startswith("```"):
+        text_content = text_content[3:]
+    if text_content.endswith("```"):
+        text_content = text_content[:-3]
+    text_content = text_content.strip()
+    try:
+        parsed_data = json.loads(text_content)
+        if isinstance(parsed_data, list):
+            return [str(item) for item in parsed_data if item]
+        elif isinstance(parsed_data, dict):
+            for v in parsed_data.values():
+                if isinstance(v, list) and all(isinstance(x, (str, int, float)) for x in v):
+                    return [str(x) for x in v]
+            ordered_keys = [
+                'response', 'final', 'answer', 'caption', 'description',
+                'observation', 'analysis', 'thought', 'emotion', 'comment',
+                'question', 'desire', 'summary', 'conclusion'
+            ]
+            parts: List[str] = []
+            for k in ordered_keys:
+                v = parsed_data.get(k)
+                if isinstance(v, (str, int, float)):
+                    s = str(v).strip()
+                    if s: parts.append(s)
+            for k, v in parsed_data.items():
+                if k not in ordered_keys and isinstance(v, (str, int, float)):
+                    s = str(v).strip()
+                    if s: parts.append(s)
+            return parts if parts else [text_content]
+        else:
+            return [str(parsed_data)]
+    except json.JSONDecodeError:
+        try:
+            sentences = re.findall(r'[^.!?…]+[.!?…]*', text_content, re.UNICODE)
+            cleaned = [s.strip() for s in sentences if s and s.strip()]
+            return cleaned if cleaned else [text_content]
+        except Exception as _split_err:
+            logger.debug(f"Sentence split fallback failed: {_split_err}")
+            return [text_content]
 
 async def get_llm_response(
     db_session: Session,
@@ -1335,30 +1297,6 @@ async def get_llm_response(
                     messages=context_for_ai,
                     model_name=model_to_use,
                 )
-            # Если OpenRouter вернул мусор вроде 'ext' — делаем автоматический фолбэк на Gemini
-            try:
-                first_part = None
-                if isinstance(llm_response, list) and llm_response:
-                    first_part = str(llm_response[0])
-                elif isinstance(llm_response, str):
-                    first_part = llm_response
-                if first_part is not None and _is_degenerate_text(first_part):
-                    logger.warning("get_llm_response: OpenRouter returned degenerate output; falling back to Gemini.")
-                    # Fallback to Gemini
-                    model_to_use = config.GEMINI_MODEL_NAME_FOR_API
-                    api_key_obj_fb = get_next_api_key(db_session, service='gemini')
-                    if api_key_obj_fb and api_key_obj_fb.api_key:
-                        api_key_to_use = api_key_obj_fb.api_key
-                        llm_response = await send_to_google_gemini(
-                            api_key=api_key_to_use,
-                            system_prompt=system_prompt,
-                            messages=context_for_ai,
-                            image_data=image_data,
-                        )
-                    else:
-                        logger.error("get_llm_response: no Gemini API key available for fallback.")
-            except Exception as _deg_err:
-                logger.warning(f"get_llm_response: degenerate output check failed: {_deg_err}")
         else:
             # Нет кредитов — используем Gemini
             # Для бесплатных ИЛИ для голосовых (media_type == 'voice') используем нативный Gemini
@@ -2444,17 +2382,23 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
                                 attached_owner_media = owner_user_refreshed
                             # Нормализуем текст для тарификации
                             _out_text = "\n".join(ai_response_text) if isinstance(ai_response_text, list) else (ai_response_text or "")
-                            # Проверяем, не был ли ответ заблокирован API
-                            if 'PROHIBITED_CONTENT' in _out_text or 'SAFETY' in _out_text:
-                                logger.warning(f"Skipping credit deduction for user {owner_user_refreshed.id} due to API content block.")
-                                # Опционально: уведомить пользователя о проблеме
-                                try:
-                                    await update.message.reply_text(
-                                        "не могу это обсуждать. возможно, тема нарушает политику безопасности. кредиты не списаны.",
-                                        parse_mode=None
-                                    )
-                                except Exception as notify_err:
-                                    logger.error(f"Failed to notify user about content block: {notify_err}")
+                            # Финальная проверка: не списываем кредиты за любой ошибочный или заблокированный ответ
+                            is_error_response = (
+                                _out_text.strip().startswith('[ошибка') or 
+                                'PROHIBITED_CONTENT' in _out_text or 
+                                'SAFETY' in _out_text
+                            )
+                            if is_error_response:
+                                logger.warning(f"Skipping credit deduction for user {owner_user_refreshed.id} due to error/blocked response: '{_out_text[:100]}'")
+                                # Уведомляем пользователя только о блокировке контента, а не о технических ошибках
+                                if 'PROHIBITED_CONTENT' in _out_text or 'SAFETY' in _out_text:
+                                    try:
+                                        await update.message.reply_text(
+                                            "не могу это обсуждать, тема нарушает политику безопасности. кредиты не списаны.",
+                                            parse_mode=None
+                                        )
+                                    except Exception as notify_err:
+                                        logger.error(f"Failed to notify user about content block: {notify_err}")
                             else:
                                 await deduct_credits_for_interaction(
                                     db=db_after_ai,
