@@ -114,7 +114,7 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 # OpenRouter Chat Completions endpoint (OpenAI compatible)
 OPENROUTER_API_BASE_URL = os.getenv("OPENROUTER_API_BASE_URL", "https://openrouter.ai/api/v1/chat/completions")
 # Default model for paid users via OpenRouter (Google Gemini 2.5 Flash)
-OPENROUTER_MODEL_NAME = os.getenv("OPENROUTER_MODEL_NAME", "google/gemini-2.5-flash")
+OPENROUTER_MODEL_NAME = os.getenv("OPENROUTER_MODEL_NAME", "x-ai/grok-4-fast:free")
 
   # --- Цены кредитной системы (базовые, можно менять без деплоя через env) ---
   # Стоимость указывается в кредитах за 1k токенов или за единицу медиа.
