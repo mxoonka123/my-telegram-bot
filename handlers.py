@@ -969,18 +969,9 @@ async def send_to_openrouter(
         "temperature": 1.0,
         "top_p": 0.95,
         "max_tokens": 4096,
-        # Требуем строгий JSON-массив строк на уровне API
-        "response_format": {
-            "type": "json_schema",
-            "json_schema": {
-                "name": "string_list_response",
-                "strict": True,
-                "schema": {
-                    "type": "array",
-                    "items": {"type": "string"}
-                }
-            }
-        },
+        # Просим модель вернуть валидный JSON-объект (широко поддерживаемый режим).
+        # Строгость формата (массив строк) обеспечивается системным промптом.
+        "response_format": {"type": "json_object"},
     }
 
     try:
@@ -1538,8 +1529,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     elif reply_pref == "mentioned_or_contextual":
                         should_ai_respond = is_mentioned or is_reply_to_bot or contains_persona_name
                         if not should_ai_respond:
-                            # --- КОНТЕКСТУАЛЬНАЯ ПРОВЕРКА ЧЕРЕЗ LLM (ИЗОЛИРОВАНО) ---
+                            # --- КОНТЕКСТУАЛЬНАЯ ПРОВЕРКА ЧЕРЕЗ LLM (С ПРЕДВАРИТЕЛЬНЫМ ЗАКРЫТИЕМ СЕССИИ) ---
                             logger.info("handle_message: No direct mention. Performing contextual LLM check...")
+                            # Закрываем текущую транзакцию перед длительным сетевым вызовом
+                            try:
+                                db_session.commit()
+                                db_session.close()
+                                logger.debug("handle_message: DB session committed and closed before contextual AI call.")
+                            except Exception as e_commit_ctx:
+                                logger.warning(f"handle_message: commit/close before contextual AI call failed: {e_commit_ctx}")
+
                             try:
                                 ctx_prompt = persona.format_should_respond_prompt(
                                     message_text=message_text,
@@ -1552,7 +1551,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
                             api_key_for_check = None
                             if ctx_prompt:
-                                # 1) Получаем ключ в ОТДЕЛЬНОЙ короткой сессии и фиксируем его использование
+                                # 1) Получаем ключ в ОТДЕЛЬНОЙ короткой сессии
                                 try:
                                     with get_db() as _db_check:
                                         key_obj_check = get_next_api_key(_db_check, service='gemini')
@@ -1597,11 +1596,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                                 logger.warning("No API key available for contextual check; skipping LLM check.")
 
                     if not should_ai_respond:
-                        logger.info(f"handle_message: Final decision - NOT responding in group '{getattr(update.effective_chat, 'title', '')}'. Rolling back context changes for this bot.")
-                        try:
-                            db_session.rollback()  # Не сохраняем контекст, если не отвечаем
-                        except Exception as rb_err:
-                            logger.warning(f"Rollback after non-response failed: {rb_err}")
+                        logger.info(f"handle_message: Final decision - NOT responding in group '{getattr(update.effective_chat, 'title', '')}'.")
+                        # Сессия уже закрыта перед контекстной проверкой; никаких откатов не делаем
                         return
 
                 if should_ai_respond:
@@ -5131,7 +5127,7 @@ async def _show_edit_wizard_menu(update: Update, context: ContextTypes.DEFAULT_T
         style_map = {"neutral": "нейтральный", "friendly": "дружелюбный", "sarcastic": "саркастичный", "formal": "формальный", "brief": "краткий"}
         verbosity_map = {"concise": "лаконичный", "medium": "средний", "talkative": "разговорчивый"}
         group_reply_map = {"always": "всегда", "mentioned_only": "по @", "mentioned_or_contextual": "по @ / контексту", "never": "никогда"}
-        media_react_map = {"all": "текст+gif", "text_only": "только текст", "none": "никак", "photo_only": "только фото", "voice_only": "только голос"}
+        media_react_map = {"all": "текст+gif", "text_only": "только текст", "none": "никак", "photo_only": "только фото", "voice_only": "только голос", "text_and_all_media": "текст и медиа"}
         proactive_map = {"never": "никогда", "rarely": "редко", "sometimes": "иногда", "often": "часто"}
         
         current_max_msgs_setting = persona_config.max_response_messages
@@ -5187,6 +5183,13 @@ async def _show_edit_wizard_menu(update: Update, context: ContextTypes.DEFAULT_T
                 logger.warning(f"_show_edit_wizard_menu: General error editing menu (error: {e_gen_edit}), sending new.")
                 sent_message = await context.bot.send_message(chat_id=chat_id_for_menu, text=msg_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
         else:
+            # Если ранее уже было сообщение меню — пробуем удалить, чтобы не засорять чат
+            prev_menu_id = current_session_wizard_menu_id
+            if prev_menu_id:
+                try:
+                    await context.bot.delete_message(chat_id=chat_id_for_menu, message_id=prev_menu_id)
+                except Exception as e_del:
+                    logger.warning(f"_show_edit_wizard_menu: Could not delete previous menu message {prev_menu_id}: {e_del}")
             sent_message = await context.bot.send_message(chat_id=chat_id_for_menu, text=msg_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
 
         context.user_data['wizard_menu_message_id'] = sent_message.message_id
