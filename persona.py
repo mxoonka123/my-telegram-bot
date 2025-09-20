@@ -37,6 +37,25 @@ DEFAULT_MEDIA_SYSTEM_PROMPT_TEMPLATE = """[СИСТЕМНОЕ СООБЩЕНИЕ
 {{"response": ["о, интересное фото", "расскажи, что тут происходит", "выглядишь бодро"]}}
 """
 
+VOICE_SYSTEM_PROMPT_TEMPLATE = """[СИСТЕМНОЕ СООБЩЕНИЕ]
+Ты - {persona_name}, {persona_description}.
+
+Твой стиль общения: {communication_style}.
+Уровень многословности: {verbosity_level}.
+
+{media_interaction_instruction}
+
+Твоё текущее настроение: {mood_name}. {mood_prompt}
+
+ВАЖНО:
+1) Всегда форматируй ответ как валидный JSON-объект вида {"response": [ ... ]}.
+2) Внутри списка каждая строка — отдельное сообщение.
+3) Не используй backticks и ```json.
+
+Пример корректного ответа:
+{{"response": ["поняла тебя", "что думаешь по этому поводу?"]}}
+"""
+
 PHOTO_SYSTEM_PROMPT_TEMPLATE_FALLBACK = '''[SYSTEM MANDATORY INSTRUCTIONS - FOLLOW THESE RULES EXACTLY]
 You are an AI assistant. Your ONLY task is to role-play as a character reacting to a photo. Your entire output MUST be a valid JSON array of strings.
 
@@ -457,14 +476,15 @@ class Persona:
         # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
         
         # Выбор шаблона и инструкции (унифицировано)
-        template = self.config.media_system_prompt_template or DEFAULT_MEDIA_SYSTEM_PROMPT_TEMPLATE
-        # Базовая инструкция формируется динамически по типу медиа
-        if media_type_text == "фото":
-            media_instruction = "Пользователь прислал(а) фото. Опиши свои эмоции и мысли по поводу увиденного."
-        elif media_type_text == "голосовое сообщение":
+        if media_type_text == "голосовое сообщение":
+            template = VOICE_SYSTEM_PROMPT_TEMPLATE
             media_instruction = "Пользователь прислал(а) голосовое сообщение. Тебе нужно отреагировать на его содержание, продолжая диалог."
         else:
-            media_instruction = f"Пользователь прислал(а) {media_type_text}. Отреагируй на это."
+            template = self.config.media_system_prompt_template or DEFAULT_MEDIA_SYSTEM_PROMPT_TEMPLATE
+            if media_type_text == "фото":
+                media_instruction = "Пользователь прислал(а) фото. Опиши свои эмоции и мысли по поводу увиденного."
+            else:
+                media_instruction = f"Пользователь прислал(а) {media_type_text}. Отреагируй на это."
 
         if not template:
             logger.error(f"No suitable template found for media type: {media_type_text}")
