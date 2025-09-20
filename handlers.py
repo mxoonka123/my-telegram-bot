@@ -176,6 +176,14 @@ async def send_to_google_gemini(
         "contents": formatted_messages,
         "system_instruction": {"parts": [{"text": system_prompt or ""}]},
         "generationConfig": generation_config,
+        # Чуть ослабляем фильтры на базовом запросе, чтобы не ловить блок на безобидных сообщениях в группах
+        "safetySettings": [
+            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_ONLY_HIGH"},
+            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_ONLY_HIGH"},
+            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_ONLY_HIGH"},
+            {"category": "HARM_CATEGORY_SEXUAL", "threshold": "BLOCK_ONLY_HIGH"},
+            {"category": "HARM_CATEGORY_VIOLENCE", "threshold": "BLOCK_ONLY_HIGH"},
+        ],
     }
 
     try:
@@ -1262,6 +1270,7 @@ async def get_llm_response(
     system_prompt: str,
     context_for_ai: List[Dict[str, str]],
     image_data: Optional[bytes] = None,
+    media_type: Optional[str] = None,
 ) -> Tuple[Union[List[str], str], str, Optional[str]]:
     """
     Централизованный выбор LLM: OpenRouter для платных пользователей, Gemini для бесплатных.
@@ -1275,8 +1284,8 @@ async def get_llm_response(
         # Привязываем потенциально отсоединённого пользователя к сессии
         attached_owner = db_session.merge(owner_user) if owner_user is not None else None
 
-        # Есть кредиты — используем OpenRouter
-        if attached_owner and float(getattr(attached_owner, "credits", 0.0) or 0.0) > 0.0:
+        # Есть кредиты — используем OpenRouter, КРОМЕ голосовых: для voice лучше сразу нативный Gemini (устраняем 'ext')
+        if attached_owner and float(getattr(attached_owner, "credits", 0.0) or 0.0) > 0.0 and (media_type != "voice"):
             if image_data is not None:
                 # Для изображений у платных пользователей — OpenRouter с отдельной моделью
                 model_to_use = _normalize_openrouter_model_id(getattr(config, 'OPENROUTER_IMAGE_MODEL_NAME', None) or config.OPENROUTER_MODEL_NAME)
@@ -1351,6 +1360,7 @@ async def get_llm_response(
                 logger.warning(f"get_llm_response: degenerate output check failed: {_deg_err}")
         else:
             # Нет кредитов — используем Gemini
+            # Для бесплатных ИЛИ для голосовых (media_type == 'voice') используем нативный Gemini
             model_to_use = config.GEMINI_MODEL_NAME_FOR_API
             api_key_obj = get_next_api_key(db_session, service='gemini')
             if not api_key_obj or not api_key_obj.api_key:
@@ -2384,7 +2394,8 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
                     owner_user=owner_user,
                     system_prompt=system_prompt,
                     context_for_ai=context_for_ai,
-                    image_data=image_data
+                    image_data=image_data,
+                    media_type=media_type,
                 )
             # Повторная попытка при перегрузке (503) только для Gemini
             if (
