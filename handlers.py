@@ -1161,9 +1161,46 @@ async def send_to_openrouter(
                 data = resp.json()
                 content = data.get('choices', [{}])[0].get('message', {}).get('content', '')
                 if not content or _is_degenerate_text(content):
-                    logger.warning(f"OpenRouter returned empty or degenerate content: '{str(content)[:100]}'")
-                    error_details = data.get('error', {}).get('message', str(content))
-                    return f"[ошибка openrouter: получен пустой или некорректный ответ: {error_details}]"
+                    logger.warning(f"OpenRouter returned empty or degenerate content: '{str(content)[:100]}' — attempting one safe retry with adjusted params")
+                    # --- ONE SAFE RETRY ---
+                    retry_messages = list(openrouter_messages)
+                    retry_messages.append({
+                        "role": "system",
+                        "content": "Отвечай естественно и по делу, на живом русском языке. Избегай бессмысленных токенов и шума."
+                    })
+                    retry_payload = {
+                        "model": model_name,
+                        "messages": retry_messages,
+                        "stream": False,
+                        "temperature": 0.7,
+                    }
+                    if max_tokens is not None:
+                        retry_payload["max_tokens"] = int(max_tokens)
+                    try:
+                        async with httpx.AsyncClient(timeout=90.0) as client:
+                            retry_resp = await client.post(config.OPENROUTER_API_BASE_URL, json=retry_payload, headers=headers)
+                        if retry_resp.status_code == 200:
+                            try:
+                                retry_data = retry_resp.json()
+                                retry_content = retry_data.get('choices', [{}])[0].get('message', {}).get('content', '')
+                                if not retry_content or _is_degenerate_text(retry_content):
+                                    logger.warning(f"Retry still produced degenerate/empty content: '{str(retry_content)[:100]}' — sending graceful fallback text to user")
+                                    # Возвращаем нейтральный вежливый ответ как успешный список сообщений,
+                                    # чтобы не сыпать техническими ошибками в чат.
+                                    return [
+                                        "не совсем понял мысль. можешь сказать иначе или чуть подробнее?",
+                                    ]
+                                return parse_and_split_messages(retry_content)
+                            except (json.JSONDecodeError, IndexError) as e2:
+                                logger.warning(f"Could not parse OpenRouter JSON retry response: {e2}. Raw text: {retry_resp.text[:250]}")
+                                return f"[ошибка openrouter: не удалось обработать ответ: {retry_resp.text[:100]}]"
+                        else:
+                            logger.warning(f"Retry failed with status {retry_resp.status_code}: {retry_resp.text[:180]}")
+                            return f"[ошибка openrouter api {retry_resp.status_code}: {retry_resp.text}]"
+                    except Exception as retry_err:
+                        logger.error(f"Retry request to OpenRouter failed: {retry_err}")
+                        return f"[ошибка сети при повторном обращении к OpenRouter: {retry_err}]"
+
                 return parse_and_split_messages(content)
             except (json.JSONDecodeError, IndexError) as e:
                 logger.warning(f"Could not parse OpenRouter JSON response: {e}. Raw text: {resp.text[:250]}")
