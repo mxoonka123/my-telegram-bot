@@ -1218,7 +1218,17 @@ def parse_and_split_messages(text_content: str) -> List[str]:
         else:
             return [str(parsed_data)]
     except json.JSONDecodeError:
+        # Фоллбэк 1: пытаемся разделить по переносам строк
+        if '\n' in text_content:
+            lines = text_content.split('\n')
+            cleaned_lines = [line.strip() for line in lines if line.strip()]
+            if len(cleaned_lines) > 1:
+                logger.warning("JSON parse failed. Falling back to splitting by newlines.")
+                return cleaned_lines
+
+        # Фоллбэк 2: деление на предложения
         try:
+            logger.warning("JSON parse and newline split failed. Falling back to sentence splitting.")
             sentences = re.findall(r'[^.!?…]+[.!?…]*', text_content, re.UNICODE)
             cleaned = [s.strip() for s in sentences if s and s.strip()]
             return cleaned if cleaned else [text_content]
