@@ -1076,12 +1076,13 @@ def _is_degenerate_text(text: str) -> bool:
 # Максимальная длина входящего сообщения от пользователя в символах
 MAX_USER_MESSAGE_LENGTH_CHARS = 600
 
-def _normalize_openrouter_model_id(model: str) -> str:
+def _normalize_openrouter_model_id(model: Optional[str]) -> Optional[str]:
     """Нормализует известные модели OpenRouter, чтобы избежать 400 'not a valid model ID'.
     Пример: 'google/gemini-2.0-flash' -> 'google/gemini-2.0-flash-latest'
     """
     try:
         m = (model or "").strip()
+        # Приводим нестандартные варианты к поддерживаемым OpenRouter ID (кроме строго заданных вами ID)
         if m == "google/gemini-2.0-flash":
             return "google/gemini-2.0-flash-latest"
         if m == "google/gemini-2.5-flash":
@@ -1150,11 +1151,16 @@ async def send_to_openrouter(
         })
     else:
         openrouter_messages.extend(messages)
+    # Нормализуем ID модели (например, *-001 -> *-latest) до отправки
+    normalized_model = _normalize_openrouter_model_id(model_name)
+    if normalized_model != model_name:
+        logger.info(f"Normalized OpenRouter model id: '{model_name}' -> '{normalized_model}'")
+
     payload = {
-        "model": model_name,
+        "model": normalized_model,
         "messages": openrouter_messages,
         "stream": False,
-        "provider": {"order": [model_name], "allow_fallbacks": False},
+        "provider": {"order": [normalized_model], "allow_fallbacks": False},
     }
     # Строже требуем JSON-ответ, если модель поддерживает этот флаг
     try:
@@ -1181,6 +1187,40 @@ async def send_to_openrouter(
                 logger.warning(f"Could not parse OpenRouter JSON response: {e}. Raw text: {resp.text[:250]}")
                 return f"[ошибка openrouter: не удалось обработать ответ: {resp.text[:100]}]"
         else:
+            # Точечный фолбэк: если у OpenRouter нет эндпоинта для строго заданного ID Gemini 2.0, пробуем *-latest
+            try:
+                if (
+                    resp.status_code == 404
+                    and isinstance(model_name, str)
+                    and model_name == "google/gemini-2.0-flash-001"
+                    and "No endpoints found" in (resp.text or "")
+                ):
+                    fallback_model = "google/gemini-2.0-flash-latest"
+                    logger.warning(
+                        f"OpenRouter 404 for '{model_name}'. Retrying once with '{fallback_model}'."
+                    )
+                    payload["model"] = fallback_model
+                    payload["provider"] = {"order": [fallback_model], "allow_fallbacks": False}
+                    async with httpx.AsyncClient(timeout=90.0) as client:
+                        resp2 = await client.post(config.OPENROUTER_API_BASE_URL, json=payload, headers=headers)
+                    if resp2.status_code == 200:
+                        try:
+                            data2 = resp2.json()
+                            content2 = data2.get('choices', [{}])[0].get('message', {}).get('content', '')
+                            if not content2 or _is_degenerate_text(content2):
+                                logger.warning(f"OpenRouter returned empty/degenerate content on fallback: '{str(content2)[:100]}'")
+                                err2 = data2.get('error', {}).get('message', str(content2))
+                                return f"[ошибка openrouter: получен пустой или некорректный ответ: {err2}]"
+                            return parse_and_split_messages(content2)
+                        except (json.JSONDecodeError, IndexError) as e2:
+                            logger.warning(f"Could not parse OpenRouter JSON fallback response: {e2}. Raw text: {resp2.text[:250]}")
+                            return f"[ошибка openrouter: не удалось обработать ответ: {resp2.text[:100]}]"
+                    else:
+                        error_message = f"[ошибка openrouter api {resp2.status_code}: {resp2.text}]"
+                        logger.error(error_message)
+                        return error_message
+            except Exception as _fb_err:
+                logger.error(f"OpenRouter 404 fallback attempt failed: {_fb_err}")
             error_message = f"[ошибка openrouter api {resp.status_code}: {resp.text}]"
             logger.error(error_message)
             return error_message
