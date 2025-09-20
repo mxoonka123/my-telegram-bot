@@ -969,6 +969,8 @@ async def send_to_openrouter(
         "temperature": 1.0,
         "top_p": 0.95,
         "max_tokens": 4096,
+        # Принудительный JSON-режим для OpenAI-совместимого API
+        "response_format": {"type": "json_object"},
     }
 
     try:
@@ -987,24 +989,42 @@ async def send_to_openrouter(
                 logger.error(f"OpenRouter API returned a valid but empty response: {data}")
                 return "[ошибка openrouter: получен пустой ответ от модели]"
 
+            # --- Улучшенный и устойчивый разбор ответа ---
             try:
-                parsed = json.loads(text_content)
-                if isinstance(parsed, list):
-                    return [str(item) for item in parsed]
-                else:
-                    logger.warning(f"OpenRouter returned JSON but not a list: {type(parsed)}. Wrapping as single item.")
-                    return [str(text_content)]
+                parsed_data = json.loads(text_content)
+                # Идеальный случай: массив строк
+                if isinstance(parsed_data, list):
+                    return [str(item) for item in parsed_data]
+                # Частый случай для json_object режима: словарь с ключом-списком
+                if isinstance(parsed_data, dict):
+                    for key in ['response', 'answer', 'text', 'parts']:
+                        val = parsed_data.get(key)
+                        if isinstance(val, list):
+                            return [str(item) for item in val]
+                logger.warning(f"OpenRouter returned valid JSON but not a list/dict-with-list (type={type(parsed_data)}). Wrapping as single item.")
+                return [str(text_content)]
             except json.JSONDecodeError:
-                # Если ответ не JSON, делим на предложения для более естественного чата
-                logger.warning(f"Response from OpenRouter is not a valid JSON. Splitting by sentences. Preview: {text_content[:200]}")
+                # Попытка извлечь JSON-массив строк из текста (если модель добавила лишний текст)
+                logger.warning(f"Response from OpenRouter is not valid JSON. Falling back to regex extraction. Preview: {text_content[:200]}")
+                try:
+                    match = re.search(r'\[\s*\".*?\"\s*\]', text_content, re.DOTALL)
+                except re.error:
+                    match = None
+                if match:
+                    try:
+                        extracted_array = json.loads(match.group(0))
+                        if isinstance(extracted_array, list):
+                            return [str(item) for item in extracted_array]
+                    except json.JSONDecodeError:
+                        pass
+                # Последний фолбэк: деление на предложения
                 try:
                     sentences = re.findall(r'[^.!?…]+[.!?…]*', text_content, re.UNICODE)
                     cleaned = [s.strip() for s in sentences if s and s.strip()]
-                    if cleaned:
-                        return cleaned
+                    return cleaned if cleaned else [text_content]
                 except Exception as _split_err:
                     logger.debug(f"Sentence split fallback failed: {_split_err}")
-                return [text_content]
+                    return [text_content]
     except httpx.HTTPStatusError as e:
         status = getattr(e.response, "status_code", None)
         error_message = e.response.text if getattr(e, "response", None) else str(e)
