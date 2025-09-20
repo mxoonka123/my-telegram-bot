@@ -28,7 +28,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 # Gemini Settings (native Google API only)
 # API-ключи теперь хранятся в БД (таблица ApiKey) и выбираются динамически.
 # Модели
-OPENROUTER_MODEL_NAME = os.getenv("OPENROUTER_MODEL_NAME", "x-ai/grok-4-fast:free")
+OPENROUTER_MODEL_NAME = os.getenv("OPENROUTER_MODEL_NAME", "google/gemini-2.5-pro")
 GEMINI_MODEL_NAME_FOR_API = os.getenv("GEMINI_MODEL_NAME_FOR_API", "gemini-2.5-flash-lite")
 
 # Бесплатные ответы на фото: включите, чтобы фото всегда шли в бесплатную Gemini и кредиты не списывались
@@ -45,8 +45,8 @@ ENABLE_OUTPUT_SANITIZER = os.getenv("ENABLE_OUTPUT_SANITIZER", "false").lower() 
 # Отдельная модель OpenRouter для фотографий (если у пользователя есть кредиты)
 # Явно устанавливаем ту же модель, что и для текста, чтобы избежать ошибок с недоступными моделями по умолчанию.
 # При необходимости можно переопределить через переменную окружения OPENROUTER_IMAGE_MODEL_NAME.
-# Используем Claude 3 Haiku для обработки изображений по умолчанию (можно переопределить через env).
-OPENROUTER_IMAGE_MODEL_NAME = os.getenv("OPENROUTER_IMAGE_MODEL_NAME", "anthropic/claude-3-haiku")
+# Используем единую мощную модель Google Gemini 2.5 Pro для изображений по умолчанию (можно переопределить через env).
+OPENROUTER_IMAGE_MODEL_NAME = os.getenv("OPENROUTER_IMAGE_MODEL_NAME", "google/gemini-2.5-pro")
 # Базовый URL теперь не содержит имя модели, оно будет подставляться при вызове
 GEMINI_API_BASE_URL_TEMPLATE = os.getenv(
     "GEMINI_API_BASE_URL_TEMPLATE",
@@ -114,8 +114,8 @@ TELEGRAPH_ACCESS_TOKEN = os.getenv("TELEGRAPH_ACCESS_TOKEN", None) # Токен 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 # OpenRouter Chat Completions endpoint (OpenAI compatible)
 OPENROUTER_API_BASE_URL = os.getenv("OPENROUTER_API_BASE_URL", "https://openrouter.ai/api/v1/chat/completions")
-# Default model for paid users via OpenRouter (Google Gemini 2.5 Flash)
-OPENROUTER_MODEL_NAME = os.getenv("OPENROUTER_MODEL_NAME", "x-ai/grok-4-fast:free")
+# Default model for paid users via OpenRouter
+OPENROUTER_MODEL_NAME = os.getenv("OPENROUTER_MODEL_NAME", "google/gemini-2.5-pro")
 
   # --- Цены кредитной системы (базовые, можно менять без деплоя через env) ---
   # Стоимость указывается в кредитах за 1k токенов или за единицу медиа.

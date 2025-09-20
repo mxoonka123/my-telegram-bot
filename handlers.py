@@ -1920,8 +1920,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                         db_session.rollback()
                         return
 
-                    # Контекст для ИИ - это история + новое сообщение
-                    context_for_ai = initial_context_from_db + [{"role": "user", "content": f"{username}: {message_text}"}]
+                    # Контекст для ИИ - это история + новое сообщение.
+                    # ВАЖНО: очищаем историю от лишних полей (например, timestamp), чтобы избежать ошибок сериализации JSON.
+                    try:
+                        context_for_ai = [
+                            {"role": msg.get("role"), "content": msg.get("content")}
+                            for msg in (initial_context_from_db or [])
+                            if isinstance(msg, dict) and msg.get("role") and msg.get("content") is not None
+                        ]
+                    except Exception:
+                        # Фолбэк: если история неожиданного формата, игнорируем её
+                        context_for_ai = []
+                    context_for_ai.append({"role": "user", "content": f"{username}: {message_text}"})
                     # --- Закрываем транзакцию/сессию перед долгим IO (AI) ---
                     owner_user_id_cache = owner_user.id
                     try:
