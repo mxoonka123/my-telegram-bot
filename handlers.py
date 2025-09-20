@@ -1175,11 +1175,19 @@ async def send_to_openrouter(
                     return [str(item) for item in parsed_data]
                 # Частый случай для json_object режима: словарь с ключом-списком
                 if isinstance(parsed_data, dict):
-                    for key in ['response', 'answer', 'text', 'parts']:
+                    # Популярные ключи, где модели кладут массив реплик
+                    for key in ['response', 'answer', 'text', 'parts', 'messages', 'items', 'replies', 'thoughts', 'output', 'result']:
                         val = parsed_data.get(key)
                         if isinstance(val, list):
                             return [str(item) for item in val]
-                logger.warning(f"OpenRouter returned valid JSON but not a list/dict-with-list (type={type(parsed_data)}). Wrapping as single item.")
+                    # Фолбэк: найдём первый список строк среди значений словаря
+                    try:
+                        for v in parsed_data.values():
+                            if isinstance(v, list) and all(isinstance(x, (str, int, float)) for x in v):
+                                return [str(x) for x in v]
+                    except Exception:
+                        pass
+                    logger.warning(f"OpenRouter returned valid JSON but not a list/dict-with-list (type={type(parsed_data)}). Wrapping as single item.")
                 return [str(text_content)]
             except json.JSONDecodeError:
                 # Попытка извлечь JSON-массив строк из текста (если модель добавила лишний текст)
