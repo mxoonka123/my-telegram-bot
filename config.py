@@ -28,7 +28,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 # Gemini Settings (native Google API only)
 # API-ключи теперь хранятся в БД (таблица ApiKey) и выбираются динамически.
 # Модели
-OPENROUTER_MODEL_NAME = os.getenv("OPENROUTER_MODEL_NAME", "google/gemini-2.5-flash")
+OPENROUTER_MODEL_NAME = os.getenv("OPENROUTER_MODEL_NAME", "x-ai/grok-4-fast:free")
 GEMINI_MODEL_NAME_FOR_API = os.getenv("GEMINI_MODEL_NAME_FOR_API", "gemini-2.5-flash-lite")
 
 # Бесплатные ответы на фото: включите, чтобы фото всегда шли в бесплатную Gemini и кредиты не списывались
@@ -39,7 +39,8 @@ FREE_IMAGE_RESPONSES = os.getenv("FREE_IMAGE_RESPONSES", "true").lower() in ("1"
 GEMINI_FREE_IMAGE_MODEL = os.getenv("GEMINI_FREE_IMAGE_MODEL", "gemini-2.5-flash-lite")
 
 # Отдельная модель OpenRouter для фотографий (если у пользователя есть кредиты)
-OPENROUTER_IMAGE_MODEL_NAME = os.getenv("OPENROUTER_IMAGE_MODEL_NAME", "google/gemini-2.0-flash-001")
+# По требованию используем единую модель для всего: x-ai/grok-4-fast:free
+OPENROUTER_IMAGE_MODEL_NAME = os.getenv("OPENROUTER_IMAGE_MODEL_NAME", OPENROUTER_MODEL_NAME)
 # Базовый URL теперь не содержит имя модели, оно будет подставляться при вызове
 GEMINI_API_BASE_URL_TEMPLATE = os.getenv(
     "GEMINI_API_BASE_URL_TEMPLATE",
