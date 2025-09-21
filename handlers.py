@@ -1759,45 +1759,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 current_user_message_dict = {"role": "user", "content": current_user_message_content}
                 context_user_msg_added = False
                 
-                # --- Трансляция сообщения пользователя всем активным ботам этого чата ---
+                # --- Broadcasting disabled: save only to current persona.chat_instance ---
                 try:
-                    all_instances_in_chat = (
-                        db_session.query(DBChatBotInstance)
-                        .filter(
-                            DBChatBotInstance.chat_id == chat_id_str,
-                            DBChatBotInstance.active == True,
-                        )
-                        .all()
-                    )
-                except Exception as e_fetch_inst:
-                    logger.error(f"handle_message: failed to fetch active instances for chat {chat_id_str}: {e_fetch_inst}", exc_info=True)
-                    all_instances_in_chat = []
-
-                if all_instances_in_chat:
-                    broadcast_content = current_user_message_content
-                    logger.info(
-                        f"handle_message: broadcasting user message from '{username}' to {len(all_instances_in_chat)} instance(s) in chat {chat_id_str}."
-                    )
-                    for inst in all_instances_in_chat:
-                        try:
-                            add_message_to_context(db_session, inst.id, "user", broadcast_content)
-                            context_user_msg_added = True
-                        except Exception as e_broadcast:
-                            logger.error(
-                                f"handle_message: broadcast add_message_to_context failed for instance {inst.id}: {e_broadcast}",
-                                exc_info=True,
-                            )
-                else:
-                    # Fallback: если по какой-то причине нет инстансов — пробуем сохранить хотя бы в текущую персону
                     if persona.chat_instance:
-                        try:
-                            add_message_to_context(db_session, persona.chat_instance.id, "user", current_user_message_content)
-                            context_user_msg_added = True
-                        except Exception as e_ctx_single:
-                            logger.error(
-                                f"handle_message: fallback add_message_to_context failed for CBI {persona.chat_instance.id}: {e_ctx_single}",
-                                exc_info=True,
-                            )
+                        add_message_to_context(db_session, persona.chat_instance.id, "user", current_user_message_content)
+                        context_user_msg_added = True
+                    else:
+                        logger.warning(f"handle_message: persona has no chat_instance for chat {chat_id_str}, cannot save user message context.")
+                except Exception as e_ctx_single:
+                    logger.error(
+                        f"handle_message: add_message_to_context failed for CBI {getattr(persona.chat_instance, 'id', 'unknown')}: {e_ctx_single}",
+                        exc_info=True,
+                    )
 
                 if persona.chat_instance.is_muted:
                     logger.info(f"handle_message: Persona '{persona.name}' is muted in chat {chat_id_str}. Saving context and exiting.")
@@ -2465,12 +2438,36 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handles photo messages by calling the generic media handler."""
     if not update.message: return
+    # Ignore non-command media for the main bot
+    try:
+        current_bot = update.get_bot()
+    except Exception:
+        current_bot = None
+    entities = update.message.caption_entities or []
+    caption_text = update.message.caption or ''
+    is_command = any((e.type == 'bot_command') for e in entities) or caption_text.startswith('/')
+    main_bot_id = context.bot_data.get('main_bot_id')
+    if (main_bot_id and current_bot and str(current_bot.id) == str(main_bot_id) and not is_command):
+        logger.info(f"handle_photo: Ignored non-command photo for main bot (ID: {main_bot_id}).")
+        return
     # Передаём подпись к фото в обработчик
     await handle_media(update, context, "photo", caption=update.message.caption)
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handles voice messages by calling the generic media handler."""
     if not update.message: return
+    # Ignore non-command media for the main bot
+    try:
+        current_bot = update.get_bot()
+    except Exception:
+        current_bot = None
+    # voice has no caption entities, so just treat as non-command unless startswith '/'
+    text_raw = update.message.text or ''
+    is_command = text_raw.startswith('/')
+    main_bot_id = context.bot_data.get('main_bot_id')
+    if (main_bot_id and current_bot and str(current_bot.id) == str(main_bot_id) and not is_command):
+        logger.info(f"handle_voice: Ignored non-command voice for main bot (ID: {main_bot_id}).")
+        return
     await handle_media(update, context, "voice")
 
 # --- Commands ---
