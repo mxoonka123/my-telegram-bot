@@ -306,8 +306,8 @@ class ChatBotInstance(Base):
     current_mood = Column(String, default="нейтрально", nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     is_muted = Column(Boolean, default=False, nullable=False)
-
-    bot_instance_ref = relationship("BotInstance", back_populates="chat_links", lazy="joined")
+    
+    bot_instance_ref = relationship("BotInstance", back_populates="chat_links", lazy="selectin")
     context = relationship("ChatContext", back_populates="chat_bot_instance", order_by="ChatContext.message_order", cascade="all, delete-orphan", lazy="dynamic")
 
     __table_args__ = (UniqueConstraint('chat_id', 'bot_instance_id', name='_chat_bot_uc'),)
@@ -692,21 +692,16 @@ def delete_persona_config(db: Session, persona_id: int, owner_id: int) -> bool:
     logger.warning(f"--- delete_persona_config: Attempting to delete PersonaConfig ID={persona_id} owned by User ID={owner_id} ---")
     try:
         logger.debug(f"Querying for PersonaConfig id={persona_id} owner_id={owner_id}...")
-        # Загружаем сразу связанный bot_instance (one-to-one) и его chat_links для эффективности
-        persona = db.query(PersonaConfig).options(
-            selectinload(PersonaConfig.bot_instance).selectinload(BotInstance.chat_links)
-        ).filter(
+        # Используем блокировку строки для предотвращения гонок при одновременных удалениях
+        persona = db.query(PersonaConfig).filter(
             PersonaConfig.id == persona_id,
             PersonaConfig.owner_id == owner_id
-        ).first() # Убираем with_for_update, т.к. будем удалять вручную частично
+        ).with_for_update().first()
 
         if persona:
             persona_name = persona.name
             logger.info(f"Found PersonaConfig {persona_id} ('{persona_name}'). Proceeding with deletion.")
-
-            # Ручное удаление ChatContext не требуется: каскадные правила SQLAlchemy удалят связанные записи
-            # PersonaConfig -> BotInstance -> ChatBotInstance -> ChatContext (cascade="all, delete-orphan").
-
+            # Просто удаляем PersonaConfig. Каскадные правила удалят связанные сущности.
             logger.debug(f"Calling db.delete() for persona {persona_id}. Cascade will handle related entities. Attempting commit...")
             db.delete(persona)
             db.commit()
@@ -1072,10 +1067,10 @@ def get_persona_and_context_with_owner(chat_id: str, db: Session, current_telegr
                 ChatBotInstance.active == True,
             )
             .options(
-                joinedload(ChatBotInstance.bot_instance_ref)
-                .joinedload(BotInstance.persona_config)
-                .joinedload(PersonaConfig.owner),
-                joinedload(ChatBotInstance.bot_instance_ref).joinedload(BotInstance.owner),
+                selectinload(ChatBotInstance.bot_instance_ref)
+                .selectinload(BotInstance.persona_config)
+                .selectinload(PersonaConfig.owner),
+                selectinload(ChatBotInstance.bot_instance_ref).selectinload(BotInstance.owner),
             )
             .order_by(ChatBotInstance.created_at.desc())
             .first()

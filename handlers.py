@@ -3405,21 +3405,20 @@ async def my_personas(update: Union[Update, CallbackQuery], context: ContextType
 
     try:
         with get_db() as db:
-            user_with_personas = db.query(User).options(
-                selectinload(User.persona_configs).selectinload(DBPersonaConfig.bot_instance)
-            ).filter(User.telegram_id == user_id).first()
+            # Сразу используем get_or_create_user, он вернет существующего или создаст нового (id будет доступен благодаря flush внутри функции)
+            user_with_personas = get_or_create_user(db, user_id, username)
 
-            if not user_with_personas:
-                user_with_personas = get_or_create_user(db, user_id, username)
-                db.commit(); db.refresh(user_with_personas)
+            # При необходимости дозагружаем связи одним запросом selectinload
+            if 'persona_configs' not in user_with_personas.__dict__:
                 user_with_personas = db.query(User).options(
                     selectinload(User.persona_configs).selectinload(DBPersonaConfig.bot_instance)
                 ).filter(User.id == user_with_personas.id).one_or_none()
-                if not user_with_personas:
-                    logger.error(f"User {user_id} not found even after get_or_create/refresh in my_personas.")
-                    final_text_to_send = error_user_not_found
-                    fallback_text_plain_parts.append("Ошибка: не удалось найти пользователя.")
-                    raise StopIteration
+
+            if not user_with_personas:
+                logger.error(f"User {user_id} not found even after get_or_create/refresh in my_personas.")
+                final_text_to_send = error_user_not_found
+                fallback_text_plain_parts.append("Ошибка: не удалось найти пользователя.")
+                raise StopIteration
 
             personas = sorted(user_with_personas.persona_configs, key=lambda p: p.name) if user_with_personas.persona_configs else []
             persona_limit = user_with_personas.persona_limit
@@ -4307,7 +4306,7 @@ async def generate_payment_link(update: Update, context: ContextTypes.DEFAULT_TY
 
         payment_response = await asyncio.to_thread(Payment.create, request, idempotence_key)
 
-        if not payment_response or not payment_response.confirmation or not payment_response.confirmation.confirmation_url:
+        if not payment_response or not getattr(payment_response, 'confirmation', None) or not getattr(payment_response.confirmation, 'confirmation_url', None):
             logger.error(f"Yookassa API returned invalid response for user {user_id}. Status: {payment_response.status if payment_response else 'N/A'}. Response: {payment_response}")
             status_info = f" \\(статус: {escape_markdown_v2(payment_response.status)}\\)" if payment_response and payment_response.status else ""
             error_message = error_link_get_fmt_raw.format(status_info=status_info)
