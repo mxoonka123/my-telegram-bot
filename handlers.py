@@ -4464,7 +4464,10 @@ async def _start_edit_convo(update: Update, context: ContextTypes.DEFAULT_TYPE, 
 
     try:
         with get_db() as db:
-            persona_config = db.query(DBPersonaConfig).options(selectinload(DBPersonaConfig.owner)).filter(
+            persona_config = db.query(DBPersonaConfig).options(
+                selectinload(DBPersonaConfig.owner),
+                selectinload(DBPersonaConfig.bot_instance)
+            ).filter(
                 DBPersonaConfig.id == persona_id,
                 DBPersonaConfig.owner.has(User.telegram_id == user_id) # Проверка владения
             ).first()
@@ -4477,6 +4480,9 @@ async def _start_edit_convo(update: Update, context: ContextTypes.DEFAULT_TYPE, 
                     except Exception: pass
                 await context.bot.send_message(chat_id_for_new_menu, final_error_msg, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
                 return ConversationHandler.END
+
+            # Кэшируем полностью загруженный объект в состоянии пользователя, чтобы избежать повторных запросов
+            context.user_data['persona_object'] = persona_config
 
             # Вызываем _show_edit_wizard_menu (патченную версию), она отправит НОВОЕ сообщение
             return await _show_edit_wizard_menu(update, context, persona_config)
@@ -4979,9 +4985,15 @@ async def _send_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE, text:
 
 # --- Edit Name ---
 async def edit_name_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    persona_id = context.user_data.get('edit_persona_id')
-    with get_db() as db:
-        current_name = db.query(DBPersonaConfig.name).filter(DBPersonaConfig.id == persona_id).scalar() or "N/A"
+    # Пытаемся взять из кэша
+    persona_obj = context.user_data.get('persona_object')
+    if persona_obj and getattr(persona_obj, 'name', None):
+        current_name = persona_obj.name
+    else:
+        # Фолбэк на БД, если кэш отсутствует (например, старая сессия)
+        persona_id = context.user_data.get('edit_persona_id')
+        with get_db() as db:
+            current_name = db.query(DBPersonaConfig.name).filter(DBPersonaConfig.id == persona_id).scalar() or "N/A"
     prompt_text = escape_markdown_v2(f"введите новое имя (текущее: '{current_name}', 2-50 симв.):")
     keyboard = [[InlineKeyboardButton("назад", callback_data="back_to_wizard_menu")]]
     await _send_prompt(update, context, prompt_text, InlineKeyboardMarkup(keyboard))
@@ -4990,7 +5002,11 @@ async def edit_name_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 async def edit_name_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not update.message or not update.message.text: return EDIT_NAME
     new_name = update.message.text.strip()
-    persona_id = context.user_data.get('edit_persona_id')
+    # Берем из кэша объект персоны
+    persona_from_cache = context.user_data.get('persona_object')
+    if not persona_from_cache:
+        await update.message.reply_text("❌ Сессия редактирования потеряна. Начните заново.", parse_mode=None)
+        return ConversationHandler.END
 
     if not (2 <= len(new_name) <= 50):
         await update.message.reply_text(escape_markdown_v2("❌ Имя: 2-50 симв. Попробуйте еще:"))
@@ -4998,47 +5014,53 @@ async def edit_name_received(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     try:
         with get_db() as db:
-            owner_id = db.query(DBPersonaConfig.owner_id).filter(DBPersonaConfig.id == persona_id).scalar()
+            # Проверка уникальности имени у владельца
             existing = db.query(DBPersonaConfig.id).filter(
-                DBPersonaConfig.owner_id == owner_id,
+                DBPersonaConfig.owner_id == persona_from_cache.owner_id,
                 func.lower(DBPersonaConfig.name) == new_name.lower(),
-                DBPersonaConfig.id != persona_id
+                DBPersonaConfig.id != persona_from_cache.id
             ).first()
             if existing:
                 await update.message.reply_text(escape_markdown_v2(f"❌ Имя '{new_name}' уже занято. Введите другое:"))
                 return EDIT_NAME
 
-            persona = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).with_for_update().first()
-            if persona:
-                persona.name = new_name
-                db.commit()
-                await update.message.reply_text(escape_markdown_v2(f"✅ имя обновлено на '{new_name}'."))
-                # Delete the prompt message before showing menu
-                prompt_msg_id = context.user_data.pop('last_prompt_message_id', None)
-                if prompt_msg_id:
-                    try: await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=prompt_msg_id)
-                    except Exception: pass
-                return await _show_edit_wizard_menu(update, context, persona)
-            else:
-                await update.message.reply_text(escape_markdown_v2("❌ Ошибка: личность не найдена."))
-                return ConversationHandler.END
+            # Присоединяем отсоединенный объект к текущей сессии и обновляем
+            live_persona = db.merge(persona_from_cache)
+            live_persona.name = new_name
+            db.commit()
+
+            # Обновляем кэш (минимально, либо через refresh)
+            try:
+                db.refresh(live_persona, attribute_names=['name'])
+            except Exception:
+                pass
+            context.user_data['persona_object'] = live_persona
+
+            await update.message.reply_text(escape_markdown_v2(f"✅ имя обновлено на '{new_name}'."))
+
+            # Delete the prompt message before showing menu
+            prompt_msg_id = context.user_data.pop('last_prompt_message_id', None)
+            if prompt_msg_id:
+                try: await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=prompt_msg_id)
+                except Exception: pass
+            return await _show_edit_wizard_menu(update, context, live_persona)
     except Exception as e:
-        logger.error(f"Error updating persona name for {persona_id}: {e}")
+        logger.error(f"Error updating persona name (cached) for {getattr(persona_from_cache, 'id', 'unknown')}: {e}")
         await update.message.reply_text("❌ Ошибка при сохранении имени.", parse_mode=None)
-        with get_db() as db:
-            persona = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
-            if persona:
-                return await _show_edit_wizard_menu(update, context, persona)
         return ConversationHandler.END
 
 # --- Edit Description ---
 async def edit_description_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Отображает форму редактирования описания, отправляя сообщение как простой текст."""
-    persona_id = context.user_data.get('edit_persona_id')
+    persona_obj = context.user_data.get('persona_object')
     query = update.callback_query
     
-    with get_db() as db:
-        current_desc = db.query(DBPersonaConfig.description).filter(DBPersonaConfig.id == persona_id).scalar() or "(пусто)"
+    if persona_obj and hasattr(persona_obj, 'description'):
+        current_desc = persona_obj.description or "(пусто)"
+    else:
+        persona_id = context.user_data.get('edit_persona_id')
+        with get_db() as db:
+            current_desc = db.query(DBPersonaConfig.description).filter(DBPersonaConfig.id == persona_id).scalar() or "(пусто)"
     
     current_desc_preview = (current_desc[:100] + '...') if len(current_desc) > 100 else current_desc
     prompt_text = f"введите новое описание (макс. 2500 символов).\n\nтекущее (начало):\n{current_desc_preview}"
@@ -5065,7 +5087,7 @@ async def edit_description_prompt(update: Update, context: ContextTypes.DEFAULT_
 async def edit_description_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not update.message or not update.message.text: return EDIT_DESCRIPTION
     new_desc = update.message.text.strip()
-    persona_id = context.user_data.get('edit_persona_id')
+    persona_from_cache = context.user_data.get('persona_object')
 
     if len(new_desc) > 2500:
         await update.message.reply_text(escape_markdown_v2("❌ описание: макс. 2500 симв. попробуйте еще:"))
@@ -5073,26 +5095,29 @@ async def edit_description_received(update: Update, context: ContextTypes.DEFAUL
 
     try:
         with get_db() as db:
-            persona = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).with_for_update().first()
-            if persona:
-                persona.description = new_desc
-                db.commit()
-                await update.message.reply_text(escape_markdown_v2("✅ описание обновлено."))
-                prompt_msg_id = context.user_data.pop('last_prompt_message_id', None)
-                if prompt_msg_id:
-                    try: await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=prompt_msg_id)
-                    except Exception: pass
-                return await _show_edit_wizard_menu(update, context, persona)
-            else:
-                await update.message.reply_text(escape_markdown_v2("❌ Ошибка: личность не найдена."))
+            if not persona_from_cache:
+                await update.message.reply_text("❌ Сессия редактирования потеряна. Начните заново.", parse_mode=None)
                 return ConversationHandler.END
+
+            live_persona = db.merge(persona_from_cache)
+            live_persona.description = new_desc
+            db.commit()
+
+            try:
+                db.refresh(live_persona, attribute_names=['description'])
+            except Exception:
+                pass
+            context.user_data['persona_object'] = live_persona
+
+            await update.message.reply_text(escape_markdown_v2("✅ описание обновлено."))
+            prompt_msg_id = context.user_data.pop('last_prompt_message_id', None)
+            if prompt_msg_id:
+                try: await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=prompt_msg_id)
+                except Exception: pass
+            return await _show_edit_wizard_menu(update, context, live_persona)
     except Exception as e:
-        logger.error(f"Error updating persona description for {persona_id}: {e}")
+        logger.error(f"Error updating persona description (cached) for {getattr(persona_from_cache, 'id', 'unknown')}: {e}")
         await update.message.reply_text("❌ Ошибка при сохранении описания.", parse_mode=None)
-        with get_db() as db:
-            persona = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
-            if persona:
-                return await _show_edit_wizard_menu(update, context, persona)
         return ConversationHandler.END
 
 # --- Edit Communication Style ---
