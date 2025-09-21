@@ -1578,32 +1578,10 @@ async def process_and_send_response(update: Update, context: ContextTypes.DEFAUL
         # добавим это же сообщение в контекст всех других активных ботов этого чата.
         try:
             if context_response_prepared and persona and getattr(persona, 'chat_instance', None):
-                try:
-                    chat_id_str_for_sync = str(chat_id)
-                except Exception:
-                    chat_id_str_for_sync = None
-                if chat_id_str_for_sync:
-                    cross_context_content = f"{persona.name}: {content_to_save_in_db}"
-                    other_instances = (
-                        db.query(DBChatBotInstance)
-                        .filter(
-                            DBChatBotInstance.chat_id == chat_id_str_for_sync,
-                            DBChatBotInstance.id != persona.chat_instance.id,
-                            DBChatBotInstance.active == True,
-                        )
-                        .all()
-                    )
-                    if other_instances:
-                        logger.info(
-                            f"process_and_send_response: cross-posting response from '{persona.name}' to {len(other_instances)} other bot(s) in chat {chat_id_str_for_sync}."
-                        )
-                        for other_inst in other_instances:
-                            try:
-                                add_message_to_context(db, other_inst.id, "assistant", cross_context_content)
-                            except Exception as e_cross:
-                                logger.error(
-                                    f"process_and_send_response: cross-context add failed for instance {other_inst.id}: {e_cross}"
-                                )
+                # --- CONTEXT SYNC DISABLED ---
+                # The logic below caused context pollution between different personas in the same chat.
+                # Disabling it ensures each persona maintains its own independent conversation history.
+                pass
         except Exception as e_sync:
             logger.error(f"process_and_send_response: context sync failed: {e_sync}", exc_info=True)
 
@@ -1624,12 +1602,27 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         except Exception:
             current_bot = None
 
-        # --- Block commands on attached (non-main) bots ---
+        # --- Determine if this is a command ---
         try:
             entities = update.message.entities or []
             text_raw = update.message.text or ''
             is_command = any((e.type == 'bot_command') for e in entities) or text_raw.startswith('/')
-            main_bot_id = context.bot_data.get('main_bot_id')
+        except Exception:
+            entities = []
+            text_raw = update.message.text or ''
+            is_command = text_raw.startswith('/')
+
+        # --- NEW: Block non-command messages on the main bot ---
+        main_bot_id = context.bot_data.get('main_bot_id')
+        if (main_bot_id and current_bot and str(current_bot.id) == str(main_bot_id)
+                and not is_command):
+            logger.info(f"handle_message: Ignored non-command text message for main bot (ID: {main_bot_id}). Main bot only handles commands.")
+            return
+        # --- END NEW BLOCK ---
+
+        # --- Block commands on attached (non-main) bots ---
+        try:
+            # main_bot_id already defined above
             if is_command and main_bot_id and current_bot and str(current_bot.id) != str(main_bot_id):
                 logger.info(f"handle_message: Skip command on attached bot (current={current_bot.id}, main={main_bot_id}).")
                 return
