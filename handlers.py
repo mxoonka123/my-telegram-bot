@@ -4568,8 +4568,8 @@ async def edit_persona_button_callback(update: Update, context: ContextTypes.DEF
 
 async def _handle_back_to_wizard_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, persona_id: int) -> int:
     """Общая функция для обработки кнопки "Назад" в меню настроек.
-    СНАЧАЛА использует кэшированный объект в context.user_data['persona_object'],
-    и только если его нет — делает fallback к БД.
+    Использует кэшированный объект. НИЧЕГО не удаляет — меню/подменю редактируется на месте.
+    Если кэш потерян — fallback к БД.
     """
     query = update.callback_query
 
@@ -4578,7 +4578,7 @@ async def _handle_back_to_wizard_menu(update: Update, context: ContextTypes.DEFA
     if persona_cached:
         return await _show_edit_wizard_menu(update, context, persona_cached)
 
-    # 2) Fallback: БД
+    # 2) Fallback: БД (на случай потери кэша)
     with get_db() as db:
         persona = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
         if not persona:
