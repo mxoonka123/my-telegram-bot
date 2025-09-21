@@ -4567,21 +4567,25 @@ async def edit_persona_button_callback(update: Update, context: ContextTypes.DEF
 # Функция delete_persona_start перемещена в новую часть файла
 
 async def _handle_back_to_wizard_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, persona_id: int) -> int:
-    """Общая функция для обработки кнопки "Назад" в меню настроек"""
+    """Общая функция для обработки кнопки "Назад" в меню настроек.
+    СНАЧАЛА использует кэшированный объект в context.user_data['persona_object'],
+    и только если его нет — делает fallback к БД.
+    """
     query = update.callback_query
-    
+
+    # 1) Быстрый путь: из кэша
+    persona_cached = context.user_data.get('persona_object')
+    if persona_cached:
+        return await _show_edit_wizard_menu(update, context, persona_cached)
+
+    # 2) Fallback: БД
     with get_db() as db:
         persona = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
         if not persona:
-            await query.answer("Ошибка: личность не найдена")
+            if query:
+                try: await query.answer("Ошибка: личность не найдена", show_alert=True)
+                except Exception: pass
             return ConversationHandler.END
-    
-        # # Удаляем текущее сообщение с подменю <-- ЭТО ВЫЗЫВАЛО ПРОБЛЕМУ
-        # try:
-        #     await context.bot.delete_message(chat_id=query.message.chat.id, message_id=query.message.message_id)
-        # except Exception as e:
-        #     logger.warning(f"Could not delete submenu message: {e}")
-    
         return await _show_edit_wizard_menu(update, context, persona)
 
 
@@ -4957,43 +4961,25 @@ async def edit_proactive_rate_received(update: Update, context: ContextTypes.DEF
 
 # --- Helper to send prompt and store message ID ---
 async def _send_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, reply_markup: InlineKeyboardMarkup) -> None:
-    """Edits the current message or sends a new one, storing the new message ID."""
+    """Always sends a new prompt message and stores its ID to allow clean deletion later.
+    This keeps the main wizard menu message intact (no editing), eliminating flicker.
+    """
     query = update.callback_query
     chat_id = query.message.chat.id if query and query.message else update.effective_chat.id
-    new_message = None
+    sent_message = None
     try:
-        if query and query.message:
-            # Try editing first
-            await query.edit_message_text(text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
-            new_message = query.message # Keep the same message object
-        else:
-            # Send new message if no query or editing failed
-            new_message = await context.bot.send_message(chat_id, text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
-    except BadRequest as e:
-        if "message is not modified" in str(e).lower():
-            logger.debug("Prompt message not modified.")
-            new_message = query.message # Keep same message
-        else:
-            logger.warning(f"Failed to edit prompt message, sending new: {e}")
-            new_message = await context.bot.send_message(chat_id, text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
-            # Try deleting the old menu message if possible
-            old_menu_id = context.user_data.get('wizard_menu_message_id')
-            if old_menu_id:
-                try:
-                    await context.bot.delete_message(chat_id=chat_id, message_id=old_menu_id)
-                except Exception as del_err:
-                    logger.warning(f"Could not delete old menu message {old_menu_id}: {del_err}")
+        sent_message = await context.bot.send_message(chat_id, text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
     except Exception as e:
-        logger.error(f"Error sending/editing prompt: {e}", exc_info=True)
-        # Fallback send plain text
+        logger.error(f"Error sending prompt message: {e}", exc_info=True)
+        # Fallback: send plain text without Markdown if formatting failed
         try:
-            new_message = await context.bot.send_message(chat_id, text.replace('\\', ''), reply_markup=reply_markup, parse_mode=None) # Basic unescaping for plain text
+            sent_message = await context.bot.send_message(chat_id, text.replace('\\', ''), reply_markup=reply_markup, parse_mode=None)
         except Exception as fallback_e:
-            logger.error(f"Failed to send fallback plain text prompt: {fallback_e}")
+            logger.critical(f"CRITICAL: Failed to send prompt even as plain text: {fallback_e}")
+            sent_message = None
 
-    # Store the ID of the message that contains the prompt
-    if new_message:
-        context.user_data['last_prompt_message_id'] = new_message.message_id
+    if sent_message:
+        context.user_data['last_prompt_message_id'] = sent_message.message_id
 
 # --- Edit Name ---
 async def edit_name_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -5202,37 +5188,25 @@ async def edit_comm_style_received(update: Update, context: ContextTypes.DEFAULT
 
 # --- Edit Max Messages ---
 async def edit_max_messages_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Отображает подменю для выбора максимального количества сообщений."""
+    """Отображает подменю для выбора максимального количества сообщений (без обращений к БД)."""
     query = update.callback_query # Ожидаем, что сюда пришли через коллбэк
     if not query:
         logger.error("edit_max_messages_prompt called without a callback query.")
-        return ConversationHandler.END # Или возврат в главное меню, если это возможно
+        return ConversationHandler.END
 
-    persona_id = context.user_data.get('edit_persona_id')
-    user_id = query.from_user.id # Для проверки подписки
-    
-    if not persona_id:
-        logger.warning("edit_max_messages_prompt: persona_id missing.")
+    # Берем текущее значение из кэша
+    persona_obj = context.user_data.get('persona_object')
+    if not persona_obj:
         await query.answer("Сессия потеряна.", show_alert=True)
         return ConversationHandler.END
 
-    current_value_str = "normal" # Значение по умолчанию
-    with get_db() as db:
-        persona_config = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
-        if not persona_config:
-            await query.answer("Ошибка: личность не найдена.", show_alert=True)
-            return ConversationHandler.END
-            
-        config_value = persona_config.max_response_messages
-        if config_value is not None:
-            if config_value == 0: current_value_str = "random"
-            elif config_value == 1: current_value_str = "few"
-            elif config_value == 3: current_value_str = "normal"
-            elif config_value == 6: current_value_str = "many"
-            # else: current_value_str остается "normal" для неожиданных значений
-
-        # Подписочная модель удалена; все опции доступны
-        current_owner = db.query(User).filter(User.id == persona_config.owner_id).first()
+    config_value = getattr(persona_obj, 'max_response_messages', None)
+    current_value_str = "normal"
+    if config_value is not None:
+        if config_value == 0: current_value_str = "random"
+        elif config_value == 1: current_value_str = "few"
+        elif config_value == 3: current_value_str = "normal"
+        elif config_value == 6: current_value_str = "many"
     
     display_map = {
         "few": "поменьше",
@@ -5261,80 +5235,63 @@ async def edit_max_messages_prompt(update: Update, context: ContextTypes.DEFAULT
     return EDIT_MAX_MESSAGES # Остаемся в этом состоянии для ожидания выбора
 
 async def edit_max_messages_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обрабатывает выбор максимального количества сообщений из подменю."""
+    """Обрабатывает выбор максимального количества сообщений из подменю, используя кэш."""
     query = update.callback_query
     if not query or not query.data:
-        return EDIT_MAX_MESSAGES # Остаемся в текущем состоянии, если нет данных
+        return EDIT_MAX_MESSAGES
 
-    await query.answer() # Быстро отвечаем на коллбэк
+    await query.answer()
     data = query.data
-    persona_id = context.user_data.get('edit_persona_id')
+    persona_from_cache = context.user_data.get('persona_object')
 
-    if not persona_id:
-        logger.warning("edit_max_messages_received: persona_id missing.")
-        # Пытаемся отредактировать сообщение с ошибкой, если оно есть
+    if not persona_from_cache:
         if query.message:
             try: await query.edit_message_text("Сессия редактирования потеряна.", reply_markup=None)
             except Exception: pass
         return ConversationHandler.END
 
-    # Обработка кнопки "Назад"
+    # Обработка кнопки "Назад" — возврат без БД
     if data == "back_to_wizard_menu":
-        with get_db() as db_session:
-            persona_config = db_session.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
-            if not persona_config: # На всякий случай
-                if query.message: await query.edit_message_text("Ошибка: личность не найдена.", reply_markup=None)
-                return ConversationHandler.END
-            return await _show_edit_wizard_menu(update, context, persona_config) # Возврат в главное меню
+        return await _handle_back_to_wizard_menu(update, context, getattr(persona_from_cache, 'id', 0))
 
     if data.startswith("set_max_msgs_"):
         new_value_str = data.replace("set_max_msgs_", "")
-        user_id = query.from_user.id # ID пользователя для проверки подписки
-        
-        # Subscription model removed: all options allowed
-        
-        numeric_value = -1 # Маркер ошибки
+        numeric_value = -1
         if new_value_str == "few": numeric_value = 1
         elif new_value_str == "normal": numeric_value = 3
         elif new_value_str == "many": numeric_value = 6
         elif new_value_str == "random": numeric_value = 0
         
         if numeric_value == -1:
-            logger.error(f"Invalid value for max_response_messages in sub-menu: {new_value_str} from data '{data}'")
-            # Можно уведомить пользователя или просто остаться в подменю
-            return EDIT_MAX_MESSAGES 
+            return EDIT_MAX_MESSAGES
 
         try:
             with get_db() as db:
-                persona = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
-                if persona:
-                    persona.max_response_messages = numeric_value
-                    db.commit()
-                    db.refresh(persona) # Обновляем объект persona_config
-                    
-                    logger.info(f"Set max_response_messages to {numeric_value} ({new_value_str}) for persona {persona_id} via sub-menu.")
-                    
-                    # Возвращаемся в главное меню настроек, которое должно отобразить новое значение
-                    return await _show_edit_wizard_menu(update, context, persona)
-                else:
-                    logger.error(f"edit_max_messages_received: Persona {persona_id} not found.")
-                    if query.message: await query.edit_message_text("❌ Ошибка: Личность не найдена.", reply_markup=None)
-                    return ConversationHandler.END
+                live_persona = db.merge(persona_from_cache)
+                live_persona.max_response_messages = numeric_value
+                db.commit()
+                try:
+                    db.refresh(live_persona, attribute_names=['max_response_messages'])
+                except Exception:
+                    pass
+                context.user_data['persona_object'] = live_persona
+                logger.info(f"Set max_response_messages to {numeric_value} ({new_value_str}) for persona {live_persona.id} via sub-menu.")
+                return await _show_edit_wizard_menu(update, context, live_persona)
         except Exception as e:
-            logger.error(f"Error setting max_response_messages for {persona_id} from sub-menu data '{data}': {e}", exc_info=True)
-            if query.message: 
-                try: await query.edit_message_text("❌ Ошибка при сохранении.", reply_markup=query.message.reply_markup) # Пытаемся сохранить кнопки подменю
+            logger.error(f"Error setting max_response_messages (cached) for {getattr(persona_from_cache, 'id', 'unknown')} from data '{data}': {e}", exc_info=True)
+            if query.message:
+                try: await query.edit_message_text("❌ Ошибка при сохранении.", reply_markup=query.message.reply_markup)
                 except Exception: pass
-            return EDIT_MAX_MESSAGES # Остаемся в подменю при ошибке
+            return EDIT_MAX_MESSAGES
     else:
         logger.warning(f"Unknown callback in edit_max_messages_received: {data}")
-        return EDIT_MAX_MESSAGES # Остаемся в подменю
+        return EDIT_MAX_MESSAGES
 
 # --- Edit Verbosity ---
 async def edit_verbosity_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    persona_id = context.user_data.get('edit_persona_id')
-    with get_db() as db:
-        current = db.query(DBPersonaConfig.verbosity_level).filter(DBPersonaConfig.id == persona_id).scalar()
+    # Берем текущее значение из кэша, чтобы не обращаться к БД
+    persona_obj = context.user_data.get('persona_object')
+    current = getattr(persona_obj, 'verbosity_level', None) if persona_obj else None
     # normalize to enum
     try:
         current_enum = Verbosity(current) if current else Verbosity.MEDIUM
@@ -5354,7 +5311,7 @@ async def edit_verbosity_received(update: Update, context: ContextTypes.DEFAULT_
     query = update.callback_query
     await query.answer()
     data = query.data
-    persona_id = context.user_data.get('edit_persona_id')
+    persona_from_cache = context.user_data.get('persona_object')
 
     if data == "back_to_wizard_menu":
         if persona_from_cache:
@@ -5375,22 +5332,22 @@ async def edit_verbosity_received(update: Update, context: ContextTypes.DEFAULT_
             return EDIT_VERBOSITY
         try:
             with get_db() as db:
-                persona = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).with_for_update().first()
-                if persona:
-                    persona.verbosity_level = verbosity_enum.value
-                    db.commit()
-                    logger.info(f"Set verbosity_level to {verbosity_enum.value} for persona {persona_id}")
-                    return await _handle_back_to_wizard_menu(update, context, persona_id)
-                else:
-                    await query.edit_message_text(escape_markdown_v2("❌ Ошибка: личность не найдена."))
+                if not persona_from_cache:
+                    await query.edit_message_text(escape_markdown_v2("❌ Ошибка: сессия редактирования потеряна."))
                     return ConversationHandler.END
+                live_persona = db.merge(persona_from_cache)
+                live_persona.verbosity_level = verbosity_enum.value
+                db.commit()
+                try:
+                    db.refresh(live_persona, attribute_names=['verbosity_level'])
+                except Exception:
+                    pass
+                context.user_data['persona_object'] = live_persona
+                logger.info(f"Set verbosity_level to {verbosity_enum.value} for persona {live_persona.id}")
+                return await _show_edit_wizard_menu(update, context, live_persona)
         except Exception as e:
-            logger.error(f"Error setting verbosity_level for {persona_id}: {e}")
+            logger.error(f"Error setting verbosity_level (cached) for {getattr(persona_from_cache, 'id', 'unknown')}: {e}")
             await query.edit_message_text("❌ Ошибка при сохранении разговорчивости.", parse_mode=None)
-            with get_db() as db:
-                persona = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
-                if persona:
-                    return await _show_edit_wizard_menu(update, context, persona)
             return ConversationHandler.END
     else:
         logger.warning(f"Unknown callback in edit_verbosity_received: {data}")
