@@ -1125,7 +1125,14 @@ async def send_to_openrouter(
         "model": model_name,
         "messages": openrouter_messages,
         "stream": False,
-        "response_format": {"type": "json_object"},  # Explicitly request JSON output
+        "response_format": {"type": "json_object"},
+        # Pass-through Gemini safety settings via OpenRouter
+        "safety_settings": [
+            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+        ],
     }
     # Temperature: если явно не задано — используем немного творческий режим по умолчанию
     if temperature is not None:
@@ -1184,6 +1191,13 @@ async def send_to_openrouter(
                         "messages": retry_messages,
                         "stream": False,
                         "response_format": {"type": "json_object"},
+                        # Pass-through Gemini safety settings via OpenRouter (retry)
+                        "safety_settings": [
+                            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+                            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+                            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+                            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+                        ],
                         "temperature": 0.75,
                     }
                     if max_tokens is not None:
