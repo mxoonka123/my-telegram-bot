@@ -4601,11 +4601,13 @@ async def edit_wizard_menu_handler(update: Update, context: ContextTypes.DEFAULT
     await query.answer()
     data = query.data
     persona_id = context.user_data.get('edit_persona_id')
+    # Используем кэшированный объект, если он есть
+    persona_obj = context.user_data.get('persona_object')
     user_id = query.from_user.id
 
     logger.debug(f"edit_wizard_menu_handler: User {user_id}, PersonaID {persona_id}, Data {data}")
 
-    if not persona_id:
+    if not persona_id and not persona_obj:
         logger.warning(f"edit_wizard_menu_handler: persona_id missing for user {user_id}. Data: {data}")
         if query.message:
             try: await query.edit_message_text("Сессия редактирования потеряна. Начните заново.", reply_markup=None)
@@ -4628,9 +4630,13 @@ async def edit_wizard_menu_handler(update: Update, context: ContextTypes.DEFAULT
 
     if data == "edit_wizard_message_volume": # Временно отключено
         await query.answer("Функция 'Объем сообщений' временно недоступна.", show_alert=True)
-        with get_db() as db_session:
-            persona_config = db_session.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
-            return await _show_edit_wizard_menu(update, context, persona_config) if persona_config else ConversationHandler.END
+        # Возвращаем меню по кэшированному объекту без обращения к БД
+        if persona_obj:
+            return await _show_edit_wizard_menu(update, context, persona_obj)
+        else:
+            with get_db() as db_session:
+                persona_config = db_session.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
+                return await _show_edit_wizard_menu(update, context, persona_config) if persona_config else ConversationHandler.END
             
     
                 
@@ -4655,11 +4661,15 @@ async def edit_wizard_menu_handler(update: Update, context: ContextTypes.DEFAULT
                     logger.info(f"edit_wizard_menu_handler (back_to_wizard_menu): Deleted specific prompt message {last_prompt_message_id} in chat {chat_id_for_delete}")
             except Exception as e_del_prompt:
                 logger.warning(f"edit_wizard_menu_handler (back_to_wizard_menu): Failed to delete specific prompt message {last_prompt_message_id} in chat {chat_id_for_delete}: {e_del_prompt}")
-        
-        with get_db() as db_session:
-            persona_config = db_session.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
-            # _show_edit_wizard_menu will handle editing/sending the main menu
-            return await _show_edit_wizard_menu(update, context, persona_config) if persona_config else ConversationHandler.END
+
+        # Возвращаем меню из кэша без запросов к БД
+        if persona_obj:
+            return await _show_edit_wizard_menu(update, context, persona_obj)
+        else:
+            with get_db() as db_session:
+                persona_config = db_session.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
+                # _show_edit_wizard_menu will handle editing/sending the main menu
+                return await _show_edit_wizard_menu(update, context, persona_config) if persona_config else ConversationHandler.END
 
     # Обработка прямого выбора `set_max_msgs_` (если вдруг останется где-то такой коллбэк, хотя его быть не должно из главного меню)
     # Этот блок теперь не должен вызываться, так как эти кнопки убраны из главного меню
@@ -4689,6 +4699,8 @@ async def edit_wizard_menu_handler(update: Update, context: ContextTypes.DEFAULT
             return await _show_edit_wizard_menu(update, context, persona_config) if persona_config else ConversationHandler.END
 
     logger.warning(f"Unhandled wizard menu callback: {data} for persona {persona_id}")
+    if persona_obj:
+        return await _show_edit_wizard_menu(update, context, persona_obj)
     with get_db() as db_session:
         persona = db_session.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
         return await _show_edit_wizard_menu(update, context, persona) if persona else ConversationHandler.END
@@ -5122,9 +5134,9 @@ async def edit_description_received(update: Update, context: ContextTypes.DEFAUL
 
 # --- Edit Communication Style ---
 async def edit_comm_style_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    persona_id = context.user_data.get('edit_persona_id')
-    with get_db() as db:
-        current_style = db.query(DBPersonaConfig.communication_style).filter(DBPersonaConfig.id == persona_id).scalar()
+    # Снимаем текущее значение из кэша, без обращения к БД
+    persona_obj = context.user_data.get('persona_object')
+    current_style = getattr(persona_obj, 'communication_style', None) if persona_obj else None
     # normalize to enum
     try:
         current_style_enum = CommunicationStyle(current_style) if current_style else CommunicationStyle.NEUTRAL
@@ -5146,9 +5158,13 @@ async def edit_comm_style_received(update: Update, context: ContextTypes.DEFAULT
     query = update.callback_query
     await query.answer()
     data = query.data
-    persona_id = context.user_data.get('edit_persona_id')
+    persona_from_cache = context.user_data.get('persona_object')
 
     if data == "back_to_wizard_menu":
+        # Возврат в меню без обращения к БД
+        if persona_from_cache:
+            return await _show_edit_wizard_menu(update, context, persona_from_cache)
+        persona_id = context.user_data.get('edit_persona_id')
         return await _handle_back_to_wizard_menu(update, context, persona_id)
 
     if data.startswith("set_comm_style_"):
@@ -5162,22 +5178,23 @@ async def edit_comm_style_received(update: Update, context: ContextTypes.DEFAULT
             return EDIT_COMM_STYLE
         try:
             with get_db() as db:
-                persona = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).with_for_update().first()
-                if persona:
-                    persona.communication_style = style_enum.value
-                    db.commit()
-                    logger.info(f"Set communication_style to {style_enum.value} for persona {persona_id}")
-                    return await _handle_back_to_wizard_menu(update, context, persona_id)
-                else:
-                    await query.edit_message_text(escape_markdown_v2("❌ Ошибка: личность не найдена."))
+                if not persona_from_cache:
+                    await query.edit_message_text(escape_markdown_v2("❌ Ошибка: сессия редактирования потеряна."))
                     return ConversationHandler.END
+                live_persona = db.merge(persona_from_cache)
+                live_persona.communication_style = style_enum.value
+                db.commit()
+                try:
+                    db.refresh(live_persona, attribute_names=['communication_style'])
+                except Exception:
+                    pass
+                context.user_data['persona_object'] = live_persona
+                logger.info(f"Set communication_style to {style_enum.value} for persona {live_persona.id}")
+                return await _show_edit_wizard_menu(update, context, live_persona)
+        
         except Exception as e:
             logger.error(f"Error setting communication_style for {persona_id}: {e}")
             await query.edit_message_text("❌ Ошибка при сохранении стиля общения.", parse_mode=None)
-            with get_db() as db:
-                persona = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
-                if persona:
-                    return await _show_edit_wizard_menu(update, context, persona)
             return ConversationHandler.END
     else:
         logger.warning(f"Unknown callback in edit_comm_style_received: {data}")
@@ -5340,6 +5357,9 @@ async def edit_verbosity_received(update: Update, context: ContextTypes.DEFAULT_
     persona_id = context.user_data.get('edit_persona_id')
 
     if data == "back_to_wizard_menu":
+        if persona_from_cache:
+            return await _show_edit_wizard_menu(update, context, persona_from_cache)
+        persona_id = context.user_data.get('edit_persona_id')
         with get_db() as db:
             persona = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
             return await _show_edit_wizard_menu(update, context, persona)
@@ -5378,9 +5398,9 @@ async def edit_verbosity_received(update: Update, context: ContextTypes.DEFAULT_
 
 # --- Edit Group Reply Preference ---
 async def edit_group_reply_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    persona_id = context.user_data.get('edit_persona_id')
-    with get_db() as db:
-        current = db.query(DBPersonaConfig.group_reply_preference).filter(DBPersonaConfig.id == persona_id).scalar() or "mentioned_or_contextual"
+    # Берем текущее значение из кэша, чтобы не ходить в БД
+    persona_obj = context.user_data.get('persona_object')
+    current = (getattr(persona_obj, 'group_reply_preference', None) if persona_obj else None) or "mentioned_or_contextual"
     
     # Словарь для красивого отображения текущего значения
     display_map = {
@@ -5406,9 +5426,12 @@ async def edit_group_reply_received(update: Update, context: ContextTypes.DEFAUL
     query = update.callback_query
     await query.answer()
     data = query.data
-    persona_id = context.user_data.get('edit_persona_id')
+    persona_from_cache = context.user_data.get('persona_object')
 
     if data == "back_to_wizard_menu":
+        if persona_from_cache:
+            return await _show_edit_wizard_menu(update, context, persona_from_cache)
+        persona_id = context.user_data.get('edit_persona_id')
         with get_db() as db:
             persona = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
             return await _show_edit_wizard_menu(update, context, persona)
@@ -5417,22 +5440,22 @@ async def edit_group_reply_received(update: Update, context: ContextTypes.DEFAUL
         new_value = data.replace("set_group_reply_", "")
         try:
             with get_db() as db:
-                persona = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).with_for_update().first()
-                if persona:
-                    persona.group_reply_preference = new_value
-                    db.commit()
-                    logger.info(f"Set group_reply_preference to {new_value} for persona {persona_id}")
-                    return await _handle_back_to_wizard_menu(update, context, persona_id)
-                else:
-                    await query.edit_message_text(escape_markdown_v2("❌ Ошибка: личность не найдена."))
+                if not persona_from_cache:
+                    await query.edit_message_text(escape_markdown_v2("❌ Ошибка: сессия редактирования потеряна."))
                     return ConversationHandler.END
+                live_persona = db.merge(persona_from_cache)
+                live_persona.group_reply_preference = new_value
+                db.commit()
+                try:
+                    db.refresh(live_persona, attribute_names=['group_reply_preference'])
+                except Exception:
+                    pass
+                context.user_data['persona_object'] = live_persona
+                logger.info(f"Set group_reply_preference to {new_value} for persona {live_persona.id}")
+                return await _show_edit_wizard_menu(update, context, live_persona)
         except Exception as e:
-            logger.error(f"Error setting group_reply_preference for {persona_id}: {e}")
+            logger.error(f"Error setting group_reply_preference (cached) for {getattr(persona_from_cache, 'id', 'unknown')}: {e}")
             await query.edit_message_text("❌ Ошибка при сохранении настройки ответа в группе.", parse_mode=None)
-            with get_db() as db:
-                persona = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
-                if persona:
-                    return await _show_edit_wizard_menu(update, context, persona)
             return ConversationHandler.END
     else:
         logger.warning(f"Unknown callback in edit_group_reply_received: {data}")
@@ -5440,19 +5463,14 @@ async def edit_group_reply_received(update: Update, context: ContextTypes.DEFAUL
 
 # --- Edit Media Reaction ---
 async def edit_media_reaction_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    persona_id = context.user_data.get('edit_persona_id')
+    persona_obj = context.user_data.get('persona_object')
     query = update.callback_query
     user_id = query.from_user.id if query else update.effective_user.id
-    
-    with get_db() as db:
-        current_config = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
-        if not current_config:
-            if update.callback_query:
-                await update.callback_query.answer("Ошибка: личность не найдена.", show_alert=True)
-            return ConversationHandler.END
-        
-        current_owner = db.query(User).filter(User.id == current_config.owner_id).first()
-        current = current_config.media_reaction or "text_only"
+    if not persona_obj:
+        if update.callback_query:
+            await update.callback_query.answer("Ошибка: сессия редактирования потеряна.", show_alert=True)
+        return ConversationHandler.END
+    current = persona_obj.media_reaction or "text_only"
        
     media_react_map = {
         "text_only": "только текст",
@@ -5496,6 +5514,7 @@ async def edit_media_reaction_received(update: Update, context: ContextTypes.DEF
     query = update.callback_query
     await query.answer()
     data = query.data
+    persona_from_cache = context.user_data.get('persona_object')
     persona_id = context.user_data.get('edit_persona_id')
     user_id = query.from_user.id
 
@@ -5509,22 +5528,22 @@ async def edit_media_reaction_received(update: Update, context: ContextTypes.DEF
         
         try:
             with get_db() as db:
-                persona = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).with_for_update().first()
-                if persona:
-                    persona.media_reaction = new_value
-                    db.commit()
-                    logger.info(f"Set media_reaction to {new_value} for persona {persona_id}")
-                    return await _handle_back_to_wizard_menu(update, context, persona_id)
-                else:
-                    await query.edit_message_text(escape_markdown_v2("❌ Ошибка: личность не найдена."))
+                if not persona_from_cache:
+                    await query.edit_message_text(escape_markdown_v2("❌ Ошибка: сессия редактирования потеряна."))
                     return ConversationHandler.END
+                live_persona = db.merge(persona_from_cache)
+                live_persona.media_reaction = new_value
+                db.commit()
+                try:
+                    db.refresh(live_persona, attribute_names=['media_reaction'])
+                except Exception:
+                    pass
+                context.user_data['persona_object'] = live_persona
+                logger.info(f"Set media_reaction to {new_value} for persona {live_persona.id}")
+                return await _show_edit_wizard_menu(update, context, live_persona)
         except Exception as e:
-            logger.error(f"Error setting media_reaction for {persona_id}: {e}")
-            await query.edit_message_text("❌ Ошибка при сохранении настройки реакции на медиа.", parse_mode=None)
-            with get_db() as db:
-                persona = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
-                if persona:
-                    return await _show_edit_wizard_menu(update, context, persona)
+            logger.error(f"Error setting media_reaction (cached) for {getattr(persona_from_cache, 'id', 'unknown')}: {e}")
+            await query.edit_message_text("❌ Ошибка при сохранении реакции на медиа.", parse_mode=None)
             return ConversationHandler.END
     else:
         logger.warning(f"Unknown callback in edit_media_reaction_received: {data}")
