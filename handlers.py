@@ -1076,31 +1076,6 @@ def _is_degenerate_text(text: str) -> bool:
 # Максимальная длина входящего сообщения от пользователя в символах
 MAX_USER_MESSAGE_LENGTH_CHARS = 600
 
-def _sanitize_text_output(text: str, chat_type: Optional[str]) -> str:
-    """Смягчает/фильтрует токсичную/NSFW лексику, особенно для групповых чатов."""
-    try:
-        s = str(text)
-    except Exception:
-        return text
-    if not s:
-        return s
-    import re as _re
-    # Простая цензура для ругательств и сексуального контента
-    bad_map = {
-        r"\b(хуй|пизд|еб|ёб|выеб|вы*еб|ебат|ебал|уёб|уеб|бля)\w*": "[нецензурно]",
-        r"\b(выебать|трахать|секс|инцест)\b": "[запрещено]",
-    }
-    for pat, repl in bad_map.items():
-        try:
-            s = _re.sub(pat, repl, s, flags=_re.IGNORECASE)
-        except Exception:
-            continue
-    # Для групп делаем ещё мягче формулировки
-    if str(chat_type or '').lower() in {"group", "supergroup"}:
-        s = s.replace("[нецензурно]", "[неуместно]")
-        s = s.replace("[запрещено]", "[неуместно]")
-    return s
-
 async def send_to_openrouter(
     api_key: str,
     system_prompt: str,
@@ -1164,17 +1139,47 @@ async def send_to_openrouter(
                 if not content or _is_degenerate_text(content):
                     logger.warning(f"OpenRouter returned empty or degenerate content: '{str(content)[:100]}' — attempting one safe retry with adjusted params")
                     # --- ONE SAFE RETRY ---
-                    retry_messages = list(openrouter_messages)
-                    retry_messages.append({
-                        "role": "system",
-                        "content": "Отвечай естественно и по делу, на живом русском языке. Избегай бессмысленных токенов и шума."
-                    })
+                    # Modify the existing system prompt instead of adding a second system message
+                    retry_suffix = (
+                        "\n\n[SYSTEM WARNING] Your previous response was empty or invalid. "
+                        "You MUST generate a valid JSON response authentic to your character role. "
+                        "Return only a JSON object with key 'response' mapped to an array of strings."
+                    )
+                    retry_system_prompt = (system_prompt or "") + retry_suffix
+
+                    # Build retry messages: start with modified system, then original user/assistant messages
+                    base_messages = messages or []
+                    retry_messages = []
+                    if retry_system_prompt:
+                        retry_messages.append({"role": "system", "content": retry_system_prompt})
+                    # Rebuild image payload if needed
+                    if image_data:
+                        # replicate same image handling as above
+                        last_user_message = next((m for m in reversed(base_messages) if m.get('role') == 'user'), None)
+                        text_content = last_user_message['content'] if last_user_message else "Опиши картинку кратко, затем задай 1-2 вопроса. Ответ в JSON."
+                        base64_image = base64.b64encode(image_data).decode('utf-8')
+                        image_url_data = f"data:image/jpeg;base64,{base64_image}"
+                        if last_user_message:
+                            messages_without_last = [m for m in base_messages if m is not last_user_message]
+                            retry_messages.extend(messages_without_last)
+                        else:
+                            retry_messages.extend(base_messages)
+                        retry_messages.append({
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": text_content},
+                                {"type": "image_url", "image_url": {"url": image_url_data}},
+                            ],
+                        })
+                    else:
+                        retry_messages.extend(base_messages)
+
                     retry_payload = {
                         "model": model_name,
                         "messages": retry_messages,
                         "stream": False,
                         "response_format": {"type": "json_object"},
-                        "temperature": 0.7,
+                        "temperature": 0.75,
                     }
                     if max_tokens is not None:
                         retry_payload["max_tokens"] = int(max_tokens)
@@ -1495,18 +1500,11 @@ async def process_and_send_response(update: Update, context: ContextTypes.DEFAUL
             for i, part_raw_send in enumerate(text_parts_to_send):
                 if not part_raw_send:
                     continue
-                # Санитизация текста перед отправкой (анти-NSFW/брань) — только если включена в конфиге
-                try:
-                    if getattr(config, 'ENABLE_OUTPUT_SANITIZER', False):
-                        chat_type_val = getattr(update.effective_chat, 'type', None)
-                        sanitized_part = _sanitize_text_output(part_raw_send, chat_type_val)
-                    else:
-                        sanitized_part = part_raw_send
-                except Exception:
-                    sanitized_part = part_raw_send
+                # Санитизация отключена: отправляем ответ модели как есть
+                sanitized_part = part_raw_send
 
                 if not sanitized_part:
-                    logger.warning(f"process_and_send_response [JSON]: Part {i+1} sanitized to empty string. Skipping.")
+                    logger.warning(f"process_and_send_response [JSON]: Part {i+1} is empty after preprocessing. Skipping.")
                     continue
 
                 if len(sanitized_part) > TELEGRAM_MAX_LEN:

@@ -38,10 +38,6 @@ FREE_IMAGE_RESPONSES = os.getenv("FREE_IMAGE_RESPONSES", "true").lower() in ("1"
 # Явно указываем бесплатную модель для изображений, если хотим отличать от текстовой
 GEMINI_FREE_IMAGE_MODEL = os.getenv("GEMINI_FREE_IMAGE_MODEL", "gemini-2.5-flash-lite")
 
-# Фильтрация нецензурной/NSFW лексики на выходе (санитизация)
-# По просьбе пользователя — по умолчанию выключена
-ENABLE_OUTPUT_SANITIZER = os.getenv("ENABLE_OUTPUT_SANITIZER", "false").lower() in ("1", "true", "yes", "y")
-
 # Отдельная модель OpenRouter для фотографий (если у пользователя есть кредиты)
 # Явно устанавливаем ту же модель, что и для текста, чтобы избежать ошибок с недоступными моделями по умолчанию.
 # При необходимости можно переопределить через переменную окружения OPENROUTER_IMAGE_MODEL_NAME.
