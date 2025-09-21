@@ -156,6 +156,11 @@ async def send_to_google_gemini(
             pass
         formatted_messages.append({"role": role, "parts": [{"text": text}]})
 
+    # If there are no messages (e.g., proactive "напиши что-нибудь"),
+    # add a minimal starter so Google API doesn't reject empty contents
+    if not formatted_messages:
+        formatted_messages.append({"role": "user", "parts": [{"text": "Начни диалог."}]})
+
     # Ensure conversation doesn't start with model role
     if formatted_messages and formatted_messages[0].get("role") == "model":
         formatted_messages.insert(0, {"role": "user", "parts": [{"text": "(начало диалога)"}]})
