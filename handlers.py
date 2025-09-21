@@ -1472,57 +1472,7 @@ async def process_and_send_response(update: Update, context: ContextTypes.DEFAUL
             f"process_and_send_response: using passed bot @{getattr(local_bot, 'username', None)} (id={getattr(local_bot, 'id', None)}) for persona '{persona.config.name if persona and persona.config else 'unknown'}'"
         )
 
-        processed_parts_for_sending = []
-        if text_parts_to_send:
-            for text_part_candidate in text_parts_to_send:
-                stripped_candidate = text_part_candidate.strip()
-                # 1) Специальный случай: fenced ```json [ ... ]```
-                match = re.search(r"^```json\s*(\[.*?\])\s*```$", stripped_candidate, re.DOTALL)
-                if match:
-                    inner_json_str = match.group(1)
-                    try:
-                        parsed_parts = json.loads(inner_json_str)
-                        if isinstance(parsed_parts, list):
-                            processed_parts_for_sending.extend(str(p) for p in parsed_parts)
-                        else:
-                            processed_parts_for_sending.append(str(parsed_parts))
-                    except (json.JSONDecodeError, TypeError):
-                        processed_parts_for_sending.append(text_part_candidate)
-                else:
-                    # 2) Попытка вытащить JSON из fenced-блока любого языка
-                    try:
-                        extracted = extract_json_from_markdown(stripped_candidate)
-                    except Exception:
-                        extracted = stripped_candidate
-                    # 3) Попытка распарсить как JSON (массив или объект с ключом response)
-                    parsed_ok = False
-                    try:
-                        maybe_json = json.loads(extracted)
-                        if isinstance(maybe_json, list):
-                            processed_parts_for_sending.extend(str(p) for p in maybe_json)
-                            parsed_ok = True
-                        elif isinstance(maybe_json, dict):
-                            resp = maybe_json.get('response')
-                            if isinstance(resp, list):
-                                processed_parts_for_sending.extend(str(p) for p in resp)
-                                parsed_ok = True
-                    except Exception:
-                        parsed_ok = False
-                    if not parsed_ok:
-                        # 4) Регэкспом попробуем вытащить JSON-массив после ключа response
-                        try:
-                            m = re.search(r'"response"\s*:\s*(\[.*?\])', extracted, re.DOTALL)
-                            if m:
-                                arr_str = m.group(1)
-                                arr = json.loads(arr_str)
-                                if isinstance(arr, list):
-                                    processed_parts_for_sending.extend(str(p) for p in arr)
-                                    parsed_ok = True
-                        except Exception:
-                            parsed_ok = False
-                    if not parsed_ok:
-                        processed_parts_for_sending.append(text_part_candidate)
-            text_parts_to_send = processed_parts_for_sending
+        # Parsing now happens upstream in send_to_* functions. Use text_parts_to_send as-is.
 
         chat_type = update.effective_chat.type if update and update.effective_chat else None
 
