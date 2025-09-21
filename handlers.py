@@ -1197,7 +1197,7 @@ async def send_to_openrouter(
                                     return [
                                         "не совсем понял мысль. можешь сказать иначе или чуть подробнее?",
                                     ]
-                                # Parse JSON on retry
+                                # Parse JSON on retry (flexible)
                                 try:
                                     retry_clean = (retry_content or "").strip()
                                     # strip common markdown code fences
@@ -1207,14 +1207,23 @@ async def send_to_openrouter(
                                         retry_clean = retry_clean[5:]
                                     retry_parsed = json.loads(retry_clean)
                                     if isinstance(retry_parsed, dict) and isinstance(retry_parsed.get("response"), list):
-                                        return [str(item) for item in retry_parsed["response"]]
+                                        return [str(item).strip() for item in retry_parsed["response"] if str(item).strip()]
                                     if isinstance(retry_parsed, list):
-                                        return [str(item) for item in retry_parsed]
+                                        return [str(item).strip() for item in retry_parsed if str(item).strip()]
+                                    if isinstance(retry_parsed, dict):
+                                        for key in ["text", "body", "message", "content", "answer"]:
+                                            val = retry_parsed.get(key)
+                                            if isinstance(val, str) and val.strip():
+                                                return [val.strip()]
+                                            if isinstance(val, list):
+                                                items = [str(it).strip() for it in val if str(it).strip()]
+                                                if items:
+                                                    return items
                                     logger.warning(f"OpenRouter retry returned valid JSON but unexpected structure: {str(retry_parsed)[:200]}")
-                                    return [str(retry_content)]
+                                    return [json.dumps(retry_parsed, ensure_ascii=False, indent=2)]
                                 except Exception as e_json_retry:
                                     logger.warning(f"Retry JSON parse failed: {e_json_retry}. Raw: {retry_content[:200]}")
-                                    return f"[ошибка openrouter: не удалось разобрать JSON при повторе]"
+                                    return [str(retry_content)]
                             except (json.JSONDecodeError, IndexError) as e2:
                                 logger.warning(f"Could not parse OpenRouter JSON retry response: {e2}. Raw text: {retry_resp.text[:250]}")
                                 return f"[ошибка openrouter: не удалось обработать ответ: {retry_resp.text[:100]}]"
@@ -1233,15 +1242,32 @@ async def send_to_openrouter(
                     if clean.lower().startswith("json\n"):
                         clean = clean[5:]
                     parsed = json.loads(clean)
+
+                    # 1) Preferred format: {"response": [ ... ]}
                     if isinstance(parsed, dict) and isinstance(parsed.get("response"), list):
-                        return [str(item) for item in parsed["response"]]
+                        return [str(item).strip() for item in parsed["response"] if str(item).strip()]
+
+                    # 2) Fallback: raw list [ ... ]
                     if isinstance(parsed, list):
-                        return [str(item) for item in parsed]
+                        return [str(item).strip() for item in parsed if str(item).strip()]
+
+                    # 3) Heuristic extraction from common keys
+                    if isinstance(parsed, dict):
+                        for key in ["text", "body", "message", "content", "answer"]:
+                            val = parsed.get(key)
+                            if isinstance(val, str) and val.strip():
+                                return [val.strip()]
+                            if isinstance(val, list):
+                                items = [str(it).strip() for it in val if str(it).strip()]
+                                if items:
+                                    return items
+
+                    # 4) Unknown but valid JSON: return formatted for visibility
                     logger.warning(f"OpenRouter returned valid JSON but unexpected structure: {str(parsed)[:200]}")
-                    return [str(content)]
+                    return [json.dumps(parsed, ensure_ascii=False, indent=2)]
                 except Exception as e_json:
                     logger.warning(f"Could not parse OpenRouter JSON response: {e_json}. Raw text: {str(content)[:250]}")
-                    return f"[ошибка openrouter: не удалось разобрать JSON-ответ]"
+                    return [str(content)]
             except (json.JSONDecodeError, IndexError) as e:
                 logger.warning(f"Could not parse OpenRouter JSON response: {e}. Raw text: {resp.text[:250]}")
                 return f"[ошибка openrouter: не удалось обработать ответ: {resp.text[:100]}]"
