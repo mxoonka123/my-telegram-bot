@@ -1708,7 +1708,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 
                 # Распаковываем кортеж правильно. Второй элемент - это ChatBotInstance, а не контекст.
                 persona, chat_instance, owner_user = persona_context_owner_tuple
-                logger.info(f"handle_message: Found active persona '{persona.name}' (ID: {persona.id}) owned by User ID {owner_user.id} (TG: {owner_user.telegram_id}).")
+                # Cache owner_user id early while the session is active to avoid DetachedInstanceError later
+                owner_user_id_cache = owner_user.id
+                logger.info(f"handle_message: Found active persona '{persona.name}' (ID: {persona.id}) owned by User ID {owner_user_id_cache} (TG: {owner_user.telegram_id}).")
                 
                 # Теперь получаем контекст (список сообщений) отдельно, используя chat_instance.id
                 initial_context_from_db = get_context_for_chat_bot(db_session, chat_instance.id)
@@ -1900,7 +1902,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                         context_for_ai = []
                     context_for_ai.append({"role": "user", "content": f"{username}: {message_text}"})
                     # --- Закрываем транзакцию/сессию перед долгим IO (AI) ---
-                    owner_user_id_cache = owner_user.id
                     try:
                         db_session.commit()
                         db_session.close()
@@ -1912,9 +1913,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     assistant_response_text: Union[List[str], str]
                     model_used: str
                     with get_db() as llm_db:
+                        # Re-fetch fresh owner_user bound to this new session to avoid DetachedInstanceError
+                        try:
+                            owner_user_for_llm = llm_db.query(User).filter(User.id == owner_user_id_cache).first()
+                        except Exception as refetch_err:
+                            logger.error(f"Failed to re-fetch owner_user by cached id {owner_user_id_cache}: {refetch_err}")
+                            owner_user_for_llm = None
+                        if not owner_user_for_llm:
+                            logger.error(f"FATAL: owner_user not found in new session by id={owner_user_id_cache}. Aborting AI call.")
+                            return
                         assistant_response_text, model_used, _ = await get_llm_response(
                             db_session=llm_db,
-                            owner_user=owner_user,
+                            owner_user=owner_user_for_llm,
                             system_prompt=system_prompt,
                             context_for_ai=context_for_ai,
                         )
