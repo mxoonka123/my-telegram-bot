@@ -480,7 +480,9 @@ async def on_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         with get_db() as db:
             bot_instance = None
             if bot_id_str:
-                bot_instance = db.query(DBBotInstance).filter(
+                bot_instance = db.query(DBBotInstance).options(
+                    selectinload(DBBotInstance.owner)
+                ).filter(
                     DBBotInstance.telegram_bot_id == bot_id_str,
                     DBBotInstance.status == 'active'
                 ).first()
@@ -2383,12 +2385,6 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
                             is_first_message=(len(history_with_timestamps) == 0)
                         )
                         if context_response_prepared:
-                            # ВАЖНО: присоединяем пользователя к текущей сессии, чтобы избежать DetachedInstanceError
-                            try:
-                                attached_owner_media = db_after_ai.merge(owner_user_refreshed) if owner_user_refreshed is not None else None
-                            except Exception as merge_err_m:
-                                logger.error(f"Failed to merge owner_user into session: {merge_err_m}")
-                                attached_owner_media = owner_user_refreshed
                             # Нормализуем текст для тарификации
                             _out_text = "\n".join(ai_response_text) if isinstance(ai_response_text, list) else (ai_response_text or "")
                             # Финальная проверка: не списываем кредиты за любой ошибочный или заблокированный ответ
@@ -2411,7 +2407,7 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE, media
                             else:
                                 await deduct_credits_for_interaction(
                                     db=db_after_ai,
-                                    owner_user=attached_owner_media,
+                                    owner_user=owner_user_refreshed,  # Используем объект в текущей сессии
                                     input_text="",
                                     output_text=_out_text,
                                     model_name=model_used,
