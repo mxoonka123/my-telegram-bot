@@ -300,14 +300,20 @@ async def send_to_google_gemini(
                         if isinstance(val, list):
                             return [str(it) for it in val]
                         if isinstance(val, str):
-                            # Если внутри строки лежит сериализованный JSON-массив
+                            # Handle when value is a plain string or a JSON-encoded list/string
                             try:
                                 inner = json.loads(val)
                                 if isinstance(inner, list):
                                     return [str(it) for it in inner]
+                                elif key == 'response' and isinstance(inner, str) and inner.strip():
+                                    return [inner.strip()]
+                            except json.JSONDecodeError:
+                                # Not JSON, just return the string for 'response'
+                                if key == 'response' and val.strip():
+                                    return [val.strip()]
                             except Exception:
                                 pass
-                    logger.warning(f"Model returned JSON but not a list: {type(parsed)}. Wrapping as single item.")
+                    logger.warning(f"Model returned JSON but couldn't extract a response list/string: {type(parsed)}. Wrapping as single item.")
                     return [str(text_content)]
                 # Иные типы
                 logger.warning(f"Model returned JSON but unexpected type: {type(parsed)}. Wrapping as single item.")
@@ -1267,6 +1273,11 @@ async def send_to_openrouter(
                     # 1) Preferred format: {"response": [ ... ]}
                     if isinstance(parsed, dict) and isinstance(parsed.get("response"), list):
                         return [str(item).strip() for item in parsed["response"] if str(item).strip()]
+                    # Added: handle string response
+                    elif isinstance(parsed, dict) and isinstance(parsed.get("response"), str):
+                        response_str = parsed.get("response", "").strip()
+                        if response_str:
+                            return [response_str]
 
                     # 2) Fallback: raw list [ ... ]
                     if isinstance(parsed, list):
