@@ -138,7 +138,7 @@ class Persona:
             self.config.max_response_messages = 1
             self.max_response_messages = 1
                 # ------------------------------------------------
-        self.message_volume = "normal"  # Используем жестко заданное значение по умолчанию
+        # self.message_volume = "normal"  # Временно отключено, чтобы не переопределять настройки из UI
 
         # Load moods safely
         loaded_moods = {}
@@ -285,8 +285,16 @@ class Persona:
 
         style_map = {"neutral": "Нейтральный", "friendly": "Дружелюбный", "sarcastic": "Саркастичный", "formal": "Формальный", "brief": "Краткий"}
         verbosity_map = {"concise": "Лаконичный", "medium": "Средний", "talkative": "Разговорчивый"}
-        style_text = style_map.get(self.communication_style, style_map["neutral"])
-        verbosity_text = verbosity_map.get(self.verbosity_level, verbosity_map["medium"])
+        try:
+            style_key = self.communication_style.value if hasattr(self.communication_style, 'value') else str(self.communication_style)
+        except Exception:
+            style_key = "neutral"
+        try:
+            verbosity_key = self.verbosity_level.value if hasattr(self.verbosity_level, 'value') else str(self.verbosity_level)
+        except Exception:
+            verbosity_key = "medium"
+        style_text = style_map.get(style_key, style_map["neutral"])
+        verbosity_text = verbosity_map.get(verbosity_key, verbosity_map["medium"])
 
         chat_id_info = self.chat_id_info
 
@@ -466,13 +474,21 @@ class Persona:
         # --- ИСПРАВЛЕНИЕ: Используем тот же механизм маппинга, что и в format_system_prompt ---
         style_map = {"neutral": "Нейтральный", "friendly": "Дружелюбный", "sarcastic": "Саркастичный", "formal": "Формальный", "brief": "Краткий"}
         verbosity_map = {"concise": "Лаконичный", "medium": "Средний", "talkative": "Разговорчивый"}
-        style_text = style_map.get(self.communication_style, style_map["neutral"])
-        verbosity_text = verbosity_map.get(self.verbosity_level, verbosity_map["medium"])
+        try:
+            _style_key = self.communication_style.value if hasattr(self.communication_style, 'value') else str(self.communication_style)
+        except Exception:
+            _style_key = "neutral"
+        try:
+            _verbosity_key = self.verbosity_level.value if hasattr(self.verbosity_level, 'value') else str(self.verbosity_level)
+        except Exception:
+            _verbosity_key = "medium"
+        style_text = style_map.get(_style_key, style_map["neutral"])
+        verbosity_text = verbosity_map.get(_verbosity_key, verbosity_map["medium"])
         # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
         
         # Выбор шаблона и инструкции (унифицировано)
         if media_type_text == "голосовое сообщение":
-            template = VOICE_SYSTEM_PROMPT_TEMPLATE
+            template = self.config.media_system_prompt_template or VOICE_SYSTEM_PROMPT_TEMPLATE
             media_instruction = "Пользователь прислал(а) голосовое сообщение. Тебе нужно отреагировать на его содержание, продолжая диалог."
         else:
             template = self.config.media_system_prompt_template or DEFAULT_MEDIA_SYSTEM_PROMPT_TEMPLATE

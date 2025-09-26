@@ -293,26 +293,30 @@ async def send_to_google_gemini(
             try:
                 parsed = json.loads(text_content)
                 if isinstance(parsed, list):
-                    return [str(it) for it in parsed]
+                    return [str(it) for it in parsed if str(it).strip()]
                 if isinstance(parsed, dict):
-                    for key in ['response', 'answer', 'text', 'parts']:
+                    # Сначала обрабатываем ключ 'response' как приоритетный
+                    response_val = parsed.get('response')
+                    if isinstance(response_val, list):
+                        return [str(it) for it in response_val if str(it).strip()]
+                    if isinstance(response_val, str) and response_val.strip():
+                        # Попытка распарсить строку как JSON-массив
+                        try:
+                            inner_list = json.loads(response_val)
+                            if isinstance(inner_list, list):
+                                return [str(it) for it in inner_list if str(it).strip()]
+                        except (json.JSONDecodeError, TypeError):
+                            # Если это не JSON, вернуть как одиночный ответ
+                            return [response_val]
+
+                    # Если 'response' не дал ответа — ищем в альтернативных ключах
+                    for key in ['answer', 'text', 'parts']:
                         val = parsed.get(key)
                         if isinstance(val, list):
-                            return [str(it) for it in val]
-                        if isinstance(val, str):
-                            # Handle when value is a plain string or a JSON-encoded list/string
-                            try:
-                                inner = json.loads(val)
-                                if isinstance(inner, list):
-                                    return [str(it) for it in inner]
-                                elif key == 'response' and isinstance(inner, str) and inner.strip():
-                                    return [inner.strip()]
-                            except json.JSONDecodeError:
-                                # Not JSON, just return the string for 'response'
-                                if key == 'response' and val.strip():
-                                    return [val.strip()]
-                            except Exception:
-                                pass
+                            return [str(it) for it in val if str(it).strip()]
+                        if isinstance(val, str) and val.strip():
+                            return [val]
+
                     logger.warning(f"Model returned JSON but couldn't extract a response list/string: {type(parsed)}. Wrapping as single item.")
                     return [str(text_content)]
                 # Иные типы
