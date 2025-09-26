@@ -1425,8 +1425,14 @@ async def process_and_send_response(update: Update, context: ContextTypes.DEFAUL
         if llm_response.strip():
             text_parts_to_send = [llm_response.strip()]
     elif isinstance(llm_response, list):
-        text_parts_to_send = [str(part).strip() for part in llm_response if str(part).strip()]
-        logger.info(f"process_and_send_response [v4]: received {len(text_parts_to_send)} parts from LLM.")
+        # Новая логика: если модель вернула один длинный элемент с переносами строк —
+        # разбиваем его на несколько сообщений для более естественного диалога.
+        if len(llm_response) == 1 and isinstance(llm_response[0], str) and '\n' in llm_response[0]:
+            logger.info("Single-item response with newlines detected. Splitting into multiple parts.")
+            text_parts_to_send = [line.strip() for line in llm_response[0].split('\n') if line.strip()]
+        else:
+            text_parts_to_send = [str(part).strip() for part in llm_response if str(part).strip()]
+        logger.info(f"process_and_send_response [v4]: received and processed into {len(text_parts_to_send)} parts from LLM.")
     else:
         logger.error(f"process_and_send_response [v4]: unexpected LLM response type: {type(llm_response)}")
         return False

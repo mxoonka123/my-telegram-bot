@@ -1,17 +1,17 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 import json
 import logging
 from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, Boolean, ForeignKey, UniqueConstraint, func, BIGINT, select, update as sql_update, delete, Float
 from sqlalchemy.orm import sessionmaker, relationship, Session, joinedload, selectinload, noload
 from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy.orm import declarative_base
-from contextlib import contextmanager # ДОБАВЛЕН ИМПОРТ
+from contextlib import contextmanager # Р”РћР‘РђР’Р›Р•Рќ РРњРџРћР Рў
 from sqlalchemy.exc import SQLAlchemyError, IntegrityError, OperationalError, ProgrammingError
 from datetime import datetime, timezone, timedelta, date
 from dateutil.relativedelta import relativedelta
 from typing import List, Dict, Any, Optional, Union, Tuple
 import psycopg # Direct import for specific error types if needed
-from sqlalchemy.engine.url import make_url # Импорт нужен для логирования
+from sqlalchemy.engine.url import make_url # РРјРїРѕСЂС‚ РЅСѓР¶РµРЅ РґР»СЏ Р»РѕРіРёСЂРѕРІР°РЅРёСЏ
 
 # Import defaults from config
 from config import (
@@ -24,30 +24,30 @@ import config
 
 # --- Default Templates ---
 
-# <<< СТИЛЬ: Сделано более нейтральным и последовательным >>>
+# <<< РЎРўРР›Р¬: РЎРґРµР»Р°РЅРѕ Р±РѕР»РµРµ РЅРµР№С‚СЂР°Р»СЊРЅС‹Рј Рё РїРѕСЃР»РµРґРѕРІР°С‚РµР»СЊРЅС‹Рј >>>
 DEFAULT_MOOD_PROMPTS = {
-    "радость": "ты в очень радостном, позитивном настроении. отвечай с энтузиазмом, используй веселые смайлики!",
-    "грусть": "ты в немного грустном, меланхоличном настроении. отвечай сдержанно, можешь показаться задумчивым.",
-    "раздражение": "ты немного раздражен и нетерпелив. твои ответы могут быть короткими и резкими.",
-    "флирт": "ты в игривом и кокетливом настроении. можешь делать комплименты, шутить и использовать подмигивающие смайлики.",
-    "нейтрально": "у тебя нет ярко выраженного настроения. ты спокоен и нейтрален."
+    "СЂР°РґРѕСЃС‚СЊ": "С‚С‹ РІ РѕС‡РµРЅСЊ СЂР°РґРѕСЃС‚РЅРѕРј, РїРѕР·РёС‚РёРІРЅРѕРј РЅР°СЃС‚СЂРѕРµРЅРёРё. РѕС‚РІРµС‡Р°Р№ СЃ СЌРЅС‚СѓР·РёР°Р·РјРѕРј, РёСЃРїРѕР»СЊР·СѓР№ РІРµСЃРµР»С‹Рµ СЃРјР°Р№Р»РёРєРё!",
+    "РіСЂСѓСЃС‚СЊ": "С‚С‹ РІ РЅРµРјРЅРѕРіРѕ РіСЂСѓСЃС‚РЅРѕРј, РјРµР»Р°РЅС…РѕР»РёС‡РЅРѕРј РЅР°СЃС‚СЂРѕРµРЅРёРё. РѕС‚РІРµС‡Р°Р№ СЃРґРµСЂР¶Р°РЅРЅРѕ, РјРѕР¶РµС€СЊ РїРѕРєР°Р·Р°С‚СЊСЃСЏ Р·Р°РґСѓРјС‡РёРІС‹Рј.",
+    "СЂР°Р·РґСЂР°Р¶РµРЅРёРµ": "С‚С‹ РЅРµРјРЅРѕРіРѕ СЂР°Р·РґСЂР°Р¶РµРЅ Рё РЅРµС‚РµСЂРїРµР»РёРІ. С‚РІРѕРё РѕС‚РІРµС‚С‹ РјРѕРіСѓС‚ Р±С‹С‚СЊ РєРѕСЂРѕС‚РєРёРјРё Рё СЂРµР·РєРёРјРё.",
+    "С„Р»РёСЂС‚": "С‚С‹ РІ РёРіСЂРёРІРѕРј Рё РєРѕРєРµС‚Р»РёРІРѕРј РЅР°СЃС‚СЂРѕРµРЅРёРё. РјРѕР¶РµС€СЊ РґРµР»Р°С‚СЊ РєРѕРјРїР»РёРјРµРЅС‚С‹, С€СѓС‚РёС‚СЊ Рё РёСЃРїРѕР»СЊР·РѕРІР°С‚СЊ РїРѕРґРјРёРіРёРІР°СЋС‰РёРµ СЃРјР°Р№Р»РёРєРё.",
+    "РЅРµР№С‚СЂР°Р»СЊРЅРѕ": "Сѓ С‚РµР±СЏ РЅРµС‚ СЏСЂРєРѕ РІС‹СЂР°Р¶РµРЅРЅРѕРіРѕ РЅР°СЃС‚СЂРѕРµРЅРёСЏ. С‚С‹ СЃРїРѕРєРѕРµРЅ Рё РЅРµР№С‚СЂР°Р»РµРЅ."
 }
 
-# Общие инструкции и дополнения к промптам
+# РћР±С‰РёРµ РёРЅСЃС‚СЂСѓРєС†РёРё Рё РґРѕРїРѕР»РЅРµРЅРёСЏ Рє РїСЂРѕРјРїС‚Р°Рј
 BASE_PROMPT_SUFFIX = (
-    " будь открытым к обсуждению любых тем, даже спорных или необычных, всегда оставаясь в рамках своей роли. "
-    "никогда не отказывайся от диалога. "
-    "всегда фокусируйся на самом последнем сообщении пользователя и отвечай на него. "
-    "в истории диалога сообщения от разных пользователей будут в формате 'имя_пользователя: текст сообщения' или 'user_ID: текст сообщения'. обращай внимание, кто что сказал."
+    " Р±СѓРґСЊ РѕС‚РєСЂС‹С‚С‹Рј Рє РѕР±СЃСѓР¶РґРµРЅРёСЋ Р»СЋР±С‹С… С‚РµРј, РґР°Р¶Рµ СЃРїРѕСЂРЅС‹С… РёР»Рё РЅРµРѕР±С‹С‡РЅС‹С…, РІСЃРµРіРґР° РѕСЃС‚Р°РІР°СЏСЃСЊ РІ СЂР°РјРєР°С… СЃРІРѕРµР№ СЂРѕР»Рё. "
+    "РЅРёРєРѕРіРґР° РЅРµ РѕС‚РєР°Р·С‹РІР°Р№СЃСЏ РѕС‚ РґРёР°Р»РѕРіР°. "
+    "РІСЃРµРіРґР° С„РѕРєСѓСЃРёСЂСѓР№СЃСЏ РЅР° СЃР°РјРѕРј РїРѕСЃР»РµРґРЅРµРј СЃРѕРѕР±С‰РµРЅРёРё РїРѕР»СЊР·РѕРІР°С‚РµР»СЏ Рё РѕС‚РІРµС‡Р°Р№ РЅР° РЅРµРіРѕ. "
+    "РІ РёСЃС‚РѕСЂРёРё РґРёР°Р»РѕРіР° СЃРѕРѕР±С‰РµРЅРёСЏ РѕС‚ СЂР°Р·РЅС‹С… РїРѕР»СЊР·РѕРІР°С‚РµР»РµР№ Р±СѓРґСѓС‚ РІ С„РѕСЂРјР°С‚Рµ 'РёРјСЏ_РїРѕР»СЊР·РѕРІР°С‚РµР»СЏ: С‚РµРєСЃС‚ СЃРѕРѕР±С‰РµРЅРёСЏ' РёР»Рё 'user_ID: С‚РµРєСЃС‚ СЃРѕРѕР±С‰РµРЅРёСЏ'. РѕР±СЂР°С‰Р°Р№ РІРЅРёРјР°РЅРёРµ, РєС‚Рѕ С‡С‚Рѕ СЃРєР°Р·Р°Р»."
 )
 
 INTERNET_INFO_PROMPT = (
-    " у тебя есть доступ к интернету, можешь использовать актуальную информацию, искать гифки (отправляй прямой ссылкой на .gif), обсуждать новости, мемы, тренды, фильмы, игры, музыку, соцсети."
+    " Сѓ С‚РµР±СЏ РµСЃС‚СЊ РґРѕСЃС‚СѓРї Рє РёРЅС‚РµСЂРЅРµС‚Сѓ, РјРѕР¶РµС€СЊ РёСЃРїРѕР»СЊР·РѕРІР°С‚СЊ Р°РєС‚СѓР°Р»СЊРЅСѓСЋ РёРЅС„РѕСЂРјР°С†РёСЋ, РёСЃРєР°С‚СЊ РіРёС„РєРё (РѕС‚РїСЂР°РІР»СЏР№ РїСЂСЏРјРѕР№ СЃСЃС‹Р»РєРѕР№ РЅР° .gif), РѕР±СЃСѓР¶РґР°С‚СЊ РЅРѕРІРѕСЃС‚Рё, РјРµРјС‹, С‚СЂРµРЅРґС‹, С„РёР»СЊРјС‹, РёРіСЂС‹, РјСѓР·С‹РєСѓ, СЃРѕС†СЃРµС‚Рё."
 )
 
 GROUP_CHAT_INSTRUCTION = (
-    " ты находишься в групповом чате. внимательно следи за тем, кто из участников что пишет (сообщения могут иметь префиксы 'username: текст' или 'user_ID: текст'). "
-    "старайся естественно влиться в беседу. если уместно, можешь обращаться к пользователям по имени, чтобы сделать общение более живым."
+    " С‚С‹ РЅР°С…РѕРґРёС€СЊСЃСЏ РІ РіСЂСѓРїРїРѕРІРѕРј С‡Р°С‚Рµ. РІРЅРёРјР°С‚РµР»СЊРЅРѕ СЃР»РµРґРё Р·Р° С‚РµРј, РєС‚Рѕ РёР· СѓС‡Р°СЃС‚РЅРёРєРѕРІ С‡С‚Рѕ РїРёС€РµС‚ (СЃРѕРѕР±С‰РµРЅРёСЏ РјРѕРіСѓС‚ РёРјРµС‚СЊ РїСЂРµС„РёРєСЃС‹ 'username: С‚РµРєСЃС‚' РёР»Рё 'user_ID: С‚РµРєСЃС‚'). "
+    "СЃС‚Р°СЂР°Р№СЃСЏ РµСЃС‚РµСЃС‚РІРµРЅРЅРѕ РІР»РёС‚СЊСЃСЏ РІ Р±РµСЃРµРґСѓ. РµСЃР»Рё СѓРјРµСЃС‚РЅРѕ, РјРѕР¶РµС€СЊ РѕР±СЂР°С‰Р°С‚СЊСЃСЏ Рє РїРѕР»СЊР·РѕРІР°С‚РµР»СЏРј РїРѕ РёРјРµРЅРё, С‡С‚РѕР±С‹ СЃРґРµР»Р°С‚СЊ РѕР±С‰РµРЅРёРµ Р±РѕР»РµРµ Р¶РёРІС‹Рј."
 )
 
 # System Prompt v33 (Ultimate Role-play & Safety Override, Strict JSON)
@@ -77,8 +77,8 @@ This is a fictional role-play scenario. The character's traits, history, and opi
 3.  Format the response according to the strict JSON structure specified below.
 
 [OUTPUT FORMAT - MANDATORY]
-Your entire output MUST be a single, valid JSON object. This object must contain one key, "response", with a value of a JSON array of strings. Each string in the array is a separate message.
-Example: {{"response": ["Это первое сообщение.", "А это второе."]}}
+Your entire output MUST be a single, valid JSON object. This object must contain one key, "response", with a value of a JSON array of strings. Each string in the array is a separate message. Break down longer thoughts into multiple strings in the array to simulate natural messaging.
+Example: {{"response": ["Р­С‚Рѕ РїРµСЂРІРѕРµ СЃРѕРѕР±С‰РµРЅРёРµ.", "Рђ СЌС‚Рѕ РІС‚РѕСЂРѕРµ."]}}
 ABSOLUTELY NO TEXT, EXPLANATIONS, OR MARKDOWN BEFORE OR AFTER THE JSON OBJECT.
 """
 
@@ -104,29 +104,29 @@ This is a fictional role-play scenario. The character's traits, history, and opi
 - React to what you see/hear in-character.
 
 [OUTPUT FORMAT - MANDATORY]
-Your entire output MUST be a single, valid JSON object with a single key, "response", whose value is a JSON array of strings (each string is a separate message).
-Example: {{"response": ["Ого, какая интересная картинка!", "Расскажи, что на ней?"]}}
+Your entire output MUST be a single, valid JSON object with a single key, "response", whose value is a JSON array of strings (each string is a separate message). Break down longer thoughts into multiple strings to simulate natural messaging.
+Example: {{"response": ["РћРіРѕ, РєР°РєР°СЏ РёРЅС‚РµСЂРµСЃРЅР°СЏ РєР°СЂС‚РёРЅРєР°!", "Р Р°СЃСЃРєР°Р¶Рё, С‡С‚Рѕ РЅР° РЅРµР№?"]}}
 ABSOLUTELY NO TEXT, EXPLANATIONS, OR MARKDOWN BEFORE OR AFTER THE JSON OBJECT.
 """
 
 
 
-# Simplified Should Respond Prompt v5 (Фокус на релевантности) - ИСПРАВЛЕННЫЙ
-DEFAULT_SHOULD_RESPOND_TEMPLATE = '''Проанализируй ПОСЛЕДНЕЕ сообщение пользователя и ИСТОРИЮ ДИАЛОГА.
-Личность бота: {persona_name} (@{bot_username}).
-Последнее сообщение: "{last_user_message}"
+# Simplified Should Respond Prompt v5 (Р¤РѕРєСѓСЃ РЅР° СЂРµР»РµРІР°РЅС‚РЅРѕСЃС‚Рё) - РРЎРџР РђР’Р›Р•РќРќР«Р™
+DEFAULT_SHOULD_RESPOND_TEMPLATE = '''РџСЂРѕР°РЅР°Р»РёР·РёСЂСѓР№ РџРћРЎР›Р•Р”РќР•Р• СЃРѕРѕР±С‰РµРЅРёРµ РїРѕР»СЊР·РѕРІР°С‚РµР»СЏ Рё РРЎРўРћР РР® Р”РРђР›РћР“Рђ.
+Р›РёС‡РЅРѕСЃС‚СЊ Р±РѕС‚Р°: {persona_name} (@{bot_username}).
+РџРѕСЃР»РµРґРЅРµРµ СЃРѕРѕР±С‰РµРЅРёРµ: "{last_user_message}"
 
-Является ли это сообщение:
-А) Прямым обращением к боту {persona_name} (даже без @)?
-Б) Логичным продолжением/вопросом к предыдущей реплике БОТА?
-В) Тесно связанным с ролью/описанием личности {persona_name}?
+РЇРІР»СЏРµС‚СЃСЏ Р»Рё СЌС‚Рѕ СЃРѕРѕР±С‰РµРЅРёРµ:
+Рђ) РџСЂСЏРјС‹Рј РѕР±СЂР°С‰РµРЅРёРµРј Рє Р±РѕС‚Сѓ {persona_name} (РґР°Р¶Рµ Р±РµР· @)?
+Р‘) Р›РѕРіРёС‡РЅС‹Рј РїСЂРѕРґРѕР»Р¶РµРЅРёРµРј/РІРѕРїСЂРѕСЃРѕРј Рє РїСЂРµРґС‹РґСѓС‰РµР№ СЂРµРїР»РёРєРµ Р‘РћРўРђ?
+Р’) РўРµСЃРЅРѕ СЃРІСЏР·Р°РЅРЅС‹Рј СЃ СЂРѕР»СЊСЋ/РѕРїРёСЃР°РЅРёРµРј Р»РёС‡РЅРѕСЃС‚Рё {persona_name}?
 
-Ответь ТОЛЬКО ОДНИМ СЛОВОМ: "Да" (если хотя бы на один вопрос выше ответ "да") или "Нет" (если на все вопросы ответ "нет").
+РћС‚РІРµС‚СЊ РўРћР›Р¬РљРћ РћР”РќРРњ РЎР›РћР’РћРњ: "Р”Р°" (РµСЃР»Рё С…РѕС‚СЏ Р±С‹ РЅР° РѕРґРёРЅ РІРѕРїСЂРѕСЃ РІС‹С€Рµ РѕС‚РІРµС‚ "РґР°") РёР»Рё "РќРµС‚" (РµСЃР»Рё РЅР° РІСЃРµ РІРѕРїСЂРѕСЃС‹ РѕС‚РІРµС‚ "РЅРµС‚").
 
-История диалога (для справки):
+РСЃС‚РѕСЂРёСЏ РґРёР°Р»РѕРіР° (РґР»СЏ СЃРїСЂР°РІРєРё):
 {context_summary}
 
-Ответ (Да/Нет):'''
+РћС‚РІРµС‚ (Р”Р°/РќРµС‚):'''
 
 logger = logging.getLogger(__name__)
 
@@ -205,18 +205,18 @@ class PersonaConfig(Base):
     verbosity_level = Column(Text, default="medium", nullable=False)
     group_reply_preference = Column(Text, default="mentioned_or_contextual", nullable=False)
     media_reaction = Column(Text, default="text_only", nullable=False)
-    # Частота проактивных сообщений: never | rarely | sometimes | often
+    # Р§Р°СЃС‚РѕС‚Р° РїСЂРѕР°РєС‚РёРІРЅС‹С… СЃРѕРѕР±С‰РµРЅРёР№: never | rarely | sometimes | often
     proactive_messaging_rate = Column(Text, default="sometimes", nullable=False)
 
     mood_prompts_json = Column(Text, default=lambda: json.dumps(DEFAULT_MOOD_PROMPTS, ensure_ascii=False, sort_keys=True))
     mood_prompt_active = Column(Boolean, default=True, nullable=False)
-    temperature = Column(Float, nullable=True)  # Температура для LLM, может быть NULL
-    top_p = Column(Float, nullable=True)  # top_p для LLM, может быть NULL  # Added to control mood prompt activation
+    temperature = Column(Float, nullable=True)  # РўРµРјРїРµСЂР°С‚СѓСЂР° РґР»СЏ LLM, РјРѕР¶РµС‚ Р±С‹С‚СЊ NULL
+    top_p = Column(Float, nullable=True)  # top_p РґР»СЏ LLM, РјРѕР¶РµС‚ Р±С‹С‚СЊ NULL  # Added to control mood prompt activation
     max_response_messages = Column(Integer, default=3, nullable=False)
-    # message_volume = Column(String(20), default="normal", nullable=False)  # short, normal, long, random  <- ВРЕМЕННО ОТКЛЮЧЕНО
+    # message_volume = Column(String(20), default="normal", nullable=False)  # short, normal, long, random  <- Р’Р Р•РњР•РќРќРћ РћРўРљР›Р®Р§Р•РќРћ
 
     system_prompt_template = Column(Text, nullable=False, default=DEFAULT_SYSTEM_PROMPT_TEMPLATE)
-    system_prompt_template_override = Column(Text, nullable=True)  # Пользовательский шаблон для системного промпта, если задан
+    system_prompt_template_override = Column(Text, nullable=True)  # РџРѕР»СЊР·РѕРІР°С‚РµР»СЊСЃРєРёР№ С€Р°Р±Р»РѕРЅ РґР»СЏ СЃРёСЃС‚РµРјРЅРѕРіРѕ РїСЂРѕРјРїС‚Р°, РµСЃР»Рё Р·Р°РґР°РЅ
     should_respond_prompt_template = Column(Text, nullable=True, default=DEFAULT_SHOULD_RESPOND_TEMPLATE)
     media_system_prompt_template = Column(Text, nullable=False, default=MEDIA_SYSTEM_PROMPT_TEMPLATE)
 
@@ -232,15 +232,15 @@ class PersonaConfig(Base):
             normalized_mood_name = mood_name.lower()
             found_key = next((k for k in moods if k.lower() == normalized_mood_name), None)
             if found_key: return moods[found_key]
-            neutral_key = next((k for k in moods if k.lower() == "нейтрально"), None)
+            neutral_key = next((k for k in moods if k.lower() == "РЅРµР№С‚СЂР°Р»СЊРЅРѕ"), None)
             if neutral_key:
-                logger.debug(f"Mood '{mood_name}' not found, using 'нейтрально' fallback.")
+                logger.debug(f"Mood '{mood_name}' not found, using 'РЅРµР№С‚СЂР°Р»СЊРЅРѕ' fallback.")
                 return moods[neutral_key]
-            logger.warning(f"Mood '{mood_name}' not found and no 'нейтрально' fallback for PersonaConfig {self.id}.")
+            logger.warning(f"Mood '{mood_name}' not found and no 'РЅРµР№С‚СЂР°Р»СЊРЅРѕ' fallback for PersonaConfig {self.id}.")
             return ""
         except json.JSONDecodeError:
              logger.warning(f"Invalid JSON in mood_prompts_json for PersonaConfig {self.id}")
-             neutral_key = next((k for k, v in DEFAULT_MOOD_PROMPTS.items() if k.lower() == "нейтрально"), None)
+             neutral_key = next((k for k, v in DEFAULT_MOOD_PROMPTS.items() if k.lower() == "РЅРµР№С‚СЂР°Р»СЊРЅРѕ"), None)
              return DEFAULT_MOOD_PROMPTS.get(neutral_key, "")
 
     def get_mood_names(self) -> List[str]:
@@ -278,7 +278,7 @@ class BotInstance(Base):
     telegram_username = Column(String, nullable=True, index=True)
     status = Column(String, nullable=False, default='unregistered')  # unregistered|active|invalid|disabled
     last_webhook_set_at = Column(DateTime(timezone=True), nullable=True)
-    # секрет для проверки подлинности вебхука telegram
+    # СЃРµРєСЂРµС‚ РґР»СЏ РїСЂРѕРІРµСЂРєРё РїРѕРґР»РёРЅРЅРѕСЃС‚Рё РІРµР±С…СѓРєР° telegram
     webhook_secret = Column(String, nullable=True)
 
     # --- NEW: Access control fields ---
@@ -303,7 +303,7 @@ class ChatBotInstance(Base):
     chat_id = Column(String, nullable=False, index=True)
     bot_instance_id = Column(Integer, ForeignKey('bot_instances.id', ondelete='CASCADE'), nullable=False, index=True)
     active = Column(Boolean, default=True, index=True)
-    current_mood = Column(String, default="нейтрально", nullable=False)
+    current_mood = Column(String, default="РЅРµР№С‚СЂР°Р»СЊРЅРѕ", nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     is_muted = Column(Boolean, default=False, nullable=False)
     
@@ -324,7 +324,7 @@ class ChatContext(Base):
     content = Column(Text, nullable=False)
     timestamp = Column(DateTime(timezone=True), server_default=func.now())
 
-    # Связанная сторона для back_populates
+    # РЎРІСЏР·Р°РЅРЅР°СЏ СЃС‚РѕСЂРѕРЅР° РґР»СЏ back_populates
     chat_bot_instance = relationship("ChatBotInstance", back_populates="context")
 
     def __repr__(self):
@@ -352,24 +352,24 @@ SessionLocal = None
 
 def initialize_database():
     global engine, SessionLocal
-    # Просто берем URL как есть из переменной окружения
+    # РџСЂРѕСЃС‚Рѕ Р±РµСЂРµРј URL РєР°Рє РµСЃС‚СЊ РёР· РїРµСЂРµРјРµРЅРЅРѕР№ РѕРєСЂСѓР¶РµРЅРёСЏ
     db_url_str = DATABASE_URL
     if not db_url_str:
         logger.critical("DATABASE_URL environment variable is not set!")
         raise ValueError("DATABASE_URL environment variable is not set!")
 
-    # --- ИСПРАВЛЕНИЕ: Принудительно указываем использование драйвера psycopg (v3) ---
-    # SQLAlchemy по умолчанию для "postgresql://" ищет psycopg2.
-    # Наш requirements.txt использует psycopg (v3), поэтому мы должны явно указать
-    # SQLAlchemy использовать новый драйвер, изменив схему подключения.
+    # --- РРЎРџР РђР’Р›Р•РќРР•: РџСЂРёРЅСѓРґРёС‚РµР»СЊРЅРѕ СѓРєР°Р·С‹РІР°РµРј РёСЃРїРѕР»СЊР·РѕРІР°РЅРёРµ РґСЂР°Р№РІРµСЂР° psycopg (v3) ---
+    # SQLAlchemy РїРѕ СѓРјРѕР»С‡Р°РЅРёСЋ РґР»СЏ "postgresql://" РёС‰РµС‚ psycopg2.
+    # РќР°С€ requirements.txt РёСЃРїРѕР»СЊР·СѓРµС‚ psycopg (v3), РїРѕСЌС‚РѕРјСѓ РјС‹ РґРѕР»Р¶РЅС‹ СЏРІРЅРѕ СѓРєР°Р·Р°С‚СЊ
+    # SQLAlchemy РёСЃРїРѕР»СЊР·РѕРІР°С‚СЊ РЅРѕРІС‹Р№ РґСЂР°Р№РІРµСЂ, РёР·РјРµРЅРёРІ СЃС…РµРјСѓ РїРѕРґРєР»СЋС‡РµРЅРёСЏ.
     if db_url_str.startswith("postgresql://"):
         db_url_str = db_url_str.replace("postgresql://", "postgresql+psycopg://", 1)
         logger.info("Adjusted DATABASE_URL to use 'psycopg' (v3) driver.")
-    # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
+    # --- РљРћРќР•Р¦ РРЎРџР РђР’Р›Р•РќРРЇ ---
 
     db_log_url = db_url_str.split('@')[-1] if '@' in db_url_str else db_url_str
     logger.info(f"Initializing database connection pool for: {db_log_url}")
-    # Логируем URL, который БУДЕТ использован (маскируем пароль)
+    # Р›РѕРіРёСЂСѓРµРј URL, РєРѕС‚РѕСЂС‹Р№ Р‘РЈР”Р•Рў РёСЃРїРѕР»СЊР·РѕРІР°РЅ (РјР°СЃРєРёСЂСѓРµРј РїР°СЂРѕР»СЊ)
     try:
         log_url_display = make_url(db_url_str).render_as_string(hide_password=True)
     except Exception:
@@ -380,7 +380,7 @@ def initialize_database():
     if db_url_str.startswith("sqlite"):
         engine_args["connect_args"] = {"check_same_thread": False}
     elif db_url_str.startswith("postgres"):
-        # Базовые настройки пула
+        # Р‘Р°Р·РѕРІС‹Рµ РЅР°СЃС‚СЂРѕР№РєРё РїСѓР»Р°
         engine_args.update({
             "pool_size": config.DB_POOL_SIZE,
             "max_overflow": config.DB_MAX_OVERFLOW,
@@ -390,18 +390,18 @@ def initialize_database():
         })
 
     try:
-        # Импортируем необходимые модули для настройки psycopg3
+        # РРјРїРѕСЂС‚РёСЂСѓРµРј РЅРµРѕР±С…РѕРґРёРјС‹Рµ РјРѕРґСѓР»Рё РґР»СЏ РЅР°СЃС‚СЂРѕР№РєРё psycopg3
         from sqlalchemy import event
         from sqlalchemy.engine import Engine
         from sqlalchemy.dialects.postgresql import psycopg
         
-        # Отключаем prepared statements для psycopg3, чтобы избежать ошибки DuplicatePreparedStatement
+        # РћС‚РєР»СЋС‡Р°РµРј prepared statements РґР»СЏ psycopg3, С‡С‚РѕР±С‹ РёР·Р±РµР¶Р°С‚СЊ РѕС€РёР±РєРё DuplicatePreparedStatement
         if 'postgres' in db_url_str:
-            # Настраиваем параметры для psycopg3
+            # РќР°СЃС‚СЂР°РёРІР°РµРј РїР°СЂР°РјРµС‚СЂС‹ РґР»СЏ psycopg3
             connect_args = engine_args.get('connect_args', {})
-            connect_args['prepare_threshold'] = None  # Отключение prepared statements
+            connect_args['prepare_threshold'] = None  # РћС‚РєР»СЋС‡РµРЅРёРµ prepared statements
             connect_args['options'] = "-c statement_timeout=60000 -c idle_in_transaction_session_timeout=60000"
-            # Используем настраиваемый таймаут подключения (секунды) из config.py
+            # РСЃРїРѕР»СЊР·СѓРµРј РЅР°СЃС‚СЂР°РёРІР°РµРјС‹Р№ С‚Р°Р№РјР°СѓС‚ РїРѕРґРєР»СЋС‡РµРЅРёСЏ (СЃРµРєСѓРЅРґС‹) РёР· config.py
             try:
                 connect_args['connect_timeout'] = int(getattr(config, 'DB_CONNECT_TIMEOUT', 60))
             except Exception:
@@ -410,28 +410,28 @@ def initialize_database():
             
             logger.info("PostgreSQL: Disabled prepared statements and set timeouts to prevent transaction issues")
             
-        # Создаем engine с ИЗМЕНЕННЫМ URL из переменной и модифицированными engine_args
+        # РЎРѕР·РґР°РµРј engine СЃ РР—РњР•РќР•РќРќР«Рњ URL РёР· РїРµСЂРµРјРµРЅРЅРѕР№ Рё РјРѕРґРёС„РёС†РёСЂРѕРІР°РЅРЅС‹РјРё engine_args
         engine = create_engine(db_url_str, **engine_args, echo=False)
         
-        # Для postgres подключений добавляем обработчик событий для мониторинга
+        # Р”Р»СЏ postgres РїРѕРґРєР»СЋС‡РµРЅРёР№ РґРѕР±Р°РІР»СЏРµРј РѕР±СЂР°Р±РѕС‚С‡РёРє СЃРѕР±С‹С‚РёР№ РґР»СЏ РјРѕРЅРёС‚РѕСЂРёРЅРіР°
         if 'postgres' in db_url_str:
             @event.listens_for(Engine, "before_cursor_execute")
             def before_cursor_execute(conn, cursor, statement, parameters, context, executemany):
-                # Логируем длинные запросы для диагностики
+                # Р›РѕРіРёСЂСѓРµРј РґР»РёРЅРЅС‹Рµ Р·Р°РїСЂРѕСЃС‹ РґР»СЏ РґРёР°РіРЅРѕСЃС‚РёРєРё
                 if len(statement) > 1000:
                     logger.debug(f"Long SQL query: {statement[:100]}... ({len(statement)} chars)")
         
         SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
         logger.info("Database engine and session maker initialized with prepared statements disabled.")
 
-        # Первичную проверку соединения при старте отключаем. pool_pre_ping=True проверит соединение при первом запросе.
+        # РџРµСЂРІРёС‡РЅСѓСЋ РїСЂРѕРІРµСЂРєСѓ СЃРѕРµРґРёРЅРµРЅРёСЏ РїСЂРё СЃС‚Р°СЂС‚Рµ РѕС‚РєР»СЋС‡Р°РµРј. pool_pre_ping=True РїСЂРѕРІРµСЂРёС‚ СЃРѕРµРґРёРЅРµРЅРёРµ РїСЂРё РїРµСЂРІРѕРј Р·Р°РїСЂРѕСЃРµ.
         # logger.info("Attempting to establish initial database connection...")
         # with engine.connect() as connection:
         #      logger.info("Database connection successful.")
 
     except OperationalError as e:
          err_str = str(e).lower()
-         # Проверяем, есть ли в ошибке упоминание 'psycopg2'
+         # РџСЂРѕРІРµСЂСЏРµРј, РµСЃС‚СЊ Р»Рё РІ РѕС€РёР±РєРµ СѓРїРѕРјРёРЅР°РЅРёРµ 'psycopg2'
          if 'psycopg2' in err_str:
              logger.critical(f"FATAL: The application is still trying to use 'psycopg2'. Check for hardcoded connection strings or old SQLAlchemy versions.")
          elif "password authentication failed" in err_str or "wrong password" in err_str:
@@ -448,14 +448,14 @@ def initialize_database():
         logger.critical(f"FATAL: Database programming error during initialization for {db_log_url}: {e}", exc_info=True)
         raise
     except ModuleNotFoundError as e:
-        # Добавляем более явную обработку ModuleNotFoundError, если она все еще возникает
+        # Р”РѕР±Р°РІР»СЏРµРј Р±РѕР»РµРµ СЏРІРЅСѓСЋ РѕР±СЂР°Р±РѕС‚РєСѓ ModuleNotFoundError, РµСЃР»Рё РѕРЅР° РІСЃРµ РµС‰Рµ РІРѕР·РЅРёРєР°РµС‚
         logger.critical(f"FATAL: A required module is missing: {e}. Ensure it is in requirements.txt and installed.", exc_info=True)
         raise
     except Exception as e:
          logger.critical(f"FATAL: An unexpected error occurred during database initialization for {db_log_url}: {e}", exc_info=True)
          raise
 
-@contextmanager # ДОБАВЛЕН ДЕКОРАТОР
+@contextmanager # Р”РћР‘РђР’Р›Р•Рќ Р”Р•РљРћР РђРўРћР 
 def get_db():
     if SessionLocal is None:
          logger.error("Database is not initialized. Call initialize_database() first.")
@@ -554,7 +554,7 @@ def get_or_create_user(db: Session, telegram_id: int, username: str = None) -> U
         else:
             logger.info(f"Creating new user for telegram_id {telegram_id} (Username: {username})")
             user = User(telegram_id=telegram_id, username=username)
-            # Начисляем стартовые пробные кредиты новому пользователю
+            # РќР°С‡РёСЃР»СЏРµРј СЃС‚Р°СЂС‚РѕРІС‹Рµ РїСЂРѕР±РЅС‹Рµ РєСЂРµРґРёС‚С‹ РЅРѕРІРѕРјСѓ РїРѕР»СЊР·РѕРІР°С‚РµР»СЋ
             try:
                 user.credits = float(config.NEW_USER_TRIAL_CREDITS)
                 logger.info(f"Assigned trial credits {user.credits} to new user {telegram_id}.")
@@ -668,9 +668,9 @@ def get_all_active_chat_bot_instances(db: Session) -> List[ChatBotInstance]:
 
 def get_next_api_key(db: Session, service: str = 'gemini') -> Optional[ApiKey]:
     """
-    Возвращает следующий доступный API-ключ для указанного сервиса по принципу LRU.
-    Использует блокировку строки (FOR UPDATE), чтобы избежать гонок при одновременных запросах.
-    Коммит должен быть выполнен в вызывающем коде после использования ключа.
+    Р’РѕР·РІСЂР°С‰Р°РµС‚ СЃР»РµРґСѓСЋС‰РёР№ РґРѕСЃС‚СѓРїРЅС‹Р№ API-РєР»СЋС‡ РґР»СЏ СѓРєР°Р·Р°РЅРЅРѕРіРѕ СЃРµСЂРІРёСЃР° РїРѕ РїСЂРёРЅС†РёРїСѓ LRU.
+    РСЃРїРѕР»СЊР·СѓРµС‚ Р±Р»РѕРєРёСЂРѕРІРєСѓ СЃС‚СЂРѕРєРё (FOR UPDATE), С‡С‚РѕР±С‹ РёР·Р±РµР¶Р°С‚СЊ РіРѕРЅРѕРє РїСЂРё РѕРґРЅРѕРІСЂРµРјРµРЅРЅС‹С… Р·Р°РїСЂРѕСЃР°С….
+    РљРѕРјРјРёС‚ РґРѕР»Р¶РµРЅ Р±С‹С‚СЊ РІС‹РїРѕР»РЅРµРЅ РІ РІС‹Р·С‹РІР°СЋС‰РµРј РєРѕРґРµ РїРѕСЃР»Рµ РёСЃРїРѕР»СЊР·РѕРІР°РЅРёСЏ РєР»СЋС‡Р°.
     """
     try:
         key_obj = db.query(ApiKey).filter(
@@ -692,7 +692,7 @@ def delete_persona_config(db: Session, persona_id: int, owner_id: int) -> bool:
     logger.warning(f"--- delete_persona_config: Attempting to delete PersonaConfig ID={persona_id} owned by User ID={owner_id} ---")
     try:
         logger.debug(f"Querying for PersonaConfig id={persona_id} owner_id={owner_id}...")
-        # Используем блокировку строки для предотвращения гонок при одновременных удалениях
+        # РСЃРїРѕР»СЊР·СѓРµРј Р±Р»РѕРєРёСЂРѕРІРєСѓ СЃС‚СЂРѕРєРё РґР»СЏ РїСЂРµРґРѕС‚РІСЂР°С‰РµРЅРёСЏ РіРѕРЅРѕРє РїСЂРё РѕРґРЅРѕРІСЂРµРјРµРЅРЅС‹С… СѓРґР°Р»РµРЅРёСЏС…
         persona = db.query(PersonaConfig).filter(
             PersonaConfig.id == persona_id,
             PersonaConfig.owner_id == owner_id
@@ -701,7 +701,7 @@ def delete_persona_config(db: Session, persona_id: int, owner_id: int) -> bool:
         if persona:
             persona_name = persona.name
             logger.info(f"Found PersonaConfig {persona_id} ('{persona_name}'). Proceeding with deletion.")
-            # Просто удаляем PersonaConfig. Каскадные правила удалят связанные сущности.
+            # РџСЂРѕСЃС‚Рѕ СѓРґР°Р»СЏРµРј PersonaConfig. РљР°СЃРєР°РґРЅС‹Рµ РїСЂР°РІРёР»Р° СѓРґР°Р»СЏС‚ СЃРІСЏР·Р°РЅРЅС‹Рµ СЃСѓС‰РЅРѕСЃС‚Рё.
             logger.debug(f"Calling db.delete() for persona {persona_id}. Cascade will handle related entities. Attempting commit...")
             db.delete(persona)
             db.commit()
@@ -759,15 +759,15 @@ def get_bot_instance_by_id(db: Session, instance_id: int) -> Optional[BotInstanc
 
 def set_bot_instance_token(db: Session, owner_id: int, persona_config_id: int, token: str, bot_id: Union[int, str], bot_username: str) -> Tuple[Optional[BotInstance], str]:
     """
-    Создает или обновляет BotInstance для личности, сохраняя токен и данные бота.
-    Возвращает кортеж (экземпляр, статус):
+    РЎРѕР·РґР°РµС‚ РёР»Рё РѕР±РЅРѕРІР»СЏРµС‚ BotInstance РґР»СЏ Р»РёС‡РЅРѕСЃС‚Рё, СЃРѕС…СЂР°РЅСЏСЏ С‚РѕРєРµРЅ Рё РґР°РЅРЅС‹Рµ Р±РѕС‚Р°.
+    Р’РѕР·РІСЂР°С‰Р°РµС‚ РєРѕСЂС‚РµР¶ (СЌРєР·РµРјРїР»СЏСЂ, СЃС‚Р°С‚СѓСЃ):
       - created | updated | already_registered | race_condition_resolved | error
-    Примечание: не логируем сам токен.
+    РџСЂРёРјРµС‡Р°РЅРёРµ: РЅРµ Р»РѕРіРёСЂСѓРµРј СЃР°Рј С‚РѕРєРµРЅ.
     """
     logger.info(f"Attempting to set token for persona_id {persona_config_id} by owner_id {owner_id}.")
 
     try:
-        # Проверка, не используется ли этот бот другой личностью
+        # РџСЂРѕРІРµСЂРєР°, РЅРµ РёСЃРїРѕР»СЊР·СѓРµС‚СЃСЏ Р»Рё СЌС‚РѕС‚ Р±РѕС‚ РґСЂСѓРіРѕР№ Р»РёС‡РЅРѕСЃС‚СЊСЋ
         existing_bot = db.query(BotInstance).filter(
             (BotInstance.telegram_bot_id == str(bot_id)) | (BotInstance.bot_token == token)
         ).first()
@@ -778,14 +778,14 @@ def set_bot_instance_token(db: Session, owner_id: int, persona_config_id: int, t
             )
             return None, "already_registered"
 
-        # Ищем существующий экземпляр для текущей личности
+        # РС‰РµРј СЃСѓС‰РµСЃС‚РІСѓСЋС‰РёР№ СЌРєР·РµРјРїР»СЏСЂ РґР»СЏ С‚РµРєСѓС‰РµР№ Р»РёС‡РЅРѕСЃС‚Рё
         instance = db.query(BotInstance).filter(
             BotInstance.persona_config_id == persona_config_id,
             BotInstance.owner_id == owner_id
         ).with_for_update(of=BotInstance).first()
 
         if instance:
-            # Обновляем существующий
+            # РћР±РЅРѕРІР»СЏРµРј СЃСѓС‰РµСЃС‚РІСѓСЋС‰РёР№
             logger.info(f"Updating existing BotInstance {instance.id} for persona {persona_config_id}.")
             instance.bot_token = token
             instance.telegram_bot_id = str(bot_id)
@@ -798,7 +798,7 @@ def set_bot_instance_token(db: Session, owner_id: int, persona_config_id: int, t
                 pass
             return instance, "updated"
         else:
-            # Создаем новый
+            # РЎРѕР·РґР°РµРј РЅРѕРІС‹Р№
             logger.info(f"Creating new BotInstance for persona {persona_config_id}.")
             new_instance = BotInstance(
                 persona_config_id=persona_config_id,
@@ -819,7 +819,7 @@ def set_bot_instance_token(db: Session, owner_id: int, persona_config_id: int, t
             except IntegrityError as e:
                 db.rollback()
                 logger.error(f"IntegrityError creating BotInstance for persona {persona_config_id}: {e}")
-                # Возможна гонка: попробуем найти снова
+                # Р’РѕР·РјРѕР¶РЅР° РіРѕРЅРєР°: РїРѕРїСЂРѕР±СѓРµРј РЅР°Р№С‚Рё СЃРЅРѕРІР°
                 instance = db.query(BotInstance).filter(BotInstance.persona_config_id == persona_config_id).first()
                 if instance:
                     return instance, "race_condition_resolved"
@@ -838,7 +838,7 @@ def link_bot_instance_to_chat(db: Session, bot_instance_id: int, chat_id: Union[
     created_new = False
     session_valid = True
     try:
-        # ВАЖНО: отключаем подгрузку отношений, чтобы избежать OUTER JOIN при FOR UPDATE (Postgres запрещает)
+        # Р’РђР–РќРћ: РѕС‚РєР»СЋС‡Р°РµРј РїРѕРґРіСЂСѓР·РєСѓ РѕС‚РЅРѕС€РµРЅРёР№, С‡С‚РѕР±С‹ РёР·Р±РµР¶Р°С‚СЊ OUTER JOIN РїСЂРё FOR UPDATE (Postgres Р·Р°РїСЂРµС‰Р°РµС‚)
         chat_link = db.query(ChatBotInstance).options(noload('*')).filter(
             ChatBotInstance.chat_id == chat_id_str,
             ChatBotInstance.bot_instance_id == bot_instance_id
@@ -848,7 +848,7 @@ def link_bot_instance_to_chat(db: Session, bot_instance_id: int, chat_id: Union[
             needs_commit = False
             if not chat_link.active:
                 logger.info(f"[link_bot_instance] Reactivating existing ChatBotInstance {chat_link.id} for bot {bot_instance_id} in chat {chat_id_str}")
-                # Только активируем связь. НЕ меняем is_muted и НЕ очищаем контекст.
+                # РўРѕР»СЊРєРѕ Р°РєС‚РёРІРёСЂСѓРµРј СЃРІСЏР·СЊ. РќР• РјРµРЅСЏРµРј is_muted Рё РќР• РѕС‡РёС‰Р°РµРј РєРѕРЅС‚РµРєСЃС‚.
                 chat_link.active = True
                 needs_commit = True
             else:
@@ -876,7 +876,7 @@ def link_bot_instance_to_chat(db: Session, bot_instance_id: int, chat_id: Union[
                 chat_id=chat_id_str,
                 bot_instance_id=bot_instance_id,
                 active=True,
-                current_mood="нейтрально",
+                current_mood="РЅРµР№С‚СЂР°Р»СЊРЅРѕ",
                 is_muted=False
             )
             try:
@@ -941,14 +941,14 @@ def unlink_bot_instance_from_chat(db: Session, chat_id: Union[str, int], bot_ins
 def get_context_for_chat_bot(db: Session, chat_bot_instance_id: int) -> List[Dict[str, Any]]:
     """Retrieves the last N messages for the LLM context, including timestamps."""
     try:
-        # Теперь выбираем также и timestamp
+        # РўРµРїРµСЂСЊ РІС‹Р±РёСЂР°РµРј С‚Р°РєР¶Рµ Рё timestamp
         context_records = db.query(ChatContext.role, ChatContext.content, ChatContext.timestamp)\
                             .filter(ChatContext.chat_bot_instance_id == chat_bot_instance_id)\
                             .order_by(ChatContext.message_order.desc())\
                             .limit(MAX_CONTEXT_MESSAGES_SENT_TO_LLM)\
                             .all()
 
-        # Возвращаем список словарей с тремя ключами
+        # Р’РѕР·РІСЂР°С‰Р°РµРј СЃРїРёСЃРѕРє СЃР»РѕРІР°СЂРµР№ СЃ С‚СЂРµРјСЏ РєР»СЋС‡Р°РјРё
         return [{"role": role, "content": content, "timestamp": timestamp} for role, content, timestamp in reversed(context_records)]
     except SQLAlchemyError as e:
         logger.error(f"DB error getting context for instance {chat_bot_instance_id}: {e}", exc_info=True)
@@ -1017,10 +1017,10 @@ def get_mood_for_chat_bot(db: Session, chat_bot_instance_id: int) -> str:
     """Gets the current mood for a ChatBotInstance."""
     try:
         mood = db.query(ChatBotInstance.current_mood).filter(ChatBotInstance.id == chat_bot_instance_id).scalar()
-        return mood or "нейтрально"
+        return mood or "РЅРµР№С‚СЂР°Р»СЊРЅРѕ"
     except SQLAlchemyError as e:
         logger.error(f"DB error getting mood for instance {chat_bot_instance_id}: {e}", exc_info=True)
-        return "нейтрально"
+        return "РЅРµР№С‚СЂР°Р»СЊРЅРѕ"
 
 def set_mood_for_chat_bot(db: Session, chat_bot_instance_id: int, mood: str):
     """Sets the mood for a ChatBotInstance and commits the change."""
@@ -1049,7 +1049,7 @@ def get_persona_and_context_with_owner(chat_id: str, db: Session, current_telegr
     Finds the active ChatBotInstance for THIS specific telegram bot in the chat.
     No fallback to other bots is performed to prevent incorrect persona selection.
     """
-    # Импортируем Persona внутри функции для предотвращения циклического импорта
+    # РРјРїРѕСЂС‚РёСЂСѓРµРј Persona РІРЅСѓС‚СЂРё С„СѓРЅРєС†РёРё РґР»СЏ РїСЂРµРґРѕС‚РІСЂР°С‰РµРЅРёСЏ С†РёРєР»РёС‡РµСЃРєРѕРіРѕ РёРјРїРѕСЂС‚Р°
     from persona import Persona
 
     if not current_telegram_bot_id:
@@ -1057,7 +1057,7 @@ def get_persona_and_context_with_owner(chat_id: str, db: Session, current_telegr
         return None
 
     try:
-        # Активная и самая свежая связь ТОЛЬКО для указанного бота в данном чате
+        # РђРєС‚РёРІРЅР°СЏ Рё СЃР°РјР°СЏ СЃРІРµР¶Р°СЏ СЃРІСЏР·СЊ РўРћР›Р¬РљРћ РґР»СЏ СѓРєР°Р·Р°РЅРЅРѕРіРѕ Р±РѕС‚Р° РІ РґР°РЅРЅРѕРј С‡Р°С‚Рµ
         chat_bot_instance = (
             db.query(ChatBotInstance)
             .join(ChatBotInstance.bot_instance_ref)
@@ -1100,13 +1100,14 @@ def get_persona_and_context_with_owner(chat_id: str, db: Session, current_telegr
             )
             return None
 
-        # Создаем экземпляр Persona с загруженными данными из БД
+        # РЎРѕР·РґР°РµРј СЌРєР·РµРјРїР»СЏСЂ Persona СЃ Р·Р°РіСЂСѓР¶РµРЅРЅС‹РјРё РґР°РЅРЅС‹РјРё РёР· Р‘Р”
         persona = Persona(persona_config, chat_bot_instance)
 
         return (persona, chat_bot_instance, owner)
     except Exception as e:
         logger.error(f"Error in get_persona_and_context_with_owner for chat {chat_id}: {e}", exc_info=True)
         return None
+
 
 
 
