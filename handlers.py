@@ -1843,6 +1843,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                         if not should_ai_respond:
                             # --- КОНТЕКСТУАЛЬНАЯ ПРОВЕРКА ЧЕРЕЗ LLM (С ПРЕДВАРИТЕЛЬНЫМ ЗАКРЫТИЕМ СЕССИИ) ---
                             logger.info("handle_message: No direct mention. Performing contextual LLM check...")
+                            # Кэшируем ID персоны до закрытия сессии, чтобы избежать DetachedInstanceError
+                            try:
+                                persona_id_cache = getattr(persona, 'id', None)
+                            except Exception:
+                                persona_id_cache = None
+
                             # Закрываем текущую транзакцию перед длительным сетевым вызовом
                             try:
                                 db_session.commit()
@@ -1851,15 +1857,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                             except Exception as e_commit_ctx:
                                 logger.warning(f"handle_message: commit/close before contextual AI call failed: {e_commit_ctx}")
 
-                            try:
-                                ctx_prompt = persona.format_should_respond_prompt(
-                                    message_text=message_text,
-                                    bot_username=bot_username,
-                                    history=initial_context_from_db
-                                )
-                            except Exception as fmt_err:
-                                logger.error(f"Failed to format contextual should_respond prompt: {fmt_err}", exc_info=True)
-                                ctx_prompt = None
+                            # Формируем промпт в НОВОЙ короткой сессии на основе заново загруженной персоны
+                            ctx_prompt = None
+                            if not persona_id_cache:
+                                logger.error("Contextual check: persona_id is not available; skipping LLM check.")
+                            else:
+                                try:
+                                    with get_db() as prompt_db:
+                                        persona_for_prompt = prompt_db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id_cache).first()
+                                        if persona_for_prompt:
+                                            persona_obj_for_prompt = Persona(persona_for_prompt)
+                                            ctx_prompt = persona_obj_for_prompt.format_should_respond_prompt(
+                                                message_text=message_text,
+                                                bot_username=bot_username,
+                                                history=initial_context_from_db
+                                            )
+                                        else:
+                                            logger.error(f"Could not re-fetch persona by id={persona_id_cache} for contextual prompt generation.")
+                                except Exception as fmt_err:
+                                    logger.error(f"Failed to format contextual should_respond prompt: {fmt_err}", exc_info=True)
 
                             api_key_for_check = None
                             if ctx_prompt:

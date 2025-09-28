@@ -138,7 +138,7 @@ MODEL_PRICE_MULTIPLIERS = {
     OPENROUTER_MODEL_NAME: float(
         os.getenv(
             f"CREDIT_MULTIPLIER_{OPENROUTER_MODEL_NAME.replace('/', '_').replace('-', '_').replace('.', '_').upper()}",
-            "1.0",
+            "3.0",
         )
     ),
 }
