@@ -25,14 +25,6 @@ from handlers import send_to_google_gemini, deduct_credits_for_interaction
 
 logger = logging.getLogger(__name__)
 
-async def check_subscription_expiry_task(context: ContextTypes.DEFAULT_TYPE):
-    """[DEPRECATED] Задача проверки подписок отключена, так как подписочная модель удалена."""
-    try:
-        logger.info("check_subscription_expiry_task called but deprecated. No action taken.")
-    except Exception:
-        pass
-
-
 async def proactive_messaging_task(application: Application) -> None:
     """Периодически инициирует проактивные сообщения, учитывая настройку частоты у персон.
 

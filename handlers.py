@@ -4915,7 +4915,7 @@ async def edit_comm_style_prompt(update: Update, context: ContextTypes.DEFAULT_T
         current_style_enum = CommunicationStyle(current_style) if current_style else CommunicationStyle.NEUTRAL
     except Exception:
         current_style_enum = CommunicationStyle.NEUTRAL
-    prompt_text = escape_markdown_v2(f"выберите стиль общения (текущий: {current_style_enum.value}):")
+    prompt_text = f"выберите стиль общения \\(текущий: {escape_markdown_v2(current_style_enum.value)}\\):"
     keyboard = [
         [InlineKeyboardButton("нейтральный", callback_data=f"set_comm_style_{CommunicationStyle.NEUTRAL.value}")],
         [InlineKeyboardButton("дружелюбный", callback_data=f"set_comm_style_{CommunicationStyle.FRIENDLY.value}")],
@@ -5006,7 +5006,7 @@ async def edit_max_messages_prompt(update: Update, context: ContextTypes.DEFAULT
     }
     current_display = display_map.get(current_value_str, "стандартно")
 
-    prompt_text = escape_markdown_v2(f"количество сообщений в ответе (тек.: {current_display}):")
+    prompt_text = f"количество сообщений в ответе \\(тек.: {escape_markdown_v2(current_display)}\\):"
 
     keyboard = [
         [
@@ -5089,7 +5089,7 @@ async def edit_verbosity_prompt(update: Update, context: ContextTypes.DEFAULT_TY
         current_enum = Verbosity(current) if current else Verbosity.MEDIUM
     except Exception:
         current_enum = Verbosity.MEDIUM
-    prompt_text = escape_markdown_v2(f"выберите разговорчивость (текущая: {current_enum.value}):")
+    prompt_text = f"выберите разговорчивость \\(текущая: {escape_markdown_v2(current_enum.value)}\\):"
     keyboard = [
         [InlineKeyboardButton("лаконичный", callback_data=f"set_verbosity_{Verbosity.CONCISE.value}")],
         [InlineKeyboardButton("средний", callback_data=f"set_verbosity_{Verbosity.MEDIUM.value}")],
@@ -5162,7 +5162,7 @@ async def edit_group_reply_prompt(update: Update, context: ContextTypes.DEFAULT_
     }
     current_display = display_map.get(current, current) # Получаем понятный текст
 
-    prompt_text = escape_markdown_v2(f"как отвечать в группах (текущее: {current_display}):")
+    prompt_text = f"как отвечать в группах \\(текущее: {escape_markdown_v2(current_display)}\\):"
     keyboard = [
         [InlineKeyboardButton("всегда", callback_data="set_group_reply_always")],
         [InlineKeyboardButton("только по упоминанию (@)", callback_data="set_group_reply_mentioned_only")],
@@ -5232,7 +5232,7 @@ async def edit_media_reaction_prompt(update: Update, context: ContextTypes.DEFAU
     if current == "all": current = "text_and_all_media"
     
     current_display_text = media_react_map.get(current, "только текст")
-    prompt_text = escape_markdown_v2(f"как реагировать на текст и медиа (текущее: {current_display_text}):")
+    prompt_text = f"как реагировать на текст и медиа \\(текущее: {escape_markdown_v2(current_display_text)}\\):"
     
     # Кнопки теперь создаются в определенном порядке для лучшего вида
     keyboard_buttons = [
@@ -5360,9 +5360,9 @@ async def _show_edit_wizard_menu(update: Update, context: ContextTypes.DEFAULT_T
         persona_name_escaped = escape_markdown_v2(persona_config.name)
         part1 = ""
         part2 = f"*{escape_markdown_v2('настройка личности: ')}{persona_name_escaped}* "
-        part3 = escape_markdown_v2(f"(id: ")
+        part3 = " \\(" + escape_markdown_v2("id: ")
         part4 = f"`{persona_id}`"
-        part5 = escape_markdown_v2(")")
+        part5 = "\\)"
         part6 = escape_markdown_v2("\n\nвыберите, что изменить:")
         
         msg_text = f"{part1}{part2}{part3}{part4}{part5}{part6}"
