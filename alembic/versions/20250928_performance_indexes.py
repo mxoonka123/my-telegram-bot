@@ -1,7 +1,7 @@
 """Add performance indexes for optimization
 
 Revision ID: 20250928_performance  
-Revises: 20250910_133600_api_keys_table
+Revises: 20250910_133600
 Create Date: 2025-09-28 18:45:00.000000
 
 """
@@ -11,7 +11,7 @@ from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
 revision = '20250928_performance'
-down_revision = '20250910_133600_api_keys_table'
+down_revision = '20250910_133600'  # Исправлено: правильный ID миграции
 branch_labels = None
 depends_on = None
 
