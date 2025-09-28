@@ -131,7 +131,7 @@ from db import (
     get_persona_by_id_and_owner, link_bot_instance_to_chat,
     set_bot_instance_token, ChatContext,
     get_personas_by_owner, get_next_api_key,
-    active_chat_bot_instances,
+    get_all_active_chat_bot_instances,
     unlink_bot_instance_from_chat,
     func,
     DEFAULT_SYSTEM_PROMPT_TEMPLATE, DEFAULT_MOOD_PROMPTS
