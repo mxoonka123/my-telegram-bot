@@ -157,9 +157,9 @@ class User(Base):
     # --- NEW: credit balance for economic model ---
     credits = Column(Float, default=0.0, nullable=False, index=True)  # ОПТИМИЗИРОВАНО: Добавлен индекс
 
-    # Изменено обратно на select/selectin для совместимости с eager loading
-    persona_configs = relationship("PersonaConfig", back_populates="owner", cascade="all, delete-orphan", lazy="selectin")
-    bot_instances = relationship("BotInstance", back_populates="owner", cascade="all, delete-orphan", lazy="selectin")
+    # ОПТИМИЗИРОВАНО: Используем lazy loading по умолчанию, загружаем только когда нужно
+    persona_configs = relationship("PersonaConfig", back_populates="owner", cascade="all, delete-orphan", lazy="select")
+    bot_instances = relationship("BotInstance", back_populates="owner", cascade="all, delete-orphan", lazy="select")
 
     @property
     def persona_limit(self) -> int:
@@ -225,8 +225,8 @@ class PersonaConfig(Base):
     should_respond_prompt_template = Column(Text, nullable=True, default=DEFAULT_SHOULD_RESPOND_TEMPLATE)
     media_system_prompt_template = Column(Text, nullable=False, default=MEDIA_SYSTEM_PROMPT_TEMPLATE)
 
-    # ОПТИМИЗИРОВАНО: Изменено на joined для частых запросов owner
-    owner = relationship("User", back_populates="persona_configs", lazy="joined")
+    # ОПТИМИЗИРОВАНО: Используем select для экономии памяти
+    owner = relationship("User", back_populates="persona_configs", lazy="select")
     # one-to-one link to BotInstance
     bot_instance = relationship("BotInstance", back_populates="persona_config", cascade="all, delete-orphan", lazy="select", uselist=False)
 
@@ -295,7 +295,8 @@ class BotInstance(Base):
 
     persona_config = relationship("PersonaConfig", back_populates="bot_instance", lazy="select")
     owner = relationship("User", back_populates="bot_instances", lazy="select")
-    chat_links = relationship("ChatBotInstance", back_populates="bot_instance_ref", cascade="all, delete-orphan", lazy="selectin")
+    # ОПТИМИЗИРОВАНО: lazy select вместо selectin
+    chat_links = relationship("ChatBotInstance", back_populates="bot_instance_ref", cascade="all, delete-orphan", lazy="select")
 
     def __repr__(self):
         return (
@@ -314,7 +315,8 @@ class ChatBotInstance(Base):
     is_muted = Column(Boolean, default=False, nullable=False)
     
     bot_instance_ref = relationship("BotInstance", back_populates="chat_links", lazy="select")
-    context = relationship("ChatContext", back_populates="chat_bot_instance", order_by="ChatContext.message_order", cascade="all, delete-orphan", lazy="selectin")
+    # ОПТИМИЗИРОВАНО: lazy select для контекста
+    context = relationship("ChatContext", back_populates="chat_bot_instance", order_by="ChatContext.message_order", cascade="all, delete-orphan", lazy="select")
 
     __table_args__ = (UniqueConstraint('chat_id', 'bot_instance_id', name='_chat_bot_uc'),)
 
@@ -555,7 +557,8 @@ def get_or_create_user(db: Session, telegram_id: int, username: str = None) -> U
     """Gets or creates a user. Ensures admin has subscription. DOES NOT COMMIT."""
     user = None
     try:
-        user = db.query(User).options(selectinload(User.persona_configs)).filter(User.telegram_id == telegram_id).first()
+        # ОПТИМИЗИРОВАНО: Убран selectinload - загружаем персон только когда нужно
+        user = db.query(User).filter(User.telegram_id == telegram_id).first()
         if user:
             modified = False
             if user.username != username and username is not None:
@@ -627,7 +630,7 @@ def create_persona_config(db: Session, owner_id: int, name: str, description: st
 
 def get_personas_by_owner(db: Session, owner_id: int) -> List[PersonaConfig]:
     """Gets all personas owned by a user."""
-    # ОПТИМИЗИРОВАНО: Убран selectinload
+    # ОПТИМИЗИРОВАНО: Простой запрос без лишних загрузок
     try:
         return db.query(PersonaConfig).filter(PersonaConfig.owner_id == owner_id).order_by(PersonaConfig.name).all()
     except SQLAlchemyError as e:
@@ -636,7 +639,7 @@ def get_personas_by_owner(db: Session, owner_id: int) -> List[PersonaConfig]:
 
 def get_persona_by_name_and_owner(db: Session, owner_id: int, name: str) -> Optional[PersonaConfig]:
     """Gets a specific persona by name (case-insensitive) and owner."""
-    # ОПТИМИЗИРОВАНО: Убран selectinload, owner загружается через joined
+    # ОПТИМИЗИРОВАНО: Простой запрос без лишних загрузок
     try:
         return db.query(PersonaConfig).filter(
             PersonaConfig.owner_id == owner_id,
@@ -650,7 +653,7 @@ def get_persona_by_id_and_owner(db: Session, owner_telegram_id: int, persona_id:
     """Gets a specific persona by its ID, ensuring ownership via owner's Telegram ID."""
     logger.debug(f"Searching for PersonaConfig id={persona_id} owned by telegram_id={owner_telegram_id}")
     try:
-        # ОПТИМИЗИРОВАНО: Убран selectinload, owner уже загружен через joined
+        # ОПТИМИЗИРОВАНО: Простой join без лишних загрузок
         persona_config = db.query(PersonaConfig)\
             .join(User, PersonaConfig.owner_id == User.id)\
             .filter(
@@ -667,7 +670,7 @@ def get_persona_by_id_and_owner(db: Session, owner_telegram_id: int, persona_id:
 
 def get_all_active_chat_bot_instances(db: Session) -> List[ChatBotInstance]:
     """Gets all active ChatBotInstances with relations for tasks."""
-    # ОПТИМИЗИРОВАНО: Упрощено, связи загружаются по необходимости
+    # ОПТИМИЗИРОВАНО: Простой запрос, связи загружаются по необходимости
     try:
         return db.query(ChatBotInstance)\
             .filter(ChatBotInstance.active == True)\
@@ -1058,7 +1061,7 @@ def get_persona_and_context_with_owner(chat_id: str, db: Session, current_telegr
     Finds the active ChatBotInstance for THIS specific telegram bot in the chat.
     No fallback to other bots is performed to prevent incorrect persona selection.
     """
-    # РРјРїРѕСЂС‚РёСЂСѓРµРј Persona РІРЅСѓС‚СЂРё С„СѓРЅРєС†РёРё РґР»СЏ РїСЂРµРґРѕС‚РІСЂР°С‰РµРЅРёСЏ С†РёРєР»РёС‡РµСЃРєРѕРіРѕ РёРјРїРѕСЂС‚Р°
+    # Импортируем Persona внутри функции для предотвращения циклического импорта
     from persona import Persona
 
     if not current_telegram_bot_id:
@@ -1066,7 +1069,7 @@ def get_persona_and_context_with_owner(chat_id: str, db: Session, current_telegr
         return None
 
     try:
-        # РђРєС‚РёРІРЅР°СЏ Рё СЃР°РјР°СЏ СЃРІРµР¶Р°СЏ СЃРІСЏР·СЊ РўРћР›Р¬РљРћ РґР»СЏ СѓРєР°Р·Р°РЅРЅРѕРіРѕ Р±РѕС‚Р° РІ РґР°РЅРЅРѕРј С‡Р°С‚Рµ
+        # ОПТИМИЗИРОВАНО: Один запрос с joinedload вместо множественных selectinload
         chat_bot_instance = (
             db.query(ChatBotInstance)
             .join(ChatBotInstance.bot_instance_ref)
@@ -1076,10 +1079,9 @@ def get_persona_and_context_with_owner(chat_id: str, db: Session, current_telegr
                 ChatBotInstance.active == True,
             )
             .options(
-                selectinload(ChatBotInstance.bot_instance_ref)
-                .selectinload(BotInstance.persona_config)
-                .selectinload(PersonaConfig.owner),
-                selectinload(ChatBotInstance.bot_instance_ref).selectinload(BotInstance.owner),
+                joinedload(ChatBotInstance.bot_instance_ref)
+                .joinedload(BotInstance.persona_config)
+                .joinedload(PersonaConfig.owner)
             )
             .order_by(ChatBotInstance.created_at.desc())
             .first()

@@ -21,14 +21,15 @@ from telegram.constants import ParseMode # Added for confirm_pay
 
 logger = logging.getLogger(__name__)
 
-# ОПТИМИЗАЦИЯ: Простой кеш для ускорения ответов
+# ОПТИМИЗАЦИЯ: Кеширование для ускорения ответов
 from typing import Dict, Tuple, Any
 import time
 
 class SimpleCache:
-    def __init__(self, ttl=60):
+    def __init__(self, ttl=60, max_size=1000):
         self.cache: Dict[str, Tuple[Any, float]] = {}
         self.ttl = ttl
+        self.max_size = max_size
     
     def get(self, key: str):
         if key in self.cache:
@@ -39,11 +40,22 @@ class SimpleCache:
         return None
     
     def set(self, key: str, value: Any):
+        # Ограничение размера кеша
+        if len(self.cache) >= self.max_size:
+            # Удаляем самый старый элемент
+            oldest = min(self.cache.items(), key=lambda x: x[1][1])
+            del self.cache[oldest[0]]
         self.cache[key] = (value, time.time())
+    
+    def invalidate(self, key: str):
+        if key in self.cache:
+            del self.cache[key]
 
-# Глобальный кеш для профилей и персон
-profile_cache = SimpleCache(ttl=120)  # 2 минуты
-persona_cache = SimpleCache(ttl=180)  # 3 минуты
+# Глобальные кеши с ограничениями
+profile_cache = SimpleCache(ttl=300, max_size=500)  # 5 минут
+persona_cache = SimpleCache(ttl=600, max_size=200)  # 10 минут
+menu_cache = SimpleCache(ttl=1800, max_size=100)  # 30 минут
+context_cache = SimpleCache(ttl=120, max_size=300)  # 2 минуты
 
 # Константы для UI
 CHECK_MARK = "✅ "  # Unicode Check Mark Symbol
@@ -4102,8 +4114,8 @@ async def profile(update: Union[Update, CallbackQuery], context: ContextTypes.DE
 
     with get_db() as db:
         try:
-            # Оптимизация: один запрос с eager loading вместо нескольких
-            user_db = db.query(User).options(selectinload(User.persona_configs)).filter(User.telegram_id == user_id).first()
+            # ОПТИМИЗИРОВАНО: Один простой запрос, персоны загружаем отдельно
+            user_db = db.query(User).filter(User.telegram_id == user_id).first()
             if not user_db:
                 user_db = get_or_create_user(db, user_id, username)
                 db.commit()
@@ -4113,8 +4125,8 @@ async def profile(update: Union[Update, CallbackQuery], context: ContextTypes.DE
                     await context.bot.send_message(chat_id, error_user_not_found, parse_mode=ParseMode.MARKDOWN_V2)
                     return
 
-            # Новый профиль: показываем баланс кредитов и базовую информацию
-            persona_count = len(user_db.persona_configs) if user_db.persona_configs is not None else 0
+            # ОПТИМИЗИРОВАНО: Отдельный быстрый запрос для подсчета персон
+            persona_count = db.query(PersonaConfig).filter(PersonaConfig.owner_id == user_db.id).count()
             persona_limit_raw = f"{persona_count}/{user_db.persona_limit}"
             persona_limit_escaped = escape_markdown_v2(persona_limit_raw)
             credits_balance = float(user_db.credits or 0.0)
