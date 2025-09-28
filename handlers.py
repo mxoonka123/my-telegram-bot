@@ -114,25 +114,27 @@ from config import (
     YOOKASSA_SECRET_KEY,
     PAID_PERSONA_LIMIT,
     FREE_PERSONA_LIMIT,
-    MAX_CONTEXT_MESSAGES_SENT_TO_LLM,
     CREDIT_PACKAGES
 )
-# --- КОНЕЦ ИСПРАВЛЕНИЯ ---
+# --- КОНЕЦ ИСпРАВЛЕНИЯ ---
 
 from db import (
+    get_db, get_or_create_user, get_persona_and_context_with_owner,
     get_context_for_chat_bot, add_message_to_context,
-    set_mood_for_chat_bot, get_mood_for_chat_bot, get_or_create_user,
-    create_persona_config, get_personas_by_owner, get_persona_by_name_and_owner,
-    get_persona_by_id_and_owner,
-    create_bot_instance, link_bot_instance_to_chat, delete_persona_config,
-    get_all_active_chat_bot_instances,
-    get_persona_and_context_with_owner,
+    get_mood_for_chat_bot, set_mood_for_chat_bot,
+    get_persona_by_name_and_owner, create_persona_config,
+    User, APIKeyRotation,
+    BotInstance as DBBotInstance,
+    ChatBotInstance as DBChatBotInstance,
+    PersonaConfig as DBPersonaConfig, 
+    PersonaConfig,  # Импорт и как DBPersonaConfig и как PersonaConfig для обратной совместимости
+    get_persona_by_id_and_owner, link_bot_instance_to_chat,
+    set_bot_instance_token, ChatContext,
+    get_personas_by_owner, get_next_api_key,
+    active_chat_bot_instances,
     unlink_bot_instance_from_chat,
-    User, PersonaConfig as DBPersonaConfig, BotInstance as DBBotInstance,
-    ChatBotInstance as DBChatBotInstance, ChatContext, func, get_db,
-    DEFAULT_SYSTEM_PROMPT_TEMPLATE, DEFAULT_MOOD_PROMPTS,
-    get_next_api_key,
-    set_bot_instance_token
+    func,
+    DEFAULT_SYSTEM_PROMPT_TEMPLATE, DEFAULT_MOOD_PROMPTS
 )
 from persona import Persona, CommunicationStyle, Verbosity
 from utils import (
