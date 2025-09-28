@@ -123,7 +123,7 @@ from db import (
     get_context_for_chat_bot, add_message_to_context,
     get_mood_for_chat_bot, set_mood_for_chat_bot,
     get_persona_by_name_and_owner, create_persona_config,
-    User, APIKeyRotation,
+    User,
     BotInstance as DBBotInstance,
     ChatBotInstance as DBChatBotInstance,
     PersonaConfig as DBPersonaConfig, 
