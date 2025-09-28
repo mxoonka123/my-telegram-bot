@@ -371,6 +371,11 @@ def initialize_database():
     if db_url_str.startswith("postgresql://"):
         db_url_str = db_url_str.replace("postgresql://", "postgresql+psycopg://", 1)
         logger.info("Adjusted DATABASE_URL to use 'psycopg' (v3) driver.")
+    
+    # OPTIMIZATION: Remove connect_timeout from URL if present, we'll set our own
+    import re
+    db_url_str = re.sub(r'[?&]connect_timeout=\d+', '', db_url_str)
+    logger.info("Removed connect_timeout from URL to set optimized value")
     # --- РљРћРќР•Р¦ РРЎРџР РђР’Р›Р•РќРРЇ ---
 
     db_log_url = db_url_str.split('@')[-1] if '@' in db_url_str else db_url_str

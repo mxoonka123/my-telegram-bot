@@ -63,7 +63,7 @@ else:
 # ОПТИМИЗИРОВАНО: Увеличены пулы для лучшей производительности
 DB_POOL_SIZE = int(os.getenv("DB_POOL_SIZE", "20"))  # Увеличено с 5 до 20
 DB_MAX_OVERFLOW = int(os.getenv("DB_MAX_OVERFLOW", "30"))  # Увеличено с 10 до 30
-DB_CONNECT_TIMEOUT = int(os.getenv("DB_CONNECT_TIMEOUT", "60"))  # Уменьшено с 90 до 60
+DB_CONNECT_TIMEOUT = int(os.getenv("DB_CONNECT_TIMEOUT", "5"))  # ОПТИМИЗАЦИЯ: Уменьшено до 5 секунд
 DB_POOL_RECYCLE = int(os.getenv("DB_POOL_RECYCLE", "1800"))  # Переиспользование соединений каждые 30 минут
 DB_POOL_PRE_PING = os.getenv("DB_POOL_PRE_PING", "true").lower() in ("1", "true", "yes")
 

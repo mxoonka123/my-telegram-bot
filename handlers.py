@@ -21,6 +21,30 @@ from telegram.constants import ParseMode # Added for confirm_pay
 
 logger = logging.getLogger(__name__)
 
+# ОПТИМИЗАЦИЯ: Простой кеш для ускорения ответов
+from typing import Dict, Tuple, Any
+import time
+
+class SimpleCache:
+    def __init__(self, ttl=60):
+        self.cache: Dict[str, Tuple[Any, float]] = {}
+        self.ttl = ttl
+    
+    def get(self, key: str):
+        if key in self.cache:
+            value, timestamp = self.cache[key]
+            if time.time() - timestamp < self.ttl:
+                return value
+            del self.cache[key]
+        return None
+    
+    def set(self, key: str, value: Any):
+        self.cache[key] = (value, time.time())
+
+# Глобальный кеш для профилей и персон
+profile_cache = SimpleCache(ttl=120)  # 2 минуты
+persona_cache = SimpleCache(ttl=180)  # 3 минуты
+
 # Константы для UI
 CHECK_MARK = "✅ "  # Unicode Check Mark Symbol
 
@@ -4037,12 +4061,44 @@ async def profile(update: Union[Update, CallbackQuery], context: ContextTypes.DE
         # проверка подписки удалена
         pass
 
-    await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+    # ОПТИМИЗАЦИЯ: Проверяем кеш перед отправкой typing
+    cache_key = f"profile:{user_id}"
+    cached_data = profile_cache.get(cache_key)
+    
+    if not cached_data:
+        await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
 
     error_db = escape_markdown_v2("❌ ошибка базы данных при загрузке профиля.")
     error_general = escape_markdown_v2("❌ ошибка при обработке команды /profile.")
     error_user_not_found = escape_markdown_v2("❌ ошибка: пользователь не найден.")
     profile_text_plain = "Ошибка загрузки профиля."
+    
+    # ОПТИМИЗАЦИЯ: Используем кеш если доступен
+    if cached_data:
+        persona_count, credits_balance, persona_limit = cached_data
+        profile_text_plain = (
+            f"твой профиль\n\n"
+            f"баланс кредитов: {credits_balance:.2f}\n"
+            f"создано личностей: {persona_count}/{persona_limit}\n\n"
+            f"кредиты списываются за текст, изображения и распознавание аудио."
+        )
+        final_text_to_send = profile_text_plain
+        
+        keyboard = [[
+            InlineKeyboardButton("пополнить кредиты", callback_data="buycredits_open")
+        ], [
+            InlineKeyboardButton("назад в меню", callback_data="show_menu")
+        ]] if is_callback else None
+        reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
+        
+        if is_callback:
+            if message_target.text != final_text_to_send or message_target.reply_markup != reply_markup:
+                await query.edit_message_text(final_text_to_send, reply_markup=reply_markup, parse_mode=None)
+            else:
+                await query.answer()
+        else:
+            await message_target.reply_text(final_text_to_send, reply_markup=reply_markup, parse_mode=None)
+        return
 
     with get_db() as db:
         try:
@@ -4077,6 +4133,9 @@ async def profile(update: Union[Update, CallbackQuery], context: ContextTypes.DE
                 f"создано личностей: {persona_limit_raw}\n\n"
                 f"кредиты списываются за текст, изображения и распознавание аудио."
             )
+            
+            # ОПТИМИЗАЦИЯ: Сохраняем в кеш
+            profile_cache.set(cache_key, (persona_count, credits_balance, user_db.persona_limit))
 
             # Во избежание ошибок MarkdownV2 отправляем простой текст без форматирования
             final_text_to_send = profile_text_plain
