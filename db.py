@@ -157,9 +157,9 @@ class User(Base):
     # --- NEW: credit balance for economic model ---
     credits = Column(Float, default=0.0, nullable=False, index=True)  # ОПТИМИЗИРОВАНО: Добавлен индекс
 
-    # ОПТИМИЗИРОВАНО: Изменено с selectin на dynamic для ленивой загрузки
-    persona_configs = relationship("PersonaConfig", back_populates="owner", cascade="all, delete-orphan", lazy="dynamic")
-    bot_instances = relationship("BotInstance", back_populates="owner", cascade="all, delete-orphan", lazy="dynamic")
+    # Изменено обратно на select/selectin для совместимости с eager loading
+    persona_configs = relationship("PersonaConfig", back_populates="owner", cascade="all, delete-orphan", lazy="selectin")
+    bot_instances = relationship("BotInstance", back_populates="owner", cascade="all, delete-orphan", lazy="selectin")
 
     @property
     def persona_limit(self) -> int:
@@ -168,23 +168,26 @@ class User(Base):
 
     @property
     def can_create_persona(self) -> bool:
-        if self.telegram_id in ADMIN_USER_ID: return True
+        if self.telegram_id in ADMIN_USER_ID: 
+            return True
         try:
-            if 'persona_configs' in self.__dict__ and self.persona_configs is not None:
-                 count = len(self.persona_configs)
-                 logger.debug(f"Using loaded persona_configs count ({count}) for User {self.id}.")
-                 return count < self.persona_limit
+            # Now persona_configs will be a list when loaded
+            if self.persona_configs is not None:
+                # Безопасная проверка типа и подсчет
+                count = len(self.persona_configs) if isinstance(self.persona_configs, list) else 0
+                logger.debug(f"Using loaded persona_configs count ({count}) for User {self.id}.")
+                return count < self.persona_limit
             elif hasattr(self, '_sa_instance_state') and self._sa_instance_state.session:
-                 db_session = self._sa_instance_state.session
-                 count = db_session.query(func.count(PersonaConfig.id)).filter(PersonaConfig.owner_id == self.id).scalar() or 0
-                 logger.debug(f"Queried persona count ({count}) for User {self.id} as relation was not loaded.")
-                 return count < self.persona_limit
+                db_session = self._sa_instance_state.session
+                count = db_session.query(func.count(PersonaConfig.id)).filter(PersonaConfig.owner_id == self.id).scalar() or 0
+                logger.debug(f"Queried persona count ({count}) for User {self.id} as relation was not loaded.")
+                return count < self.persona_limit
             else:
-                 logger.warning(f"Accessing can_create_persona for detached/transient User {self.id}. Cannot reliably determine count. Assuming False.")
-                 return False
+                logger.warning(f"Accessing can_create_persona for detached/transient User {self.id}. Cannot reliably determine count. Assuming False.")
+                return False
         except Exception as e:
-             logger.error(f"Error checking persona count for User {self.id}: {e}", exc_info=True)
-             return False
+            logger.error(f"Error checking persona count for User {self.id}: {e}", exc_info=True)
+            return False
 
     def has_credits(self) -> bool:
         """Checks if the user has a positive credit balance."""
@@ -292,7 +295,7 @@ class BotInstance(Base):
 
     persona_config = relationship("PersonaConfig", back_populates="bot_instance", lazy="select")
     owner = relationship("User", back_populates="bot_instances", lazy="select")
-    chat_links = relationship("ChatBotInstance", back_populates="bot_instance_ref", cascade="all, delete-orphan", lazy="dynamic")
+    chat_links = relationship("ChatBotInstance", back_populates="bot_instance_ref", cascade="all, delete-orphan", lazy="selectin")
 
     def __repr__(self):
         return (
@@ -311,7 +314,7 @@ class ChatBotInstance(Base):
     is_muted = Column(Boolean, default=False, nullable=False)
     
     bot_instance_ref = relationship("BotInstance", back_populates="chat_links", lazy="select")
-    context = relationship("ChatContext", back_populates="chat_bot_instance", order_by="ChatContext.message_order", cascade="all, delete-orphan", lazy="dynamic")
+    context = relationship("ChatContext", back_populates="chat_bot_instance", order_by="ChatContext.message_order", cascade="all, delete-orphan", lazy="selectin")
 
     __table_args__ = (UniqueConstraint('chat_id', 'bot_instance_id', name='_chat_bot_uc'),)
 

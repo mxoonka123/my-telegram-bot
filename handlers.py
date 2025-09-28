@@ -324,7 +324,8 @@ async def send_to_google_gemini(
                 import re
                 try:
                     extracted_block = extract_json_from_markdown(text_content)
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"JSON extraction from markdown failed: {e}")
                     extracted_block = text_content
                 logger.warning(f"Failed to parse JSON. Falling back to regex extraction. Preview: {extracted_block[:200]}")
                 # 1) Попробуем найти массив после ключа "response"
@@ -334,8 +335,8 @@ async def send_to_google_gemini(
                         arr = json.loads(m.group(1))
                         if isinstance(arr, list):
                             return [str(it) for it in arr]
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"JSON parse attempt failed: {e}")
                 # 2) Если не вышло — извлечем только элементы массива в квадратных скобках
                 try:
                     m2 = re.search(r'(\[\s*".*?"\s*(?:,\s*".*?"\s*)*\])', extracted_block, re.DOTALL)
@@ -343,8 +344,8 @@ async def send_to_google_gemini(
                         arr2 = json.loads(m2.group(1))
                         if isinstance(arr2, list):
                             return [str(it) for it in arr2]
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"JSON parse attempt failed: {e}")
                 # 3) Последний шанс: извлечь все строки в кавычках, исключая служебные ключи вроде "response"
                 try:
                     extracted_parts = re.findall(r'"([^"\\]*(?:\\.[^"\\]*)*)"', extracted_block)
@@ -366,7 +367,8 @@ async def send_to_google_gemini(
         try:
             error_body = e.response.json()
             error_message = (error_body.get("error", {}) or {}).get("message") or str(e)
-        except Exception:
+        except Exception as parse_err:
+            logger.debug(f"Failed to parse error response: {parse_err}")
             error_message = e.response.text if e.response is not None else str(e)
         logger.error(f"API error calling '{api_url}' (status={getattr(e.response, 'status_code', 'n/a')}): {error_message}")
         api_source = "openrouter" if "openrouter" in (api_url or "") else "google api"
@@ -430,7 +432,8 @@ async def botsettings_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from_id = int(user.id) if user else None
     try:
         admin_ids = set((getattr(config, 'ADMIN_USER_ID', []) or []))
-    except Exception:
+    except Exception as e:
+        logger.error(f"Failed to get admin IDs: {e}")
         admin_ids = set()
 
     with get_db() as db:
@@ -565,7 +568,8 @@ async def botsettings_menu_show(update: Update, context: ContextTypes.DEFAULT_TY
         access = bi.access_level or 'owner_only'
         try:
             wl = json.loads(bi.whitelisted_users_json or '[]')
-        except Exception:
+        except (json.JSONDecodeError, TypeError) as e:
+            logger.warning(f"Failed to parse whitelist JSON: {e}")
             wl = []
         wl_count = len(wl)
         # Получаем mute-статус для текущего чата и выбранного бота
@@ -651,7 +655,8 @@ async def botsettings_wl_show(update: Update, context: ContextTypes.DEFAULT_TYPE
             return ConversationHandler.END
         try:
             wl = json.loads(bi.whitelisted_users_json or '[]')
-        except Exception:
+        except (json.JSONDecodeError, TypeError) as e:
+            logger.warning(f"Failed to parse whitelist JSON: {e}")
             wl = []
         if not wl:
             text = "белый список пуст."
@@ -690,7 +695,8 @@ async def botsettings_wl_add_receive(update: Update, context: ContextTypes.DEFAU
             return ConversationHandler.END
         try:
             wl = json.loads(bi.whitelisted_users_json or '[]')
-        except Exception:
+        except (json.JSONDecodeError, TypeError) as e:
+            logger.warning(f"Failed to parse whitelist JSON: {e}")
             wl = []
         if add_id not in wl:
             wl.append(add_id)
@@ -715,7 +721,8 @@ async def botsettings_wl_remove_prompt(update: Update, context: ContextTypes.DEF
             return ConversationHandler.END
         try:
             wl = json.loads(bi.whitelisted_users_json or '[]')
-        except Exception:
+        except (json.JSONDecodeError, TypeError) as e:
+            logger.warning(f"Failed to parse whitelist JSON: {e}")
             wl = []
         if not wl:
             await q.edit_message_text("белый список пуст.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ назад", callback_data="botset_back")]]), parse_mode=None)
@@ -745,7 +752,8 @@ async def botsettings_wl_remove_confirm(update: Update, context: ContextTypes.DE
             return ConversationHandler.END
         try:
             wl = json.loads(bi.whitelisted_users_json or '[]')
-        except Exception:
+        except (json.JSONDecodeError, TypeError) as e:
+            logger.warning(f"Failed to parse whitelist JSON: {e}")
             wl = []
         if rem_id in wl:
             wl = [x for x in wl if x != rem_id]
@@ -2060,8 +2068,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                         "❌ Ошибка целостности данных. Возможно, вы пытаетесь создать дубликат.",
                         parse_mode=None,
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"JSON parse attempt failed: {e}")
             if db_session:
                 try:
                     db_session.rollback()
@@ -2075,8 +2083,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                         "❌ Критическая ошибка конфигурации базы данных. Свяжитесь с администратором.",
                         parse_mode=None,
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"JSON parse attempt failed: {e}")
             if db_session:
                 try:
                     db_session.rollback()
@@ -2090,8 +2098,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                         "❌ Временно не удается подключиться к базе данных. Попробуйте позже.",
                         parse_mode=None,
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"JSON parse attempt failed: {e}")
             if db_session:
                 try:
                     db_session.rollback()
@@ -2105,8 +2113,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                         "❌ Ошибка базы данных. Попробуйте позже.",
                         parse_mode=None,
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"JSON parse attempt failed: {e}")
             if db_session:
                 try:
                     db_session.rollback()
@@ -4619,8 +4627,8 @@ async def proactive_chat_select_prompt(update: Update, context: ContextTypes.DEF
                         title = f"личный чат ({first_name})"
                     else:
                         title = getattr(chat_info, 'title', None) or f"группа ({link.chat_id})"
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"JSON parse attempt failed: {e}")
 
             keyboard.append([InlineKeyboardButton(title, callback_data=f"proactive_pick_chat_{link.id}")])
         keyboard.append([InlineKeyboardButton("назад", callback_data="back_to_wizard_menu")])
