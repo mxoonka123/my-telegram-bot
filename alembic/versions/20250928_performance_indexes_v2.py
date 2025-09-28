@@ -10,7 +10,7 @@ import sqlalchemy as sa
 
 # revision identifiers
 revision = 'performance_indexes_v2'
-down_revision = 'api_keys_table'
+down_revision = '20250928_performance'  # Исправлено: правильная ссылка на предыдущую миграцию
 branch_labels = None
 depends_on = None
 
