@@ -387,11 +387,12 @@ def initialize_database():
         engine_args["connect_args"] = {"check_same_thread": False}
     elif db_url_str.startswith("postgres"):
         # Р‘Р°Р·РѕРІС‹Рµ РЅР°СЃС‚СЂРѕР№РєРё РїСѓР»Р°
+        # Оптимизация: настройки пула для быстрого отклика
         engine_args.update({
             "pool_size": config.DB_POOL_SIZE,
             "max_overflow": config.DB_MAX_OVERFLOW,
-            "pool_timeout": 30,
-            "pool_recycle": 1800,
+            "pool_timeout": 5,  # Уменьшено с 30 до 5 секунд
+            "pool_recycle": 900,  # Уменьшено с 1800 до 900 (15 минут)
             "pool_pre_ping": True,
         })
 
@@ -406,12 +407,13 @@ def initialize_database():
             # РќР°СЃС‚СЂР°РёРІР°РµРј РїР°СЂР°РјРµС‚СЂС‹ РґР»СЏ psycopg3
             connect_args = engine_args.get('connect_args', {})
             connect_args['prepare_threshold'] = None  # РћС‚РєР»СЋС‡РµРЅРёРµ prepared statements
-            connect_args['options'] = "-c statement_timeout=60000 -c idle_in_transaction_session_timeout=60000"
+            connect_args['options'] = "-c statement_timeout=10000 -c idle_in_transaction_session_timeout=30000"
             # РСЃРїРѕР»СЊР·СѓРµРј РЅР°СЃС‚СЂР°РёРІР°РµРјС‹Р№ С‚Р°Р№РјР°СѓС‚ РїРѕРґРєР»СЋС‡РµРЅРёСЏ (СЃРµРєСѓРЅРґС‹) РёР· config.py
+            # Оптимизация: быстрое подключение - 5 секунд вместо 60
             try:
-                connect_args['connect_timeout'] = int(getattr(config, 'DB_CONNECT_TIMEOUT', 60))
+                connect_args['connect_timeout'] = 5  # Уменьшен с 60 до 5 секунд для Railway
             except Exception:
-                connect_args['connect_timeout'] = 60
+                connect_args['connect_timeout'] = 5
             engine_args['connect_args'] = connect_args
             
             logger.info("PostgreSQL: Disabled prepared statements and set timeouts to prevent transaction issues")

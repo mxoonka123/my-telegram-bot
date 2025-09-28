@@ -3443,14 +3443,15 @@ async def my_personas(update: Union[Update, CallbackQuery], context: ContextType
 
     try:
         with get_db() as db:
-            # Сразу используем get_or_create_user, он вернет существующего или создаст нового (id будет доступен благодаря flush внутри функции)
-            user_with_personas = get_or_create_user(db, user_id, username)
-
-            # При необходимости дозагружаем связи одним запросом selectinload
-            if 'persona_configs' not in user_with_personas.__dict__:
-                user_with_personas = db.query(User).options(
-                    selectinload(User.persona_configs).selectinload(DBPersonaConfig.bot_instance)
-                ).filter(User.id == user_with_personas.id).one_or_none()
+            # Оптимизация: один запрос с полной загрузкой всех необходимых данных
+            user_with_personas = db.query(User).options(
+                selectinload(User.persona_configs).selectinload(DBPersonaConfig.bot_instance)
+            ).filter(User.telegram_id == user_id).first()
+            
+            if not user_with_personas:
+                # Создаем нового пользователя если не существует
+                user_with_personas = get_or_create_user(db, user_id, username)
+                db.commit()
 
             if not user_with_personas:
                 logger.error(f"User {user_id} not found even after get_or_create/refresh in my_personas.")
@@ -4045,14 +4046,14 @@ async def profile(update: Union[Update, CallbackQuery], context: ContextTypes.DE
 
     with get_db() as db:
         try:
+            # Оптимизация: один запрос с eager loading вместо нескольких
             user_db = db.query(User).options(selectinload(User.persona_configs)).filter(User.telegram_id == user_id).first()
             if not user_db:
                 user_db = get_or_create_user(db, user_id, username)
                 db.commit()
-                db.refresh(user_db)
-                user_db = db.query(User).options(selectinload(User.persona_configs)).filter(User.id == user_db.id).one_or_none()
+                # Оптимизация: используем уже загруженный объект
                 if not user_db:
-                    logger.error(f"User {user_id} not found after get_or_create/refresh in profile.")
+                    logger.error(f"User {user_id} not found after get_or_create in profile.")
                     await context.bot.send_message(chat_id, error_user_not_found, parse_mode=ParseMode.MARKDOWN_V2)
                     return
 
