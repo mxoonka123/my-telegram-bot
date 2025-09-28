@@ -1,7 +1,7 @@
-"""Add performance indexes and remove deprecated fields
+"""Add performance indexes for optimization
 
-Revision ID: performance_001
-Revises: 20250820_200500_acl_credits
+Revision ID: 20250928_performance  
+Revises: 20250910_133600_api_keys_table
 Create Date: 2025-09-28 18:45:00.000000
 
 """
@@ -10,8 +10,8 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
-revision = 'performance_001'
-down_revision = '20250820_200500_acl_credits'
+revision = '20250928_performance'
+down_revision = '20250910_133600_api_keys_table'
 branch_labels = None
 depends_on = None
 
@@ -39,17 +39,17 @@ def upgrade():
     # Индексы для api_keys
     op.create_index('ix_api_key_service_active', 'api_keys', ['service', 'is_active', 'last_used_at'])
     
-    # Удаляем DEPRECATED колонки из таблицы users
-    op.drop_column('users', 'daily_message_count')
-    op.drop_column('users', 'last_message_reset')
+    # ВРЕМЕННО ОТКЛЮЧЕНО: Удаление DEPRECATED колонок - сделаем в отдельной миграции после проверки
+    # op.drop_column('users', 'daily_message_count')
+    # op.drop_column('users', 'last_message_reset')
     
-    # Добавляем колонку для кеширования промптов
-    op.add_column('persona_configs',
-        sa.Column('cached_system_prompt', sa.Text(), nullable=True)
-    )
-    op.add_column('persona_configs',
-        sa.Column('cache_updated_at', sa.DateTime(timezone=True), nullable=True)
-    )
+    # ВРЕМЕННО ОТКЛЮЧЕНО: Добавление колонок для кеша - проверим совместимость
+    # op.add_column('persona_configs',
+    #     sa.Column('cached_system_prompt', sa.Text(), nullable=True)
+    # )
+    # op.add_column('persona_configs',
+    #     sa.Column('cache_updated_at', sa.DateTime(timezone=True), nullable=True)
+    # )
 
 
 def downgrade():
@@ -65,14 +65,14 @@ def downgrade():
     op.drop_index('ix_persona_owner_name', 'persona_configs')
     op.drop_index('ix_api_key_service_active', 'api_keys')
     
-    # Восстанавливаем удаленные колонки
-    op.add_column('users',
-        sa.Column('daily_message_count', sa.Integer(), nullable=False, server_default='0')
-    )
-    op.add_column('users',
-        sa.Column('last_message_reset', sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now())
-    )
+    # ВРЕМЕННО ОТКЛЮЧЕНО: Восстановление колонок
+    # op.add_column('users',
+    #     sa.Column('daily_message_count', sa.Integer(), nullable=False, server_default='0')
+    # )
+    # op.add_column('users',
+    #     sa.Column('last_message_reset', sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now())
+    # )
     
-    # Удаляем добавленные колонки
-    op.drop_column('persona_configs', 'cached_system_prompt')
-    op.drop_column('persona_configs', 'cache_updated_at')
+    # ВРЕМЕННО ОТКЛЮЧЕНО: Удаление колонок кеша
+    # op.drop_column('persona_configs', 'cached_system_prompt')
+    # op.drop_column('persona_configs', 'cache_updated_at')
