@@ -60,9 +60,12 @@ else:
     logger.info(f"INFO: DATABASE_URL успешно загружена из окружения: {db_url_log_display}")
 
 # Database Pool Settings (configurable via env)
-DB_POOL_SIZE = int(os.getenv("DB_POOL_SIZE", "5"))
-DB_MAX_OVERFLOW = int(os.getenv("DB_MAX_OVERFLOW", "10"))
-DB_CONNECT_TIMEOUT = int(os.getenv("DB_CONNECT_TIMEOUT", "90"))  # Таймаут подключения к БД в секундах
+# ОПТИМИЗИРОВАНО: Увеличены пулы для лучшей производительности
+DB_POOL_SIZE = int(os.getenv("DB_POOL_SIZE", "20"))  # Увеличено с 5 до 20
+DB_MAX_OVERFLOW = int(os.getenv("DB_MAX_OVERFLOW", "30"))  # Увеличено с 10 до 30
+DB_CONNECT_TIMEOUT = int(os.getenv("DB_CONNECT_TIMEOUT", "60"))  # Уменьшено с 90 до 60
+DB_POOL_RECYCLE = int(os.getenv("DB_POOL_RECYCLE", "1800"))  # Переиспользование соединений каждые 30 минут
+DB_POOL_PRE_PING = os.getenv("DB_POOL_PRE_PING", "true").lower() in ("1", "true", "yes")
 
 YOOKASSA_SHOP_ID = os.getenv("YOOKASSA_SHOP_ID", "") # ID магазина
 YOOKASSA_SECRET_KEY = os.getenv("YOOKASSA_SECRET_KEY", "") # Секретный ключ
@@ -160,3 +163,18 @@ CREDIT_PACKAGES = {
 # --- Low Balance Warning ---
 # Порог в кредитах, при котором пользователю будет отправлено уведомление о низком балансе
 LOW_BALANCE_WARNING_THRESHOLD = float(os.getenv("LOW_BALANCE_WARNING_THRESHOLD", "50.0"))
+
+# --- Cache Settings (NEW) ---
+# Настройки кеширования для оптимизации производительности
+CACHE_TTL_USER = int(os.getenv("CACHE_TTL_USER", "300"))  # 5 минут
+CACHE_TTL_PERSONA = int(os.getenv("CACHE_TTL_PERSONA", "600"))  # 10 минут  
+CACHE_TTL_MENU = int(os.getenv("CACHE_TTL_MENU", "1800"))  # 30 минут
+CACHE_TTL_CONTEXT = int(os.getenv("CACHE_TTL_CONTEXT", "120"))  # 2 минуты
+CACHE_TTL_PROMPT = int(os.getenv("CACHE_TTL_PROMPT", "3600"))  # 1 час
+
+# --- Performance Settings (NEW) ---
+# Настройки для оптимизации производительности
+MAX_CONCURRENT_UPDATES = int(os.getenv("MAX_CONCURRENT_UPDATES", "50"))  # Макс. параллельных обновлений
+CONNECTION_POOL_SIZE = int(os.getenv("CONNECTION_POOL_SIZE", "100"))  # Размер пула соединений PTB
+HTTP_CLIENT_TIMEOUT = int(os.getenv("HTTP_CLIENT_TIMEOUT", "30"))  # Таймаут HTTP запросов
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")  # Уровень логирования (DEBUG в dev, INFO в prod)

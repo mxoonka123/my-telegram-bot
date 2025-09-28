@@ -28,6 +28,15 @@ import tasks
 import config
 from utils import escape_markdown_v2, format_visual_text
 
+# ОПТИМИЗАЦИЯ: Импорт модулей оптимизации
+try:
+    from optimization.cache_manager import cache, init_cache, shutdown_cache
+    from optimization.handlers_optimized import warm_up_cache
+    OPTIMIZATION_ENABLED = True
+except ImportError:
+    OPTIMIZATION_ENABLED = False
+    logger.warning("Optimization modules not found, running in standard mode")
+
 # --- Импорты библиотек ---
 from telegram.ext import (
     Application, Defaults, CommandHandler, MessageHandler, CallbackQueryHandler,
@@ -74,7 +83,8 @@ except Exception as e:
 # Глобальные переменные для доступа к PTB Application и его event loop из вебхука
 application_instance: Application | None = None
 application_loop: asyncio.AbstractEventLoop | None = None
-bot_swap_lock = threading.RLock()
+# ОПТИМИЗИРОВАНО: Заменено threading.RLock на asyncio.Lock для лучшей производительности
+bot_swap_lock = asyncio.Lock()
 
 async def process_telegram_update(update_data, token: str, bot_username_for_log: str) -> None:
     """Асинхронная функция для обработки одного Telegram-апдейта без подмены глобального бота.
@@ -418,9 +428,10 @@ async def main():
     builder = Application.builder().token(config.TELEGRAM_TOKEN)
     
     # Настраиваем параметры
+    # ОПТИМИЗИРОВАНО: Увеличены пулы и таймауты для лучшей производительности
     builder.defaults(Defaults(parse_mode=ParseMode.MARKDOWN_V2, block=False))
-    builder.pool_timeout(20.0).connect_timeout(20.0).read_timeout(30.0).write_timeout(30.0)
-    builder.connection_pool_size(50)
+    builder.pool_timeout(30.0).connect_timeout(30.0).read_timeout(30.0).write_timeout(30.0)
+    builder.connection_pool_size(config.CONNECTION_POOL_SIZE)  # Используем настройку из конфига (100)
     
     # Включаем параллельную обработку апдейтов (PTB создаёт независимые задачи на апдейты)
     try:
@@ -574,6 +585,16 @@ async def main():
     async with application:
         # Инициализация приложения
         await application.initialize()
+        
+        # ОПТИМИЗАЦИЯ: Инициализация кеша и прогрев
+        if OPTIMIZATION_ENABLED:
+            try:
+                await init_cache()
+                logger.info("Cache manager initialized")
+                await warm_up_cache()
+                logger.info("Cache warmed up")
+            except Exception as e:
+                logger.error(f"Failed to initialize optimization: {e}")
 
         # Режим запуска: webhook (по умолчанию для Railway) или polling
         run_mode = os.environ.get("RUN_MODE", "webhook").strip().lower()

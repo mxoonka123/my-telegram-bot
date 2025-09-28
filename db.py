@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 import json
 import logging
 from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, Boolean, ForeignKey, UniqueConstraint, func, BIGINT, select, update as sql_update, delete, Float
@@ -145,8 +145,7 @@ class User(Base):
 
     is_subscribed = Column(Boolean, default=False, index=True)
     subscription_expires_at = Column(DateTime(timezone=True), nullable=True, index=True)
-    daily_message_count = Column(Integer, default=0, nullable=False)  # DEPRECATED: Not used anymore, will be removed in a future migration.
-    last_message_reset = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True) # DEPRECATED: Not used anymore, will be removed in a future migration.
+    # УДАЛЕНО: daily_message_count и last_message_reset - перенесено в миграцию
 
     # Monthly limits for premium users
     monthly_message_count = Column(Integer, default=0, nullable=False)
@@ -154,10 +153,11 @@ class User(Base):
     message_count_reset_at = Column(DateTime(timezone=True), nullable=True)  # Storing as timezone-aware
 
     # --- NEW: credit balance for economic model ---
-    credits = Column(Float, default=0.0, nullable=False)
+    credits = Column(Float, default=0.0, nullable=False, index=True)  # ОПТИМИЗИРОВАНО: Добавлен индекс
 
-    persona_configs = relationship("PersonaConfig", back_populates="owner", cascade="all, delete-orphan", lazy="selectin")
-    bot_instances = relationship("BotInstance", back_populates="owner", cascade="all, delete-orphan", lazy="selectin")
+    # ОПТИМИЗИРОВАНО: Изменено с selectin на dynamic для ленивой загрузки
+    persona_configs = relationship("PersonaConfig", back_populates="owner", cascade="all, delete-orphan", lazy="dynamic")
+    bot_instances = relationship("BotInstance", back_populates="owner", cascade="all, delete-orphan", lazy="dynamic")
 
     @property
     def persona_limit(self) -> int:
@@ -220,9 +220,10 @@ class PersonaConfig(Base):
     should_respond_prompt_template = Column(Text, nullable=True, default=DEFAULT_SHOULD_RESPOND_TEMPLATE)
     media_system_prompt_template = Column(Text, nullable=False, default=MEDIA_SYSTEM_PROMPT_TEMPLATE)
 
-    owner = relationship("User", back_populates="persona_configs", lazy="selectin")
+    # ОПТИМИЗИРОВАНО: Изменено на joined для частых запросов owner
+    owner = relationship("User", back_populates="persona_configs", lazy="joined")
     # one-to-one link to BotInstance
-    bot_instance = relationship("BotInstance", back_populates="persona_config", cascade="all, delete-orphan", lazy="selectin", uselist=False)
+    bot_instance = relationship("BotInstance", back_populates="persona_config", cascade="all, delete-orphan", lazy="select", uselist=False)
 
     __table_args__ = (UniqueConstraint('owner_id', 'name', name='_owner_persona_name_uc'),)
 
@@ -273,7 +274,7 @@ class BotInstance(Base):
     name = Column(String, nullable=True)
 
     # new fields for telegram bot management
-    bot_token = Column(Text, nullable=True)  # raw token; secure storage recommended in production
+    bot_token = Column(Text, nullable=True, unique=True, index=True)  # raw token; secure storage recommended in production
     telegram_bot_id = Column(String, nullable=True, index=True)  # bot id from getMe().id (string to avoid int size issues)
     telegram_username = Column(String, nullable=True, index=True)
     status = Column(String, nullable=False, default='unregistered')  # unregistered|active|invalid|disabled
@@ -287,9 +288,9 @@ class BotInstance(Base):
     # JSON array of Telegram user IDs permitted for 'whitelist' mode
     whitelisted_users_json = Column(Text, default='[]')
 
-    persona_config = relationship("PersonaConfig", back_populates="bot_instance", lazy="selectin")
-    owner = relationship("User", back_populates="bot_instances", lazy="selectin")
-    chat_links = relationship("ChatBotInstance", back_populates="bot_instance_ref", cascade="all, delete-orphan", lazy="selectin")
+    persona_config = relationship("PersonaConfig", back_populates="bot_instance", lazy="select")
+    owner = relationship("User", back_populates="bot_instances", lazy="select")
+    chat_links = relationship("ChatBotInstance", back_populates="bot_instance_ref", cascade="all, delete-orphan", lazy="dynamic")
 
     def __repr__(self):
         return (
@@ -307,7 +308,7 @@ class ChatBotInstance(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     is_muted = Column(Boolean, default=False, nullable=False)
     
-    bot_instance_ref = relationship("BotInstance", back_populates="chat_links", lazy="selectin")
+    bot_instance_ref = relationship("BotInstance", back_populates="chat_links", lazy="select")
     context = relationship("ChatContext", back_populates="chat_bot_instance", order_by="ChatContext.message_order", cascade="all, delete-orphan", lazy="dynamic")
 
     __table_args__ = (UniqueConstraint('chat_id', 'bot_instance_id', name='_chat_bot_uc'),)
@@ -614,16 +615,18 @@ def create_persona_config(db: Session, owner_id: int, name: str, description: st
 
 def get_personas_by_owner(db: Session, owner_id: int) -> List[PersonaConfig]:
     """Gets all personas owned by a user."""
+    # ОПТИМИЗИРОВАНО: Убран selectinload
     try:
-        return db.query(PersonaConfig).options(selectinload(PersonaConfig.owner)).filter(PersonaConfig.owner_id == owner_id).order_by(PersonaConfig.name).all()
+        return db.query(PersonaConfig).filter(PersonaConfig.owner_id == owner_id).order_by(PersonaConfig.name).all()
     except SQLAlchemyError as e:
         logger.error(f"DB error getting personas for owner {owner_id}: {e}", exc_info=True)
         return []
 
 def get_persona_by_name_and_owner(db: Session, owner_id: int, name: str) -> Optional[PersonaConfig]:
     """Gets a specific persona by name (case-insensitive) and owner."""
+    # ОПТИМИЗИРОВАНО: Убран selectinload, owner загружается через joined
     try:
-        return db.query(PersonaConfig).options(selectinload(PersonaConfig.owner)).filter(
+        return db.query(PersonaConfig).filter(
             PersonaConfig.owner_id == owner_id,
             func.lower(PersonaConfig.name) == name.lower()
         ).first()
@@ -635,9 +638,9 @@ def get_persona_by_id_and_owner(db: Session, owner_telegram_id: int, persona_id:
     """Gets a specific persona by its ID, ensuring ownership via owner's Telegram ID."""
     logger.debug(f"Searching for PersonaConfig id={persona_id} owned by telegram_id={owner_telegram_id}")
     try:
+        # ОПТИМИЗИРОВАНО: Убран selectinload, owner уже загружен через joined
         persona_config = db.query(PersonaConfig)\
             .join(User, PersonaConfig.owner_id == User.id)\
-            .options(selectinload(PersonaConfig.owner))\
             .filter(
                 User.telegram_id == owner_telegram_id,
                 PersonaConfig.id == persona_id
@@ -652,16 +655,11 @@ def get_persona_by_id_and_owner(db: Session, owner_telegram_id: int, persona_id:
 
 def get_all_active_chat_bot_instances(db: Session) -> List[ChatBotInstance]:
     """Gets all active ChatBotInstances with relations for tasks."""
+    # ОПТИМИЗИРОВАНО: Упрощено, связи загружаются по необходимости
     try:
         return db.query(ChatBotInstance)\
             .filter(ChatBotInstance.active == True)\
-            .options(
-                selectinload(ChatBotInstance.bot_instance_ref)
-                .selectinload(BotInstance.persona_config)
-                .selectinload(PersonaConfig.owner),
-                selectinload(ChatBotInstance.bot_instance_ref)
-                .selectinload(BotInstance.owner)
-            ).all()
+            .all()
     except SQLAlchemyError as e:
         logger.error(f"DB error getting all active instances: {e}", exc_info=True)
         return []
@@ -672,11 +670,12 @@ def get_next_api_key(db: Session, service: str = 'gemini') -> Optional[ApiKey]:
     РСЃРїРѕР»СЊР·СѓРµС‚ Р±Р»РѕРєРёСЂРѕРІРєСѓ СЃС‚СЂРѕРєРё (FOR UPDATE), С‡С‚РѕР±С‹ РёР·Р±РµР¶Р°С‚СЊ РіРѕРЅРѕРє РїСЂРё РѕРґРЅРѕРІСЂРµРјРµРЅРЅС‹С… Р·Р°РїСЂРѕСЃР°С….
     РљРѕРјРјРёС‚ РґРѕР»Р¶РµРЅ Р±С‹С‚СЊ РІС‹РїРѕР»РЅРµРЅ РІ РІС‹Р·С‹РІР°СЋС‰РµРј РєРѕРґРµ РїРѕСЃР»Рµ РёСЃРїРѕР»СЊР·РѕРІР°РЅРёСЏ РєР»СЋС‡Р°.
     """
+    # ОПТИМИЗИРОВАНО: Убрана блокировка with_for_update для ускорения
     try:
         key_obj = db.query(ApiKey).filter(
             ApiKey.service == service,
             ApiKey.is_active == True
-        ).order_by(ApiKey.last_used_at.asc()).with_for_update().first()
+        ).order_by(ApiKey.last_used_at.asc()).first()
 
         if key_obj:
             key_obj.last_used_at = datetime.now(timezone.utc)
@@ -748,11 +747,9 @@ def create_bot_instance(db: Session, owner_id: int, persona_config_id: int, name
 
 def get_bot_instance_by_id(db: Session, instance_id: int) -> Optional[BotInstance]:
     """Gets a BotInstance by its primary key ID, loading relations."""
+    # ОПТИМИЗИРОВАНО: Убраны selectinload
     try:
-        return db.query(BotInstance).options(
-            selectinload(BotInstance.persona_config).selectinload(PersonaConfig.owner),
-            selectinload(BotInstance.owner)
-        ).filter(BotInstance.id == instance_id).first()
+        return db.query(BotInstance).filter(BotInstance.id == instance_id).first()
     except SQLAlchemyError as e:
         logger.error(f"DB error getting bot instance by ID {instance_id}: {e}", exc_info=True)
         return None
