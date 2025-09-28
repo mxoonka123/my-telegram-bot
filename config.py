@@ -138,7 +138,7 @@ MODEL_PRICE_MULTIPLIERS = {
     OPENROUTER_MODEL_NAME: float(
         os.getenv(
             f"CREDIT_MULTIPLIER_{OPENROUTER_MODEL_NAME.replace('/', '_').replace('-', '_').replace('.', '_').upper()}",
-            "3.0",
+            "25.0",  # elevated default for profitability; can be overridden via env
         )
     ),
 }
@@ -148,8 +148,8 @@ CREDIT_MIN_OUTPUT_TOKENS = int(os.getenv("CREDIT_MIN_OUTPUT_TOKENS", "200"))
 # Минимальная тарификация по голосу в минутах
 CREDIT_MIN_AUDIO_MINUTES = float(os.getenv("CREDIT_MIN_AUDIO_MINUTES", "1.0"))
 
-# Стартовые кредиты для новых пользователей
-NEW_USER_TRIAL_CREDITS = float(os.getenv("NEW_USER_TRIAL_CREDITS", "10.0"))
+# Стартовые кредиты для новых пользователей (отключены по умолчанию)
+NEW_USER_TRIAL_CREDITS = float(os.getenv("NEW_USER_TRIAL_CREDITS", "0.0"))
 
 # Пакеты кредитов для покупки (id -> {credits, price_rub, title})
 # Значения по умолчанию можно переопределять через окружение в будущем
