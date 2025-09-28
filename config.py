@@ -70,10 +70,7 @@ YOOKASSA_SECRET_KEY = os.getenv("YOOKASSA_SECRET_KEY", "") # Секретный 
 # URL вашего приложения на Railway
 WEBHOOK_URL_BASE = os.getenv("WEBHOOK_URL_BASE", "")
 
-# Параметры подписки и лимиты
-SUBSCRIPTION_PRICE_RUB = 699.00
-SUBSCRIPTION_CURRENCY = "RUB"
-SUBSCRIPTION_DURATION_DAYS = 30
+# Лимиты и настройки
 FREE_PERSONA_LIMIT = 10
 PAID_PERSONA_LIMIT = 10
 FREE_USER_MONTHLY_PHOTO_LIMIT = 2 # 2 фото для бесплатных пользователей, как и запрашивалось

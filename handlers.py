@@ -74,9 +74,6 @@ from yookassa.domain.models.receipt import Receipt, ReceiptItem
 # --- ИСПРАВЛЕНИЕ: Добавлены импорты из config.py для устранения NameError ---
 import config
 from config import (
-    SUBSCRIPTION_DURATION_DAYS,
-    SUBSCRIPTION_PRICE_RUB,
-    SUBSCRIPTION_CURRENCY,
     YOOKASSA_SHOP_ID,
     YOOKASSA_SECRET_KEY,
     PAID_PERSONA_LIMIT,
@@ -4184,7 +4181,7 @@ async def buycredits_pkg_callback(update: Update, context: ContextTypes.DEFAULT_
             ReceiptItem({
                 "description": f"Кредиты для @{bot_username} ({int(credits)} кр.)",
                 "quantity": 1.0,
-                "amount": {"value": f"{price_rub:.2f}", "currency": SUBSCRIPTION_CURRENCY},
+                "amount": {"value": f"{price_rub:.2f}", "currency": "RUB"},
                 "vat_code": "1",
                 "payment_mode": "full_prepayment",
                 "payment_subject": "service"
@@ -4201,7 +4198,7 @@ async def buycredits_pkg_callback(update: Update, context: ContextTypes.DEFAULT_
 
     try:
         builder = PaymentRequestBuilder()
-        builder.set_amount({"value": f"{price_rub:.2f}", "currency": SUBSCRIPTION_CURRENCY}) \
+        builder.set_amount({"value": f"{price_rub:.2f}", "currency": "RUB"}) \
             .set_capture(True) \
             .set_confirmation({"type": "redirect", "return_url": return_url}) \
             .set_description(description) \
@@ -4225,163 +4222,7 @@ async def buycredits_pkg_callback(update: Update, context: ContextTypes.DEFAULT_
         logger.error(f"Yookassa create payment error (credits) for user {user_id}: {e}", exc_info=True)
         await query.edit_message_text("❌ ошибка при создании платежа", parse_mode=None)
 
-async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE, from_callback: bool = False) -> None:
-    """[DEPRECATED] /subscribe — больше не поддерживается. Оставлено как заглушка."""
-    is_callback = update.callback_query is not None
-    msg = update.callback_query.message if is_callback else update.message
-    if not msg:
-        return
-    try:
-        text = "ℹ️ Подписки больше не поддерживаются. Используйте /buycredits для пополнения кредитов."
-        if is_callback:
-            await update.callback_query.edit_message_text(text, parse_mode=None)
-        else:
-            await msg.reply_text(text, parse_mode=None)
-    except Exception:
-        pass
-
-async def view_tos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """[DEPRECATED] Показ ToS для подписок — отключен."""
-    query = update.callback_query
-    if not query: return
-    try:
-        await query.answer("Подписки отключены. Используйте /buycredits", show_alert=True)
-    except Exception:
-        pass
-
-async def confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """[DEPRECATED] Подтверждение оплаты подписки — отключено."""
-    query = update.callback_query
-    if not query: return
-    try:
-        await query.answer("Подписки отключены. Используйте /buycredits", show_alert=True)
-    except Exception:
-        pass
-
-async def generate_payment_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """[DEPRECATED] Генерация ссылки для подписки — отключена."""
-    query = update.callback_query
-    if not query: return
-    success_link_raw = (
-        "✨ Ссылка для оплаты создана!\n\n"
-        "Нажмите кнопку ниже для перехода к оплате.\n"
-        "После успешной оплаты подписка активируется автоматически (может занять до 5 минут).\n\n"
-        "Если возникнут проблемы, обратитесь в поддержку."
-    )
-
-    text = ""
-    reply_markup = None
-
-    yookassa_ready = bool(YOOKASSA_SHOP_ID and YOOKASSA_SECRET_KEY and YOOKASSA_SHOP_ID.isdigit())
-    if not yookassa_ready:
-        logger.error("Yookassa credentials not set correctly for payment generation.")
-        text = error_yk_not_ready
-        reply_markup = None
-        await query.edit_message_text(text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
-        return
-
-    try:
-        current_shop_id = int(YOOKASSA_SHOP_ID)
-        YookassaConfig.configure(account_id=current_shop_id, secret_key=config.YOOKASSA_SECRET_KEY)
-        logger.info(f"Yookassa configured within generate_payment_link (Shop ID: {current_shop_id}).")
-    except ValueError:
-        logger.error(f"YOOKASSA_SHOP_ID ({config.YOOKASSA_SHOP_ID}) invalid integer.")
-        text = error_yk_config
-        reply_markup = None
-        await query.edit_message_text(text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
-        return
-    except Exception as conf_e:
-        logger.error(f"Failed to configure Yookassa SDK in generate_payment_link: {conf_e}", exc_info=True)
-        text = error_yk_config
-        reply_markup = None
-        await query.edit_message_text(text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
-        return
-
-    idempotence_key = str(uuid.uuid4())
-    payment_description = f"Premium подписка @NunuAiBot на {SUBSCRIPTION_DURATION_DAYS} дней (User ID: {user_id})"
-    payment_metadata = {'telegram_user_id': str(user_id)}
-    bot_username = context.bot_data.get('bot_username', "NunuAiBot")
-    return_url = f"https://t.me/{bot_username}"
-
-    try:
-        receipt_items = [
-            ReceiptItem({
-                "description": f"Премиум доступ @{bot_username} на {SUBSCRIPTION_DURATION_DAYS} дней",
-                "quantity": 1.0,
-                "amount": {"value": f"{SUBSCRIPTION_PRICE_RUB:.2f}", "currency": SUBSCRIPTION_CURRENCY},
-                "vat_code": "1",
-                "payment_mode": "full_prepayment",
-                "payment_subject": "service"
-            })
-        ]
-        user_email = f"user_{user_id}@telegram.bot"
-        receipt_data = Receipt({
-            "customer": {"email": user_email},
-            "items": receipt_items,
-        })
-    except Exception as receipt_e:
-        logger.error(f"Error preparing receipt data: {receipt_e}", exc_info=True)
-        text = error_receipt
-        reply_markup = None
-        await query.edit_message_text(text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
-        return
-
-    try:
-        builder = PaymentRequestBuilder()
-        builder.set_amount({"value": f"{SUBSCRIPTION_PRICE_RUB:.2f}", "currency": SUBSCRIPTION_CURRENCY}) \
-            .set_capture(True) \
-            .set_confirmation({"type": "redirect", "return_url": return_url}) \
-            .set_description(payment_description) \
-            .set_metadata(payment_metadata) \
-            .set_receipt(receipt_data)
-        request = builder.build()
-        logger.debug(f"Payment request built: {request.json()}")
-
-        payment_response = await asyncio.to_thread(Payment.create, request, idempotence_key)
-
-        if not payment_response or not getattr(payment_response, 'confirmation', None) or not getattr(payment_response.confirmation, 'confirmation_url', None):
-            logger.error(f"Yookassa API returned invalid response for user {user_id}. Status: {payment_response.status if payment_response else 'N/A'}. Response: {payment_response}")
-            status_info = f" \\(статус: {escape_markdown_v2(payment_response.status)}\\)" if payment_response and payment_response.status else ""
-            error_message = error_link_get_fmt_raw.format(status_info=status_info)
-            text = error_message
-            reply_markup = None
-            await query.edit_message_text(text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
-            return
-
-        confirmation_url = payment_response.confirmation.confirmation_url
-        logger.info(f"Created Yookassa payment {payment_response.id} for user {user_id}. URL: {confirmation_url}")
-
-        keyboard = [[InlineKeyboardButton("перейти к оплате", url=confirmation_url)]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        # Используем НЕэкранированную строку и parse_mode=None
-        text_to_send = success_link_raw
-        await query.edit_message_text(text_to_send, reply_markup=reply_markup, parse_mode=None)
-    except Exception as e:
-        logger.error(f"Error during Yookassa payment creation for user {user_id}: {e}", exc_info=True)
-        error_detail = ""
-        if hasattr(e, 'response') and hasattr(e.response, 'text'):
-            try:
-                err_text = e.response.text
-                logger.error(f"Yookassa API Error Response Text: {err_text}")
-                if "Invalid credentials" in err_text:
-                    error_detail = "ошибка аутентификации с юkassa"
-                elif "receipt" in err_text.lower():
-                    error_detail = "ошибка данных чека \\(детали в логах\\)"
-                else:
-                    error_detail = "ошибка от юkassa \\(детали в логах\\)"
-            except Exception as parse_e:
-                logger.error(f"Could not parse YK error response: {parse_e}")
-                error_detail = "ошибка от юkassa \\(не удалось разобрать ответ\\)"
-        elif isinstance(e, httpx.RequestError):
-            error_detail = "проблема с сетевым подключением к юkassa"
-        else:
-            error_detail = "произошла непредвиденная ошибка"
-
-        user_message = error_link_create_raw.format(error_detail=escape_markdown_v2(error_detail))
-        try:
-            await query.edit_message_text(user_message, reply_markup=None, parse_mode=ParseMode.MARKDOWN_V2)
-        except Exception as send_e:
-            logger.error(f"Failed to send error message after payment creation failure: {send_e}")
+# [Removed deprecated subscription-related functions]
 
 
 async def yookassa_webhook_placeholder(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -4393,62 +4234,7 @@ async def yookassa_webhook_placeholder(update: Update, context: ContextTypes.DEF
 
 # --- Edit Persona Wizard ---
 
-async def _clean_previous_edit_session(context: ContextTypes.DEFAULT_TYPE, current_user_id_for_log_prefix: int):
-    """Helper to delete the menu message from a previous edit session, if any."""
-    # current_user_id_for_log_prefix - это ID пользователя, который инициировал ТЕКУЩЕЕ действие,
-    # чтобы лог был привязан к текущему пользователю, даже если user_data от предыдущего.
-    
-    # Мы все еще смотрим на wizard_menu_message_id и edit_chat_id, которые могли быть установлены
-    # этим же пользователем в предыдущей сессии.
-    
-    current_keys = list(context.user_data.keys()) # Получаем ключи ДО попытки извлечения
-    logger.info(f"_clean_previous_edit_session: CALLED (initiating user: {current_user_id_for_log_prefix}). "
-                f"Current user_data keys BEFORE getting IDs: {current_keys}")
-    
-    old_wizard_menu_id = context.user_data.get('wizard_menu_message_id')
-    old_edit_chat_id = context.user_data.get('edit_chat_id') 
-    # _user_id_for_logging из user_data относится к пользователю ПРЕДЫДУЩЕЙ сессии (если она была от того же пользователя)
-    previous_session_user_log = context.user_data.get('_user_id_for_logging', 'N/A_prev_session')
-    
-    logger.info(f"_clean_previous_edit_session: For initiating user '{current_user_id_for_log_prefix}' (prev session user log: '{previous_session_user_log}') - "
-                f"Found old_wizard_menu_id: {old_wizard_menu_id}, old_edit_chat_id: {old_edit_chat_id}")
-    
-    if old_wizard_menu_id and old_edit_chat_id:
-        logger.info(f"_clean_previous_edit_session: Attempting to delete old menu message {old_wizard_menu_id} "
-                    f"in chat {old_edit_chat_id} (likely from user '{previous_session_user_log}')")
-        try:
-            delete_successful = await context.bot.delete_message(chat_id=old_edit_chat_id, message_id=old_wizard_menu_id)
-            if delete_successful:
-                logger.info(f"_clean_previous_edit_session: Successfully deleted old wizard menu message "
-                            f"{old_wizard_menu_id} from chat {old_edit_chat_id}.")
-            else:
-                logger.warning(f"_clean_previous_edit_session: delete_message returned {delete_successful} "
-                                f"for message {old_wizard_menu_id} in chat {old_edit_chat_id}.")
-        except BadRequest as e_bad_req:
-            if "message to delete not found" in str(e_bad_req).lower():
-                logger.warning(f"_clean_previous_edit_session: Message {old_wizard_menu_id} in chat {old_edit_chat_id} "
-                                f"not found for deletion. Error: {e_bad_req}")
-            elif "message can't be deleted" in str(e_bad_req).lower():
-                logger.warning(f"_clean_previous_edit_session: Message {old_wizard_menu_id} in chat {old_edit_chat_id} "
-                                f"can't be deleted. Error: {e_bad_req}")
-            else:
-                logger.error(f"_clean_previous_edit_session: BadRequest while deleting message {old_wizard_menu_id} "
-                            f"in chat {old_edit_chat_id}. Error: {e_bad_req}")
-        except Forbidden as e_forbidden:
-            logger.error(f"_clean_previous_edit_session: Forbidden to delete message {old_wizard_menu_id} "
-                        f"in chat {old_edit_chat_id}. Error: {e_forbidden}")
-        except Exception as e:
-            logger.error(f"_clean_previous_edit_session: Generic error deleting message {old_wizard_menu_id} "
-                        f"in chat {old_edit_chat_id}. Error: {e}")
-    elif old_wizard_menu_id:
-        logger.warning(f"_clean_previous_edit_session: Found old_wizard_menu_id ({old_wizard_menu_id}) "
-                        f"but no old_edit_chat_id (initiating user '{current_user_id_for_log_prefix}'). Cannot delete.")
-    elif old_edit_chat_id:
-        logger.warning(f"_clean_previous_edit_session: Found old_edit_chat_id ({old_edit_chat_id}) "
-                        f"but no old_wizard_menu_id (initiating user '{current_user_id_for_log_prefix}'). Cannot delete.")
-    else:
-        logger.info(f"_clean_previous_edit_session: No old wizard menu message found in user_data "
-                    f"(initiating user '{current_user_id_for_log_prefix}') to delete.")
+# [Removed] _clean_previous_edit_session — меню теперь редактируется на месте без удаления
 
 async def _start_edit_convo(update: Update, context: ContextTypes.DEFAULT_TYPE, persona_id: int) -> int:
     """Starts the persona editing wizard."""
@@ -4476,10 +4262,7 @@ async def _start_edit_convo(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     
     # 2. Вызываем очистку. Она использует user_data от ВОЗМОЖНОЙ ПРЕДЫДУЩЕЙ сессии.
     # Передаем user_id ТЕКУЩЕГО пользователя для логирования в _clean_previous_edit_session
-    logger.info(f"_start_edit_convo: Calling _clean_previous_edit_session for user {user_id}")
-    await _clean_previous_edit_session(context, user_id) 
-    
-    # 3. Очищаем user_data для начала чистой НОВОЙ сессии
+    # 3. Начинаем новую сессию без агрессивного удаления предыдущих сообщений
     logger.info(f"_start_edit_convo: Clearing user_data for user {user_id} to start new session.")
     context.user_data.clear() 
     
@@ -4517,7 +4300,7 @@ async def _start_edit_convo(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             # Кэшируем полностью загруженный объект в состоянии пользователя, чтобы избежать повторных запросов
             context.user_data['persona_object'] = persona_config
 
-            # Вызываем _show_edit_wizard_menu (патченную версию), она отправит НОВОЕ сообщение
+            # Вызываем _show_edit_wizard_menu, она отправит НОВОЕ сообщение или отредактирует текущее
             return await _show_edit_wizard_menu(update, context, persona_config)
 
     except SQLAlchemyError as e:
@@ -4665,15 +4448,7 @@ async def edit_wizard_menu_handler(update: Update, context: ContextTypes.DEFAULT
     if data == "edit_wizard_max_msgs":
         return await edit_max_messages_prompt(update, context) # Новая функция
 
-    if data == "edit_wizard_message_volume": # Временно отключено
-        await query.answer("Функция 'Объем сообщений' временно недоступна.", show_alert=True)
-        # Возвращаем меню по кэшированному объекту без обращения к БД
-        if persona_obj:
-            return await _show_edit_wizard_menu(update, context, persona_obj)
-        else:
-            with get_db() as db_session:
-                persona_config = db_session.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
-                return await _show_edit_wizard_menu(update, context, persona_config) if persona_config else ConversationHandler.END
+    # 'edit_wizard_message_volume' удалено
             
     
                 
@@ -5016,15 +4791,14 @@ async def _send_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE, text:
 
 # --- Edit Name ---
 async def edit_name_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # Пытаемся взять из кэша
+    # Кэш обязателен: если потерян — завершаем диалог без запросов к БД
     persona_obj = context.user_data.get('persona_object')
-    if persona_obj and getattr(persona_obj, 'name', None):
-        current_name = persona_obj.name
-    else:
-        # Фолбэк на БД, если кэш отсутствует (например, старая сессия)
-        persona_id = context.user_data.get('edit_persona_id')
-        with get_db() as db:
-            current_name = db.query(DBPersonaConfig.name).filter(DBPersonaConfig.id == persona_id).scalar() or "N/A"
+    if not persona_obj:
+        if update.callback_query:
+            try: await update.callback_query.answer("сессия потеряна. начни заново.", show_alert=True)
+            except Exception: pass
+        return ConversationHandler.END
+    current_name = getattr(persona_obj, 'name', None) or "N/A"
     prompt_text = escape_markdown_v2(f"введите новое имя (текущее: '{current_name}', 2-50 симв.):")
     keyboard = [[InlineKeyboardButton("назад", callback_data="back_to_wizard_menu")]]
     await _send_prompt(update, context, prompt_text, InlineKeyboardMarkup(keyboard))
@@ -5060,11 +4834,8 @@ async def edit_name_received(update: Update, context: ContextTypes.DEFAULT_TYPE)
             live_persona.name = new_name
             db.commit()
 
-            # Обновляем кэш (минимально, либо через refresh)
-            try:
-                db.refresh(live_persona, attribute_names=['name'])
-            except Exception:
-                pass
+            # Обновляем кэш из БД полностью
+            db.refresh(live_persona)
             context.user_data['persona_object'] = live_persona
 
             await update.message.reply_text(escape_markdown_v2(f"✅ имя обновлено на '{new_name}'."))
@@ -5082,37 +4853,18 @@ async def edit_name_received(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 # --- Edit Description ---
 async def edit_description_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Отображает форму редактирования описания, отправляя сообщение как простой текст."""
+    """Отображает форму редактирования описания. Использует только кэш."""
     persona_obj = context.user_data.get('persona_object')
-    query = update.callback_query
-    
-    if persona_obj and hasattr(persona_obj, 'description'):
-        current_desc = persona_obj.description or "(пусто)"
-    else:
-        persona_id = context.user_data.get('edit_persona_id')
-        with get_db() as db:
-            current_desc = db.query(DBPersonaConfig.description).filter(DBPersonaConfig.id == persona_id).scalar() or "(пусто)"
-    
+    if not persona_obj:
+        if update.callback_query:
+            try: await update.callback_query.answer("сессия потеряна. начни заново.", show_alert=True)
+            except Exception: pass
+        return ConversationHandler.END
+    current_desc = getattr(persona_obj, 'description', None) or "(пусто)"
     current_desc_preview = (current_desc[:100] + '...') if len(current_desc) > 100 else current_desc
     prompt_text = f"введите новое описание (макс. 2500 символов).\n\nтекущее (начало):\n{current_desc_preview}"
     keyboard = [[InlineKeyboardButton("назад", callback_data="back_to_wizard_menu")]]
-    
-    try:
-        # Всегда отправляем новое сообщение без Markdown
-        sent_message = await query.message.reply_text(
-            text=prompt_text,
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode=None
-        )
-        context.user_data['last_prompt_message_id'] = sent_message.message_id
-        # Пытаемся удалить старое сообщение с меню
-        try:
-            await query.message.delete()
-        except Exception:
-            pass
-    except Exception as e:
-        logger.error(f"Error sending description prompt: {e}", exc_info=True)
-
+    await _send_prompt(update, context, prompt_text, InlineKeyboardMarkup(keyboard))
     return EDIT_DESCRIPTION
 
 async def edit_description_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -5134,10 +4886,7 @@ async def edit_description_received(update: Update, context: ContextTypes.DEFAUL
             live_persona.description = new_desc
             db.commit()
 
-            try:
-                db.refresh(live_persona, attribute_names=['description'])
-            except Exception:
-                pass
+            db.refresh(live_persona)
             context.user_data['persona_object'] = live_persona
 
             await update.message.reply_text(escape_markdown_v2("✅ описание обновлено."))
@@ -5153,8 +4902,13 @@ async def edit_description_received(update: Update, context: ContextTypes.DEFAUL
 
 # --- Edit Communication Style ---
 async def edit_comm_style_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # Снимаем текущее значение из кэша, без обращения к БД
+    # Используем только кэшированный объект. Если потерян — завершаем диалог.
     persona_obj = context.user_data.get('persona_object')
+    if not persona_obj:
+        if update.callback_query:
+            try: await update.callback_query.answer("сессия потеряна. начни заново.", show_alert=True)
+            except Exception: pass
+        return ConversationHandler.END
     current_style = getattr(persona_obj, 'communication_style', None) if persona_obj else None
     # normalize to enum
     try:
@@ -5203,10 +4957,7 @@ async def edit_comm_style_received(update: Update, context: ContextTypes.DEFAULT
                 live_persona = db.merge(persona_from_cache)
                 live_persona.communication_style = style_enum.value
                 db.commit()
-                try:
-                    db.refresh(live_persona, attribute_names=['communication_style'])
-                except Exception:
-                    pass
+                db.refresh(live_persona)
                 context.user_data['persona_object'] = live_persona
                 logger.info(f"Set communication_style to {style_enum.value} for persona {live_persona.id}")
                 return await _show_edit_wizard_menu(update, context, live_persona)
@@ -5221,7 +4972,13 @@ async def edit_comm_style_received(update: Update, context: ContextTypes.DEFAULT
 
 # --- Edit Max Messages ---
 async def edit_max_messages_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Отображает подменю для выбора максимального количества сообщений (без обращений к БД)."""
+    """Отображает подменю для выбора максимального количества сообщений (кэш обязателен)."""
+    persona_obj = context.user_data.get('persona_object')
+    if not persona_obj:
+        if update.callback_query:
+            try: await update.callback_query.answer("сессия потеряна. начни заново.", show_alert=True)
+            except Exception: pass
+        return ConversationHandler.END
     query = update.callback_query # Ожидаем, что сюда пришли через коллбэк
     if not query:
         logger.error("edit_max_messages_prompt called without a callback query.")
@@ -5303,10 +5060,7 @@ async def edit_max_messages_received(update: Update, context: ContextTypes.DEFAU
                 live_persona = db.merge(persona_from_cache)
                 live_persona.max_response_messages = numeric_value
                 db.commit()
-                try:
-                    db.refresh(live_persona, attribute_names=['max_response_messages'])
-                except Exception:
-                    pass
+                db.refresh(live_persona)
                 context.user_data['persona_object'] = live_persona
                 logger.info(f"Set max_response_messages to {numeric_value} ({new_value_str}) for persona {live_persona.id} via sub-menu.")
                 return await _show_edit_wizard_menu(update, context, live_persona)
@@ -5322,8 +5076,13 @@ async def edit_max_messages_received(update: Update, context: ContextTypes.DEFAU
 
 # --- Edit Verbosity ---
 async def edit_verbosity_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # Берем текущее значение из кэша, чтобы не обращаться к БД
+    # Берем текущее значение из кэша. Если кэш отсутствует — завершаем диалог.
     persona_obj = context.user_data.get('persona_object')
+    if not persona_obj:
+        if update.callback_query:
+            try: await update.callback_query.answer("сессия потеряна. начни заново.", show_alert=True)
+            except Exception: pass
+        return ConversationHandler.END
     current = getattr(persona_obj, 'verbosity_level', None) if persona_obj else None
     # normalize to enum
     try:
@@ -5371,10 +5130,7 @@ async def edit_verbosity_received(update: Update, context: ContextTypes.DEFAULT_
                 live_persona = db.merge(persona_from_cache)
                 live_persona.verbosity_level = verbosity_enum.value
                 db.commit()
-                try:
-                    db.refresh(live_persona, attribute_names=['verbosity_level'])
-                except Exception:
-                    pass
+                db.refresh(live_persona)
                 context.user_data['persona_object'] = live_persona
                 logger.info(f"Set verbosity_level to {verbosity_enum.value} for persona {live_persona.id}")
                 return await _show_edit_wizard_menu(update, context, live_persona)
@@ -5388,8 +5144,13 @@ async def edit_verbosity_received(update: Update, context: ContextTypes.DEFAULT_
 
 # --- Edit Group Reply Preference ---
 async def edit_group_reply_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # Берем текущее значение из кэша, чтобы не ходить в БД
+    # Берем текущее значение из кэша, кэш обязателен
     persona_obj = context.user_data.get('persona_object')
+    if not persona_obj:
+        if update.callback_query:
+            try: await update.callback_query.answer("сессия потеряна. начни заново.", show_alert=True)
+            except Exception: pass
+        return ConversationHandler.END
     current = (getattr(persona_obj, 'group_reply_preference', None) if persona_obj else None) or "mentioned_or_contextual"
     
     # Словарь для красивого отображения текущего значения
@@ -5436,10 +5197,7 @@ async def edit_group_reply_received(update: Update, context: ContextTypes.DEFAUL
                 live_persona = db.merge(persona_from_cache)
                 live_persona.group_reply_preference = new_value
                 db.commit()
-                try:
-                    db.refresh(live_persona, attribute_names=['group_reply_preference'])
-                except Exception:
-                    pass
+                db.refresh(live_persona)
                 context.user_data['persona_object'] = live_persona
                 logger.info(f"Set group_reply_preference to {new_value} for persona {live_persona.id}")
                 return await _show_edit_wizard_menu(update, context, live_persona)
@@ -5524,10 +5282,7 @@ async def edit_media_reaction_received(update: Update, context: ContextTypes.DEF
                 live_persona = db.merge(persona_from_cache)
                 live_persona.media_reaction = new_value
                 db.commit()
-                try:
-                    db.refresh(live_persona, attribute_names=['media_reaction'])
-                except Exception:
-                    pass
+                db.refresh(live_persona)
                 context.user_data['persona_object'] = live_persona
                 logger.info(f"Set media_reaction to {new_value} for persona {live_persona.id}")
                 return await _show_edit_wizard_menu(update, context, live_persona)
@@ -5613,32 +5368,22 @@ async def _show_edit_wizard_menu(update: Update, context: ContextTypes.DEFAULT_T
         msg_text = f"{part1}{part2}{part3}{part4}{part5}{part6}"
 
         sent_message = None
-        current_session_wizard_menu_id = context.user_data.get('wizard_menu_message_id')
-        
-        if query and query.message and current_session_wizard_menu_id and \
-            query.message.message_id == current_session_wizard_menu_id:
-            try:
-                if query.message.text != msg_text or query.message.reply_markup != reply_markup:
-                    await query.edit_message_text(text=msg_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
+        is_callback = update.callback_query is not None
+
+        try:
+            if is_callback:
+                await query.edit_message_text(text=msg_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
                 sent_message = query.message
-            except BadRequest as e_edit:
-                if "message is not modified" in str(e_edit).lower():
-                    sent_message = query.message
-                else: 
-                    logger.warning(f"_show_edit_wizard_menu: Failed to edit menu (error: {e_edit}), sending new.")
-                    sent_message = await context.bot.send_message(chat_id=chat_id_for_menu, text=msg_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
-            except Exception as e_gen_edit: 
-                logger.warning(f"_show_edit_wizard_menu: General error editing menu (error: {e_gen_edit}), sending new.")
+            else:
                 sent_message = await context.bot.send_message(chat_id=chat_id_for_menu, text=msg_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
-        else:
-            # Если ранее уже было сообщение меню — пробуем удалить, чтобы не засорять чат
-            prev_menu_id = current_session_wizard_menu_id
-            if prev_menu_id:
-                try:
-                    await context.bot.delete_message(chat_id=chat_id_for_menu, message_id=prev_menu_id)
-                except Exception as e_del:
-                    logger.warning(f"_show_edit_wizard_menu: Could not delete previous menu message {prev_menu_id}: {e_del}")
-            sent_message = await context.bot.send_message(chat_id=chat_id_for_menu, text=msg_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
+
+        except BadRequest as e:
+            if "message is not modified" in str(e).lower():
+                sent_message = query.message if is_callback else sent_message
+            else:
+                logger.error(f"Failed to edit/send wizard menu: {e}")
+                # Fallback: если редактирование не удалось, отправляем новое сообщение
+                sent_message = await context.bot.send_message(chat_id=chat_id_for_menu, text=msg_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
 
         context.user_data['wizard_menu_message_id'] = sent_message.message_id
         context.user_data['edit_chat_id'] = chat_id_for_menu 
@@ -6665,80 +6410,7 @@ async def unmute_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 # --- Новые функции для настройки макс. сообщений ---
 
-# --- Функции для настройки объема сообщений ---
-async def edit_message_volume_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Sends prompt to choose message volume."""
-    persona_id = context.user_data.get('edit_persona_id')
-    # Временно используем значение по умолчанию, пока миграция не применена
-    # with get_db() as db:
-    #     current_volume = db.query(PersonaConfig.message_volume).filter(PersonaConfig.id == persona_id).scalar() or "normal"
-    current_volume = "normal"
-
-    display_map = {
-        "short": "🔉 Короткие сообщения",
-        "normal": "🔊 Стандартный объем",
-        "long": "📝 Подробные сообщения",
-        "random": "🎲 Случайный объем"
-    }
-    current_display = display_map.get(current_volume, current_volume)
-
-    prompt_text = escape_markdown_v2(f"🔊 Выберите объем сообщений (текущий: {current_display}):")
-
-    keyboard = [
-        [InlineKeyboardButton(f"{'✅ ' if current_volume == 'short' else ''}{display_map['short']}", callback_data="set_volume_short")],
-        [InlineKeyboardButton(f"{'✅ ' if current_volume == 'normal' else ''}{display_map['normal']}", callback_data="set_volume_normal")],
-        [InlineKeyboardButton(f"{'✅ ' if current_volume == 'long' else ''}{display_map['long']}", callback_data="set_volume_long")],
-        [InlineKeyboardButton(f"{'✅ ' if current_volume == 'random' else ''}{display_map['random']}", callback_data="set_volume_random")],
-        [InlineKeyboardButton("⬅️ Назад", callback_data="back_to_wizard_menu")]
-    ]
-
-    await _send_prompt(update, context, prompt_text, InlineKeyboardMarkup(keyboard))
-    return EDIT_MESSAGE_VOLUME
-
-async def edit_message_volume_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handles receiving the choice for message volume."""
-    query = update.callback_query
-    await query.answer()
-    data = query.data
-    persona_id = context.user_data.get('edit_persona_id')
-
-    if data == "back_to_wizard_menu":
-        return await _handle_back_to_wizard_menu(update, context, persona_id)
-
-    if data.startswith("set_volume_"):
-        volume = data.replace("set_volume_", "")
-        valid_volumes = ["short", "normal", "long", "random"]
-        if volume not in valid_volumes:
-            logger.warning(f"Invalid volume setting: {volume}")
-            return EDIT_MESSAGE_VOLUME
-
-        try:
-            with get_db() as db:
-                # Временно не обновляем столбец, пока миграция не применена
-                # db.query(PersonaConfig).filter(PersonaConfig.id == persona_id).update({"message_volume": volume})
-                # db.commit()
-                logger.info(f"Would update message_volume to {volume} for persona {persona_id} (temporarily disabled)")
-                
-                # Показываем сообщение об успешном обновлении
-                display_map = {
-                    "short": "🔉 Короткие сообщения",
-                    "normal": "🔊 Стандартный объем",
-                    "long": "📝 Подробные сообщения",
-                    "random": "🎲 Случайный объем"
-                }
-                display_value = display_map.get(volume, volume)
-                await query.edit_message_text(escape_markdown_v2(f"✅ Объем сообщений установлен: {display_value}"))
-                
-                # Return to wizard menu
-                persona = db.query(DBPersonaConfig).filter(DBPersonaConfig.id == persona_id).first()
-                return await _show_edit_wizard_menu(update, context, persona)
-        except Exception as e:
-            logger.error(f"Error setting message_volume for {persona_id}: {e}")
-            await query.edit_message_text(escape_markdown_v2("❌ Ошибка при сохранении настройки объема сообщений."))
-            return await _try_return_to_wizard_menu(update, context, query.from_user.id, persona_id)
-    else:
-        logger.warning(f"Unknown callback in edit_message_volume_received: {data}")
-        return EDIT_MESSAGE_VOLUME
+# --- Функции для настройки объема сообщений — удалены ---
 
 
 
